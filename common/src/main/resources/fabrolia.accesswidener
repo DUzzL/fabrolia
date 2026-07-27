@@ -1,0 +1,58 @@
+accessWidener v1 official
+accessible field net/minecraft/server/level/ChunkMap poiManager Lnet/minecraft/world/entity/ai/village/poi/PoiManager;
+accessible field net/minecraft/server/level/ChunkMap$TrackedEntity entity Lnet/minecraft/world/entity/Entity;
+accessible method net/minecraft/server/level/ChunkMap anyPlayerCloseEnoughForSpawning (Lnet/minecraft/world/level/ChunkPos;)Z
+accessible class net/minecraft/server/level/ChunkMap$TrackedEntity
+accessible field net/minecraft/server/level/ServerChunkCache mainThreadProcessor Lnet/minecraft/server/level/ServerChunkCache$MainThreadExecutor;
+accessible method net/minecraft/server/level/ServerChunkCache getVisibleChunkIfPresent (J)Lnet/minecraft/server/level/ChunkHolder;
+accessible method net/minecraft/server/level/ServerChunkCache$MainThreadExecutor pollTask ()Z
+accessible method net/minecraft/server/MinecraftServer pollTask ()Z
+accessible field net/minecraft/util/thread/BlockableEventLoop blockingCount I
+accessible class net/minecraft/server/level/ServerChunkCache$MainThreadExecutor
+accessible class net/minecraft/server/level/ServerLevel
+accessible field net/minecraft/server/level/ServerLevel entityTickList Lnet/minecraft/world/level/entity/EntityTickList;
+accessible method net/minecraft/server/level/ServerLevel doBlockEvent (Lnet/minecraft/world/level/BlockEventData;)Z
+accessible class net/minecraft/server/level/ServerLevel$EntityCallbacks
+accessible class net/minecraft/world/entity/ai/gossip/GossipContainer$EntityGossips
+accessible method net/minecraft/world/entity/animal/turtle/Turtle setHasEgg (Z)V
+accessible class net/minecraft/world/entity/animal/turtle/Turtle$TurtleBreedGoal
+accessible class net/minecraft/world/level/PotentialCalculator$PointCharge
+accessible method net/minecraft/world/level/Level tickBlockEntities ()V
+accessible class net/minecraft/world/level/block/entity/BeehiveBlockEntity$BeeData
+accessible field net/minecraft/world/level/chunk/LevelChunk$BoundTickingBlockEntity blockEntity Lnet/minecraft/world/level/block/entity/BlockEntity;
+accessible class net/minecraft/world/level/chunk/LevelChunk$BoundTickingBlockEntity
+accessible field net/minecraft/world/level/chunk/LevelChunk$RebindableTickingBlockEntityWrapper ticker Lnet/minecraft/world/level/block/entity/TickingBlockEntity;
+accessible class net/minecraft/world/level/chunk/LevelChunk$RebindableTickingBlockEntityWrapper
+accessible class net/minecraft/world/level/entity/PersistentEntitySectionManager$Callback
+accessible class net/minecraft/world/level/redstone/CollectingNeighborUpdater$NeighborUpdates
+accessible class net/minecraft/world/scores/PlayerScores
+accessible class net/minecraft/world/level/LocalMobCapCalculator$MobCounts
+accessible method net/minecraft/world/level/LocalMobCapCalculator$MobCounts <init> ()V
+accessible class net/minecraft/world/entity/animal/fox/Fox$FoxBreedGoal
+accessible class net/minecraft/world/level/chunk/storage/SectionStorage$PackedChunk
+accessible class net/minecraft/world/level/NaturalSpawner
+accessible method net/minecraft/world/level/NaturalSpawner getRoughBiome (Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/chunk/ChunkAccess;)Lnet/minecraft/world/level/biome/Biome;
+accessible class net/minecraft/world/level/NaturalSpawner$SpawnState
+accessible method net/minecraft/world/level/NaturalSpawner$SpawnState <init> (ILit/unimi/dsi/fastutil/objects/Object2IntOpenHashMap;Lnet/minecraft/world/level/PotentialCalculator;Lnet/minecraft/world/level/LocalMobCapCalculator;)V
+accessible method net/minecraft/server/level/ServerChunkCache tickSpawningChunk (Lnet/minecraft/world/level/chunk/LevelChunk;JLjava/util/List;Lnet/minecraft/world/level/NaturalSpawner$SpawnState;)V
+accessible class net/minecraft/server/level/ChunkMap$DistanceManager
+accessible method net/minecraft/server/level/DistanceManager forEachEntityTickingChunk (Lit/unimi/dsi/fastutil/longs/LongConsumer;)V
+accessible method net/minecraft/server/level/ChunkMap collectSpawningChunks (Ljava/util/List;)V
+accessible method net/minecraft/server/level/ChunkMap forEachBlockTickingChunk (Ljava/util/function/Consumer;)V
+accessible class net/minecraft/world/entity/Entity$Movement
+accessible field net/minecraft/world/level/entity/EntitySectionStorage intialSectionVisibility Lit/unimi/dsi/fastutil/longs/Long2ObjectFunction;
+mutable field net/minecraft/world/level/entity/EntitySectionStorage intialSectionVisibility Lit/unimi/dsi/fastutil/longs/Long2ObjectFunction;
+accessible field net/minecraft/world/level/block/RedstoneTorchBlock RECENT_TOGGLES Ljava/util/Map;
+mutable field net/minecraft/world/level/block/RedstoneTorchBlock RECENT_TOGGLES Ljava/util/Map;
+accessible class net/minecraft/world/level/block/RedstoneTorchBlock$Toggle
+accessible field net/minecraft/world/level/block/RedstoneTorchBlock$Toggle pos Lnet/minecraft/core/BlockPos;
+accessible field net/minecraft/world/level/block/RedstoneTorchBlock$Toggle when J
+accessible field net/minecraft/world/entity/PortalProcessor portal Lnet/minecraft/world/level/block/Portal;
+accessible field net/minecraft/server/level/GenerationChunkHolder futures Ljava/util/concurrent/atomic/AtomicReferenceArray;
+accessible field net/minecraft/world/level/entity/PersistentEntitySectionManager sectionStorage Lnet/minecraft/world/level/entity/EntitySectionStorage;
+accessible field net/minecraft/world/level/chunk/LevelChunk tickersInLevel Ljava/util/Map;
+accessible field net/minecraft/world/level/Level blockEntityTickers Ljava/util/List;
+accessible field net/minecraft/world/level/Level pendingBlockEntityTickers Ljava/util/List;
+accessible field net/minecraft/world/level/Level tickingBlockEntities Z
+accessible field net/minecraft/server/level/ChunkMap updatingChunkMap Lit/unimi/dsi/fastutil/longs/Long2ObjectLinkedOpenHashMap;
+accessible field net/minecraft/server/level/ChunkMap pendingUnloads Lit/unimi/dsi/fastutil/longs/Long2ObjectLinkedOpenHashMap;

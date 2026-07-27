@@ -1,0 +1,89 @@
+plugins {
+    id 'multiloader-loader'
+    id 'net.fabricmc.fabric-loom'
+    id "com.modrinth.minotaur" version "2.+"
+    id 'idea'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
+}
+
+repositories {
+    maven { url 'https://api.modrinth.com/maven' }
+}
+
+apply plugin: 'com.modrinth.minotaur'
+modrinth {
+    token = System.getenv("MODRINTH_TOKEN")
+    projectId = "fabrolia"
+    versionNumber.set(project.version.toString())
+    versionName.set(project.version.toString())
+    versionType = "alpha"
+    def libsDir = layout.buildDirectory.dir("libs").get().asFile
+    uploadFile = libsDir.listFiles().find { it.name.endsWith(".jar") }
+    gameVersions = ["26.2"]
+    loaders = ["fabric", "quilt"]
+    dependencies {
+        required.project "fabric-api"
+        optional.project "lithium"
+        optional.project "c2me-fabric"
+        incompatible.project "moonrise-opt"
+        incompatible.project "open-parties-and-claims"
+    }
+    changelog = """
+"""
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${fabric_loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${fabric_version}"
+
+    include(implementation(annotationProcessor("com.github.bawnorton.mixinsquared:mixinsquared-fabric:${mixinsquared_version}")))
+    implementation 'com.electronwill.night-config:toml:3.8.1'
+    include group: 'com.electronwill.night-config', name: 'toml', version: '3.8.1'
+    include group: 'com.electronwill.night-config', name: 'core', version: '3.8.1'
+    compileOnly 'org.projectlombok:lombok:1.18.44'
+    annotationProcessor 'org.projectlombok:lombok:1.18.44'
+
+    implementation "maven.modrinth:lithium:${lithium_version}-neoforge"
+    compileOnly("maven.modrinth:vmp-fabric:${vmp_version}") { transitive = false }
+    implementation(include("me.lucko:fabric-permissions-api:${project.permission_api}"))
+    implementation include(project(":api"))
+}
+
+loom {
+    def aw = project(':common').file("src/main/resources/fabrolia.accesswidener")
+    accessWidenerPath.set(project(":common").file("src/main/resources/fabrolia.accesswidener"))
+    if (aw.exists()) {
+        accessWidenerPath.set(aw)
+    }
+    mixin {
+        useLegacyMixinAp = false
+    }
+    runs {
+        client {
+            client()
+            setConfigName('Fabric Client')
+            ideConfigGenerated(true)
+            runDir('runs/client')
+        }
+        server {
+            server()
+            setConfigName('Fabric Server')
+            ideConfigGenerated(true)
+            runDir('runs/server')
+            vmArgs(
+                    "-Xms12G",
+                    "-Xmx12G",
+                    "--add-modules=jdk.incubator.vector",
+                    "-XX:+UnlockExperimentalVMOptions",
+                    "-XX:+UseZGC",
+                    "-XX:+AlwaysPreTouch",
+                    "-XX:+DisableExplicitGC",
+                    "-XX:+UseDynamicNumberOfGCThreads"
+            )
+        }
+    }
+}

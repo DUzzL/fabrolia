@@ -1,0 +1,68 @@
+plugins {
+    id 'multiloader-loader'
+    id 'net.neoforged.moddev'
+    id 'idea'
+    id "com.modrinth.minotaur" version "2.+"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
+}
+
+repositories {
+    maven { url 'https://api.modrinth.com/maven' }
+}
+
+apply plugin: 'com.modrinth.minotaur'
+modrinth {
+    token = System.getenv("MODRINTH_TOKEN")
+    projectId = "fabrolia"
+    versionNumber.set(project.version.toString())
+    versionName.set(project.version.toString())
+    versionType = "alpha"
+    def libsDir = layout.buildDirectory.dir("libs").get().asFile
+    uploadFile = libsDir.listFiles().find { it.name.endsWith(".jar") }
+    gameVersions = ["1.21.11"]
+    loaders = ["neoforge"]
+    dependencies {
+        optional.project "lithium"
+        optional.project "c2me-neoforge"
+        incompatible.project "moonrise-opt"
+        incompatible.project "open-parties-and-claims"
+    }
+    changelog = """
+"""
+}
+
+neoForge {
+    version = neoforge_version
+    def at = project(':common').file('src/main/resources/META-INF/accesstransformer.cfg')
+    if (at.exists()) {
+        accessTransformers.from(at.absolutePath)
+    }
+    runs {
+        create("client") {
+            client()
+        }
+        create("server") {
+            server()
+        }
+    }
+    mods {
+        create("${mod_id}") {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+dependencies {
+    compileOnly(annotationProcessor("com.github.bawnorton.mixinsquared:mixinsquared-common:${mixinsquared_version}"))
+    implementation(jarJar("com.github.bawnorton.mixinsquared:mixinsquared-neoforge:${mixinsquared_version}"))
+    implementation "maven.modrinth:lithium:${lithium_version}-neoforge"
+    compileOnly("maven.modrinth:vmp-fabric:${vmp_version}") { transitive = false }
+    compileOnly 'org.projectlombok:lombok:1.18.44'
+    annotationProcessor 'org.projectlombok:lombok:1.18.44'
+    implementation(jarJar(project(':api')))
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }

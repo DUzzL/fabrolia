@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "fabrolia",
+  "version": "${version}",
+  "name": "${mod_name}",
+  "description": "${description}",
+  "authors": [
+    "${mod_author}"
+  ],
+  "contact": {
+    "homepage": "https://fabricmc.net/",
+    "sources": "https://github.com/FabricMC/fabric-example-mod"
+  },
+  "license": "GPL-3.0",
+  "icon": "fabrolia/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.axalotl.fabrolia.fabric.FabroliaFabric"
+    ],
+    "mixinsquared": [
+      "com.axalotl.fabrolia.common.mixin.utils.MixinCanceller"
+    ]
+  },
+  "mixins": [
+    "fabrolia.common.mixins.json",
+    "fabrolia.fabric.mixins.json"
+  ],
+  "accessWidener": "fabrolia.accesswidener",
+  "depends": {
+    "fabricloader": "*",
+    "fabric-api": "*",
+    "minecraft": ">=26.1",
+    "java": ">=25"
+  },
+  "breaks": {
+    "moonrise": "*",
+    "openpartiesandclaims": "*"
+  },
+  "custom": {
+    "lithium:options": {
+      "mixin.alloc.chunk_random": false
+    }
+  }
+}

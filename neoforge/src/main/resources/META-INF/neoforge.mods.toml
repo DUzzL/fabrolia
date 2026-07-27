@@ -1,0 +1,42 @@
+modLoader = "javafml"
+loaderVersion = "${neoforge_loader_version_range}"
+license = "GPL-3.0"
+
+[[mods]]
+modId = "fabrolia"
+version = "${version}"
+displayName = "Fabrolia"
+
+logoFile = "fabrolia/icon.png"
+authors = "AxalotL, Alchemy, Bliss, Contributor, Grider, jediminer543"
+description = '''${description}'''
+
+[[mixins]]
+config = "fabrolia.common.mixins.json"
+
+[[mixins]]
+config = "fabrolia.neoforge.mixins.json"
+
+[[dependencies.fabrolia]]
+modId = "minecraft"
+type = "required"
+versionRange = "${minecraft_version_range}"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.fabrolia]]
+modId = "moonrise"
+type = "incompatible"
+versionRange = ""
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.fabrolia]]
+modId = "openpartiesandclaims"
+type = "incompatible"
+versionRange = ""
+ordering = "NONE"
+side = "BOTH"
+
+["lithium:options"]
+"mixin.alloc.chunk_random" = false

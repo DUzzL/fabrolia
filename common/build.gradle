@@ -1,0 +1,70 @@
+plugins {
+    id 'idea'
+    id 'net.fabricmc.fabric-loom'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
+}
+
+repositories {
+    maven { url = 'https://maven.bawnorton.com/releases' }
+    maven { url 'https://api.modrinth.com/maven' }
+}
+
+dependencies {
+    minecraft("com.mojang:minecraft:${minecraft_version}")
+    compileOnly("net.fabricmc:fabric-loader:$fabric_loader_version")
+    compileOnly "net.fabricmc.fabric-api:fabric-api:${fabric_version}"
+    implementation(annotationProcessor("com.github.bawnorton.mixinsquared:mixinsquared-common:${mixinsquared_version}"))
+    implementation("org.ow2.asm:asm:9.6")
+    implementation("org.ow2.asm:asm-tree:9.6")
+    compileOnly 'org.projectlombok:lombok:1.18.44'
+    annotationProcessor 'org.projectlombok:lombok:1.18.44'
+    implementation "maven.modrinth:lithium:${lithium_version}-neoforge"
+    compileOnly("maven.modrinth:vmp-fabric:${vmp_version}") { transitive = false }
+    implementation project(":api")
+
+    // task #26: unit coverage for the MC-free concurrency primitives (the
+    // transfer-visibility barrier). Everything that touches Minecraft types
+    // still needs an in-game rig — see TransferVisibilityBarrierTest's header.
+    testImplementation "org.junit.jupiter:junit-jupiter:5.9.1"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+    // Task #31 production-path tests: ServerLevel/ChunkAccess load in the test
+    // JVM, and loom's merged jar interface-injects fabric-api attachment
+    // interfaces into Level/ChunkAccess — the classes cannot link without them.
+    testImplementation "net.fabricmc:fabric-loader:$fabric_loader_version"
+    testImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_version}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "failed", "skipped"
+        exceptionFormat = "full"
+    }
+}
+
+loom {
+    mixin {
+        defaultRefmapName = "fabrolia.refmap.json"
+        useLegacyMixinAp = false
+    }
+    accessWidenerPath = file("src/main/resources/fabrolia.accesswidener")
+}
+
+configurations {
+    commonJava {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+    commonResources {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+}
+
+artifacts {
+    commonJava sourceSets.main.java.sourceDirectories.singleFile
+    commonResources sourceSets.main.resources.sourceDirectories.singleFile
+}

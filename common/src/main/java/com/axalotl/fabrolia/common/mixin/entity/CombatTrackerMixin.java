@@ -1,0 +1,20 @@
+package com.axalotl.fabrolia.common.mixin.entity;
+
+import com.axalotl.fabrolia.api.utils.ConcurrentList;
+import net.minecraft.world.damagesource.CombatEntry;
+import net.minecraft.world.damagesource.CombatTracker;
+import org.spongepowered.asm.mixin.Final;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Mutable;
+import org.spongepowered.asm.mixin.Shadow;
+
+import java.util.List;
+
+@Mixin(CombatTracker.class)
+public class CombatTrackerMixin {
+
+    @Shadow
+    @Final
+    @Mutable
+    private List<CombatEntry> entries = new ConcurrentList<>();
+}

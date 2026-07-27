@@ -1,0 +1,124 @@
+package com.axalotl.fabrolia.common.mixin.advancement;
+
+import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import net.minecraft.advancements.triggers.CriterionTrigger;
+import net.minecraft.advancements.triggers.SimpleCriterionTrigger;
+import net.minecraft.server.level.ServerPlayer;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
+
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.util.function.Predicate;
+
+/**
+ * Routes {@code SimpleCriterionTrigger.trigger(ServerPlayer, Predicate)} into the
+ * {@link AdvancementBuffer} deferred-mutation harness when buffering is active for the
+ * calling thread.
+ *
+ * <p>26.2 model: Mojang removed {@code SimpleCriterionTrigger.players} (the
+ * {@code Map<PlayerAdvancements, Set<Listener>>} we used to {@code @Shadow}) and moved the
+ * listener-set onto each {@link PlayerAdvancements} ({@link PlayerAdvancements#getTriggerMapForType
+ * getTriggerMapForType} → {@code Map<TriggerInstanceKey, SimpleInstance>}). Grants now go
+ * through {@link PlayerAdvancements#award(net.minecraft.advancements.AdvancementHolder, String)
+ * award}. We hand the per-player map directly to the buffer; the buffer snapshots key+instance
+ * pairs and awards by key at drain time.
+ *
+ * <p><b>Vanish integration:</b> when the Vanish mod is present, its
+ * {@code me.drex.vanish.mixin.interaction.SimpleCriterionTriggerMixin} adds a second
+ * {@code @WrapMethod} layer on this same vanilla method to skip advancement progress for
+ * vanished/spectator players. That extra mixin layer was profiled at ~6.9% of main-thread
+ * time on a 26-player live event (mixinextras {@code Operation.call} dispatch + varargs
+ * array per trigger × ~25k trigger calls per tick). We absorb the check into this single
+ * wrap and cancel Vanish's mixin via {@code MixinCanceller}, saving one layer of
+ * wrap-operation overhead per trigger.
+ *
+ * <p>Soft dependency: VanishAPI is resolved via MethodHandle at class-init. When Vanish is
+ * absent, the lookup falls back to a no-op constant; the JIT inlines the volatile field
+ * check as a single load. When present, {@code isVanished} runs as a direct MH invoke —
+ * cheaper than {@code Class.forName + reflective Method.invoke} on each call.
+ */
+@Mixin(SimpleCriterionTrigger.class)
+public abstract class SimpleCriterionTriggerMixin {
+
+    /**
+     * Resolved at class-load. Null when Vanish is absent (no skip-check needed) or its API
+     * isn't shaped as expected (defensive — we fall through to vanilla in that case).
+     */
+    @Unique
+    private static final MethodHandle fabrolia$VANISH_IS_VANISHED;
+
+    /** Mirrors {@code VanishConfig.interaction.advancementProgress} read once per call. */
+    @Unique
+    private static final MethodHandle fabrolia$VANISH_CONFIG_ADV_FLAG;
+
+    /** Mirrors {@code VanishConfig.interaction.spectatorAdvancementProgress}. */
+    @Unique
+    private static final MethodHandle fabrolia$VANISH_CONFIG_SPEC_FLAG;
+
+    static {
+        MethodHandle isVan = null, advFlag = null, specFlag = null;
+        try {
+            Class<?> api = Class.forName("me.drex.vanish.api.VanishAPI");
+            isVan = MethodHandles.lookup().findStatic(
+                    api, "isVanished",
+                    MethodType.methodType(boolean.class, net.minecraft.world.entity.Entity.class));
+            // Config is fetched via static ConfigManager.vanish() → VanishConfig instance.
+            // We inline as two MH chains so each call is a single MH.invokeExact returning bool.
+            Class<?> mgr = Class.forName("me.drex.vanish.config.ConfigManager");
+            Class<?> cfg = Class.forName("me.drex.vanish.config.VanishConfig");
+            Class<?> inter = Class.forName("me.drex.vanish.config.VanishConfig$Interaction");
+            MethodHandle vanishCall = MethodHandles.lookup().findStatic(
+                    mgr, "vanish", MethodType.methodType(cfg));
+            MethodHandle interactionGetter = MethodHandles.lookup().findGetter(cfg, "interaction", inter);
+            MethodHandle advGetter = MethodHandles.lookup().findGetter(inter, "advancementProgress", boolean.class);
+            MethodHandle specGetter = MethodHandles.lookup().findGetter(inter, "spectatorAdvancementProgress", boolean.class);
+            // Compose: () -> bool  via filterReturnValue chains.
+            advFlag = MethodHandles.filterReturnValue(
+                    MethodHandles.filterReturnValue(vanishCall, interactionGetter), advGetter);
+            specFlag = MethodHandles.filterReturnValue(
+                    MethodHandles.filterReturnValue(vanishCall, interactionGetter), specGetter);
+        } catch (Throwable ignored) {
+            // Vanish absent or API mismatch — leave the MHs null and the wrap proceeds straight to buffer.
+        }
+        fabrolia$VANISH_IS_VANISHED = isVan;
+        fabrolia$VANISH_CONFIG_ADV_FLAG = advFlag;
+        fabrolia$VANISH_CONFIG_SPEC_FLAG = specFlag;
+    }
+
+    @WrapMethod(method = "trigger(Lnet/minecraft/server/level/ServerPlayer;Ljava/util/function/Predicate;)V")
+    private void fabrolia$bufferOrTrigger(ServerPlayer player, Predicate<?> predicate, Operation<Void> original) {
+        // Vanish skip-check (inlined from me.drex.vanish.mixin.interaction.SimpleCriterionTriggerMixin —
+        // their mixin is disabled via MixinCanceller when we ship). Same semantics: skip when player
+        // is vanished AND the config flag is on, or spectator AND the spectator flag is on.
+        if (fabrolia$VANISH_IS_VANISHED != null) {
+            try {
+                if ((boolean) fabrolia$VANISH_CONFIG_ADV_FLAG.invokeExact()
+                        && (boolean) fabrolia$VANISH_IS_VANISHED.invokeExact((net.minecraft.world.entity.Entity) player)) {
+                    return;
+                }
+                if ((boolean) fabrolia$VANISH_CONFIG_SPEC_FLAG.invokeExact() && player.isSpectator()) {
+                    return;
+                }
+            } catch (Throwable ignored) {
+                // VanishAPI threw something unexpected — fall through to vanilla path.
+            }
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        CriterionTrigger<?> selfTrigger = (CriterionTrigger) (Object) this;
+        // Trigger-map fetch happens INSIDE the buffer's pa monitor (2026-07-17
+        // torn-read fix): the outer activeTriggers map resizes under main's
+        // registerListeners; a lock-free get from a worker raced it.
+        if (AdvancementBuffer.tryBuffer(player, predicate, selfTrigger)) {
+            return;
+        }
+        // Reaches vanilla inline only when the mod is disabled or async is
+        // fully inactive — single-threaded, no monitor needed (the SyncAll
+        // blanket monitor on this class is gone, 2026-07-17 deadlock).
+        original.call(player, predicate);
+    }
+}
