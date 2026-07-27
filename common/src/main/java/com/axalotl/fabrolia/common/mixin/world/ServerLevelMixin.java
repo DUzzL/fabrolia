@@ -461,6 +461,42 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private void skipSendBlockUpdatedCheck(ServerLevel instance, boolean value) {
     }
 
+    /**
+     * Task #32 — the vanilla navigatingMobs scan calls the synchronized
+     * {@code shouldRecomputePath}: a BLOCKING monitor entry on a nav whose
+     * owner worker may be parked in the getGroundY→getChunk main bridge while
+     * holding it (with Lithium this loop iterates Lithium's internal set —
+     * empty under our LithiumServerLevel overrides — but without Lithium it
+     * is the live scan). Route through the monitor-free snapshot check
+     * instead; identical decision logic, stale-tolerant by design.
+     */
+    @Redirect(method = "sendBlockUpdated", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/ai/navigation/PathNavigation;shouldRecomputePath(Lnet/minecraft/core/BlockPos;)Z"))
+    private boolean fabrolia$monitorFreeScan(net.minecraft.world.entity.ai.navigation.PathNavigation nav,
+                                             net.minecraft.core.BlockPos pos) {
+        if (nav instanceof com.axalotl.fabrolia.common.parallelised.utils.FabroliaSafeNavigation safe) {
+            Mob m = safe.fabrolia$navMob();
+            if (m == null || m.isRemoved()) return false; // leaked entry (task #24)
+            return safe.fabrolia$shouldRecomputePathSafe(pos);
+        }
+        return nav.shouldRecomputePath(pos);
+    }
+
+    /**
+     * Task #32 (the 2026-07-28 production watchdog deadlock) — vanilla runs
+     * {@code recomputePath()} (full pathfinding, synchronized) on whatever
+     * thread changed the block. Cross-owner that was BOTH the deadlock edge
+     * (main parked on a nav monitor held by a worker that was itself parked
+     * on main's chunk service) and an ownership violation. NavRecompute runs
+     * it inline only in the mob's own execution context and defers to the
+     * owner island's lane otherwise.
+     */
+    @Redirect(method = "sendBlockUpdated", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/ai/navigation/PathNavigation;recomputePath()V"))
+    private void fabrolia$ownerRoutedRecompute(net.minecraft.world.entity.ai.navigation.PathNavigation nav) {
+        com.axalotl.fabrolia.common.regions.NavRecompute.recomputeOwnerSafe(this.getLevel(), nav);
+    }
+
     @WrapMethod(method = "explode")
     private void createExplosion(
             @Nullable Entity source,

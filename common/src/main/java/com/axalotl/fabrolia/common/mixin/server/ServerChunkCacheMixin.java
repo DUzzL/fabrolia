@@ -724,11 +724,28 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                                                               ChunkStatus status,
                                                               boolean loadOrGenerate) {
         long sleepNs = INITIAL_PARK_NS;
+        long stuckSince = System.nanoTime();
+        int stuck = 0;
         while (!chunkFuture.isDone()) {
             ChunkHolder holder = this.getVisibleChunkIfPresent(pos);
             if (holder != null) {
                 ChunkAccess ready = fabrolia$extractReady(holder, status);
                 if (ready != null) return ready;
+            }
+            // Task #32 forensics: this park is only deadlock-free while NOTHING
+            // main can block on is held by this thread (the nav-monitor cycle
+            // fixed by NavRecompute was exactly such a hold). A wait this long
+            // means main is not reaching a pump point — dump who we are and
+            // what we wait for BEFORE the watchdog kills the server silently.
+            if (System.nanoTime() - stuckSince > 10_000_000_000L) {
+                stuckSince = System.nanoTime();
+                org.slf4j.LoggerFactory.getLogger("Fabrolia-ChunkBridge").error(
+                        "[fabrolia] awaitMainThreadResult stuck {}x10s: thread={} chunk=[{}, {}] status={} load={} "
+                        + "— main is not servicing mainThreadProcessor; if this thread holds a game monitor "
+                        + "(nav/entity), that is a lock-order bug",
+                        ++stuck, Thread.currentThread().getName(),
+                        ChunkPos.getX(pos), ChunkPos.getZ(pos), status, loadOrGenerate,
+                        new Throwable("awaitMainThreadResult wait site"));
             }
             LockSupport.parkNanos(sleepNs);
             sleepNs = Math.min(sleepNs << 1, MAX_PARK_NS);

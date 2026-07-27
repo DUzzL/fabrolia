@@ -162,11 +162,16 @@ public abstract class LithiumServerLevel extends Level implements WorldGenLevel,
         this.fabrolia$suppressNavigationUpdates = suppress;
     }
 
+    /** Task #32: the explosion drain runs on the exploding thread (owner of
+     *  the blast region), but the collected navs may belong to OTHER islands
+     *  whose workers hold their nav monitors — route each recompute through
+     *  the owner instead of entering the monitor cross-thread. */
     @Unique
     public void fabrolia$recomputeAllNavigations() {
         if (fabrolia$pendingRecompute.isEmpty()) return;
         for (PathNavigation nav : fabrolia$pendingRecompute) {
-            nav.recomputePath();
+            com.axalotl.fabrolia.common.regions.NavRecompute.recomputeOwnerSafe(
+                    (net.minecraft.server.level.ServerLevel) (Object) this, nav);
         }
         fabrolia$pendingRecompute.clear();
     }

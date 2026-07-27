@@ -306,7 +306,7 @@ public final class FallingBlockPlacementTrace {
                 arrival != null ? (now - arrival[0]) : -1,
                 firstTick != null ? (now - firstTick) : -1,
                 regen != null ? (now - regen) : -1,
-                ArrivalReleaseRule.CAUSAL_PREFIX ? "causal" : "paced",
+                "causal", // the causal-prefix rule is the only release mode now (flag retired)
                 cohort + (SUPPRESSED.sum() > 0 ? " suppressed=" + SUPPRESSED.sumThenReset() : ""));
     }
 }

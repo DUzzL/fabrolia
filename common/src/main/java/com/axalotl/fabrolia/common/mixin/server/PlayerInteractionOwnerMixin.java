@@ -61,6 +61,110 @@ public abstract class PlayerInteractionOwnerMixin {
         withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
     }
 
+    // ------------------------------------------------------------------
+    // Task #32 coverage extension — every remaining main-venue handler that
+    // mutates island-owned state (vehicle entities, target mobs, BE-backed
+    // menus, world item drops) takes the owner claim like the five above.
+    // The player's own chunk bounds the interaction in all cases except the
+    // vehicle pair (claim the ridden vehicle's island) and the sign edit
+    // (claim the sign's island — the write happens in a deferred main task
+    // after async text filtering, see fabrolia$ownSignText).
+    // ------------------------------------------------------------------
+
+    /** 26.2 split attack out of ServerboundInteractPacket. */
+    @WrapMethod(method = "handleAttack")
+    private void fabrolia$ownAttack(net.minecraft.network.protocol.game.ServerboundAttackPacket packet, Operation<Void> original) {
+        withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
+    }
+
+    /** Moves an island-ticked vehicle entity from main (passenger players are
+     *  region-ineligible, so this handler never routes to a worker). */
+    @WrapMethod(method = "handleMoveVehicle")
+    private void fabrolia$ownMoveVehicle(net.minecraft.network.protocol.game.ServerboundMoveVehiclePacket packet, Operation<Void> original) {
+        net.minecraft.world.entity.Entity vehicle = this.player.getRootVehicle();
+        long chunk = (vehicle != null && vehicle != this.player ? vehicle : this.player)
+                .chunkPosition().pack();
+        withOwner(chunk, () -> original.call(packet));
+    }
+
+    @WrapMethod(method = "handlePaddleBoat")
+    private void fabrolia$ownPaddleBoat(net.minecraft.network.protocol.game.ServerboundPaddleBoatPacket packet, Operation<Void> original) {
+        net.minecraft.world.entity.Entity vehicle = this.player.getRootVehicle();
+        long chunk = (vehicle != null && vehicle != this.player ? vehicle : this.player)
+                .chunkPosition().pack();
+        withOwner(chunk, () -> original.call(packet));
+    }
+
+    /** Riding jump / custom vehicle screen / leave-bed all touch island state
+     *  at the player's position. */
+    @WrapMethod(method = "handlePlayerCommand")
+    private void fabrolia$ownPlayerCommand(net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket packet, Operation<Void> original) {
+        withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
+    }
+
+    /** Reads block state + block-entity NBT (includeData) from the target. */
+    @WrapMethod(method = "handlePickItemFromBlock")
+    private void fabrolia$ownPickBlock(net.minecraft.network.protocol.game.ServerboundPickItemFromBlockPacket packet, Operation<Void> original) {
+        withOwner(ChunkPos.pack(packet.pos()), () -> original.call(packet));
+    }
+
+    @WrapMethod(method = "handlePickItemFromEntity")
+    private void fabrolia$ownPickEntity(net.minecraft.network.protocol.game.ServerboundPickItemFromEntityPacket packet, Operation<Void> original) {
+        withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
+    }
+
+    /** May drop an item entity into the island world. */
+    @WrapMethod(method = "handleSetCreativeModeSlot")
+    private void fabrolia$ownCreativeSlot(net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket packet, Operation<Void> original) {
+        withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
+    }
+
+    /** Menu ops whose containers are backed by island block entities /
+     *  merchant entities: mutual exclusion with the island ticking them
+     *  (a hopper pushing into the open chest, the villager restocking). */
+    @WrapMethod(method = "handleContainerButtonClick")
+    private void fabrolia$ownButtonClick(net.minecraft.network.protocol.game.ServerboundContainerButtonClickPacket packet, Operation<Void> original) {
+        withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
+    }
+
+    @WrapMethod(method = "handleSelectTrade")
+    private void fabrolia$ownSelectTrade(net.minecraft.network.protocol.game.ServerboundSelectTradePacket packet, Operation<Void> original) {
+        withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
+    }
+
+    @WrapMethod(method = "handlePlaceRecipe")
+    private void fabrolia$ownPlaceRecipe(net.minecraft.network.protocol.game.ServerboundPlaceRecipePacket packet, Operation<Void> original) {
+        withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
+    }
+
+    @WrapMethod(method = "handleRenameItem")
+    private void fabrolia$ownRenameItem(net.minecraft.network.protocol.game.ServerboundRenameItemPacket packet, Operation<Void> original) {
+        withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
+    }
+
+    /** Writes BeaconBlockEntity effects. */
+    @WrapMethod(method = "handleSetBeaconPacket")
+    private void fabrolia$ownSetBeacon(net.minecraft.network.protocol.game.ServerboundSetBeaconPacket packet, Operation<Void> original) {
+        withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
+    }
+
+    /** Menu close can drop the carried stack into the island world. */
+    @WrapMethod(method = "handleContainerClose")
+    private void fabrolia$ownContainerClose(net.minecraft.network.protocol.game.ServerboundContainerClosePacket packet, Operation<Void> original) {
+        withOwner(this.player.chunkPosition().pack(), () -> original.call(packet));
+    }
+
+    /** The sign write runs in a DEFERRED main task (after async chat
+     *  filtering), not in handleSignUpdate itself — claim at the actual
+     *  mutation point so the SignBlockEntity write is exclusive with the
+     *  island that ticks it. */
+    @WrapMethod(method = "updateSignText")
+    private void fabrolia$ownSignText(net.minecraft.network.protocol.game.ServerboundSignUpdatePacket packet,
+                                      java.util.List<net.minecraft.server.network.FilteredText> lines,
+                                      Operation<Void> original) {
+        withOwner(ChunkPos.pack(packet.getPos()), () -> original.call(packet, lines));
+    }
+
     private void withOwner(long chunkPos, Runnable body) {
         if (!(this.player.level() instanceof ServerLevel sl)) {
             body.run();

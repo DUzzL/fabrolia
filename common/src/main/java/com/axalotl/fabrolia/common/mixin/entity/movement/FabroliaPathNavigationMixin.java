@@ -28,6 +28,18 @@ public abstract class FabroliaPathNavigationMixin implements FabroliaSafeNavigat
         return this.mob;
     }
 
+    /**
+     * MONITOR-FREE by contract (SynchronisePlugin exclusion, task #32): callers
+     * are the sendBlockUpdated nav scan on main and on region workers — they
+     * must never block on the nav monitor the owner holds across its whole
+     * synchronized tick() (which may park on the getGroundY→getChunk
+     * main-thread bridge). All reads are snapshot-local and stale-tolerant;
+     * the one racy structural mutation the owner can make in place is
+     * {@code Path.truncateNodes} (trimPath), which can shrink {@code nodes}
+     * between our size read and {@code getEndNode()}'s get — caught below and
+     * answered {@code false} (the owner is mid-repath already; a request
+     * would be redundant, matching vanilla's delayed-recompute tolerance).
+     */
     @Override
     public boolean fabrolia$shouldRecomputePathSafe(BlockPos pos) {
         if (this.hasDelayedRecomputation) {
@@ -41,7 +53,12 @@ public abstract class FabroliaPathNavigationMixin implements FabroliaSafeNavigat
         if (nodeCount == 0) {
             return false;
         }
-        Node endNode = currentPath.getEndNode();
+        Node endNode;
+        try {
+            endNode = currentPath.getEndNode();
+        } catch (IndexOutOfBoundsException raceWithTruncate) {
+            return false;
+        }
         if (endNode == null) {
             return false;
         }

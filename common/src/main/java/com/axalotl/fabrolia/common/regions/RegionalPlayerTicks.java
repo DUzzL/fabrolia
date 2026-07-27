@@ -278,12 +278,21 @@ public final class RegionalPlayerTicks {
      *       mid-stream, and MAIN-only items (containers) are sequenced through
      *       the same lane so they cannot overtake earlier simulation packets.</li>
      *   <li>Connection-state safety: every apply runs under the per-listener
-     *       monitor (see ServerGamePacketRoutingMixin) so anti-cheat /
-     *       teleport-ack bookkeeping never tears against main's listener tick.</li>
+     *       lane LOCK (FabroliaListenerLane; main-side acquirers pump chunk
+     *       services while waiting — task #32) so anti-cheat / teleport-ack
+     *       bookkeeping never tears against main's listener tick and a
+     *       worker-venue apply parked in the chunk main-bridge can never
+     *       deadlock main.</li>
      * </ul>
      */
     public static boolean routePacket(ServerPlayer p, String kind, boolean mainOnly, Runnable apply) {
         if (Thread.currentThread() instanceof RegionWorkerThread) return false; // already regional
+        // Task #32 ordering fix: a MAIN-venue lane drain re-enters the handler
+        // through the same mixin head. Re-routing here would move the item to
+        // the lane TAIL — reordering it behind packets that arrived after it
+        // (and re-looping if the owner keeps resolving). Inside a routed apply
+        // the current venue IS the ordered execution point: run inline.
+        if (inRoutedApply()) return false;
         if (!regionEligible(p)) return false;
         Sim s = sim(p);
         s.lane.add(new LaneItem(kind, mainOnly, p, apply));
@@ -301,6 +310,15 @@ public final class RegionalPlayerTicks {
         return region != null && region.domain != null ? region.domain.owner : null;
     }
 
+    /** Test seam: main-thread executor indirection. Production = the server's
+     *  task queue; tests substitute a captured queue to drive real drains
+     *  deterministically. Never null. */
+    static volatile java.util.function.Consumer<Runnable> MAIN_EXEC = task -> {
+        net.minecraft.server.MinecraftServer srv =
+                com.axalotl.fabrolia.common.ParallelProcessor.getServer();
+        if (srv != null) srv.execute(task);
+    };
+
     private static void scheduleDrain(ServerPlayer p, Sim s) {
         if (s.lane.isEmpty()) return;
         RegionizedServer rs = p.level() instanceof ServerLevel sl ? RegionScheduler.forLevel(sl) : null;
@@ -312,19 +330,32 @@ public final class RegionalPlayerTicks {
             CommandShards.enqueueIslandTask(owner, "pktlane:" + p.getUUID(), () -> drainLane(p, s));
         } else {
             s.replayedToMain.increment();
-            net.minecraft.server.MinecraftServer srv =
-                    com.axalotl.fabrolia.common.ParallelProcessor.getServer();
-            if (srv != null) srv.execute(() -> drainLane(p, s));
+            MAIN_EXEC.accept(() -> drainLane(p, s));
         }
+    }
+
+    /** The apply mutex for {@code p.connection}, or null when the listener is
+     *  not duck-typed (unit tests with bare listener stand-ins). */
+    private static java.util.concurrent.locks.ReentrantLock laneLock(ServerPlayer p) {
+        return p.connection instanceof com.axalotl.fabrolia.common.parallelised.utils.FabroliaListenerLane lane
+                ? lane.fabrolia$laneLock() : null;
     }
 
     /** Single-consumer lane drain at the calling venue. A MAIN-only item met
      *  on a worker stops the drain and reschedules the remainder on main
      *  (order preserved); REGION items reached on main just run there —
-     *  main is always a legal (vanilla) venue for simulation applies. */
+     *  main is always a legal (vanilla) venue for simulation applies.
+     *
+     *  <p>Task #32: applies run under the listener's {@link
+     *  com.axalotl.fabrolia.common.parallelised.utils.FabroliaListenerLane
+     *  lane lock}, NOT {@code synchronized (connection)}: a worker-venue
+     *  apply may park in the chunk main-bridge while holding the apply mutex,
+     *  and main's listener tick must be able to keep pumping chunk services
+     *  while it waits (a raw monitor block on main was the deadlock edge). */
     static void drainLane(ServerPlayer p, Sim s) {
         if (!s.draining.compareAndSet(false, true)) return;
         boolean onWorker = Thread.currentThread() instanceof RegionWorkerThread;
+        java.util.concurrent.locks.ReentrantLock lock = laneLock(p);
         try {
             LaneItem it;
             while ((it = s.lane.peek()) != null) {
@@ -335,21 +366,19 @@ public final class RegionalPlayerTicks {
                 if (it.mainOnly() && onWorker) {
                     // reschedule remainder on main, order intact
                     s.replayedToMain.increment();
-                    net.minecraft.server.MinecraftServer srv =
-                            com.axalotl.fabrolia.common.ParallelProcessor.getServer();
-                    if (srv != null) srv.execute(() -> drainLane(p, s));
+                    MAIN_EXEC.accept(() -> drainLane(p, s));
                     return;
                 }
                 s.lane.poll();
                 ROUTED_APPLY.set(Boolean.TRUE);
+                if (lock != null) lock.lock();
                 try {
-                    synchronized (p.connection) {
-                        it.apply().run();
-                    }
+                    it.apply().run();
                 } catch (Throwable t) {
                     LOGGER.error("[player-ticks] routed {} apply failed for {}",
                             it.kind(), p.getName().getString(), t);
                 } finally {
+                    if (lock != null) lock.unlock();
                     ROUTED_APPLY.remove();
                 }
             }

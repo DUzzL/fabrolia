@@ -51,7 +51,22 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
 
     @Override
     public void onLoad(String mixinPackage) {
-        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "net.minecraft.world.level.chunk.ChunkStatus.isOrAfter");
+        // Exclusions match by PLAIN method name (postApply compares method.name).
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "isOrAfter");
+        // Task #32 (2026-07-28 production watchdog deadlock): postApply runs after
+        // FabroliaPathNavigationMixin merged its members, so the blanket bit also
+        // landed on the FabroliaSafeNavigation accessors — turning the
+        // sendBlockUpdated nav scan (main/any worker) into a BLOCKING entry on the
+        // nav monitor a region worker holds for its whole synchronized tick(),
+        // including the getGroundY→getChunk main-thread bridge. Cycle: main parked
+        // on the monitor cannot pump mainThreadProcessor; the worker parked on the
+        // chunk future never releases the monitor. These two are monitor-free BY
+        // DESIGN: fabrolia$navMob returns the @Final mob field; fabrolia$
+        // shouldRecomputePathSafe reads a local Path snapshot with defensive
+        // bounds/null checks and tolerates stale values (worst case = one missed
+        // or spurious recompute request, vanilla's delayed-recompute class).
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "fabrolia$navMob");
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "fabrolia$shouldRecomputePathSafe");
         syncAllSet.add("com.axalotl.fabrolia.common.mixin.utils.FastUtilSynchronizeMixin");
         syncAllSet.add("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin");
     }
