@@ -101,6 +101,12 @@ public class FabroliaConfig {
      *  island worker (fake-player shape) with packet routing + epoch handoffs.
      *  Runtime toggle: /fabrolia regions playerticks on|off. Default OFF. */
     public static volatile boolean regionalPlayerTicksExperimental = false;
+    /** Task #35: when the chunk bridge times out on a c2me holder that is
+     *  provably in the FLAG_BROKEN latch (chunk abandoned by the chunk system
+     *  after one upgrade exception — upstream has no retry), clear the flag
+     *  and re-mark the holder dirty via flowsched's public API, budgeted at
+     *  3 attempts per chunk. Runtime toggle: /fabrolia regions chunkheal. */
+    public static volatile boolean chunkBridgeHealBroken = true;
     // Let the parallel-spawn future ride to the entity-phase barrier instead of being
     // awaited at the end of tickChunks — one park covers max(spawn, entities). Random/
     // fluid ticks are still awaited before the chunk phase ends (vanilla order). A mob

@@ -124,6 +124,22 @@ public final class ChunkBridgeWait {
                                             Supplier<C> probe,
                                             boolean loadOrGenerate,
                                             Supplier<String> posDescription) {
+        return await(initial, submit, probe, loadOrGenerate, posDescription, () -> {});
+    }
+
+    /**
+     * @param onStall fired before each load=true resubmission (task #35: the
+     *                bridge's only view of a NEVER-completing future — the
+     *                c2me FLAG_BROKEN latch probe/heal hooks here, because a
+     *                plain resubmission against a latched holder re-reads the
+     *                same dead future forever)
+     */
+    public static <T, C> Result<T, C> await(CompletableFuture<T> initial,
+                                            Supplier<CompletableFuture<T>> submit,
+                                            Supplier<C> probe,
+                                            boolean loadOrGenerate,
+                                            Supplier<String> posDescription,
+                                            Runnable onStall) {
         CompletableFuture<T> future = initial;
         long sleepNs = INITIAL_PARK_NS;
         final long start = System.nanoTime();
@@ -165,6 +181,11 @@ public final class ChunkBridgeWait {
                     LOGGER.error(msg + " — REPEATED stall: likely a chunk-system strand", args);
                 } else {
                     LOGGER.warn(msg, args);
+                }
+                try {
+                    onStall.run();
+                } catch (Throwable t) {
+                    LOGGER.warn("[fabrolia] onStall hook failed: {}", t.toString());
                 }
                 // Race the fresh request against the old future: whichever
                 // completes first wins; a permanently stranded original can

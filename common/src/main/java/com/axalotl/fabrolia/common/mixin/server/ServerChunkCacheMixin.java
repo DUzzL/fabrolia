@@ -798,7 +798,9 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                     },
                     loadOrGenerate,
                     () -> "[" + ChunkPos.getX(pos) + ", " + ChunkPos.getZ(pos) + "] status=" + status
-                            + " thread=" + Thread.currentThread().getName());
+                            + " thread=" + Thread.currentThread().getName(),
+                    () -> com.axalotl.fabrolia.common.regions.C2meStrandHeal.inspectAndMaybeHeal(
+                            this.getVisibleChunkIfPresent(pos), this.chunkMap, pos));
             if (outcome instanceof com.axalotl.fabrolia.common.regions.ChunkBridgeWait.Result.Ready<ChunkResult<ChunkAccess>, ChunkAccess> ready) {
                 return ready.chunk();
             }
@@ -806,6 +808,11 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 // load=false only — the vanilla @Nullable contract; memoized so
                 // the next lookups at this strand answer instantly for the TTL.
                 fabrolia$softNullUntil.put(pos, System.nanoTime() + SOFT_NULL_TTL_NS);
+                // Task #35: a timed-out wait is the c2me FLAG_BROKEN latch's
+                // only visible symptom — probe the holder and (gated) retry
+                // the upgrade the chunk system abandoned.
+                com.axalotl.fabrolia.common.regions.C2meStrandHeal.inspectAndMaybeHeal(
+                        this.getVisibleChunkIfPresent(pos), this.chunkMap, pos);
                 return null;
             }
             var done = (com.axalotl.fabrolia.common.regions.ChunkBridgeWait.Result.Done<ChunkResult<ChunkAccess>, ChunkAccess>) outcome;
@@ -832,6 +839,11 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                         ChunkPos.getX(pos), ChunkPos.getZ(pos), status, attempt + 1,
                         lastFailure != null ? String.valueOf(lastFailure)
                                 : (lastResult != null ? lastResult.getError() : "no result"));
+                // Task #35: before the blind retry, probe for (and heal) the
+                // c2me FLAG_BROKEN latch — a latched holder makes plain
+                // resubmission useless (it re-reads the same dead future).
+                com.axalotl.fabrolia.common.regions.C2meStrandHeal.inspectAndMaybeHeal(
+                        this.getVisibleChunkIfPresent(pos), this.chunkMap, pos);
                 future = resubmit.get();
                 continue;
             }
