@@ -602,9 +602,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 : CompletableFuture.allOf(futures.toArray(new CompletableFuture<?>[0]));
     }
 
-    @Unique private static final long INITIAL_PARK_NS = 50_000L;
-    @Unique private static final long MAX_PARK_NS = 1_000_000L;
-
 
     /**
      * Fabrolia-thread getChunk fast path. Tiered lookup, cheapest first:
@@ -654,12 +651,58 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             }
         }
 
+        // Task #34 negative cache: a chunk that already burned a full soft-null
+        // budget answers null immediately for the TTL — ten mobs clustered at
+        // one stranded chunk must not each park 200ms per collision pass per
+        // tick (the review's N×budget entity-barrier stall). Checked AFTER the
+        // Tier-1/2 probes, so a chunk that became ready is never masked; a
+        // stale entry expires by TTL and is removed on first read past it.
+        if (!loadOrGenerate) {
+            Long until = fabrolia$softNullUntil.get(pos);
+            if (until != null) {
+                if (System.nanoTime() - until < 0L) {
+                    cir.setReturnValue(null);
+                    return;
+                }
+                fabrolia$softNullUntil.remove(pos, until);
+            }
+        }
+
         // Tier 3: miss path — let vanilla's main-thread helper decide whether load=false
         // may use an existing eligible holder or load=true must add a ticket.
         // SAFE despite Server-thread parking in ParallelProcessor.pumpUntilDone because
         // pumpUntilDone now drains mainThreadProcessor.pollTask() per level while waiting
         // (chunk-system tasks only — never MinecraftServer.pollTask which can run Carpet
         // bot-kill / mod tasks that re-enter ChunkMap monitor). See pumpUntilDone comment.
+        cir.setReturnValue(fabrolia$awaitMainThreadResult(
+                fabrolia$submitMainThreadRequest(x, z, targetStatus, loadOrGenerate),
+                () -> fabrolia$submitMainThreadRequest(x, z, targetStatus, loadOrGenerate),
+                pos, targetStatus, loadOrGenerate));
+    }
+
+    /** Task #34: load=false soft-null memo — pos → nanotime deadline. Written
+     *  only when a full bridge budget expired (strand state); read before
+     *  Tier-3 so repeat lookups at a strand answer instantly. Entries are
+     *  few (one per stranded chunk) and self-expire. */
+    @Unique
+    private final java.util.concurrent.ConcurrentHashMap<Long, Long> fabrolia$softNullUntil =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    @Unique
+    private static final long SOFT_NULL_TTL_NS = 2_000_000_000L;
+
+    /** Task #34: bounded retries before the vanilla load=true failure throw —
+     *  a churn race that completes the future with UNLOADED (or drops it with
+     *  an exception) gets fresh ticket+schedule attempts instead of crashing
+     *  the entity tick on the first transient miss. */
+    @Unique
+    private static final int LOAD_TRUE_MAX_RESUBMITS = 2;
+
+    /** One main-thread request submission (task #34: re-invokable — the
+     *  load=true self-heal re-arms a load the chunk system dropped). */
+    @Unique
+    private CompletableFuture<ChunkResult<ChunkAccess>> fabrolia$submitMainThreadRequest(
+            int x, int z, ChunkStatus targetStatus, boolean loadOrGenerate) {
         CompletableFuture<ChunkResult<ChunkAccess>> chunkFuture = new CompletableFuture<>();
         this.mainThreadProcessor.execute(() -> {
             try {
@@ -674,7 +717,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 chunkFuture.completeExceptionally(t);
             }
         });
-        cir.setReturnValue(fabrolia$awaitMainThreadResult(chunkFuture, pos, targetStatus, loadOrGenerate));
+        return chunkFuture;
     }
 
     @Inject(method = "getChunkNow", at = @At("HEAD"), cancellable = true)
@@ -718,52 +761,86 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         return null;
     }
 
+    /**
+     * Task #34 rework: the wait loop lives in {@link com.axalotl.fabrolia.common.regions.ChunkBridgeWait}
+     * (bounded vanilla-null for load=false, self-healing resubmission for
+     * load=true — see its javadoc for the 2026-07-28 06:56 production
+     * watchdog this closes). This method keeps the extraction/contract
+     * logic, plus two review-driven hardenings:
+     * <ul>
+     *   <li>load=true retries a COMPLETED-but-empty outcome (churn races that
+     *       finish the future with UNLOADED, or fail it exceptionally — e.g.
+     *       the stale original winning the applyToEither race with an error)
+     *       up to {@link #LOAD_TRUE_MAX_RESUBMITS} times with a fresh
+     *       ticket+schedule before the vanilla failure throw, so a transient
+     *       ticket race no longer crashes the entity tick.</li>
+     *   <li>load=false budget expiry feeds the soft-null memo so a persistent
+     *       strand costs ONE budget per TTL, not one per lookup.</li>
+     * </ul>
+     */
     @Unique
-    private @Nullable ChunkAccess fabrolia$awaitMainThreadResult(CompletableFuture<ChunkResult<ChunkAccess>> chunkFuture,
-                                                              long pos,
-                                                              ChunkStatus status,
-                                                              boolean loadOrGenerate) {
-        long sleepNs = INITIAL_PARK_NS;
-        long stuckSince = System.nanoTime();
-        int stuck = 0;
-        while (!chunkFuture.isDone()) {
+    private @Nullable ChunkAccess fabrolia$awaitMainThreadResult(
+            CompletableFuture<ChunkResult<ChunkAccess>> chunkFuture,
+            java.util.function.Supplier<CompletableFuture<ChunkResult<ChunkAccess>>> resubmit,
+            long pos,
+            ChunkStatus status,
+            boolean loadOrGenerate) {
+        CompletableFuture<ChunkResult<ChunkAccess>> future = chunkFuture;
+        Throwable lastFailure = null;
+        ChunkResult<ChunkAccess> lastResult = null;
+        for (int attempt = 0; ; attempt++) {
+            var outcome = com.axalotl.fabrolia.common.regions.ChunkBridgeWait.await(
+                    future,
+                    resubmit,
+                    () -> {
+                        ChunkHolder h = this.getVisibleChunkIfPresent(pos);
+                        return h == null ? null : fabrolia$extractReady(h, status);
+                    },
+                    loadOrGenerate,
+                    () -> "[" + ChunkPos.getX(pos) + ", " + ChunkPos.getZ(pos) + "] status=" + status
+                            + " thread=" + Thread.currentThread().getName());
+            if (outcome instanceof com.axalotl.fabrolia.common.regions.ChunkBridgeWait.Result.Ready<ChunkResult<ChunkAccess>, ChunkAccess> ready) {
+                return ready.chunk();
+            }
+            if (outcome instanceof com.axalotl.fabrolia.common.regions.ChunkBridgeWait.Result.GiveUpNull<ChunkResult<ChunkAccess>, ChunkAccess>) {
+                // load=false only — the vanilla @Nullable contract; memoized so
+                // the next lookups at this strand answer instantly for the TTL.
+                fabrolia$softNullUntil.put(pos, System.nanoTime() + SOFT_NULL_TTL_NS);
+                return null;
+            }
+            var done = (com.axalotl.fabrolia.common.regions.ChunkBridgeWait.Result.Done<ChunkResult<ChunkAccess>, ChunkAccess>) outcome;
+            try {
+                lastResult = done.future().join();
+                ChunkAccess chunk = fabrolia$extractFromResult(lastResult);
+                if (chunk != null) return chunk;
+            } catch (Throwable t) {
+                lastFailure = t;
+            }
+
             ChunkHolder holder = this.getVisibleChunkIfPresent(pos);
             if (holder != null) {
                 ChunkAccess ready = fabrolia$extractReady(holder, status);
                 if (ready != null) return ready;
             }
-            // Task #32 forensics: this park is only deadlock-free while NOTHING
-            // main can block on is held by this thread (the nav-monitor cycle
-            // fixed by NavRecompute was exactly such a hold). A wait this long
-            // means main is not reaching a pump point — dump who we are and
-            // what we wait for BEFORE the watchdog kills the server silently.
-            if (System.nanoTime() - stuckSince > 10_000_000_000L) {
-                stuckSince = System.nanoTime();
-                org.slf4j.LoggerFactory.getLogger("Fabrolia-ChunkBridge").error(
-                        "[fabrolia] awaitMainThreadResult stuck {}x10s: thread={} chunk=[{}, {}] status={} load={} "
-                        + "— main is not servicing mainThreadProcessor; if this thread holds a game monitor "
-                        + "(nav/entity), that is a lock-order bug",
-                        ++stuck, Thread.currentThread().getName(),
-                        ChunkPos.getX(pos), ChunkPos.getZ(pos), status, loadOrGenerate,
-                        new Throwable("awaitMainThreadResult wait site"));
+            if (!loadOrGenerate) {
+                return null;
             }
-            LockSupport.parkNanos(sleepNs);
-            sleepNs = Math.min(sleepNs << 1, MAX_PARK_NS);
+            if (attempt < LOAD_TRUE_MAX_RESUBMITS) {
+                org.slf4j.LoggerFactory.getLogger("Fabrolia-ChunkBridge").warn(
+                        "[fabrolia] load=true chunk request came back empty at [{}, {}] status={} "
+                                + "(attempt {}: {}) — retrying with a fresh ticket+schedule",
+                        ChunkPos.getX(pos), ChunkPos.getZ(pos), status, attempt + 1,
+                        lastFailure != null ? String.valueOf(lastFailure)
+                                : (lastResult != null ? lastResult.getError() : "no result"));
+                future = resubmit.get();
+                continue;
+            }
+            IllegalStateException fail = fabrolia$missingChunk(lastResult);
+            if (lastFailure != null) {
+                fail.initCause(lastFailure);
+            }
+            throw fail;
         }
-
-        ChunkResult<ChunkAccess> result = chunkFuture.join();
-        ChunkAccess chunk = fabrolia$extractFromResult(result);
-        if (chunk != null) return chunk;
-
-        ChunkHolder holder = this.getVisibleChunkIfPresent(pos);
-        if (holder != null) {
-            ChunkAccess ready = fabrolia$extractReady(holder, status);
-            if (ready != null) return ready;
-        }
-        if (loadOrGenerate) {
-            throw fabrolia$missingChunk(result);
-        }
-        return null;
     }
 
     @Unique
