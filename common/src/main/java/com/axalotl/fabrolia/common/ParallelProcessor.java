@@ -242,6 +242,25 @@ public final class ParallelProcessor {
     }
 
     public static void pumpUntilDone(CompletableFuture<?> future) {
+        pumpUntilDone(future, false);
+    }
+
+    /**
+     * Task #33 (2026-07-28 production wedge, `/tick sprint`): {@code
+     * serviceRoutedCommands} makes MAIN also drain the A8 routed-command batch
+     * while it waits. Required at any barrier whose completion depends on an
+     * ISLAND UNIT finishing: a unit's scheduled-tick phase can hit a
+     * non-island-local command block, whose coordinator then parks in
+     * {@code IslandCommands.routeCommandBlock} until MAIN executes the batch —
+     * but the self-nudge lands on the MinecraftServer task queue this pump
+     * deliberately never polls (Carpet reentry, see below), and the next
+     * drive-head batch point can't come while main is parked HERE. Cycle:
+     * main ⇄ coordinator (the 2026-07-28 sprint-lockstep dump). Only legal
+     * where main holds no claims and no global-lane phase is in flight —
+     * i.e. the sprint unit-barrier loop, which is exactly the drive-head
+     * serialization point re-entered mid-tick.
+     */
+    public static void pumpUntilDone(CompletableFuture<?> future, boolean serviceRoutedCommands) {
         MinecraftServer s = server;
         if (s != null && s.isSameThread()) {
             // DO NOT call s.pollTask() (MinecraftServer task queue) here — reentrancy-
@@ -318,6 +337,15 @@ public final class ParallelProcessor {
                     // 2026-07-02 barrier stall, so orphan completions and owing-region
                     // re-pushes never ran exactly when they were needed most.
                     RegionScheduler.healColorGate();
+                    // Task #33: unit-barrier waits must service the routed-command
+                    // batch — the awaited unit may be parked INSIDE it waiting for
+                    // exactly this drain (bounded fence attempt; parked waiters are
+                    // fence-quiescent, live units defer it to the next iteration).
+                    if (serviceRoutedCommands
+                            && com.axalotl.fabrolia.common.regions.IslandCommands.hasRoutedPending()) {
+                        com.axalotl.fabrolia.common.regions.IslandCommands.drainRoutedBatch();
+                        drained = true;
+                    }
                     if (!drained) {
                         if (System.nanoTime() < spinUntil) {
                             Thread.onSpinWait();

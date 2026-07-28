@@ -1729,7 +1729,14 @@ public final class RegionizedServer {
                     barriers.add(IslandTickUnit.submitUnit(this, due.get(i)));
                 }
                 for (int i = 0, n = barriers.size(); i < n; i++) {
-                    com.axalotl.fabrolia.common.ParallelProcessor.pumpUntilDone(barriers.get(i));
+                    // Task #33 (2026-07-28 sprint wedge): serviceRoutedCommands —
+                    // an awaited unit's command block may be parked on the routed
+                    // batch only MAIN can execute; without the drain this await is
+                    // a main ⇄ coordinator deadlock (the nudge sits on the MS task
+                    // queue pumpUntilDone deliberately never polls). Main holds no
+                    // claims here and the global lane is not dispatched yet — this
+                    // is the drive-head serialization point re-entered mid-tick.
+                    com.axalotl.fabrolia.common.ParallelProcessor.pumpUntilDone(barriers.get(i), true);
                 }
                 List<Region> sprintRegions = regionizer.snapshot();
                 ArrayList<Region> sprintGlobals = new ArrayList<>(8);
