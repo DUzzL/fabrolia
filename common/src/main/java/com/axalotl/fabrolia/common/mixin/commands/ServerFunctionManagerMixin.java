@@ -36,6 +36,34 @@ public abstract class ServerFunctionManagerMixin {
     @org.spongepowered.asm.mixin.Unique
     private static final long FENCE_TRY_NANOS = 50_000_000L;
 
+    /** Task #36 (2026-07-28 stress test, 12k mobs pinning an island): the
+     *  deferred lane must ESCALATE like the routed-command batch does —
+     *  bounded attempts under permanent island load never win, and the
+     *  retry chains grew without bound (tick tag adds one chain per server
+     *  tick; 54M attempts, 1.1 GB of WARN log). Deferred tasks run on the
+     *  clean main queue with every monitor released, so an unbounded quiesce
+     *  is safe there (the 2026-07-17 monitor hazard applies only to the
+     *  in-place first attempt). Main-confined. */
+    @org.spongepowered.asm.mixin.Unique
+    private static int fabrolia$fenceStarve;
+
+    @org.spongepowered.asm.mixin.Unique
+    private static final int FENCE_STARVE_ESCALATE = 8;
+
+    /** Tick-tag chains coalesce by function id (missed-cycle semantics, same
+     *  as CommandShards island tasks): while one tick_timer invocation is
+     *  still deferred, this tick's fresh copy is DROPPED — running a per-tick
+     *  function once instead of N queued times is vanilla-under-lag, and the
+     *  alternative is one new immortal retry chain per server tick.
+     *  One-shot executions (/function, advancement rewards) are never
+     *  coalesced — exactly-once holds for them. */
+    @org.spongepowered.asm.mixin.Unique
+    private static final java.util.Set<net.minecraft.resources.Identifier> fabrolia$deferredTickFns =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    @org.spongepowered.asm.mixin.Unique
+    private static volatile long fabrolia$lastDeferWarnNanos;
+
     @org.spongepowered.asm.mixin.Unique
     private boolean fabrolia$inTickTag;
 
@@ -94,9 +122,16 @@ public abstract class ServerFunctionManagerMixin {
         }
         boolean took = IslandCommands.quiesceAllExcept(null, FENCE_TRY_NANOS);
         if (!took) {
-            fabrolia$deferFenced(function, source, 1);
+            // Task #36: tick-tag copies coalesce — one deferred chain per
+            // function id; a fresh per-tick copy while one is queued is a
+            // missed cycle, not a second chain.
+            if (fabrolia$inTickTag && !fabrolia$deferredTickFns.add(function.id())) {
+                return;
+            }
+            fabrolia$deferFenced(function, source, fabrolia$inTickTag, 1);
             return;
         }
+        fabrolia$fenceStarve = 0;
         IslandCommands.FUNCTION_FENCED.increment();
         // task #22: inside an advancement batch scope, the FIRST function
         // keeps the window (sticky) — nested/subsequent functions and the
@@ -123,26 +158,43 @@ public abstract class ServerFunctionManagerMixin {
 
     @org.spongepowered.asm.mixin.Unique
     private void fabrolia$deferFenced(CommandFunction<CommandSourceStack> function,
-                                      CommandSourceStack source, int attempt) {
+                                      CommandSourceStack source, boolean tickTag, int attempt) {
         ServerFunctionManager self = (ServerFunctionManager) (Object) this;
         source.getServer().execute(() -> {
-            if (attempt == 100 || attempt % 400 == 0) {
+            // Task #36: time-throttled (the attempt-modulo version wrote a
+            // 1.1 GB log at 12k-mob load — hundreds of lines/sec across the
+            // accumulated chains).
+            long now = System.nanoTime();
+            long last = fabrolia$lastDeferWarnNanos;
+            if (now - last > 5_000_000_000L) {
+                fabrolia$lastDeferWarnNanos = now;
                 org.slf4j.LoggerFactory.getLogger("fabrolia").warn(
-                        "[async-islands] function fence still deferring '{}' (attempt {}) — "
-                        + "islands busy; retrying at main-safe points, never unfenced",
-                        function.id(), attempt);
+                        "[async-islands] function fence still deferring '{}' (attempt {}, starve {}) — "
+                        + "islands busy; escalates to an unbounded fence after {} misses, never unfenced",
+                        function.id(), attempt, fabrolia$fenceStarve, FENCE_STARVE_ESCALATE);
             }
             if (IslandCommands.fenceWindowHeld()) {
                 // Another main-context holder is mid-window — already
                 // quiescent; the wrap's reentrancy head runs it inline.
+                if (tickTag) fabrolia$deferredTickFns.remove(function.id());
                 self.execute(function, source);
                 return;
             }
-            boolean t = IslandCommands.quiesceAllExcept(null, FENCE_TRY_NANOS);
+            // Task #36 escalation: this task runs on the clean main queue —
+            // no vanilla monitors held — so after enough consecutive bounded
+            // misses the fence goes UNBOUNDED (exactly drainRoutedBatch's
+            // fenceStarve discipline). A permanently-loaded island can delay
+            // datapack functions by units, not forever.
+            boolean t = fabrolia$fenceStarve >= FENCE_STARVE_ESCALATE
+                    ? IslandCommands.quiesceAllExcept(null)
+                    : IslandCommands.quiesceAllExcept(null, FENCE_TRY_NANOS);
             if (!t) {
-                fabrolia$deferFenced(function, source, attempt + 1);
+                fabrolia$fenceStarve++;
+                fabrolia$deferFenced(function, source, tickTag, attempt + 1);
                 return;
             }
+            fabrolia$fenceStarve = 0;
+            if (tickTag) fabrolia$deferredTickFns.remove(function.id());
             IslandCommands.FUNCTION_FENCED.increment();
             try {
                 // Window held by us — the wrap's reentrancy head runs the
