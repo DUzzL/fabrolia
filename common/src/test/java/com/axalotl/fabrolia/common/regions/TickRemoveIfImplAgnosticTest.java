@@ -113,6 +113,48 @@ class TickRemoveIfImplAgnosticTest {
         assertEquals(1200, second.triggerTick());
     }
 
+    /** Task #37b (2026-07-29 01:35 regression, 'Failed to load chunk'):
+     *  Lithium's poll() Overwrite dereferences its nextTickQueue field and
+     *  NPEs on an EMPTY container — their contract is peek-first (peek IS
+     *  null-safe). A PACKED (deserialized, not yet unpacked) Lithium
+     *  container reports count()>0 while the live queues are empty, so the
+     *  count()>0 gate does not protect the drain. This emulation mirrors
+     *  that exact contract: the drain must peek-guard and no-op, preserving
+     *  the audit15 'packed state stays untouched' invariant. */
+    static final class LithiumContractChunkTicks<T> extends LevelChunkTicks<T> {
+        boolean emulatePacked;
+
+        @Override public ScheduledTick<T> poll() {
+            if (super.peek() == null) {
+                throw new NullPointerException(
+                        "emulated Lithium poll(): this.nextTickQueue is null");
+            }
+            return super.poll();
+        }
+
+        @Override public int count() {
+            return emulatePacked ? 3 : super.count();
+        }
+    }
+
+    @Test
+    void drainAndShiftPeekGuardTheLithiumEmptyPollContract() {
+        LithiumContractChunkTicks<String> packed = new LithiumContractChunkTicks<>();
+        packed.emulatePacked = true; // count()>0, live queue empty — the crash state
+        assertEquals(0, TickDomains.drainRemoveIf(packed, t -> true),
+                "packed container must be a NO-OP, not an NPE");
+        assertEquals(0, TickDomains.shiftAll(packed, 1000),
+                "packed container rebase must retag-only, live queue untouched");
+
+        LithiumContractChunkTicks<String> live = new LithiumContractChunkTicks<>();
+        live.schedule(tick("a", 0, 100, 0));
+        live.schedule(tick("b", 1, 200, 1));
+        assertEquals(2, TickDomains.shiftAll(live, 50),
+                "live entries still drain fully through the peek guard");
+        assertEquals(150, live.poll().triggerTick());
+        assertEquals(250, live.poll().triggerTick());
+    }
+
     /** Source pin: no Fabrolia code may call LevelChunkTicks.removeIf
      *  directly — every removal goes through the drain helper. */
     @Test

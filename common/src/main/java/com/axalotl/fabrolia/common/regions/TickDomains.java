@@ -255,7 +255,16 @@ public final class TickDomains {
         synchronized (c) {
             List<ScheduledTick<T>> keep = null;
             int removed = 0;
-            for (ScheduledTick<T> t; (t = c.poll()) != null; ) {
+            // peek-before-poll (task #37b, 2026-07-29 01:35 regression):
+            // Lithium's poll() does NOT tolerate an empty container
+            // (this.nextTickQueue is null there — their contract is
+            // peek-first, and peek IS null-safe in both impls). A PACKED
+            // (deserialized, not yet unpacked) Lithium container reports
+            // count()>0 while its live queues are empty — the audit15
+            // invariant "packed state is unreachable through this API and
+            // stays untouched" is preserved exactly by the peek guard: the
+            // drain no-ops on packed/empty containers like removeIf did.
+            for (ScheduledTick<T> t; c.peek() != null && (t = c.poll()) != null; ) {
                 if (remove.test(t)) {
                     removed++;
                 } else {
@@ -286,7 +295,9 @@ public final class TickDomains {
     public static <T> int shiftAll(LevelChunkTicks<T> c, long delta) {
         synchronized (c) {
             List<ScheduledTick<T>> all = new ArrayList<>();
-            for (ScheduledTick<T> t; (t = c.poll()) != null; ) {
+            // peek-before-poll: see drainRemoveIf (task #37b) — Lithium's
+            // poll() NPEs on empty/packed containers.
+            for (ScheduledTick<T> t; c.peek() != null && (t = c.poll()) != null; ) {
                 all.add(t);
             }
             all.sort(Comparator.<ScheduledTick<T>>comparingLong(ScheduledTick::triggerTick)
