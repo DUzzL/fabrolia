@@ -933,13 +933,17 @@ class TickRepairProductionPathTest {
      *  re-schedules via the same API) works, exactly like a transient
      *  container fault. */
     static final class FailOnceChunkTicks<T> extends RepairChunkTicks<T> {
-        int removeIfCalls;
+        int nonNullPolls;
 
-        @Override public void removeIf(java.util.function.Predicate<ScheduledTick<T>> pred) {
-            super.removeIf(pred);   // the mutation COMMITS to the container first
-            if (++removeIfCalls == 1) {
-                throw new IllegalStateException("injected post-mutation removeIf failure (test)");
+        // task #37: the repair mutates through the poll-drain now (removeIf is
+        // impl-broken under Lithium) — the injected fault moves to poll, same
+        // shape: the mutation COMMITS to the container first, then the throw.
+        @Override public ScheduledTick<T> poll() {
+            ScheduledTick<T> t = super.poll();
+            if (t != null && ++nonNullPolls == 1) {
+                throw new IllegalStateException("injected post-mutation poll failure (test)");
             }
+            return t;
         }
     }
 
@@ -990,7 +994,7 @@ class TickRepairProductionPathTest {
         String rollbackNote = r.notes.stream()
                 .filter(n -> n.contains("FAILED-ROLLED-BACK")).findFirst().orElseThrow();
         assertTrue(rollbackNote.contains("chunk[2,2]"));
-        assertTrue(rollbackNote.contains("injected post-mutation removeIf failure"));
+        assertTrue(rollbackNote.contains("injected post-mutation poll failure"));
         assertTrue(rollbackNote.contains("no mutation from this chunk was committed"));
         assertTrue(rollbackNote.contains("restored and verified exact"),
                 "the restore must be verified exact, not assumed");

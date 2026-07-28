@@ -301,7 +301,8 @@ public final class TickInspector {
                   .append(" trigger=").append(t.triggerTick())
                   .append(" (+").append(t.triggerTick() - fnow).append(')');
                 if (!dryRun) {
-                    c.removeIf(x -> x.pos().equals(t.pos()) && x.triggerTick() == t.triggerTick()
+                    TickDomains.drainRemoveIfErased(c, x -> x.pos().equals(t.pos())
+                            && x.triggerTick() == t.triggerTick()
                             && x.subTickOrder() == t.subTickOrder() && x.type() == t.type());
                     org.slf4j.LoggerFactory.getLogger("Fabrolia-TickDomains").warn(
                             "[ticks clear-stale chunkhere] removed {} {} at {} trigger={} (+{}) chunk=[{},{}] {}",
@@ -354,7 +355,8 @@ public final class TickInspector {
             if (confirm) {
                 LevelChunkTicks<?> c = container(level, e.block(), chunkKey);
                 if (c != null) {
-                    c.removeIf(t -> t.pos().equals(pos) && t.triggerTick() == e.trigger()
+                    TickDomains.drainRemoveIfErased(c, t -> t.pos().equals(pos)
+                            && t.triggerTick() == e.trigger()
                             && t.subTickOrder() == e.subTick());
                 }
                 org.slf4j.LoggerFactory.getLogger("Fabrolia-TickDomains").warn(

@@ -6,6 +6,7 @@ import net.minecraft.world.ticks.ScheduledTick;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
@@ -233,21 +234,69 @@ public final class TickDomains {
         return shiftAll((LevelChunkTicks) c, delta);
     }
 
+    /**
+     * Task #37 (2026-07-28 22:10 production NPE) — implementation-agnostic
+     * {@code removeIf}. Lithium's overwritten {@code removeIf} iterates
+     * ABSOLUTE indices {@code 0..size()} over its poll-compacted
+     * OrderedTickQueue ring, but live data occupies
+     * {@code [firstIndex, lastIndexExclusive)} and every polled slot is
+     * nulled — on any PARTIALLY-POLLED bucket the loop reads those nulls and
+     * NPEs ({@code nextTick.pos()}). Island tick slicing leaves
+     * partially-polled buckets routinely (vanilla only reaches that state
+     * when the MAX_TICKS budget interrupts a drain — their latent bug, hit
+     * via clearArea//fill). Poll-drain + re-schedule survivors uses only the
+     * hot-path methods BOTH implementations keep correct (poll maintains the
+     * dedup set in each), under the container monitor so the swap is atomic
+     * against the synchronized container API. Survivors re-fire onTickAdded —
+     * a benign LevelTicks next-trigger recompute.
+     */
+    public static <T> int drainRemoveIf(LevelChunkTicks<T> c,
+                                        java.util.function.Predicate<ScheduledTick<T>> remove) {
+        synchronized (c) {
+            List<ScheduledTick<T>> keep = null;
+            int removed = 0;
+            for (ScheduledTick<T> t; (t = c.poll()) != null; ) {
+                if (remove.test(t)) {
+                    removed++;
+                } else {
+                    if (keep == null) keep = new ArrayList<>();
+                    keep.add(t);
+                }
+            }
+            if (keep != null) {
+                for (ScheduledTick<T> t : keep) {
+                    c.schedule(t);
+                }
+            }
+            return removed;
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public static int drainRemoveIfErased(LevelChunkTicks<?> c,
+                                          java.util.function.Predicate<ScheduledTick<?>> remove) {
+        return drainRemoveIf((LevelChunkTicks) c, (java.util.function.Predicate) remove);
+    }
+
     /** Exact-order-preserving trigger shift (the proven assignDomain algorithm,
      *  now shared): original (triggerTick, subTickOrder) pairs kept, all
      *  shifted by one delta — never executed, never duplicated, dedup set
-     *  rebuilt consistently by re-scheduling into the drained container. */
+     *  rebuilt consistently by re-scheduling into the drained container.
+     *  Task #37: drained via poll (impl-agnostic), never removeIf. */
     public static <T> int shiftAll(LevelChunkTicks<T> c, long delta) {
-        List<ScheduledTick<T>> all = c.getAll()
-                .sorted(Comparator.<ScheduledTick<T>>comparingLong(ScheduledTick::triggerTick)
-                        .thenComparingLong(ScheduledTick::subTickOrder))
-                .collect(Collectors.toList());
-        c.removeIf(t -> true);
-        for (ScheduledTick<T> t : all) {
-            c.schedule(new ScheduledTick<>(t.type(), t.pos(), t.triggerTick() + delta,
-                    t.priority(), t.subTickOrder()));
+        synchronized (c) {
+            List<ScheduledTick<T>> all = new ArrayList<>();
+            for (ScheduledTick<T> t; (t = c.poll()) != null; ) {
+                all.add(t);
+            }
+            all.sort(Comparator.<ScheduledTick<T>>comparingLong(ScheduledTick::triggerTick)
+                    .thenComparingLong(ScheduledTick::subTickOrder));
+            for (ScheduledTick<T> t : all) {
+                c.schedule(new ScheduledTick<>(t.type(), t.pos(), t.triggerTick() + delta,
+                        t.priority(), t.subTickOrder()));
+            }
+            return all.size();
         }
-        return all.size();
     }
 
     /** Container registration hook (chunk load / promotion): if the chunk's

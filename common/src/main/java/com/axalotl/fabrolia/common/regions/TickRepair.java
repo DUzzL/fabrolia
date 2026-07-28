@@ -489,7 +489,7 @@ public final class TickRepair {
             return null;
         }
         LevelChunkTicks erased = (LevelChunkTicks) snap.container();
-        erased.removeIf((java.util.function.Predicate) (t -> true));
+        TickDomains.drainRemoveIfErased(erased, t -> true); // task #37: impl-agnostic drain
         for (ScheduledTick<?> st : snap.queue()) {
             erased.schedule(st);
         }
@@ -816,7 +816,7 @@ public final class TickRepair {
         LevelChunkTicks erased = (LevelChunkTicks) c;
         if (!mode.clearAmbiguous) {
             if (!removeSet.isEmpty()) {
-                erased.removeIf(removeSet::contains);
+                TickDomains.drainRemoveIfErased(erased, removeSet::contains); // task #37
                 mutated = true;
                 if (!blockLane && rescheduleFluid != null) {
                     for (ScheduledTick<?> st : removeSet) {
@@ -847,7 +847,7 @@ public final class TickRepair {
             }
         } else {
             if (!clearSet.isEmpty()) {
-                erased.removeIf(clearSet::contains);
+                TickDomains.drainRemoveIfErased(erased, clearSet::contains); // task #37
                 mutated = true;
                 for (ScheduledTick<?> st : clearSet) {
                     LOGGER.warn("[tick-repair] {} chunk[{},{}] CLEARED ambiguous {} {} @{} trigger={} (operator confirm)",
