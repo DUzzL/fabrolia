@@ -58,6 +58,46 @@ public final class ChunkBridgeWait {
     private static final long INITIAL_PARK_NS = 50_000L;
     private static final long MAX_PARK_NS = 1_000_000L;
 
+    // ------------------------------------------------------------------
+    // Log aggregation (2026-07-28 mass-join field test): forty fake players
+    // dropped into ungenerated wilderness produce dozens of legitimate
+    // >200ms generations per second — one WARN per give-up floods the log
+    // and the "strand?" wording misdiagnoses plain slow worldgen. Give-ups
+    // aggregate into one summary line per window; the load=true stall keeps
+    // its per-event one-liner (rare, meaningful) but prints the call-site
+    // stack at most once per minute globally.
+    // ------------------------------------------------------------------
+
+    private static final long GIVEUP_SUMMARY_WINDOW_NS = 5_000_000_000L;
+    private static final java.util.concurrent.atomic.AtomicLong GIVEUPS =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong GIVEUP_FLUSH_AT =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static volatile String LAST_GIVEUP_POS = "";
+
+    private static final long STALL_STACK_INTERVAL_NS = 60_000_000_000L;
+    private static final java.util.concurrent.atomic.AtomicLong LAST_STALL_STACK_AT =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    private static void logGiveUp(long waitedNs, String pos) {
+        long n = GIVEUPS.incrementAndGet();
+        LAST_GIVEUP_POS = pos;
+        long now = System.nanoTime();
+        long flushAt = GIVEUP_FLUSH_AT.get();
+        if (now - flushAt < GIVEUP_SUMMARY_WINDOW_NS
+                || !GIVEUP_FLUSH_AT.compareAndSet(flushAt, now)) {
+            LOGGER.debug("[fabrolia] load=false chunk bridge gave up after {}ms at {} — vanilla null",
+                    waitedNs / 1_000_000, pos);
+            return;
+        }
+        long total = GIVEUPS.getAndSet(0);
+        LOGGER.warn("[fabrolia] load=false chunk bridge answered vanilla null for {} lookups "
+                        + "in the last {}s (latest {}) — worldgen slower than the {}ms budget "
+                        + "under load, or a chunk-system strand; per-event detail at DEBUG",
+                total, GIVEUP_SUMMARY_WINDOW_NS / 1_000_000_000, LAST_GIVEUP_POS,
+                SOFT_NULL_BUDGET_NS / 1_000_000);
+    }
+
     private ChunkBridgeWait() {}
 
     /** Outcome of one bridge wait. */
@@ -97,26 +137,28 @@ public final class ChunkBridgeWait {
             long now = System.nanoTime();
             if (!loadOrGenerate && now - start > SOFT_NULL_BUDGET_NS) {
                 // Vanilla-legal: load=false means "what is there RIGHT NOW";
-                // the budget already exceeded any legitimate promotion. The
-                // stranded future is abandoned loudly — this exact shape was
-                // a silent 60s watchdog kill before task #34.
-                LOGGER.warn("[fabrolia] load=false chunk bridge gave up after {}ms at {} "
-                                + "(future never completed — chunk-system strand?); "
-                                + "answering vanilla null",
-                        (now - start) / 1_000_000, posDescription.get());
+                // the budget already exceeded any legitimate promotion. This
+                // exact wait shape was a silent 60s watchdog kill before #34.
+                logGiveUp(now - start, posDescription.get());
                 return new Result.GiveUpNull<>();
             }
             if (loadOrGenerate && now - lastSubmit > RESUBMIT_INTERVAL_NS) {
                 lastSubmit = now;
                 resubmits++;
-                // Call-site stack on the FIRST stall only (task #32 forensic
-                // parity: the wait site identifies which game path — nav,
-                // collision, BE — is bridging, without flooding on repeats).
+                // One-line per event (rare, meaningful); the call-site stack —
+                // which game path (nav, collision, isInWall) is bridging — at
+                // most once per minute GLOBALLY, so mass worldgen (40 fake
+                // players joining ungenerated wilderness, 2026-07-28 field
+                // test) doesn't flood the log with identical traces.
+                long stackAt = LAST_STALL_STACK_AT.get();
+                boolean withStack = now - stackAt > STALL_STACK_INTERVAL_NS
+                        && LAST_STALL_STACK_AT.compareAndSet(stackAt, now);
                 LOGGER.error("[fabrolia] load=true chunk bridge stalled {}s at {} — "
-                                + "re-submitting main-thread request (attempt {}); a lost "
-                                + "load is re-armed by the fresh ticket+schedule",
+                                + "re-submitting main-thread request (attempt {}); slow "
+                                + "worldgen resolves on its own, a dropped load is re-armed "
+                                + "by the fresh ticket+schedule",
                         (now - start) / 1_000_000_000, posDescription.get(), resubmits,
-                        resubmits == 1 ? new Throwable("chunk bridge wait site") : null);
+                        withStack ? new Throwable("chunk bridge wait site") : null);
                 // Race the fresh request against the old future: whichever
                 // completes first wins; a permanently stranded original can
                 // no longer pin this thread.
