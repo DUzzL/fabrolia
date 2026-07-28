@@ -2,7 +2,9 @@ package com.axalotl.fabrolia.common.mixin.utils;
 
 import net.minecraft.util.profiling.ActiveProfiler;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
+import net.minecraft.world.entity.ai.village.poi.PoiSection;
 import net.minecraft.world.entity.monster.warden.AngerManagement;
+import net.minecraft.world.level.chunk.storage.SectionStorage;
 import net.minecraft.world.level.gameevent.EuclideanGameEventListenerRegistry;
 import net.minecraft.world.level.lighting.DynamicGraphMinFixedPoint;
 import net.minecraft.world.level.pathfinder.BinaryHeap;
@@ -14,6 +16,19 @@ import org.spongepowered.asm.mixin.Mixin;
         LevelChunkTicks.class,
         DynamicGraphMinFixedPoint.class,
         PathNavigation.class,
+        // Task #38 (2026-07-29 01:51 crash): POI storage raced to corruption —
+        // AIOOBE 'Index -1' in Long2ObjectOpenHashMap.rehash from
+        // PoiManager.tick/unpackChunk on main, with region workers mutating
+        // POIs concurrently (villager brains acquire/release, portals create,
+        // sections load on demand from worker queries). Fabrolia had NO POI
+        // guard at all. Blanket per-instance monitors on the storage owner
+        // and the leaf sections are the proven first-correctness step (same
+        // as LevelChunkTicks); an RWLock wrapper is the known refinement if
+        // POI query contention shows up in profiles. Deadlock audit: both
+        // classes are leaves (no path from their methods back into region
+        // claims, chunk bridges, or each other in reverse order).
+        SectionStorage.class,
+        PoiSection.class,
         EuclideanGameEventListenerRegistry.class,
         // SimpleCriterionTrigger removed 2026-07-17: the blanket per-instance
         // monitor was held by MAIN across trigger -> award -> rewards ->
