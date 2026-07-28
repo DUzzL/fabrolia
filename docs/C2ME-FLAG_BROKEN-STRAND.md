@@ -25,6 +25,17 @@ until watchdog kill
 **Versions:** c2me 0.4.1-beta.1.0+26.2 on MC 26.2/Fabric, dedicated server.
 The involved classes are byte-identical in 0.4.2-alpha.0.9+26.2 and
 semantically identical in 0.4.2-alpha.0.29 — unfixed on all branches.
+Verified against FlowSched upstream HEAD
+(RelativityMC/FlowSched@fae2126839607b68d4059e3933a492886fe8b8f5):
+the broken-gate is `StatusAdvancingScheduler.java:154-156`; MARK_BROKEN sets
+the flag without failing futures at lines 243-246, 302-307 and the
+catch-Throwable path 330-334 (HEAD's added `consolidateMarkDirty` after
+MARK_BROKEN re-enqueues a tickHolder0 pass that dies on the same gate);
+`ItemHolder.clearFlag` has zero call sites repo-wide; `FLAG_HAVE_RETRIED`
+(`ItemHolder.java:50`) is declared and never used. The core defect therefore
+lives in FlowSched; c2me contributes the always-MARK_BROKEN
+`TheChunkSystem.handleTransactionException` override and the vanilla-facing
+bypass that converts the latch into a synchronous hang.
 
 **Symptom:** after ~12h uptime with heavy permanent-ticket churn (ender-pearl
 chunk loaders, notickvd), a vanilla
