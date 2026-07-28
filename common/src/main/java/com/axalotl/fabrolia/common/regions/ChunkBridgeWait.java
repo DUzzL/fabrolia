@@ -145,20 +145,27 @@ public final class ChunkBridgeWait {
             if (loadOrGenerate && now - lastSubmit > RESUBMIT_INTERVAL_NS) {
                 lastSubmit = now;
                 resubmits++;
-                // One-line per event (rare, meaningful); the call-site stack —
-                // which game path (nav, collision, isInWall) is bridging — at
-                // most once per minute GLOBALLY, so mass worldgen (40 fake
-                // players joining ungenerated wilderness, 2026-07-28 field
-                // test) doesn't flood the log with identical traces.
+                // Severity tracks actual danger (2026-07-28 field feedback):
+                // attempt 1 is the EXPECTED shape under mass worldgen (slow
+                // generation resolves on its own) — WARN, stack at most once
+                // per minute globally. Attempt 2+ means the re-armed load
+                // ALSO went nowhere — that is the real strand signature and
+                // earns ERROR with the call-site stack every time.
                 long stackAt = LAST_STALL_STACK_AT.get();
-                boolean withStack = now - stackAt > STALL_STACK_INTERVAL_NS
-                        && LAST_STALL_STACK_AT.compareAndSet(stackAt, now);
-                LOGGER.error("[fabrolia] load=true chunk bridge stalled {}s at {} — "
-                                + "re-submitting main-thread request (attempt {}); slow "
-                                + "worldgen resolves on its own, a dropped load is re-armed "
-                                + "by the fresh ticket+schedule",
-                        (now - start) / 1_000_000_000, posDescription.get(), resubmits,
-                        withStack ? new Throwable("chunk bridge wait site") : null);
+                boolean withStack = resubmits > 1
+                        || (now - stackAt > STALL_STACK_INTERVAL_NS
+                                && LAST_STALL_STACK_AT.compareAndSet(stackAt, now));
+                String msg = "[fabrolia] load=true chunk bridge stalled {}s at {} — "
+                        + "re-submitting main-thread request (attempt {}); slow "
+                        + "worldgen resolves on its own, a dropped load is re-armed "
+                        + "by the fresh ticket+schedule";
+                Object[] args = {(now - start) / 1_000_000_000, posDescription.get(), resubmits,
+                        withStack ? new Throwable("chunk bridge wait site") : null};
+                if (resubmits > 1) {
+                    LOGGER.error(msg + " — REPEATED stall: likely a chunk-system strand", args);
+                } else {
+                    LOGGER.warn(msg, args);
+                }
                 // Race the fresh request against the old future: whichever
                 // completes first wins; a permanently stranded original can
                 // no longer pin this thread.
