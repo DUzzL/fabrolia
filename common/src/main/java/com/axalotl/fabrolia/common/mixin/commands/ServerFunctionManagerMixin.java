@@ -161,6 +161,19 @@ public abstract class ServerFunctionManagerMixin {
                                       CommandSourceStack source, boolean tickTag, int attempt) {
         ServerFunctionManager self = (ServerFunctionManager) (Object) this;
         source.getServer().execute(() -> {
+            // Task #36b (2026-07-28 shutdown hang): once the region system is
+            // DOWN (scheduler stopped / pool dead — shutdown, or async turned
+            // off with this task already queued), fencing is meaningless (no
+            // worker can be mid-unit) and re-deferring is FATAL: a task that
+            // always re-enqueues itself starves runAllTasks inside
+            // stopServer's waitUntilNextTick forever, jamming every chunk-
+            // unload task queued behind it. Run inline — the wrap head sees
+            // anyAsyncActive()==false and executes the vanilla body directly.
+            if (!RegionScheduler.anyAsyncActive() || !RegionScheduler.poolRunning()) {
+                if (tickTag) fabrolia$deferredTickFns.remove(function.id());
+                self.execute(function, source);
+                return;
+            }
             // Task #36: time-throttled (the attempt-modulo version wrote a
             // 1.1 GB log at 12k-mob load — hundreds of lines/sec across the
             // accumulated chains).

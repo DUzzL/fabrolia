@@ -718,6 +718,14 @@ public final class IslandCommands {
                     drainRoutedBatch();
                     continue;
                 }
+                if (!RegionScheduler.poolRunning()) {
+                    // Task #36b: pool down — nothing can hold or release this
+                    // claim anymore; proceeding claimless is safe (no
+                    // concurrency exists) and spinning wedges shutdown.
+                    LOGGER.warn("[async-islands] mainClaim met a claim with the worker pool "
+                            + "stopped (island#{}) — proceeding claimless (shutdown leak)", owner.id);
+                    return;
+                }
                 if (System.nanoTime() - spinStart > 5_000_000_000L) {
                     spinStart = System.nanoTime();
                     LOGGER.error("[async-islands] mainClaim stuck {}x5s — retained-claim forensics: {}",
@@ -807,6 +815,14 @@ public final class IslandCommands {
                         // Parked waiter: exactly as quiescent as claimed, and
                         // it cannot resume before this fence releases (its
                         // future completes post-release by construction).
+                        break;
+                    }
+                    if (!RegionScheduler.poolRunning()) {
+                        // Task #36b: pool is DOWN — no unit can be running,
+                        // a set claim is a shutdown leak; spinning on it
+                        // wedges stopServer's task drain. Treat as quiescent.
+                        LOGGER.warn("[async-islands] fence met a claim with the worker pool "
+                                + "stopped (island#{}) — treating as quiescent (shutdown leak)", p.id);
                         break;
                     }
                     if (System.nanoTime() - fSpin > 5_000_000_000L) {

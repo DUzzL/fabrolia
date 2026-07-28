@@ -476,7 +476,7 @@ public final class RegionScheduler {
 
     /** A2: is the worker pool alive? Coordinators bound their barrier pump on
      *  this so a unit stranded across shutdown exits instead of spinning. */
-    static boolean poolRunning() {
+    public static boolean poolRunning() {
         RegionWorkerPool p = pool;
         return p != null && p.isRunning();
     }
