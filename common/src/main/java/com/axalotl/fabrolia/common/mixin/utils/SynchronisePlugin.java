@@ -27,7 +27,17 @@ import java.util.TreeSet;
 public class SynchronisePlugin implements IMixinConfigPlugin {
     private static final Logger LOGGER = LoggerFactory.getLogger(SynchronisePlugin.class);
 
-    private static final int FINAL_STATIC_PRIVATE_ABSTRACT = 0x1548; // final, static, private, abstract
+    /**
+     * Access-flag mask of methods the blanket pass SKIPS. {@code 0x1548} decodes to
+     * SYNTHETIC (0x1000) | ABSTRACT (0x0400) | NATIVE (0x0100) | BRIDGE (0x0040) |
+     * STATIC (0x0008). NOTE what is NOT in the mask: {@code private} (0x0002) and
+     * {@code final} (0x0010) methods DO receive the synchronized bit. That is
+     * load-bearing — e.g. {@code DynamicGraphMinFixedPoint.runUpdates} is
+     * {@code protected final} and is the fixpoint driver the monitor exists for.
+     * (The constant was historically misnamed FINAL_STATIC_PRIVATE_ABSTRACT, which
+     * claimed the exact opposite; 2026-08-01 audit.)
+     */
+    private static final int SKIP_SYNTHETIC_ABSTRACT_NATIVE_BRIDGE_STATIC = 0x1548;
     private static final int SYNCHRONIZED = 0x20; // synchronized
     private final Multimap<String, String> mixin2MethodsMap = ArrayListMultimap.create();
     private final Multimap<String, String> mixin2MethodsExcludeMap = ArrayListMultimap.create();
@@ -51,7 +61,18 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
 
     @Override
     public void onLoad(String mixinPackage) {
-        // Exclusions match by PLAIN method name (postApply compares method.name).
+        // Exclusions match by PLAIN method name (exact, or a Mixin-renamed injector
+        // handler ending in "$<name>" — see isExcluded). TWO FOOTGUNS, both audited
+        // 2026-08-01:
+        //  1. NAME-GLOBAL: an exclusion applies to EVERY SyncAllMixin target class.
+        //     Before adding a name here, sweep every class listed in SyncAllMixin
+        //     with javap and confirm the name is unique to the class you mean
+        //     (all names below verified unique to PathNavigation on 26.2).
+        //  2. ORDER-DEPENDENT: postApply sees the target ClassNode at SyncAllMixin
+        //     apply time. Members merged by lower-priority/earlier-declared mixins
+        //     (FabroliaPathNavigationMixin) ARE seen and need exclusions; members
+        //     merged by higher-priority mixins (LevelChunkTicksMixin, prio 2000)
+        //     are NOT seen and silently escape the blanket.
         mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "isOrAfter");
         // Task #32 (2026-07-28 production watchdog deadlock): postApply runs after
         // FabroliaPathNavigationMixin merged its members, so the blanket bit also
@@ -67,8 +88,63 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
         // or spurious recompute request, vanilla's delayed-recompute class).
         mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "fabrolia$navMob");
         mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "fabrolia$shouldRecomputePathSafe");
+        // PathNavigation stale-tolerant READS (task #40, audit finding #2): each is
+        // a single field read (or one hop through an immutable-after-ctor field)
+        // whose caller tolerates a stale answer by design — the same class as
+        // fabrolia$shouldRecomputePathSafe above. Keeping the bit on these turned
+        // every cross-context poll (debug ENTITY_PATHS iterates ALL tracked mobs
+        // from MAIN via getPath/getMaxDistanceToWaypoint; GoalUtils.mobRestricted
+        // calls canNavigateGround ~10x per random-stroll candidate) into a blocking
+        // entry on a monitor the owner worker may hold across an UNBOUNDED
+        // ChunkBridgeWait — the task-#32 deadlock shape through doors the nav
+        // routing did not cover. NOTE getPath returns the live mutable Path: a
+        // consumer racing the owner's trimPath/advance can observe a mid-mutation
+        // Path (the debug serializer may IOOBE on a torn read) — accepted, it is
+        // dev-only polling, versus a production watchdog deadlock.
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "getPath");
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "isDone");
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "isInProgress");
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "isStuck");
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "getTargetPos");
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "getMaxDistanceToWaypoint");
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "canFloat");
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "getNodeEvaluator");
+        // PathNavigation.stop is OWNER-ROUTED, not monitored (task #40): the body is
+        // one reference write (path = null), and FabroliaPathNavigationMixin's HEAD
+        // inject (fabrolia$routedStop) defers any cross-context call to the owner
+        // island's lane via NavRecompute.stopCrossContextDeferred — so a monitor
+        // here would only re-arm the task-#32 cycle for the doors that reach stop
+        // from MAIN (TeleportCommand.performTeleport, PiglinAi.stopWalking via
+        // mobInteract, LivingEntity.randomTeleport // spreadplayers). The handler's
+        // Mixin-mangled name (handler$xxx$fabrolia$routedStop) is matched by the
+        // "$<name>" suffix rule in isExcluded — the guard must run WITHOUT the
+        // monitor or the exemption is void.
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "stop");
+        mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "fabrolia$routedStop");
         syncAllSet.add("com.axalotl.fabrolia.common.mixin.utils.FastUtilSynchronizeMixin");
         syncAllSet.add("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin");
+    }
+
+    /**
+     * Exclusion match: exact name, or a Mixin-renamed injector handler whose mangled
+     * name ends in {@code "$<excluded>"} (Mixin merges {@code @Inject}/MixinExtras
+     * handlers as {@code handler$xxxxxx$<originalName>}; whether they carry
+     * ACC_SYNTHETIC is a Mixin implementation detail we must not depend on — without
+     * the suffix rule the blanket bit can land on a handler that is the un-monitored
+     * guard for its own exempted method). The "$" separator keeps ordinary vanilla
+     * names from ever matching (none contain '$' outside lambdas, which are
+     * synthetic-static and skipped by the mask anyway).
+     */
+    private static boolean isExcluded(String methodName, Collection<String> excludedMethods) {
+        if (excludedMethods.contains(methodName)) {
+            return true;
+        }
+        for (String excluded : excludedMethods) {
+            if (methodName.endsWith("$" + excluded)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -103,7 +179,7 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
             applySynchronizeBit(targetClass, targetMethods, targetClassName);
         } else if (syncAllSet.contains(mixinClassName)) {
             for (MethodNode method : targetClass.methods) {
-                if ((method.access & FINAL_STATIC_PRIVATE_ABSTRACT) == 0 && !method.name.equals("<init>") && !excludedMethods.contains(method.name)) {
+                if ((method.access & SKIP_SYNTHETIC_ABSTRACT_NATIVE_BRIDGE_STATIC) == 0 && !method.name.equals("<init>") && !isExcluded(method.name, excludedMethods)) {
                     method.access |= SYNCHRONIZED;
                     logSynchronize(method.name, targetClassName, mixinClassName);
                 }

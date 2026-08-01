@@ -6,14 +6,62 @@ import net.minecraft.world.entity.monster.warden.AngerManagement;
 import net.minecraft.world.level.chunk.storage.SectionStorage;
 import net.minecraft.world.level.gameevent.EuclideanGameEventListenerRegistry;
 import net.minecraft.world.level.lighting.DynamicGraphMinFixedPoint;
-import net.minecraft.world.level.pathfinder.BinaryHeap;
 import net.minecraft.world.ticks.LevelChunkTicks;
 import org.spongepowered.asm.mixin.Mixin;
 
 @Mixin(value = {
-        BinaryHeap.class,
+        // BinaryHeap removed 2026-08-01 (task #40, audit finding #5), same grounds
+        // as WorldBorder (2026-06-10): the monitor bought nothing and cost on a hot
+        // path. javap-verified pure leaf — every method touches only the private
+        // Node[]/size plus fields of nodes it owns; zero outward calls, so no cycle
+        // can pass through it. Also 100% uncontended: PathFinder.openSet is private
+        // per-PathFinder, each PathNavigation builds its own PathFinder, and every
+        // heap access happens inside PathFinder.findPath which PathFinderMixin
+        // already makes synchronized (itself under the nav monitor) — three nested
+        // monitors guarding one thread's private array, paid per insert/pop/
+        // changeCost in the A* inner loop (up to maxVisitedNodes times per path,
+        // 12k pathing mobs). Re-adding it is only defensible if a third-party mod
+        // shares PathFinder instances across mobs.
         LevelChunkTicks.class,
+        // DynamicGraphMinFixedPoint (2026-08-01, task #40 / audit finding #1): NOT
+        // the light engine — 26.2's light engine does not use this class at all.
+        // Subclasses are the chunk ticket/simulation propagator (Loading/Simulation
+        // ChunkTracker, DistanceManager$FixedPlayerDistanceChunkTracker/
+        // $PlayerTicketTracker) and POI's PoiManager$DistanceTracker. The monitor
+        // is held across ENTIRE unbounded relaxation waves (runUpdates(MAX_VALUE)
+        // is protected final — the blanket mask does NOT skip final). It is
+        // load-bearing in two places: PoiDistanceTrackerMixin drains its deferral
+        // queue under synchronized(this) on the POI tracker (7e769ee), and it
+        // serialises any residual off-main entry into the ticket trackers. Do NOT
+        // remove without replacing the POI tracker's guard. The convoy this monitor
+        // caused on the spawn hot path (workers running naturalSpawnChunkCounter
+        // waves from hasPlayersNearby while holding the ChunkMap monitor) is closed
+        // structurally instead: DistanceManagerMixin reroutes the spawn-proximity
+        // reads onto a completed-wave snapshot (FixedPlayerDistanceChunkTrackerMixin)
+        // so workers never run — or wait on — the propagator at all; waves now run
+        // only inside DistanceManager.runAllUpdates on main (off-main refusal in
+        // ServerChunkCacheMixin.fabrolia$serializeDistanceUpdatesWithPlayerMove).
         DynamicGraphMinFixedPoint.class,
+        // PathNavigation (task #40 rework of the task-#32 area): the blanket bit
+        // stays for the owner-side mutators (tick/moveTo/createPath/recomputePath/
+        // trimPath/followThePath...), but the monitor is no longer a door MAIN can
+        // block on: SynchronisePlugin exempts the stale-tolerant reads (getPath,
+        // isDone, isInProgress, isStuck, getTargetPos, getMaxDistanceToWaypoint,
+        // canFloat, getNodeEvaluator) and exempts stop(), whose cross-context
+        // callers are owner-routed by FabroliaPathNavigationMixin.fabrolia$routedStop
+        // → NavRecompute.stopCrossContextDeferred (covers TeleportCommand /
+        // PiglinAi.stopWalking / randomTeleport — every MAIN-side mutator door the
+        // 2026-08-01 audit found; the debug ENTITY_PATHS poll is covered by the
+        // read exemptions). RESIDUAL, accepted and documented: (a) the owner still
+        // holds the monitor across the getGroundY/trimPath/isStableDestination →
+        // getChunk(load=true) → ChunkBridgeWait park — after this change the only
+        // threads that can block on it are OTHER WORKERS (YieldJobSite cross-villager
+        // createPath, onAttributeUpdated), which is a bounded stall, not a cycle:
+        // main keeps pumping mainThreadProcessor, so the holder's chunk future
+        // completes. (b) subclass overrides (FlyingPathNavigation.tick has no
+        // super.tick()) are NOT covered by the blanket — flying mobs already run
+        // vanilla's unmonitored shape; do not "fix" that by listing subclasses here
+        // without re-auditing every door.
         PathNavigation.class,
         // SectionStorage (2026-07-29 01:51 crash): AIOOBE 'Index -1' in
         // Long2ObjectOpenHashMap.rehash from PoiManager.tick/unpackChunk with
