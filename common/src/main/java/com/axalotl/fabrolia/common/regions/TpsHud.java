@@ -124,6 +124,19 @@ public final class TpsHud {
                             IslandMetrics.label(rs, isl),
                             IslandMetrics.actualTps(isl),
                             isl.emaUnitNanos / 1_000_000.0));
+                    // Cross-dimension coupling marker (task #43). Standing at a
+                    // portal farm, the one thing you want to know is whether this
+                    // half is actually locked to the other one — reading it off
+                    // `/fabrolia regions crossdim` means leaving the spot. The
+                    // volatile read is the same field IslandTickUnit consumes; a
+                    // torn/stale value is a display artefact only.
+                    CrossDimLinks.Coupling c = isl.crossDimCoupling;
+                    if (c != null) {
+                        sb.append(" | XDIM: linked x").append(c.members.size())
+                          .append(String.format(java.util.Locale.ROOT, " @%.1f TPS",
+                                  c.sharedTargetNanos > 0
+                                          ? 1_000_000_000.0 / c.sharedTargetNanos : 20.0));
+                    }
                 }
             } else {
                 sb.append(" | Island: SYNC");
