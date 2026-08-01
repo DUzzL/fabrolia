@@ -91,13 +91,83 @@ public final class TpsHud {
         if (SUBSCRIBERS.isEmpty()) {
             return;
         }
+        // Roster once per update, not once per subscriber: islandOwnerOfChunk per
+        // player per subscriber is O(subscribers x players) and this room runs
+        // 50 carpet bots.
+        java.util.IdentityHashMap<IslandRegistry.PIsland, java.util.List<ServerPlayer>> roster =
+                new java.util.IdentityHashMap<>();
+        for (ServerPlayer pl : server.getPlayerList().getPlayers()) {
+            if (!(pl.level() instanceof ServerLevel plLevel)) {
+                continue;
+            }
+            RegionizedServer plRs = RegionScheduler.forLevel(plLevel);
+            if (plRs == null || !plRs.asyncActive) {
+                continue;
+            }
+            IslandRegistry.PIsland owner = plRs.islandOwnerOfChunk(pl.chunkPosition().pack());
+            if (owner != null) {
+                roster.computeIfAbsent(owner, k -> new java.util.ArrayList<>(4)).add(pl);
+            }
+        }
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
             if (!SUBSCRIBERS.contains(p.getUUID())) {
                 continue;
             }
-            p.connection.send(new ClientboundSetActionBarTextPacket(
-                    Component.literal(buildLine(p))));
+            p.connection.send(new ClientboundSetActionBarTextPacket(buildLine(p, roster)));
         }
+    }
+
+    /**
+     * Dimension colour for a player name. Resolved from the player's CURRENT
+     * level on every HUD update, so walking through a portal recolours the name
+     * on the next line without any cached state to invalidate.
+     */
+    private static net.minecraft.ChatFormatting dimColor(ServerPlayer pl) {
+        return pl.level() instanceof ServerLevel sl
+                ? dimColor(sl.dimension())
+                : net.minecraft.ChatFormatting.WHITE;
+    }
+
+    /**
+     * Overworld green, Nether red, End light purple, anything modded white.
+     *
+     * <p>Package-private and keyed on the dimension rather than the player so the
+     * mapping is testable without standing up a level.
+     */
+    static net.minecraft.ChatFormatting dimColor(
+            net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dim) {
+        if (net.minecraft.world.level.Level.OVERWORLD.equals(dim)) {
+            return net.minecraft.ChatFormatting.GREEN;
+        }
+        if (net.minecraft.world.level.Level.NETHER.equals(dim)) {
+            return net.minecraft.ChatFormatting.RED;
+        }
+        if (net.minecraft.world.level.Level.END.equals(dim)) {
+            return net.minecraft.ChatFormatting.LIGHT_PURPLE;
+        }
+        return net.minecraft.ChatFormatting.WHITE;
+    }
+
+    /** " [Alice Bob +2]" with each name coloured by its player's dimension. */
+    private static void appendRoster(net.minecraft.network.chat.MutableComponent out,
+                                     java.util.List<ServerPlayer> players) {
+        if (players == null || players.isEmpty()) {
+            return;
+        }
+        out.append(Component.literal(" ["));
+        int shown = Math.min(players.size(), 3);
+        for (int i = 0; i < shown; i++) {
+            ServerPlayer pl = players.get(i);
+            if (i > 0) {
+                out.append(Component.literal(" "));
+            }
+            out.append(Component.literal(pl.getName().getString())
+                    .withStyle(dimColor(pl)));
+        }
+        if (players.size() > shown) {
+            out.append(Component.literal(" +" + (players.size() - shown)));
+        }
+        out.append(Component.literal("]"));
     }
 
     private static void prevSample(long gt, long now) {
@@ -107,41 +177,56 @@ public final class TpsHud {
         }
     }
 
-    private static String buildLine(ServerPlayer p) {
-        StringBuilder sb = new StringBuilder(96);
-        sb.append(String.format(java.util.Locale.ROOT, "Main: %.1f TPS / %.1f MSPT",
-                mainTps, mainEmaNanos / 1_000_000.0));
-        if (p.level() instanceof ServerLevel sl) {
-            RegionizedServer rs = RegionScheduler.forLevel(sl);
-            if (rs != null && rs.asyncActive) {
-                IslandRegistry.PIsland isl =
-                        rs.islandOwnerOfChunk(p.chunkPosition().pack());
-                if (isl == null) {
-                    sb.append(" | Island: GLOBAL");
-                } else {
-                    sb.append(String.format(java.util.Locale.ROOT,
-                            " | Island %s: %.1f TPS / %.2f MSPT",
-                            IslandMetrics.label(rs, isl),
-                            IslandMetrics.actualTps(isl),
-                            isl.emaUnitNanos / 1_000_000.0));
-                    // Cross-dimension coupling marker (task #43). Standing at a
-                    // portal farm, the one thing you want to know is whether this
-                    // half is actually locked to the other one — reading it off
-                    // `/fabrolia regions crossdim` means leaving the spot. The
-                    // volatile read is the same field IslandTickUnit consumes; a
-                    // torn/stale value is a display artefact only.
-                    CrossDimLinks.Coupling c = isl.crossDimCoupling;
-                    if (c != null) {
-                        sb.append(" | XDIM: linked x").append(c.members.size())
-                          .append(String.format(java.util.Locale.ROOT, " @%.1f TPS",
-                                  c.sharedTargetNanos > 0
-                                          ? 1_000_000_000.0 / c.sharedTargetNanos : 20.0));
-                    }
-                }
-            } else {
-                sb.append(" | Island: SYNC");
-            }
+    private static Component buildLine(ServerPlayer p,
+            java.util.IdentityHashMap<IslandRegistry.PIsland, java.util.List<ServerPlayer>> roster) {
+        net.minecraft.network.chat.MutableComponent out = Component.literal(
+                String.format(java.util.Locale.ROOT, "Main: %.1f TPS / %.1f MSPT",
+                        mainTps, mainEmaNanos / 1_000_000.0));
+        if (!(p.level() instanceof ServerLevel sl)) {
+            return out;
         }
-        return sb.toString();
+        RegionizedServer rs = RegionScheduler.forLevel(sl);
+        if (rs == null || !rs.asyncActive) {
+            out.append(Component.literal(" | Island: SYNC"));
+            return out;
+        }
+        IslandRegistry.PIsland isl = rs.islandOwnerOfChunk(p.chunkPosition().pack());
+        if (isl == null) {
+            out.append(Component.literal(" | Island: GLOBAL"));
+            return out;
+        }
+        out.append(Component.literal(String.format(java.util.Locale.ROOT,
+                " | Island %s: %.1f TPS / %.2f MSPT",
+                IslandMetrics.label(rs, isl),
+                IslandMetrics.actualTps(isl),
+                isl.emaUnitNanos / 1_000_000.0)));
+        appendRoster(out, roster.get(isl));
+
+        // Cross-dimension coupling (task #43). Standing at a portal farm the one
+        // thing worth knowing is whether this half is actually locked to the
+        // other one, and who is over there — reading that off
+        // `/fabrolia regions crossdim` means leaving the spot. Both fields are
+        // the volatiles IslandTickUnit consumes; a stale read is a display
+        // artefact only.
+        CrossDimLinks.Coupling c = isl.crossDimCoupling;
+        if (c == null) {
+            return out;
+        }
+        out.append(Component.literal(String.format(java.util.Locale.ROOT,
+                " | XDIM: linked x%d @%.1f TPS",
+                c.members.size(),
+                c.sharedTargetNanos > 0 ? 1_000_000_000.0 / c.sharedTargetNanos : 20.0)));
+        // The partners' rosters — the whole point of the request: standing in the
+        // Overworld half you see the Nether half's occupants (in red) and vice
+        // versa. Iterating the coupling's member list is a snapshot read of a
+        // main-written ArrayList; this runs on main, so no copy is needed.
+        for (int i = 0; i < c.members.size(); i++) {
+            IslandRegistry.PIsland m = c.members.get(i);
+            if (m == isl) {
+                continue;
+            }
+            appendRoster(out, roster.get(m));
+        }
+        return out;
     }
 }
