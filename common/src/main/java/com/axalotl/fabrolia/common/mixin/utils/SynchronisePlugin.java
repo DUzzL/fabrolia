@@ -27,7 +27,14 @@ import java.util.TreeSet;
 public class SynchronisePlugin implements IMixinConfigPlugin {
     private static final Logger LOGGER = LoggerFactory.getLogger(SynchronisePlugin.class);
 
-    private static final int FINAL_STATIC_PRIVATE_ABSTRACT = 0x1548; // final, static, private, abstract
+    // 0x1548 = SYNTHETIC(0x1000) | ABSTRACT(0x400) | NATIVE(0x100) | BRIDGE(0x40) | STATIC(0x8).
+    // The constant's old name claimed it excluded final/static/private/abstract
+    // — a lie that cost real debugging time (task #38): PRIVATE (0x2) and FINAL
+    // (0x10) are NOT in this mask, so any fabrolia$/lithium$/c2me$ method merged
+    // onto a class in the blanket set silently inherits ACC_SYNCHRONIZED too —
+    // a feature for coverage, but a trap for handler methods that must stay
+    // monitor-free (see mixin2MethodsExcludeMap and the task-#32 nav exemptions).
+    private static final int SYNTHETIC_ABSTRACT_NATIVE_BRIDGE_STATIC = 0x1548;
     private static final int SYNCHRONIZED = 0x20; // synchronized
     private final Multimap<String, String> mixin2MethodsMap = ArrayListMultimap.create();
     private final Multimap<String, String> mixin2MethodsExcludeMap = ArrayListMultimap.create();
@@ -103,7 +110,7 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
             applySynchronizeBit(targetClass, targetMethods, targetClassName);
         } else if (syncAllSet.contains(mixinClassName)) {
             for (MethodNode method : targetClass.methods) {
-                if ((method.access & FINAL_STATIC_PRIVATE_ABSTRACT) == 0 && !method.name.equals("<init>") && !excludedMethods.contains(method.name)) {
+                if ((method.access & SYNTHETIC_ABSTRACT_NATIVE_BRIDGE_STATIC) == 0 && !method.name.equals("<init>") && !excludedMethods.contains(method.name)) {
                     method.access |= SYNCHRONIZED;
                     logSynchronize(method.name, targetClassName, mixinClassName);
                 }

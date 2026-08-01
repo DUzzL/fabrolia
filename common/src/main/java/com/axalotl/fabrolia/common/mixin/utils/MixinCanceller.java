@@ -31,6 +31,21 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
         if (mixinClassName.startsWith("net.caffeinemc.mods.lithium.mixin.ai.task.")) {
             return true;
         }
+        // Task #38 (review D5): fast_portals @Overwrite's ensureLoadedAndValid
+        // with two unguarded @Unique fields on PoiManager (preloadedCenterChunks:
+        // plain LongOpenHashSet, clear()+add on every call; preloadRadius) that
+        // region workers hit concurrently via AcquirePoi-class behaviors — the
+        // same fastutil-rehash AIOOBE family as the 2026-07-29 01:51 crash, live.
+        // Do NOT monitor-wrap it instead: the body calls getChunk(EMPTY), and a
+        // main caller waiting on that monitor while a worker-holder waits on the
+        // chunk future is precisely the task-#32 nav-monitor deadlock shape.
+        // Cancelling restores the vanilla body, whose loadedChunks dedup set is
+        // replaced with a concurrent one in PoiManagerMixin. The package's
+        // PortalForcerMixin stays active — it only needs ensureLoadedAndValid
+        // (vanilla now) and lithium$findNearestForPortalLogic (ai.poi, alive).
+        if (mixinClassName.equals("net.caffeinemc.mods.lithium.mixin.ai.poi.fast_portals.PoiManagerMixin")) {
+            return true;
+        }
         switch (mixinClassName) {
             case "com.ishland.c2me.base.mixin.instrumentation.MixinServerChunkManager":
             case "com.ishland.c2me.fixes.general.threading_issues.mixin.asynccatchers.MixinThreadedAnvilChunkStorage":
@@ -48,10 +63,20 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumEntitySectionMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumEntityMovementTrackerMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumInternerMixin") ||
-                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumClassGroupFilterableListMixin")) {
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumClassGroupFilterableListMixin") ||
+                // Task #38: these three target Lithium-merged methods / a
+                // Lithium anonymous class, so without Lithium they must not
+                // load — and WITH Lithium they must fail LOUDLY if a target
+                // string rots (default require), which is why they are gated
+                // here rather than written with require = 0.
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiStorageMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiColumnIteratorMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiTakeAtMixin")) {
             return !LITHIUM;
         }
-        if (mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.TheChunkSystemMixin")) {
+        if (mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.TheChunkSystemMixin") ||
+                // Task #38 (review D3): wraps the C2ME-merged c2me$unloadPoi.
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.PoiUnloadGuardMixin")) {
             return !C2ME;
         }
         return mixinClassName.endsWith("com.cupboard.mixin.ServerAddEntityMixin");
