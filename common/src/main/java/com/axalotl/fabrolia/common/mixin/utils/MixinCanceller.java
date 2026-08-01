@@ -18,36 +18,90 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
         if (mixinClassName.contains("ishland.vmp") && !mixinClassName.contains("fabrolia")) {
             VMP = true;
         }
-        // Villager-freeze fix (2026-07-14, bisected: fabrolia+lithium =
-        // stationary villagers; lithium.mixin.ai.task=false = normal): lithium's
-        // brain-task optimization caches behavior start checks against a plain
-        // per-brain memory-change counter with no cross-thread visibility.
-        // Fabrolia ticks entity brains on pool/region threads, so counter bumps
-        // made on one thread stay invisible to the start-check on another —
-        // behaviors never re-evaluate, walk targets are never set, villagers
-        // freeze (sensors and AcquirePoi still run: memories were written, only
-        // the cached start gate was stale). Cancel the task package; pathing/
-        // poi/sensor lithium modules stay active.
-        if (mixinClassName.startsWith("net.caffeinemc.mods.lithium.mixin.ai.task.")) {
+        // ai.task.launch — a genuine target conflict, NOT a crutch.
+        //
+        // lithium's launch/BrainMixin @Overwrite's Brain.startEachNonRunningBehavior
+        // (cached possibleTasks list) and Brain.getRunningBehaviors (a MaskedList),
+        // and maintains that MaskedList from four more injectors. Fabrolia's own
+        // entity/BrainMixin (priority 1500) already @WrapMethod's
+        // startEachNonRunningBehavior with a volatile flat (activity, behavior)
+        // snapshot and never calls original — so lithium's @Overwrite of that method
+        // is dead code, while its runningTasks bookkeeping keeps running against a
+        // list nothing rebuilds. Two implementations of the same method, ours wins,
+        // theirs is left half-live. On top of that lithium's MaskedList has no
+        // Fabrolia guard: ReferenceMaskedListMixin below targets a DIFFERENT class
+        // (common.util.collections.ReferenceMaskedList, used by the cramming
+        // EntitySection path), not the plain MaskedList that launch hands out of
+        // getRunningBehaviors. If launch is ever wanted, clone ReferenceMaskedListMixin
+        // against MaskedList first and drop Fabrolia's startEachNonRunningBehavior wrap.
+        //
+        // The rest of ai.task is ENABLED as of 2026-08-01. It used to be cancelled
+        // wholesale to kill the villager freeze (2026-07-14 bisect: fabrolia+lithium =
+        // stationary villagers). The recorded diagnosis on that cancel — "a memory-change
+        // counter with no cross-thread visibility" — was WRONG, and the fix is now in
+        // mixin/lithium/FabroliaLithiumBrainMemoryCounterMixin (atomic, fenced counter)
+        // + FabroliaLithiumBrainMemoryBumpMixin (a bump AFTER every mutation). The real
+        // defect was ORDERING, not visibility: ai.task.memory_changes bumps the counter
+        // BEFORE the mutation it announces, so a reader in that window caches a result
+        // computed from pre-mutation state against the post-bump count and the start gate
+        // latches FOREVER. See those two classes for the full writeup. ai.task.replace_streams
+        // and ai.task.run are stateless and were never implicated.
+        if (mixinClassName.startsWith("net.caffeinemc.mods.lithium.mixin.ai.task.launch.")) {
             return true;
         }
         switch (mixinClassName) {
             case "com.ishland.c2me.base.mixin.instrumentation.MixinServerChunkManager":
             case "com.ishland.c2me.fixes.general.threading_issues.mixin.asynccatchers.MixinThreadedAnvilChunkStorage":
             case "com.ishland.c2me.fixes.worldgen.threading_issues.mixin.threading_detections.random_instances.MixinWorld":
+
+            // SUPERSEDED, not disabled. lithium re-seats AttributeMap's
+            // attributesToUpdate/attributesToSync from @Inject(<init>, RETURN) purely to
+            // get ReferenceOpenHashSets with initial capacity 0; vanilla 26.2 already uses
+            // ObjectOpenHashSet and AttributeInstance overrides neither equals nor hashCode,
+            // so the two are semantically identical and NEITHER is thread-safe. Fabrolia's
+            // entity/AttributeMapMixin (priority 1500) installs ConcurrentCollections.newHashSet()
+            // at the same injection point. Keeping both would make the winner depend on
+            // callback ordering at an identical injection point; the win forgone is two
+            // allocations. If both are ever wanted, the robust lever is order = MAX_VALUE
+            // on Fabrolia's @Inject, not mixin priority.
             case "net.caffeinemc.mods.lithium.mixin.collections.attributes.AttributeMapMixin":
+
+            // MATCHED PAIR with mixin/lithium/FabroliaLithiumEntitySectionMixin — the cancel
+            // exists so that Fabrolia's class is the SOLE implementor of lithium's
+            // EntityMovementTrackerSection / PositionedEntityTrackingSection duck interfaces
+            // on EntitySection. lithium's version adds three plain mutable fields (a
+            // ReferenceOpenHashSet of visibility listeners, an ArrayList[] of per-class
+            // once-listeners, a long[] of change times) and mutates them from every worker
+            // that moves an entity. Fabrolia's is a full lock-free reimplementation of the
+            // same interfaces (ConcurrentHashMap key set, CAS-installed
+            // AtomicReferenceArray<ConcurrentLinkedQueue>, AtomicLongArray). DO NOT un-cancel:
+            // two implementations of the same interface methods on one class is a mixin apply
+            // error at best and silent duplicate state at worst.
             case "net.caffeinemc.mods.lithium.mixin.util.entity_movement_tracking.EntitySectionMixin":
+
+            // MATCHED PAIR with mixin/lithium/FabroliaLithiumClassGroupFilterableListMixin,
+            // and with the VMP cancel below — three mods rewriting ClassInstanceMultiMap.find.
+            // lithium @Overwrite's it as get-then-put on the plain byClass HashMap (vanilla's
+            // computeIfAbsent is one map op, so lithium is marginally worse, but BOTH are
+            // unsafe). The actual repair is Fabrolia's parallel ConcurrentHashMap index keyed
+            // by EntityClassGroup, maintained from @Inject(add/remove, RETURN). DO NOT
+            // un-cancel: same duplicate-implementor problem as above.
             case "net.caffeinemc.mods.lithium.mixin.collections.entity_filtering.ClassInstanceMultiMapMixin":
             case "com.ishland.vmp.mixins.general.collections.MixinTypeFilterableList":
+
             case "me.drex.vanish.mixin.interaction.SimpleCriterionTriggerMixin":
                 return true;
         }
+        // Fabrolia mixins that reference lithium types or lithium-merged members
+        // directly: they must not even load without lithium present.
         if (mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.LithiumServerLevel") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.LithiumGameEventDispatcherStorage") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.ReferenceMaskedListMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumEntitySectionMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumEntityMovementTrackerMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumInternerMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumBrainMemoryCounterMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumBrainMemoryBumpMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumClassGroupFilterableListMixin")) {
             return !LITHIUM;
         }
