@@ -61,6 +61,8 @@
     "entity.movement.FabroliaPathNavigationMixin",
     "entity.movement.LevelPushableEntitiesMixin",
     "entity.movement.PathFinderMixin",
+    "entity.movement.PoiDistanceTrackerMixin",
+    "entity.movement.PoiManagerDistanceMixin",
     "entity.movement.PoiManagerMixin",
     "entity.movement.PoiSectionMixin",
     "entity.sensor.NearestItemSensorMixin",
