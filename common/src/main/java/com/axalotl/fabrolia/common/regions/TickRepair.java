@@ -435,7 +435,19 @@ public final class TickRepair {
         if (!(lane instanceof LevelTicksIslandAccess<?> access)) return;
         synchronized (access.fabrolia$tickLock()) {
             for (var e : access.fabrolia$allContainers().long2ObjectEntrySet()) {
-                if (e.getValue() instanceof LevelChunkTicks<?> c && c.count() > 0) {
+                // count() OR peek() (task #41, Lithium audit §4.7): vanilla's
+                // count() is queue.size() + pendingTicks.size(); Lithium's is
+                // allTicks.size(), the (pos,type) dedup-set cardinality. Those
+                // disagree in BOTH directions once a queue holds duplicates —
+                // which unpack() can create on either implementation, since it
+                // schedules unchecked past the dedup set. count()==0 with a
+                // live queued tick would silently exclude that chunk from every
+                // scan/repair pass, so the liveness half of the gate is peek(),
+                // which is null-safe and exact on both. count() is kept for the
+                // packed (deserialized, not-yet-unpacked) case, where the live
+                // queue is empty by construction and peek() answers null.
+                if (e.getValue() instanceof LevelChunkTicks<?> c
+                        && (c.count() > 0 || c.peek() != null)) {
                     keys.add(e.getLongKey());
                 }
             }
@@ -686,6 +698,16 @@ public final class TickRepair {
         // pendingTicks at construction and disjoint from the queue by dedup).
         // count() > queue size therefore means packed relative-delay entries
         // exist that NO public API can reach.
+        //
+        // KNOWN IMPRECISION, accepted (task #41, audit §4.7): on Lithium the
+        // dedup set collapses duplicates, so a queue holding N copies of one
+        // (pos,type) makes count() UNDER-report by N-1 and the difference can
+        // come out zero or negative for a genuinely packed container. The
+        // consequence is a packed container classified as live and then found
+        // empty by getAll() — under-reporting, never a bad mutation, because
+        // every mutation below still runs through the public API on entries
+        // getAll() actually returned. There is no public API that separates the
+        // two states exactly; reaching into pendingTicks is the audit15 NPE.
         int packedCount = c.count() - queue.size();
         if (queue.isEmpty() && packedCount <= 0) {
             return false;
