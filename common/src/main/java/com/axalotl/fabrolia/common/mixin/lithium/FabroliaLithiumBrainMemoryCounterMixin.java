@@ -2,6 +2,7 @@ package com.axalotl.fabrolia.common.mixin.lithium;
 
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import net.minecraft.world.entity.ai.Brain;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 
@@ -11,9 +12,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * Fix A of the villager-freeze repair (see {@link FabroliaLithiumBrainMemoryBumpMixin}
  * for Fix B and for the full defect writeup).
  *
- * <p>MixinSquared into lithium's own {@code ai.task.memory_changes.BrainMixin}.
- * That mixin carries the per-{@code Brain} memory-modification counter that
- * lithium's {@code BehaviorMixin} caches {@code hasRequiredMemories()} against:
+ * <p>Replaces the per-{@code Brain} memory-modification counter that lithium's
+ * {@code ai.task.memory_changes} module maintains and its {@code BehaviorMixin}
+ * caches {@code hasRequiredMemories()} against:
  *
  * <pre>{@code
  * @Unique private long memoryModCount = 1;                        // PLAIN long
@@ -48,10 +49,32 @@ import java.util.concurrent.atomic.AtomicLong;
  * replaces lithium's plain {@code long maxChangeTime} with a CAS-max
  * {@code AtomicLong} the same way.
  *
- * <p>Casts to nothing lithium-specific itself, but it cannot load without lithium's
- * mixin class existing — {@code MixinCanceller} gates it behind {@code !LITHIUM}.
+ * <h2>Why this targets {@code Brain} and not lithium's mixin class</h2>
+ * The obvious-looking
+ * {@code @Mixin(targets = "…lithium.mixin.ai.task.memory_changes.BrainMixin")} is
+ * ILLEGAL and kills the server at bootstrap:
+ * <pre>
+ * IllegalClassLoadError: Illegal classload request for
+ *   net.caffeinemc.mods.lithium.mixin.ai.task.memory_changes.BrainMixin.
+ *   Mixin is defined in lithium.mixins.json and cannot be referenced directly
+ * </pre>
+ * (caught 2026-08-01 by a bytecode-verification boot; no unit test can see it,
+ * since the failure is in the transformer, not in any code path). Another mod's
+ * mixin class is not a loadable target — only MixinSquared's {@code @TargetHandler}
+ * can reach INTO one.
+ *
+ * <p>None of that is needed here: {@code lithium$onMemoryModified} and
+ * {@code lithium$getMemoryValueModCount} are lithium's own interface methods,
+ * MERGED INTO {@code Brain} itself at apply time. So they can simply be wrapped on
+ * {@code Brain} at a priority above lithium's default 1000 — the same shape
+ * {@link FabroliaLithiumPoiTakeAtMixin} and {@link FabroliaLithiumPoiStorageMixin}
+ * use for lithium-merged POI methods. {@code remap = false} because these names are
+ * lithium's, not Mojang's.
+ *
+ * <p>The wrapped methods do not exist without lithium, so {@code MixinCanceller}
+ * gates this class behind {@code !LITHIUM}.
  */
-@Mixin(targets = "net.caffeinemc.mods.lithium.mixin.ai.task.memory_changes.BrainMixin", remap = false)
+@Mixin(value = Brain.class, priority = 1500)
 public abstract class FabroliaLithiumBrainMemoryCounterMixin {
 
     /**
@@ -63,13 +86,13 @@ public abstract class FabroliaLithiumBrainMemoryCounterMixin {
     private final AtomicLong fabrolia$memoryModCount = new AtomicLong(1L);
 
     /** Does NOT call original — lithium's {@code memoryModCount++} is dead code from here on. */
-    @WrapMethod(method = "lithium$onMemoryModified")
+    @WrapMethod(method = "lithium$onMemoryModified", remap = false)
     private void fabrolia$onMemoryModified(Operation<Void> original) {
         this.fabrolia$memoryModCount.incrementAndGet();
     }
 
     /** Does NOT call original. */
-    @WrapMethod(method = "lithium$getMemoryValueModCount")
+    @WrapMethod(method = "lithium$getMemoryValueModCount", remap = false)
     private long fabrolia$getMemoryValueModCount(Operation<Long> original) {
         return this.fabrolia$memoryModCount.get();
     }
