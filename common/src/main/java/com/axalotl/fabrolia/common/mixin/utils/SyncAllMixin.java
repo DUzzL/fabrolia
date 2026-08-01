@@ -3,7 +3,6 @@ package com.axalotl.fabrolia.common.mixin.utils;
 import net.minecraft.util.profiling.ActiveProfiler;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.monster.warden.AngerManagement;
-import net.minecraft.world.level.chunk.storage.SectionStorage;
 import net.minecraft.world.level.gameevent.EuclideanGameEventListenerRegistry;
 import net.minecraft.world.level.lighting.DynamicGraphMinFixedPoint;
 import net.minecraft.world.ticks.LevelChunkTicks;
@@ -63,25 +62,28 @@ import org.spongepowered.asm.mixin.Mixin;
         // vanilla's unmonitored shape; do not "fix" that by listing subclasses here
         // without re-auditing every door.
         PathNavigation.class,
-        // SectionStorage (2026-07-29 01:51 crash): AIOOBE 'Index -1' in
-        // Long2ObjectOpenHashMap.rehash from PoiManager.tick/unpackChunk with
-        // region workers mutating POIs concurrently. NOTE the real root cause,
-        // found 2026-08-01: Fabrolia's SectionStorageMixin installs a concurrent
-        // `storage` map via a @Shadow field initialiser, and Lithium's
-        // ai.poi.SectionStorageMixin @Injects at <init> RETURN and OVERWRITES it
-        // with a plain ListeningLong2ObjectOpenHashMap — the map Fabrolia thought
-        // it had was never installed. Lithium winning is also load-bearing: if
-        // Fabrolia won, Lithium's onEntryAdded would never fire, its `columns`
-        // map would stay empty and every POI query would hit
-        // "Failed to load POI section data!". The correct repair is to WRAP
-        // Lithium's listening map (@Inject <init> RETURN, order = MAX_VALUE),
-        // not replace it — plus a defensive BitSet clone at the getNonEmpty
-        // boundary, the shape already proven in Sepals. Until that lands this
-        // blanket monitor is the only thing covering `storage` AND Lithium's
-        // unguarded `columns` AND C2ME's merged c2me$unloadPoi, so it STAYS.
-        // Staged deliberately: it is a contention and latency liability, not a
-        // deadlock one, now that PoiSection is out (see below).
-        SectionStorage.class,
+        // SectionStorage REMOVED 2026-08-01 (task #38, second half): the
+        // staged blanket monitor from 7d58bbb is gone now that every one of
+        // the four things it actually covered has a real replacement:
+        //   1. `storage` — WRAPPED (never replaced) in LockedLong2ObjectMap at
+        //      <init> RETURN with injector order = Integer.MAX_VALUE, so it
+        //      wraps Lithium's ListeningLong2ObjectOpenHashMap instead of
+        //      fighting it (the @Shadow initialiser Lithium silently defeated
+        //      was the true root cause of the 2026-07-29 01:51 rehash AIOOBE);
+        //      one-shot startup assert makes any future silent defeat loud.
+        //   2. Lithium's `columns` BitSet sidecar — writes serialise inside
+        //      the wrapper's write lock; reads snapshot-and-CLONE under the
+        //      read lock in FabroliaLithiumPoiStorageMixin (lock released
+        //      across unpackChunk — a hold there self-deadlocks and AB-BAs
+        //      against loadLock).
+        //   3. C2ME's merged c2me$unloadPoi — whole body under loadLock and
+        //      skipped while a load is in flight (PoiUnloadGuardMixin).
+        //   4. getOrLoad's loser-vs-winner ISE window — per-chunk completion
+        //      handshake (PoiChunkLoadFence) + unpackPendingLoads skip +
+        //      bounded retry, in SectionStorageMixin.
+        // The full corrected lock order and its two invariants live in
+        // SectionStorageMixin's javadoc. The monitor also never made reads
+        // safe here either: every Lithium column read escaped it lazily.
         // PoiSection REMOVED 2026-08-01 (task #38): it was the direct cause of
         // three production watchdog deadlocks (2026-07-29 07:21/10:08/10:26).
         // The blanket bit made PoiSection.getRecords synchronized, so a worker

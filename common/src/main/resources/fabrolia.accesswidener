@@ -56,3 +56,4 @@ accessible field net/minecraft/world/level/Level pendingBlockEntityTickers Ljava
 accessible field net/minecraft/world/level/Level tickingBlockEntities Z
 accessible field net/minecraft/server/level/ChunkMap updatingChunkMap Lit/unimi/dsi/fastutil/longs/Long2ObjectLinkedOpenHashMap;
 accessible field net/minecraft/server/level/ChunkMap pendingUnloads Lit/unimi/dsi/fastutil/longs/Long2ObjectLinkedOpenHashMap;
+accessible method net/minecraft/world/entity/ai/village/poi/PoiRecord acquireTicket ()Z

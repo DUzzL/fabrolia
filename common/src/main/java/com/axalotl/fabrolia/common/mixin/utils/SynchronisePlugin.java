@@ -30,12 +30,22 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
     /**
      * Access-flag mask of methods the blanket pass SKIPS. {@code 0x1548} decodes to
      * SYNTHETIC (0x1000) | ABSTRACT (0x0400) | NATIVE (0x0100) | BRIDGE (0x0040) |
-     * STATIC (0x0008). NOTE what is NOT in the mask: {@code private} (0x0002) and
-     * {@code final} (0x0010) methods DO receive the synchronized bit. That is
-     * load-bearing — e.g. {@code DynamicGraphMinFixedPoint.runUpdates} is
-     * {@code protected final} and is the fixpoint driver the monitor exists for.
-     * (The constant was historically misnamed FINAL_STATIC_PRIVATE_ABSTRACT, which
-     * claimed the exact opposite; 2026-08-01 audit.)
+     * STATIC (0x0008).
+     *
+     * <p>NOTE what is NOT in the mask: {@code private} (0x0002) and {@code final}
+     * (0x0010) methods DO receive the synchronized bit. The constant was
+     * historically misnamed FINAL_STATIC_PRIVATE_ABSTRACT, claiming the exact
+     * opposite, and that lie cost real debugging time on both the 2026-07-29 POI
+     * deadlock (task #38, where {@code private unpackChunk} came out synchronized)
+     * and the 2026-08-01 audit.
+     *
+     * <p>The behaviour itself is load-bearing in both directions. It is a feature
+     * for coverage — {@code DynamicGraphMinFixedPoint.runUpdates} is
+     * {@code protected final} and is the fixpoint driver the monitor exists for —
+     * and a trap for merged handlers: any {@code fabrolia$}/{@code lithium$}/
+     * {@code c2me$} method merged onto a class in the blanket set silently
+     * inherits ACC_SYNCHRONIZED, including handlers that must stay monitor-free
+     * (see {@code mixin2MethodsExcludeMap} and the task-#32 nav exemptions).
      */
     private static final int SKIP_SYNTHETIC_ABSTRACT_NATIVE_BRIDGE_STATIC = 0x1548;
     private static final int SYNCHRONIZED = 0x20; // synchronized
@@ -179,6 +189,9 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
             applySynchronizeBit(targetClass, targetMethods, targetClassName);
         } else if (syncAllSet.contains(mixinClassName)) {
             for (MethodNode method : targetClass.methods) {
+                // isExcluded (not a plain contains) so that Mixin-mangled injector
+                // handler names (handler$xxx000$<name>) match their exemption too —
+                // otherwise a handler carries the very monitor its exemption removed.
                 if ((method.access & SKIP_SYNTHETIC_ABSTRACT_NATIVE_BRIDGE_STATIC) == 0 && !method.name.equals("<init>") && !isExcluded(method.name, excludedMethods)) {
                     method.access |= SYNCHRONIZED;
                     logSynchronize(method.name, targetClassName, mixinClassName);
