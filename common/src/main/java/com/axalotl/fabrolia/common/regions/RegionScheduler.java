@@ -182,6 +182,7 @@ public final class RegionScheduler {
                 LOGGER.error("cross-dim arrival flush at stop failed", t);
             }
             TemporalControl.drainPacer();
+            CrossDimLinks.reset();
         } finally {
             for (RegionizedServer rs : PER_LEVEL.values()) {
                 try { rs.regionizer().clear(); } catch (Throwable t) {

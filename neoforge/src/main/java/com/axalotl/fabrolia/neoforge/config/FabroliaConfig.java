@@ -47,6 +47,9 @@ public class FabroliaConfig {
     private static final ModConfigSpec.BooleanValue fabroliaIslandBlockEntityTicks;
     private static final ModConfigSpec.BooleanValue asyncIslands;
     private static final ModConfigSpec.BooleanValue asyncFailClosed;
+    private static final ModConfigSpec.BooleanValue fabroliaCrossDimCoupling;
+    private static final ModConfigSpec.IntValue crossDimUnlinkGraceTicks;
+    private static final ModConfigSpec.ConfigValue<List<? extends String>> crossDimLinkedPairs;
 
     static {
         // ───── Core ─────
@@ -118,6 +121,17 @@ public class FabroliaConfig {
                 .define("asyncFailClosed", com.axalotl.fabrolia.common.config.FabroliaConfig.asyncFailClosed);
         asyncIslands = BUILDER.comment("A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. DEFAULT OFF while the phase rewire completes. Runtime: /fabrolia regions async.")
                 .define("asyncIslands", com.axalotl.fabrolia.common.config.FabroliaConfig.asyncIslands);
+        fabroliaCrossDimCoupling = BUILDER.comment("Cross-dimension cadence coupling: Overworld islands whose down-projected footprint (vanilla portal scale + pairing reach) touches a Nether island's cells are LINKED, and linked members share one deadline anchor + one lower-TPS-wins rate — removes the phase drift that breaks portal farms straddling the boundary. Clocks stay per-island (phase-lock, never value-merge); the End can never be linked. Runtime: /fabrolia regions crossdim on|off.")
+                .define("fabroliaCrossDimCoupling", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling);
+        crossDimUnlinkGraceTicks = BUILDER.comment("Unlink hysteresis for cross-dimension links: the intersection must be absent for this many wall ticks before a link drops (reappearance resets the timer). Links themselves form immediately.")
+                .defineInRange("crossDimUnlinkGraceTicks", com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimUnlinkGraceTicks, 0, Integer.MAX_VALUE);
+        crossDimLinkedPairs = BUILDER.comment("Cross-dimension link table. Default and ONLY supported value: 'minecraft:overworld=minecraft:the_nether'. Every other entry — the End in particular — is refused at parse time.")
+                .defineListAllowEmpty(
+                        "crossDimLinkedPairs",
+                        () -> new ArrayList<>(com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimLinkedPairs),
+                        () -> "",
+                        obj -> obj instanceof String
+                );
 
         BUILDER.pop();
 
@@ -158,6 +172,12 @@ public class FabroliaConfig {
         com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandBlockEntityTicks = fabroliaIslandBlockEntityTicks.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.asyncIslands = asyncIslands.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.asyncFailClosed = asyncFailClosed.get();
+        com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling = fabroliaCrossDimCoupling.get();
+        com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimUnlinkGraceTicks = crossDimUnlinkGraceTicks.get();
+        List<? extends String> pairEntries = crossDimLinkedPairs.get();
+        com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimLinkedPairs = pairEntries.isEmpty()
+                ? com.axalotl.fabrolia.common.config.FabroliaConfig.defaultCrossDimLinkedPairs()
+                : new ArrayList<>(pairEntries);
 
         List<? extends String> entries = synchronizedEntities.get();
         Set<String> entities = new HashSet<>();
@@ -190,6 +210,9 @@ public class FabroliaConfig {
         fabroliaRegionColorGate.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionColorGate);
         fabroliaIslandScheduledTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandScheduledTicks);
         fabroliaIslandBlockEntityTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandBlockEntityTicks);
+        fabroliaCrossDimCoupling.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling);
+        crossDimUnlinkGraceTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimUnlinkGraceTicks);
+        crossDimLinkedPairs.set(new ArrayList<>(com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimLinkedPairs));
 
         synchronizedEntities.set(new ArrayList<>(com.axalotl.fabrolia.common.config.FabroliaConfig.synchronizedEntities));
 

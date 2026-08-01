@@ -364,6 +364,12 @@ public final class IslandRegistry {
          *  confirm the running unit observed the new pacing at a unit boundary. */
         public volatile long pacingGen;
         public volatile long appliedPacingGen;
+        /** Task #43 — cross-dimension cadence coupling (CrossDimLinks): when
+         *  set, {@code IslandTickUnit.complete()} rolls the deadline at the
+         *  coupling's shared rate instead of this island's own target, so
+         *  linked Overworld↔Nether members advance in drift-free lockstep.
+         *  Written on main only (link manager); null = uncoupled. */
+        public volatile CrossDimLinks.Coupling crossDimCoupling;
         /** Frontier halo cells owned by this island for WRITE-DOMAIN purposes
          *  (1-cell closure around the populated core). Regions here carry the
          *  island's domain so vanilla edge mutations (fluid spread, fire, piston

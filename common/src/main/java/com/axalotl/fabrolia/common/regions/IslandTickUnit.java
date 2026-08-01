@@ -473,6 +473,20 @@ public final class IslandTickUnit {
                 .forLevel(island.level);
         long tickNanos = rsT != null
                 ? TemporalControl.effectiveTargetNanos(rsT, island) : TICK_NANOS;
+        // Task #43 — cross-dimension cadence coupling: a linked
+        // Overworld↔Nether member rolls its deadline at the coupling's SHARED
+        // rate (lower-TPS-wins over the members, resolved on main by
+        // CrossDimLinks), from the shared anchor CrossDimLinks wrote at link
+        // time. Both members therefore advance in lockstep and the pre-link
+        // phase offset stops drifting (dΔ/dunit == 0). Clocks are untouched —
+        // phase-lock, never value-merge.
+        CrossDimLinks.Coupling coupling = island.crossDimCoupling;
+        if (coupling != null) {
+            long shared = coupling.sharedTargetNanos;
+            if (shared > 0) {
+                tickNanos = shared;
+            }
+        }
         long next = island.nextDeadlineNanos;
         next = (next == 0 ? startNanos : next) + tickNanos;
         if (end - next >= tickNanos) {

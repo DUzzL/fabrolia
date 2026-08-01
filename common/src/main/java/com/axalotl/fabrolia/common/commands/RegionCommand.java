@@ -40,6 +40,8 @@ import static net.minecraft.commands.Commands.literal;
  *   /fabrolia regions async debug on|off — diagnostics gate (burst detectors,
  *                                          invariant ring dumps; default OFF)
  *   /fabrolia regions rate|sprint|name … — temporal control / island naming
+ *   /fabrolia regions crossdim [on|off]  — Overworld↔Nether link listing +
+ *                                          cadence-coupling toggle
  *   /fabrolia regions tps                — action-bar TPS HUD (player)
  *   /fabrolia regions on|off|toggle      — master region-threading switch
  *   /fabrolia regions debug …            — everything diagnostic: flightrec,
@@ -221,6 +223,30 @@ public final class RegionCommand {
                 .then(literal("off").executes(ctx -> {
                     com.axalotl.fabrolia.common.config.FabroliaConfig.chunkBridgeHealBroken = false;
                     send(ctx, "c2me broken-holder heal: ", "off", false);
+                    return 1;
+                })));
+
+        // Task #43: cross-dimension link listing + coupling toggle (runtime
+        // command + config persistence — never a JVM flag).
+        regionsCmd.then(literal("crossdim").requires(PlatformPermission.require("command.regions.toggle", 4))
+                .executes(ctx -> {
+                    send(ctx, "", com.axalotl.fabrolia.common.regions.CrossDimLinks.status(), false);
+                    return 1;
+                })
+                .then(literal("on").executes(ctx -> {
+                    com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling = true;
+                    PlatformUtils.saveConfig();
+                    send(ctx, "crossdim coupling: ",
+                            "ON — linked Overworld↔Nether islands share one deadline anchor + rate "
+                            + "(links form at the next rebuild pass)", false);
+                    return 1;
+                }))
+                .then(literal("off").executes(ctx -> {
+                    com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling = false;
+                    PlatformUtils.saveConfig();
+                    send(ctx, "crossdim coupling: ",
+                            "off — islands pace independently; existing links drop at the next tick",
+                            false);
                     return 1;
                 })));
 

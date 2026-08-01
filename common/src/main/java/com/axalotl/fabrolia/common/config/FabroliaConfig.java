@@ -174,6 +174,29 @@ public class FabroliaConfig {
                             + "session only", v);
         }
     }
+    /** Task #43 — cross-dimension deadline-anchor cadence coupling: linked
+     *  Overworld↔Nether islands (populated-cell projections intersect, per
+     *  CrossDimProjection) share one deadline anchor and one lower-TPS-wins
+     *  rate, removing the phase drift that breaks portal farms straddling the
+     *  boundary. Observation + scheduling only — no clock writes, no new
+     *  claim topology, transfer lane untouched. Runtime:
+     *  /fabrolia regions crossdim on|off. */
+    public static volatile boolean fabroliaCrossDimCoupling = true;
+    /** Unlink hysteresis: a link whose intersection disappeared is dropped
+     *  only after this many WALL ticks of continuous absence (the grace-100
+     *  region-eviction precedent); reappearance resets the timer, so
+     *  population flicker never thrashes a link. */
+    public static volatile int crossDimUnlinkGraceTicks = 100;
+    /** Explicit cross-dimension link table. Default and ONLY supported value:
+     *  "minecraft:overworld=minecraft:the_nether". The End must never appear
+     *  (EndPlatformHandoff has no dimension check of its own); CrossDimLinks
+     *  refuses every other entry at parse time. */
+    public static volatile List<String> crossDimLinkedPairs = defaultCrossDimLinkedPairs();
+
+    public static List<String> defaultCrossDimLinkedPairs() {
+        return new ArrayList<>(List.of("minecraft:overworld=minecraft:the_nether"));
+    }
+
     // Fail-closed: a detected cross-ownership write auto-disables asyncIslands
     // (collapses to byte-identical sync mode) instead of risking world state.
     public static volatile boolean asyncFailClosed = true;

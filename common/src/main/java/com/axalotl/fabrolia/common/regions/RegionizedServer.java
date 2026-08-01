@@ -1370,6 +1370,15 @@ public final class RegionizedServer {
                 }
             }
         }
+        // Task #43 — cross-dimension link detection + deadline-anchor cadence
+        // coupling. Deliberately INSIDE the rebuild quiesce window (review
+        // D7): this level's island claims are main-held here, so link/anchor
+        // writes on this side cannot race a completing unit; the partner
+        // level's members are touched only under a try-CAS of their claim
+        // (failure defers the anchor to the drive-head tick pass). Runs for
+        // the ON→OFF collapse too — CrossDimLinks drops every link once the
+        // both-levels-async precondition is gone.
+        CrossDimLinks.onRebuild(this);
     }
 
     /** A2: move {@code r} onto timeline {@code d}, translating its epoch stamps
@@ -1689,6 +1698,10 @@ public final class RegionizedServer {
             TpsHud.tick(level.getServer(), level);
             if (net.minecraft.world.level.Level.OVERWORLD.equals(level.dimension())) {
                 TemporalControl.tickAcks();
+                // Task #43: coupling maintenance — shared-rate refresh,
+                // deferred-anchor retries, operator-session eligibility, and
+                // the phase heal. Geometry is rebuild-only.
+                CrossDimLinks.mainTick();
                 ChunkDelivery.stressTick();
                 if (level.getGameTime() % 20 == 0) {
                     ChunkDelivery.liveness();

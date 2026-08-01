@@ -193,6 +193,16 @@ public class FabroliaConfig {
         e.add(bool("fabroliaIslandBlockEntityTicks", null,
                 "F2 (Stage C): island-partitioned block-entity ticks. Each island's loaded chunks dispatch their LevelChunk.tickersInLevel entries to one worker; islands are spatially separated by ≥16 unloaded chunks so cross-island side effects are impossible by construction. Heaviest island stays on main. <2 islands → vanilla. Runtime: /fabrolia regions islandbeticks on|off.",
                 () -> fabroliaIslandBlockEntityTicks, v -> fabroliaIslandBlockEntityTicks = v));
+        e.add(bool("fabroliaCrossDimCoupling", null,
+                "Cross-dimension cadence coupling: Overworld islands whose down-projected footprint (vanilla portal scale + pairing reach) touches a Nether island's cells are LINKED, and linked members share one deadline anchor + one lower-TPS-wins rate — removes the phase drift that breaks portal farms straddling the boundary. Clocks stay per-island (phase-lock, never value-merge); the End can never be linked. Runtime: /fabrolia regions crossdim on|off.",
+                () -> fabroliaCrossDimCoupling, v -> fabroliaCrossDimCoupling = v));
+        e.add(intEntry("crossDimUnlinkGraceTicks", null,
+                "Unlink hysteresis for cross-dimension links: the intersection must be absent for this many wall ticks before a link drops (reappearance resets the timer). Links themselves form immediately.",
+                () -> crossDimUnlinkGraceTicks, v -> crossDimUnlinkGraceTicks = v));
+        e.add(stringList("crossDimLinkedPairs", null,
+                "Cross-dimension link table. Default and ONLY supported value: 'minecraft:overworld=minecraft:the_nether'. Every other entry — the End in particular — is refused at parse time.",
+                () -> new ArrayList<>(crossDimLinkedPairs),
+                v -> crossDimLinkedPairs = new ArrayList<>(v)));
         e.add(bool("asyncFailClosed", null,
                 "Fail-closed safety: a detected cross-island ownership write (crossDOMAIN, requires the access detector for stacks) auto-disables asyncIslands, collapsing to byte-identical sync mode instead of risking world state. Leave ON in production.",
                 () -> asyncFailClosed, v -> asyncFailClosed = v));
