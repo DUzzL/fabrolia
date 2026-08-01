@@ -42,6 +42,10 @@ public final class NavRecompute {
      *  recompute per navigation per island (recompute is idempotent-latest). */
     private record Key(PathNavigation nav) {}
 
+    /** Coalesce key for deferred stops — a distinct record type so a pending
+     *  recompute never swallows a stop's coalescing slot (and vice versa). */
+    private record StopKey(PathNavigation nav) {}
+
     /**
      * Replacement for the {@code navigation.recomputePath()} loop body of
      * {@code ServerLevel.sendBlockUpdated} (and the explosion suppress-drain):
@@ -73,6 +77,62 @@ public final class NavRecompute {
         // so a migrating mob chases at most one pending task per island).
         dispatch(rs, owner, new Key(nav), nav::recomputePath,
                 () -> recomputeOwnerSafe(level, nav));
+    }
+
+    /**
+     * Task #40 (audit finding #2): owner-routed {@code PathNavigation.stop()}.
+     *
+     * <p>{@code stop} is exempted from the blanket monitor (SynchronisePlugin)
+     * because its body is one reference write — and because it is the ONLY
+     * mutator the 2026-08-01 door sweep found MAIN calling on a foreign mob's
+     * navigation ({@code TeleportCommand.performTeleport},
+     * {@code PiglinAi.stopWalking} from the interact packet,
+     * {@code LivingEntity.randomTeleport} / {@code /spreadplayers}). Keeping
+     * the bit there meant main could block on a nav monitor a region worker
+     * holds across an unbounded {@code ChunkBridgeWait} — main then cannot
+     * pump {@code mainThreadProcessor}, the worker's chunk future never
+     * completes, watchdog: the task-#32 shape verbatim through a door
+     * {@code recomputeOwnerSafe} does not cover.
+     *
+     * <p>Called from {@code FabroliaPathNavigationMixin.fabrolia$routedStop}
+     * ({@code @Inject} at {@code stop} HEAD, monitor-free by plugin
+     * exemption). Returns {@code true} when the stop was DEFERRED to the
+     * owner's context — the injector then cancels; {@code false} means the
+     * caller IS the owner context (or async is off) and the vanilla body
+     * runs right now. Deferral tolerance is vanilla's own: the mob keeps
+     * following its old path for at most one owner-lane drain (unit start),
+     * the same observable class as a stop under server lag; the pre-fix
+     * behavior was an unbounded block or a cross-thread unguarded write
+     * racing the owner's synchronized tick.
+     *
+     * <p>The redispatch re-enters {@code stop} in the owner's context and
+     * re-resolves ownership there — a mob that migrated (teleport is the
+     * common caller!) is chased to whoever owns it then, coalesced per nav.
+     */
+    public static boolean stopCrossContextDeferred(ServerLevel level, Mob mob, PathNavigation nav) {
+        if (mob == null || mob.isRemoved()) {
+            return false; // dead mob: the plain write is unobservable — run it
+        }
+        RegionizedServer rs = RegionScheduler.forLevel(level);
+        if (rs == null || !rs.asyncActive) {
+            return false; // sync / classic mode: vanilla call, vanilla thread
+        }
+        IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(mob.chunkPosition().pack());
+        return stopDeferred(rs, owner, nav, () -> {
+            if (!mob.isRemoved()) {
+                nav.stop();
+            }
+        });
+    }
+
+    /** Package-visible core for the regression tests (mirrors how the task-#32
+     *  graph is proven against {@link #dispatch}): routes through the SAME
+     *  proven dispatch and reports whether the vanilla body must be skipped. */
+    static boolean stopDeferred(RegionizedServer rs, IslandRegistry.PIsland owner,
+                                PathNavigation nav, Runnable deferredStop) {
+        boolean[] ranInline = new boolean[1];
+        dispatch(rs, owner, new StopKey(nav), () -> ranInline[0] = true, deferredStop);
+        return !ranInline[0];
     }
 
     /**
