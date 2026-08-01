@@ -222,7 +222,16 @@ public final class TickDomains {
         }
         long delta = targetNow - tagNow;
         int moved = 0;
-        if (delta != 0 && c.count() > 0) {
+        // LIVENESS GATE, NOT count() (task #41, Lithium audit §4.7): vanilla's
+        // count() is queue.size() + pendingTicks.size(); Lithium's is
+        // allTicks.size() — the (pos,type) DEDUP-SET cardinality. The two
+        // diverge the moment a queue holds duplicates, which unpack() can
+        // create in BOTH implementations (it schedules unchecked, bypassing the
+        // dedup set), so a container can legitimately report count()==0 with a
+        // live tick still queued. Gating the shift on it would silently skip
+        // the rebase for exactly those containers. peek() is the only
+        // implementation-agnostic liveness answer, and it is null-safe in both.
+        if (delta != 0 && c.peek() != null) {
             moved = shiftAllErased(c, delta);
         }
         tag.fabrolia$setDomain(targetId, targetGen);
@@ -307,6 +316,241 @@ public final class TickDomains {
                         t.priority(), t.subTickOrder()));
             }
             return all.size();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Task #41 — Lithium `world.tick_scheduler` containment
+    //
+    // Lithium's LevelChunkTicksMixin replaces the vanilla PriorityQueue with a
+    // Long2ReferenceAVLTreeMap of (time, priority) buckets plus a cached
+    // `nextTickQueue` head pointer and an `allTicks` dedup set. Three of its
+    // public methods behave nothing like their vanilla counterparts, and all
+    // three are reached from Fabrolia worker threads. Everything below is the
+    // container-API-level containment; the wrap sites are in
+    // {@code mixin/world/LevelChunkTicksMixin}, which delegates here so the
+    // logic can be exercised without a mixin environment
+    // (TickContainerWriteShapedApiTest).
+    //
+    // THE ONE MONITOR. Every public method of LevelChunkTicks carries
+    // ACC_SYNCHRONIZED on the target-instance monitor, because the class is
+    // listed in SyncAllMixin. That monitor is what makes Lithium's cached head
+    // pointer, its bucket map and its dedup set mutually consistent under
+    // Fabrolia's concurrent schedule()/poll(). It is load-bearing — see the
+    // comment on the SyncAllMixin entry before removing it. The helpers here
+    // take the SAME monitor explicitly rather than relying on it, because
+    // methods merged by a priority-2000 mixin are NOT seen by
+    // SynchronisePlugin.postApply and therefore never receive the blanket bit
+    // (SynchronisePlugin's own javadoc says so, naming this very class).
+    // ------------------------------------------------------------------
+
+    /** Lithium bucket-invariant violations contained by {@link #pollGuarded}.
+     *  Designed unreachable while the blanket monitor stands — any nonzero
+     *  value is a bug report, with a chunk's worth of scheduled ticks lost. */
+    public static final AtomicLong BUCKET_INVARIANT_VIOLATIONS = new AtomicLong();
+
+    /** Containers un-wedged by {@link #compact} on the recovery path. */
+    public static final AtomicLong CONTAINER_COMPACTIONS = new AtomicLong();
+
+    /** Lithium's own message from {@code updateNextTickQueue}. Matching on it
+     *  is deliberate and deliberately narrow: any OTHER IllegalStateException
+     *  out of poll() is not ours to swallow and is rethrown unchanged. */
+    private static final String LITHIUM_BUCKET_INVARIANT_MESSAGE =
+            "Next tick queue doesn't have the lowest key!";
+
+    /**
+     * IDENTITY-COMPARED sentinel predicate. {@code LevelChunkTicksMixin}'s
+     * {@code removeIf} wrap normally replaces the whole body with
+     * {@link #drainRemoveIf} (task #37 — Lithium's overwrite NPEs on
+     * partially-polled buckets). This one predicate is the exception: the wrap
+     * forwards it to the UNDERLYING implementation instead, because Lithium's
+     * {@code removeIf} is the only public operation that evicts stale-EMPTY
+     * buckets from its tree map and then re-points {@code nextTickQueue}, and
+     * that is precisely the repair a wedged container needs. Removing nothing
+     * (the predicate is constant false, and null-tolerant, so Lithium's
+     * absolute-index loop cannot NPE on a polled slot) makes the forward safe.
+     * On vanilla it is an inert scan of the PriorityQueue.
+     */
+    public static final java.util.function.Predicate<ScheduledTick<?>> COMPACT_ONLY = t -> false;
+
+    /**
+     * Implementation-level compaction: evict empty buckets and re-derive the
+     * head pointer. See {@link #COMPACT_ONLY}. No-op semantics — not one
+     * scheduled tick is added, removed or reordered on either implementation.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public static void compact(LevelChunkTicks<?> c) {
+        synchronized (c) {
+            ((LevelChunkTicks) c).removeIf((java.util.function.Predicate) COMPACT_ONLY);
+        }
+        CONTAINER_COMPACTIONS.incrementAndGet();
+    }
+
+    /**
+     * HAZARD A (Lithium audit §4.6) — {@code getAll()} is WRITE-SHAPED, and
+     * worse, it is write-shaped LAZILY.
+     *
+     * <p>Vanilla's {@code getAll()} is {@code tickQueue.stream()}: a pure read.
+     * Lithium's is {@code tickQueuesByTimeAndPriority.values().stream()
+     * .flatMap(Collection::stream)}, and {@code OrderedTickQueue.iterator()}
+     * begins with {@code sort()} → {@code removeNullsAndConsumed()} →
+     * {@code handleCompaction()}, which REALLOCATES the backing array, moves
+     * every live element to index 0 and resets {@code firstIndex = 0}. A drain
+     * in progress on that container has already advanced {@code firstIndex};
+     * resetting it under the drainer makes its next {@code poll()} re-read
+     * slots it already consumed (duplicate ticks) or skip live ones (lost
+     * ticks).
+     *
+     * <p>The laziness is why the blanket monitor does NOT cover this today.
+     * {@code Collection.spliterator()} defers {@code iterator()} until first
+     * traversal and {@code flatMap} builds the inner streams during traversal,
+     * so the compaction happens at the CALLER's terminal operation — long
+     * after the synchronized {@code getAll()} frame returned. Same shape as the
+     * lazy {@code PoiSection.getRecords} stream that made the blanket bit
+     * useless there (see the SyncAllMixin comment).
+     *
+     * <p>Fix: drain the stream into a snapshot INSIDE the monitor and hand the
+     * caller a stream over the snapshot. Callers see the same elements in the
+     * same order; what they no longer see is a live view whose traversal
+     * mutates the scheduler. {@code LevelTicks.copyAreaFrom} — the vanilla
+     * caller — already consumes it immediately, so nothing regresses.
+     */
+    public static <T> java.util.stream.Stream<ScheduledTick<T>> snapshotAll(
+            LevelChunkTicks<T> c,
+            java.util.function.Supplier<java.util.stream.Stream<ScheduledTick<T>>> raw) {
+        java.util.ArrayList<ScheduledTick<T>> snapshot = new java.util.ArrayList<>();
+        synchronized (c) {
+            raw.get().forEach(snapshot::add);
+        }
+        return snapshot.stream();
+    }
+
+    /**
+     * HAZARD A, second half — {@code pack(long)} is write-shaped too.
+     *
+     * <p>Vanilla's {@code pack} copies the queue into a fresh {@code ArrayList}
+     * and sorts the copy. Lithium's iterates each live bucket directly
+     * ({@code for (ScheduledTick<T> t : nextTickQueue)}), so it takes the same
+     * {@code iterator() → sort() → handleCompaction()} path as
+     * {@link #snapshotAll}. Unlike {@code getAll} it is EAGER — the whole
+     * iteration completes before {@code pack} returns — so a monitor really is
+     * sufficient here. It is taken explicitly because {@code pack} is called
+     * from chunk serialisation, which under c2me runs OFF the server thread,
+     * against a container a region worker may be draining.
+     *
+     * <p>Kept as a named helper rather than a bare {@code synchronized} in the
+     * mixin so that "pack is a write" is stated once, in a place a reader
+     * classifying the container API will actually find.
+     */
+    public static <T> java.util.List<net.minecraft.world.ticks.SavedTick<T>> packUnderMonitor(
+            LevelChunkTicks<T> c,
+            java.util.function.Supplier<java.util.List<net.minecraft.world.ticks.SavedTick<T>>> raw) {
+        synchronized (c) {
+            return raw.get();
+        }
+    }
+
+    /**
+     * HAZARD B (Lithium audit §4.5) — {@code updateNextTickQueue(true)} removes
+     * the map entry BEFORE it validates that it removed the right one:
+     *
+     * <pre>{@code
+     * OrderedTickQueue<T> removed = this.tickQueuesByTimeAndPriority.remove(
+     *         this.tickQueuesByTimeAndPriority.firstLongKey());
+     * if (removed != this.nextTickQueue) {
+     *     throw new IllegalStateException("Next tick queue doesn't have the lowest key!");
+     * }
+     * }</pre>
+     *
+     * By the time the guard fires the bucket is gone, and it is the bucket with
+     * the LOWEST key — the one a racing {@code schedule()} just created, which
+     * may hold live ticks. Their {@code allTicks} keys survive, so
+     * {@code hasScheduledTick} stays true at those positions forever and the
+     * blocks that gate on it (repeater, comparator, observer, fluid) never
+     * reschedule. The exception then unwinds out of {@code LevelTicks.tick}.
+     *
+     * <p>PREVENTION is the real fix and it is structural, not a catch: the
+     * violation needs {@code nextTickQueue} to stop being the minimum-key
+     * bucket, which single-threaded Lithium never produces — every path that
+     * creates a lower bucket ({@code queueTick}) re-points the head in the same
+     * breath. It becomes reachable only when a {@code schedule()} from another
+     * worker interleaves a drain's {@code poll()}, and the container monitor
+     * (see the block comment above) is what forbids that interleaving. The
+     * upstream fix — compare {@code firstLongKey()} against
+     * {@code nextTickQueue} before removing — is not reproducible from here:
+     * it needs {@code @Shadow} access to two Lithium-added private fields, and
+     * a {@code @Shadow} cannot be made conditional, so the mixin would fail to
+     * apply on a vanilla-without-Lithium install.
+     *
+     * <p>What this method adds is CONTAINMENT for the case where prevention is
+     * defeated anyway (a future mod calling {@code schedule} off-monitor, or a
+     * Lithium change). Three decisions, all deliberate:
+     *
+     * <ul>
+     *   <li><b>Recover, do not propagate.</b> Letting the ISE out of
+     *       {@code poll()} aborts the entire level's tick phase — under
+     *       Fabrolia, a region worker's whole slice — turning one chunk's
+     *       damage into every chunk's. The damage is already done when the
+     *       exception is constructed; re-throwing adds harm and repairs
+     *       nothing.</li>
+     *   <li><b>Fail loudly anyway.</b> {@link #BUCKET_INVARIANT_VIOLATIONS}
+     *       and an ERROR line with the surviving-tick count. This path is
+     *       designed unreachable; a nonzero counter is a bug report.</li>
+     *   <li><b>Un-wedge before returning.</b> Lithium leaves the emptied head
+     *       bucket wired as both {@code nextTickQueue} and the map's first key.
+     *       {@code queueTick}'s {@code updateNextTickQueue(false)} re-selects it
+     *       by {@code firstLongKey()} from then on, so {@code peek()} and
+     *       {@code poll()} answer null forever while {@code schedule()} keeps
+     *       filling {@code allTicks} — the chunk's scheduled ticks stop,
+     *       silently, until it reloads (audit §4.4). {@link #compact} evicts
+     *       the stale bucket and re-derives the head, then the poll is retried
+     *       once so the caller gets a real tick rather than a null vanilla's
+     *       {@code LevelTicks.collectTicks} would go on to dereference.</li>
+     * </ul>
+     *
+     * <p>NOT recoverable, and not pretended to be: the ticks in the destroyed
+     * bucket are gone, and their {@code allTicks} keys are unreachable through
+     * any public API (there is no enumeration of that set). Those positions
+     * stop rescheduling until the chunk reloads. The ERROR line says so and
+     * points at {@code /fabrolia regions ticks scan}.
+     *
+     * <p>CALLING SHAPE — this is the CATCH BLOCK, not the whole guard, and
+     * that is deliberate. {@code poll()} runs thousands of times per tick, so
+     * the wrap in {@code LevelChunkTicksMixin} keeps its {@code try} body bare
+     * ({@code return original.call();}) and constructs the retry supplier only
+     * inside {@code catch}. A {@code try} that never throws is free; a
+     * capturing lambda evaluated on the happy path would not be, and neither
+     * would a second monitor acquisition — the happy path takes the container
+     * monitor exactly once, from the blanket bit, as it always has. The monitor
+     * IS taken here, because the repair is several operations long.
+     */
+    public static <T> ScheduledTick<T> recoverFromBucketInvariantViolation(
+            LevelChunkTicks<T> c, IllegalStateException e,
+            java.util.function.Supplier<ScheduledTick<T>> raw) {
+        if (!LITHIUM_BUCKET_INVARIANT_MESSAGE.equals(e.getMessage())) {
+            throw e;
+        }
+        synchronized (c) {
+            BUCKET_INVARIANT_VIOLATIONS.incrementAndGet();
+            compact(c);
+            ScheduledTick<?> head = c.peek();
+            LOGGER.error("[tick-domains] Lithium bucket invariant violated in LevelChunkTicks.poll() — "
+                    + "the lowest-key bucket was REMOVED before the check failed and its scheduled ticks "
+                    + "are unrecoverable (their dedup keys survive, so those positions stop rescheduling "
+                    + "until the chunk reloads). Container un-wedged and the tick phase continued; "
+                    + "head after repair={}. This requires an off-monitor schedule() racing a drain and "
+                    + "is designed unreachable — report with logs, then run /fabrolia regions ticks scan.",
+                    head, e);
+            if (head == null) {
+                return null;
+            }
+            try {
+                return raw.get();
+            } catch (IllegalStateException again) {
+                LOGGER.error("[tick-domains] repair did not restore LevelChunkTicks.poll(); "
+                        + "container abandoned for this tick", again);
+                return null;
+            }
         }
     }
 
@@ -497,6 +741,10 @@ public final class TickDomains {
             if (!(o instanceof LevelChunkTicks<?> c)) continue;
             FabroliaTickDomain tag = (FabroliaTickDomain) (Object) c;
             if (tag.fabrolia$domainIsland() == FabroliaTickDomain.WALL) continue;
+            // REPORTING ONLY — never a gate. count() is queue+pending on
+            // vanilla but the dedup-set cardinality on Lithium (audit §4.7);
+            // the two disagree whenever a queue holds duplicates. Nothing
+            // below branches on it: every container is rebased unconditionally.
             int n = c.count();
             if (n > 0 && FlightRecorder.DEBUG) {
                 LOGGER.info("[tick-domains] collapse detail: {} chunk=[{},{}] {} island#{} -> wall ticks={}",

@@ -21,6 +21,38 @@ import org.spongepowered.asm.mixin.Mixin;
         // changeCost in the A* inner loop (up to maxVisitedNodes times per path,
         // 12k pathing mobs). Re-adding it is only defensible if a third-party mod
         // shares PathFinder instances across mobs.
+        // LevelChunkTicks: KEEP (re-affirmed 2026-08-01, task #41). This is not
+        // inertia — it is the container's ONE monitor and Lithium's
+        // world.tick_scheduler overwrite depends on it for correctness, not just
+        // for collection safety. Lithium replaces the vanilla PriorityQueue with
+        // a (time,priority) bucket tree PLUS a cached `nextTickQueue` head
+        // pointer PLUS an `allTicks` dedup set, and the invariant tying the
+        // three together ("nextTickQueue is the minimum-key bucket") is
+        // established by whichever of queueTick/poll/removeIf ran last. Each of
+        // those preserves it when run alone; nothing preserves it when a
+        // schedule() from one worker interleaves a drain's poll() on another.
+        // The three consequences, all source-verified against
+        // lithium-fabric@mc26.2-0.25.1:
+        //   §4.4 poll() on an empty-but-present head bucket returns null and
+        //        leaves it wired as both nextTickQueue and the map's first key;
+        //        queueTick re-selects it by firstLongKey() from then on, so the
+        //        chunk's scheduled ticks stop FOREVER, silently, while
+        //        hasScheduledTick keeps answering true.
+        //   §4.5 updateNextTickQueue(true) removes the first map entry BEFORE
+        //        checking it was the right one, so the guard destroys a bucket
+        //        of live ticks and then throws out of LevelTicks.tick.
+        //   §4.6 getAll()/pack() route through OrderedTickQueue.iterator() ->
+        //        sort() -> handleCompaction(), which reallocates the backing
+        //        array and resets firstIndex under a concurrent drainer.
+        // Removing this entry is a real project, not a line deletion: schedule,
+        // peek, hasScheduledTick and unpack would all need their own guard
+        // first. LevelChunkTicksMixin (priority 2000, so its handlers escape
+        // postApply and get NO blanket bit) already carries explicit monitors
+        // for the three methods above and asserts this entry is still in force
+        // at runtime — fabrolia$assertBlanketSyncOnce logs a loud ERROR if the
+        // class comes out with zero synchronized methods. TickContainer-
+        // WriteShapedApiTest#levelChunkTicksIsStillInTheBlanketSyncSet pins it
+        // at build time. Do not remove either without the other.
         LevelChunkTicks.class,
         // DynamicGraphMinFixedPoint (2026-08-01, task #40 / audit finding #1): NOT
         // the light engine — 26.2's light engine does not use this class at all.
