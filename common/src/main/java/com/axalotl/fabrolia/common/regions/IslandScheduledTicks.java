@@ -55,9 +55,26 @@ public final class IslandScheduledTicks {
 
     private IslandScheduledTicks() {}
 
-    /** Vanilla LevelTicks.CONTAINER_DRAIN_ORDER replica (compares container heads). */
+    /**
+     * Vanilla LevelTicks.CONTAINER_DRAIN_ORDER replica (compares container heads).
+     *
+     * <p>Null-tolerant, unlike vanilla's. Vanilla holds the invariant "a container
+     * only ever sits in containersToTick with a non-null peek()" because it is
+     * single-threaded; under island slicing a container can be emptied after
+     * collection by another slice or an off-slice mutator (TickDomains drains,
+     * shiftAll, c2me's off-thread pack()), and PriorityQueue re-compares on every
+     * sift — so a null head is reachable here and would NPE inside
+     * INTRA_TICK_DRAIN_ORDER. Empty containers sort LAST; the drain loop's
+     * peek-before-poll guard then skips them.
+     */
     private static Comparator<LevelChunkTicks<?>> containerOrder() {
-        return (a, b) -> ScheduledTick.INTRA_TICK_DRAIN_ORDER.compare(a.peek(), b.peek());
+        return (a, b) -> {
+            ScheduledTick<?> ha = a.peek();
+            ScheduledTick<?> hb = b.peek();
+            if (ha == null) return hb == null ? 0 : 1;
+            if (hb == null) return -1;
+            return ScheduledTick.INTRA_TICK_DRAIN_ORDER.compare(ha, hb);
+        };
     }
 
     /**
@@ -479,24 +496,55 @@ public final class IslandScheduledTicks {
         ArrayDeque<ScheduledTick<T>> toRun = new ArrayDeque<>();
         LevelChunkTicks<T> top;
         while (budget.get() > 0 && (top = containersToTick.poll()) != null) {
-            ScheduledTick<T> first = top.poll();
-            toRun.add(first);
-            budget.decrementAndGet();
-
+            // The comparison bar is read BEFORE taking top's monitor on purpose:
+            // nextBest.peek() enters a DIFFERENT container's monitor, and two
+            // slices draining crossing container pairs would give an A->B / B->A
+            // cycle (the POI DistanceTracker/PoiSection shape, task #38). Every
+            // container monitor here is therefore held alone, never nested.
             LevelChunkTicks<T> nextBest = containersToTick.peek();
             ScheduledTick<T> bar = nextBest != null ? nextBest.peek() : null;
-            while (budget.get() > 0) {
-                ScheduledTick<T> cand = top.peek();
-                if (cand == null || cand.triggerTick() > gameTime
-                        || (bar != null && ScheduledTick.INTRA_TICK_DRAIN_ORDER.compare(cand, bar) > 0)) {
-                    break;
-                }
-                top.poll();
-                toRun.add(cand);
-                budget.decrementAndGet();
-            }
 
-            ScheduledTick<T> next = top.peek();
+            ScheduledTick<T> next;
+            // Whole per-container drain under the container monitor: peek/poll
+            // pairs must be ATOMIC. Collection (above) peeked in an earlier
+            // phase, and containers are reachable off-slice — TickDomains
+            // drains (clearArea/fill), shiftAll, and c2me's off-thread pack().
+            synchronized (top) {
+                // peek-before-poll, same contract as TickDomains.drainRemoveIf:
+                // Lithium's poll() NPEs when nextTickQueue is null (empty or
+                // packed container), and — worse — on an empty-BUT-PRESENT head
+                // bucket it returns null while leaving that bucket wired as both
+                // nextTickQueue and the map's first key. queueTick's
+                // updateNextTickQueue(false) then re-selects it by firstLongKey()
+                // forever: peek/poll return null permanently, LevelTicks drops
+                // the chunk from nextTickForContainer, yet schedule() keeps
+                // filling allTicks so hasScheduledTick stays true and
+                // repeaters/observers/fluids in that chunk never reschedule.
+                // Silent, persistent, chunk-local death of all scheduled ticks
+                // until the chunk reloads. peek() is null-safe in BOTH impls.
+                ScheduledTick<T> first = top.peek() != null ? top.poll() : null;
+                if (first == null) {
+                    // Drained between collection and here by another slice or an
+                    // off-slice mutator. Its nextTick entry was already removed
+                    // at collection time; nothing left owed for this container.
+                    continue;
+                }
+                toRun.add(first);
+                budget.decrementAndGet();
+
+                while (budget.get() > 0) {
+                    ScheduledTick<T> cand = top.peek();
+                    if (cand == null || cand.triggerTick() > gameTime
+                            || (bar != null && ScheduledTick.INTRA_TICK_DRAIN_ORDER.compare(cand, bar) > 0)) {
+                        break;
+                    }
+                    top.poll();
+                    toRun.add(cand);
+                    budget.decrementAndGet();
+                }
+
+                next = top.peek();
+            }
             if (next != null) {
                 if (next.triggerTick() <= gameTime && budget.get() > 0) {
                     containersToTick.add(top);
