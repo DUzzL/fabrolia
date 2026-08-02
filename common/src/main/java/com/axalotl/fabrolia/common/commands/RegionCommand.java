@@ -474,6 +474,26 @@ public final class RegionCommand {
                     spawnSnapshotReport(ctx);
                     return 1;
                 })));
+        // Vanilla checks the local per-player cap ONCE per chunk pass and then
+        // completes a pack of up to four; the parallel path re-checks it per
+        // candidate, which bounds the overshoot but starves a farm that sits AT
+        // the cap. Flip it to restore vanilla pack completion; measure with
+        // /fabrolia regions debug spawnrate.
+        regionsCmd.then(literal("localcaprecheck")
+                .requires(PlatformPermission.require("command.regions.toggle", 4))
+                .executes(ctx -> { localCapRecheckReport(ctx); return 1; })
+                .then(literal("on").executes(ctx -> {
+                    FabroliaConfig.fabroliaSpawnLocalCapRecheck = true;
+                    PlatformUtils.saveConfig();
+                    localCapRecheckReport(ctx);
+                    return 1;
+                }))
+                .then(literal("off").executes(ctx -> {
+                    FabroliaConfig.fabroliaSpawnLocalCapRecheck = false;
+                    PlatformUtils.saveConfig();
+                    localCapRecheckReport(ctx);
+                    return 1;
+                })));
         regionsCmd.then(literal("tps").executes(ctx -> {
                     try {
                         boolean on = com.axalotl.fabrolia.common.regions.TpsHud.toggle(
@@ -1016,6 +1036,18 @@ public final class RegionCommand {
      * the completed-wave reroute is starving the cap and
      * {@code /fabrolia regions spawnsnapshot off} is the immediate mitigation.
      */
+    private static void localCapRecheckReport(CommandContext<CommandSourceStack> ctx) {
+        send(ctx, "local mob-cap recheck: ",
+                FabroliaConfig.fabroliaSpawnLocalCapRecheck
+                        ? "ON (per candidate) — bounds the parallel overshoot, but a farm sitting AT "
+                          + "the local cap spawns one mob at a time instead of completing a pack"
+                        : "off (vanilla) — the local cap is checked once per chunk pass and the pack "
+                          + "completes; parallel chunk passes can overshoot the local cap again",
+                false);
+        send(ctx, "measure with: ", "/fabrolia regions debug spawnrate (checks vs accepts per category)",
+                false);
+    }
+
     private static void spawnSnapshotReport(CommandContext<CommandSourceStack> ctx) {
         StringBuilder sb = new StringBuilder(160);
         sb.append(FabroliaConfig.fabroliaSpawnProximitySnapshot

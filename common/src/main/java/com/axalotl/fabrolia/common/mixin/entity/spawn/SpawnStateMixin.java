@@ -69,6 +69,7 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
         if (com.axalotl.fabrolia.common.config.FabroliaConfig.disabled
                 || !com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaSpawn
+                || !com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaSpawnLocalCapRecheck
                 || ParallelProcessor.executor == null) {
             return;
         }

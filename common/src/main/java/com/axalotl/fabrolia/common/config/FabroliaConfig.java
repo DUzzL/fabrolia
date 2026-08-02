@@ -208,6 +208,24 @@ public class FabroliaConfig {
      */
     public static volatile boolean fabroliaSpawnProximitySnapshot = true;
 
+    /**
+     * Re-check the LOCAL per-player mob cap per spawn CANDIDATE instead of once
+     * per chunk pass (task #32, the cod runaway). It exists because Fabrolia runs
+     * chunk passes in parallel: every eligible chunk reads the count in the same
+     * open window, approves together, and a whole neighbourhood's packs land at
+     * once (measured 2-7x the local cap).
+     *
+     * <p>The cost is under-spawning relative to vanilla at a farm that sits AT
+     * the local cap: vanilla checks once and then completes a pack of up to four,
+     * this rejects each candidate after the cap fills, so pack spawning degrades
+     * to a trickle. Turning it off restores vanilla's complete-the-pack behaviour
+     * exactly — at the price of the parallel overshoot coming back.
+     *
+     * <p>/fabrolia regions localcaprecheck on|off ; measure with
+     * /fabrolia regions debug spawnrate (checks vs accepts per category).
+     */
+    public static volatile boolean fabroliaSpawnLocalCapRecheck = true;
+
     public static List<String> defaultCrossDimLinkedPairs() {
         return new ArrayList<>(List.of("minecraft:overworld=minecraft:the_nether"));
     }
