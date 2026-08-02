@@ -1,6 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.world;
 
 import com.axalotl.fabrolia.api.utils.ConcurrentCollections;
+import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.api.fastutil.ConcurrentLongLinkedOpenHashSet;
 import com.axalotl.fabrolia.common.regions.CompletedPlayerProximityView;
 import com.axalotl.fabrolia.common.regions.CompletedSimulationView;
@@ -119,8 +120,15 @@ public abstract class DistanceManagerMixin {
     private void fabrolia$noEagerWaveOnReads(@Coerce Object tracker, Operation<Void> original) {
         // Deliberately NOT calling original: readers must never drive (or block
         // on) the propagator. Consolidation already ran this tick on main before
-        // any consumer — staleness bound is one wave, the CompletedSimulationView
-        // class of tolerance.
+        // any consumer (DistanceManager.runAllUpdates drives
+        // naturalSpawnChunkCounter first of the four trackers) — staleness bound
+        // is one wave, the CompletedSimulationView class of tolerance.
+        //
+        // Kill switch: this sits directly under the mob cap, so it must be
+        // revertible on a live server without a restart. See the config field.
+        if (!FabroliaConfig.fabroliaSpawnProximitySnapshot) {
+            original.call(tracker);
+        }
     }
 
     @WrapOperation(
@@ -128,7 +136,9 @@ public abstract class DistanceManagerMixin {
             at = @At(value = "INVOKE",
                     target = "Lnet/minecraft/server/level/DistanceManager$FixedPlayerDistanceChunkTracker;getLevel(J)I"))
     private int fabrolia$completedProximityLevel(@Coerce Object tracker, long pos, Operation<Integer> original) {
-        return ((CompletedPlayerProximityView) tracker).fabrolia$completedLevel(pos);
+        return FabroliaConfig.fabroliaSpawnProximitySnapshot
+                ? ((CompletedPlayerProximityView) tracker).fabrolia$completedLevel(pos)
+                : original.call(tracker, pos);
     }
 
     /** getNaturalSpawnChunkCount reads {@code chunks.size()} (mob-cap scaling),
@@ -141,6 +151,8 @@ public abstract class DistanceManagerMixin {
                     target = "Lnet/minecraft/server/level/DistanceManager$FixedPlayerDistanceChunkTracker;chunks:Lit/unimi/dsi/fastutil/longs/Long2ByteMap;",
                     opcode = Opcodes.GETFIELD))
     private Long2ByteMap fabrolia$completedProximityChunks(@Coerce Object tracker, Operation<Long2ByteMap> original) {
-        return ((CompletedPlayerProximityView) tracker).fabrolia$completedChunks();
+        return FabroliaConfig.fabroliaSpawnProximitySnapshot
+                ? ((CompletedPlayerProximityView) tracker).fabrolia$completedChunks()
+                : original.call(tracker);
     }
 }

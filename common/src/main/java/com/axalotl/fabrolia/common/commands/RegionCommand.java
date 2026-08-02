@@ -454,6 +454,26 @@ public final class RegionCommand {
                                         return 1;
                                     } catch (Exception e) { send(ctx, "name: ", "player required", false); return 0; }
                                 }))));
+        // Mob-cap A/B switch. getNaturalSpawnChunkCount scales every category's
+        // cap by the spawnable-chunk count, so a snapshot smaller than the live
+        // map slows or stops spawning with no error anywhere. Printing the count
+        // per level with the snapshot ON and then OFF settles in two commands
+        // whether the reroute is responsible.
+        regionsCmd.then(literal("spawnsnapshot")
+                .requires(PlatformPermission.require("command.regions.toggle", 4))
+                .executes(ctx -> { spawnSnapshotReport(ctx); return 1; })
+                .then(literal("on").executes(ctx -> {
+                    FabroliaConfig.fabroliaSpawnProximitySnapshot = true;
+                    PlatformUtils.saveConfig();
+                    spawnSnapshotReport(ctx);
+                    return 1;
+                }))
+                .then(literal("off").executes(ctx -> {
+                    FabroliaConfig.fabroliaSpawnProximitySnapshot = false;
+                    PlatformUtils.saveConfig();
+                    spawnSnapshotReport(ctx);
+                    return 1;
+                })));
         regionsCmd.then(literal("tps").executes(ctx -> {
                     try {
                         boolean on = com.axalotl.fabrolia.common.regions.TpsHud.toggle(
@@ -989,6 +1009,35 @@ public final class RegionCommand {
     // ------------------------------------------------------------------
     // messaging helpers — same shape as ConfigCommand.sendMessage
     // ------------------------------------------------------------------
+
+    /**
+     * Per-level spawnable-chunk count — the number the mob cap is scaled by.
+     * Run it with the snapshot on, then off: if the counts differ materially,
+     * the completed-wave reroute is starving the cap and
+     * {@code /fabrolia regions spawnsnapshot off} is the immediate mitigation.
+     */
+    private static void spawnSnapshotReport(CommandContext<CommandSourceStack> ctx) {
+        StringBuilder sb = new StringBuilder(160);
+        sb.append(FabroliaConfig.fabroliaSpawnProximitySnapshot
+                ? "ON (completed-wave snapshot)" : "off (vanilla inline wave)");
+        var server = ctx.getSource().getServer();
+        for (net.minecraft.server.level.ServerLevel sl : server.getAllLevels()) {
+            int spawnable;
+            try {
+                spawnable = sl.getChunkSource().chunkMap.getDistanceManager().getNaturalSpawnChunkCount();
+            } catch (Throwable t) {
+                spawnable = -1;
+            }
+            sb.append("\n  ").append(sl.dimension().identifier())
+              .append(": spawnableChunks=").append(spawnable);
+            if (spawnable >= 0) {
+                // Vanilla scales every category cap by chunks/289.
+                sb.append(" (cap scale x").append(String.format(java.util.Locale.ROOT, "%.2f",
+                        spawnable / 289.0)).append(')');
+            }
+        }
+        send(ctx, "spawn proximity: ", sb.toString(), false);
+    }
 
     private static void send(CommandContext<CommandSourceStack> ctx, String head, String highlight, boolean broadcast) {
         MutableComponent message = prefix.copy()

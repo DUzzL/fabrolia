@@ -193,6 +193,21 @@ public class FabroliaConfig {
      *  refuses every other entry at parse time. */
     public static volatile List<String> crossDimLinkedPairs = defaultCrossDimLinkedPairs();
 
+    /**
+     * Spawn-proximity reads answer from the last COMPLETED player-distance wave
+     * instead of driving the propagator inline (task #40). Kill switch, because
+     * this sits directly under the mob cap: {@code getNaturalSpawnChunkCount}
+     * scales every category's cap by the spawnable-chunk count, so if the
+     * snapshot were ever smaller than the live map, spawning would slow or stop
+     * with no error anywhere. Turning it off restores vanilla's inline
+     * {@code runAllUpdates()} on the three readers exactly — which is also how
+     * to A/B a suspected mob-cap regression on a live server in one command,
+     * without a restart or a rebuild.
+     *
+     * <p>/fabrolia regions spawnsnapshot on|off
+     */
+    public static volatile boolean fabroliaSpawnProximitySnapshot = true;
+
     public static List<String> defaultCrossDimLinkedPairs() {
         return new ArrayList<>(List.of("minecraft:overworld=minecraft:the_nether"));
     }
