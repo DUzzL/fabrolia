@@ -209,6 +209,24 @@ public class FabroliaConfig {
     public static volatile boolean fabroliaSpawnProximitySnapshot = true;
 
     /**
+     * Let the three spawn-proximity readers drive the player-distance wave
+     * inline, the way vanilla does. Vanilla=true; Fabrolia defaults to FALSE
+     * because that inline wave is the load-bearing half of task #40: a spawn
+     * worker calling hasPlayersNearby through ChunkMap.getPlayersCloseForSpawning
+     * parks on an unbounded relaxation wave WHILE HOLDING the ChunkMap monitor,
+     * convoying every other worker in ChunkMap.move behind it, and the
+     * unsynchronized door anyPlayerCloseEnoughForSpawning let a worker run the
+     * wave itself against concurrent playersPerChunk rehashes.
+     *
+     * <p>Split from {@link #fabroliaSpawnProximitySnapshot} deliberately: the
+     * wave drop is the correctness fix, the snapshot is only a coherence
+     * refinement on top of it. Turning the snapshot off while leaving this false
+     * reads the LIVE (already concurrent) map with no copy and no staleness —
+     * the cheapest configuration that still keeps the convoy closed.
+     */
+    public static volatile boolean fabroliaSpawnProximityInlineWave = false;
+
+    /**
      * Re-check the LOCAL per-player mob cap per spawn CANDIDATE instead of once
      * per chunk pass (task #32, the cod runaway). It exists because Fabrolia runs
      * chunk passes in parallel: every eligible chunk reads the count in the same

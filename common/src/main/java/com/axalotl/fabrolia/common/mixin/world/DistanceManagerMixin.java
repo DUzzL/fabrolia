@@ -126,7 +126,7 @@ public abstract class DistanceManagerMixin {
         //
         // Kill switch: this sits directly under the mob cap, so it must be
         // revertible on a live server without a restart. See the config field.
-        if (!FabroliaConfig.fabroliaSpawnProximitySnapshot) {
+        if (FabroliaConfig.fabroliaSpawnProximityInlineWave) {
             original.call(tracker);
         }
     }

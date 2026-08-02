@@ -473,6 +473,24 @@ public final class RegionCommand {
                     PlatformUtils.saveConfig();
                     spawnSnapshotReport(ctx);
                     return 1;
+                }))
+                .then(literal("vanilla").executes(ctx -> {
+                    // Full vanilla: readers drive the wave AND read the live map.
+                    // Reopens the convoy — for A/B only.
+                    FabroliaConfig.fabroliaSpawnProximitySnapshot = false;
+                    FabroliaConfig.fabroliaSpawnProximityInlineWave = true;
+                    PlatformUtils.saveConfig();
+                    spawnSnapshotReport(ctx);
+                    return 1;
+                }))
+                .then(literal("cheap").executes(ctx -> {
+                    // Wave stays off main-only (convoy closed), reads go to the
+                    // live concurrent map: no copy, no staleness.
+                    FabroliaConfig.fabroliaSpawnProximitySnapshot = false;
+                    FabroliaConfig.fabroliaSpawnProximityInlineWave = false;
+                    PlatformUtils.saveConfig();
+                    spawnSnapshotReport(ctx);
+                    return 1;
                 })));
         // Vanilla checks the local per-player cap ONCE per chunk pass and then
         // completes a pack of up to four; the parallel path re-checks it per
@@ -1051,7 +1069,12 @@ public final class RegionCommand {
     private static void spawnSnapshotReport(CommandContext<CommandSourceStack> ctx) {
         StringBuilder sb = new StringBuilder(160);
         sb.append(FabroliaConfig.fabroliaSpawnProximitySnapshot
-                ? "ON (completed-wave snapshot)" : "off (vanilla inline wave)");
+                        ? "snapshot=ON (completed-wave copy)"
+                        : "snapshot=off (live concurrent map, no copy, no staleness)")
+          .append(FabroliaConfig.fabroliaSpawnProximityInlineWave
+                        ? "  inlineWave=ON (vanilla; readers drive the wave — reopens the "
+                          + "ChunkMap-monitor convoy)"
+                        : "  inlineWave=off (waves run only in DistanceManager.runAllUpdates)");
         var server = ctx.getSource().getServer();
         for (net.minecraft.server.level.ServerLevel sl : server.getAllLevels()) {
             int spawnable;
