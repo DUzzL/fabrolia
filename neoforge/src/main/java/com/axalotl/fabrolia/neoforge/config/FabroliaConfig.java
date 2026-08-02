@@ -28,6 +28,7 @@ public class FabroliaConfig {
 
     // ── Fabrolia subsystems ────────────────────────────────────────────────
     private static final ModConfigSpec.BooleanValue enableFabroliaSpawn;
+    private static final ModConfigSpec.BooleanValue fabroliaSpawnLocalCapReservation;
     private static final ModConfigSpec.BooleanValue enableFabroliaRandomTicks;
     private static final ModConfigSpec.BooleanValue enableFabroliaChunkSend;
     private static final ModConfigSpec.BooleanValue enableFabroliaDespawn;
@@ -79,6 +80,8 @@ public class FabroliaConfig {
 
         enableFabroliaSpawn = BUILDER.comment("Fabrolia mob spawning (parallel candidate generation + serial cap claim). Profile-validated 2026-06-08.")
                 .define("enableFabroliaSpawn", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaSpawn);
+        fabroliaSpawnLocalCapReservation = BUILDER.comment("Atomic pack reservation at spawn chunk-pass approval (local per-player mob cap): parallel chunk passes immediately see approved packs' slots taken, so overshoot stays ~ cap + one pack while packs still complete like vanilla. false = vanilla plain approval (packs complete, parallel overshoot window returns). Runtime: /fabrolia regions localcapreserve on|off.")
+                .define("fabroliaSpawnLocalCapReservation", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaSpawnLocalCapReservation);
         enableFabroliaRandomTicks = BUILDER.comment("Fabrolia random block ticks (parallel per-chunk). Default ON.")
                 .define("enableFabroliaRandomTicks", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaRandomTicks);
         enableFabroliaChunkSend = BUILDER.comment("Pre-build ClientboundLevelChunkWithLightPacket on the worker pool during PlayerChunkSender.sendNextChunks. Removes main-thread cost of chunk packet construction on join bursts.")
@@ -155,6 +158,7 @@ public class FabroliaConfig {
         com.axalotl.fabrolia.common.config.FabroliaConfig.threadPriority = threadPriority.get();
 
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaSpawn = enableFabroliaSpawn.get();
+        com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaSpawnLocalCapReservation = fabroliaSpawnLocalCapReservation.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaRandomTicks = enableFabroliaRandomTicks.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaChunkSend = enableFabroliaChunkSend.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaDespawn = enableFabroliaDespawn.get();
@@ -195,6 +199,7 @@ public class FabroliaConfig {
         threadPriority.set(com.axalotl.fabrolia.common.config.FabroliaConfig.threadPriority);
 
         enableFabroliaSpawn.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaSpawn);
+        fabroliaSpawnLocalCapReservation.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaSpawnLocalCapReservation);
         enableFabroliaRandomTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaRandomTicks);
         enableFabroliaChunkSend.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaChunkSend);
         enableFabroliaDespawn.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaDespawn);

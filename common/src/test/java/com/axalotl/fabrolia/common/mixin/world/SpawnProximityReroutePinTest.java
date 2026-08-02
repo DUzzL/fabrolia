@@ -3,10 +3,8 @@ package com.axalotl.fabrolia.common.mixin.world;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
@@ -21,24 +19,33 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Task #40 (SyncAll audit finding #1) pins for the spawn-proximity reroute:
+ * Task #40 (SyncAll audit finding #1) pins for the spawn-proximity wave drop:
  * vanilla's three spawn-proximity readers ({@code hasPlayersNearby},
  * {@code getNaturalSpawnChunkCount}, {@code getSpawnCandidateChunks}) used to
  * RUN the {@code naturalSpawnChunkCounter} propagation wave inline — under the
  * {@code DynamicGraphMinFixedPoint} blanket monitor, from spawn workers, while
  * holding the ChunkMap monitor (convoy; plus the unsynchronized
  * {@code anyPlayerCloseEnoughForSpawning} door racing {@code playersPerChunk}
- * rehashes). {@code DistanceManagerMixin} reroutes them onto the completed-wave
- * snapshot published by {@code FixedPlayerDistanceChunkTrackerMixin}.
+ * rehashes). {@code DistanceManagerMixin} drops the wave INVOKE from the
+ * readers (waves run only inside {@code DistanceManager.runAllUpdates},
+ * main-only) and the readers read the LIVE concurrent tracker map installed by
+ * {@code FixedPlayerDistanceChunkTrackerMixin}.
+ *
+ * <p>The completed-wave SNAPSHOT that used to sit between the readers and the
+ * map was removed 2026-08-02: with the map concurrent, a mid-wave read's worst
+ * case is one transient answer on one spawn check for one tick (self-healing),
+ * while the snapshot paid a full map copy per changed wave and a wave of
+ * staleness directly under the mob cap. These pins keep it out.
  *
  * <p>Two pin layers, because mixins do not apply in unit tests:
  * <ul>
- *   <li><b>Vanilla bytecode</b> — the exact seams the {@code @WrapOperation}s
- *       bind to must still exist in the shipped {@code DistanceManager};
- *       if an MC update reshapes them, this fails at build time, not as a
- *       silently-unapplied wrap in production.</li>
- *   <li><b>Mixin source</b> — the reroute itself must not be quietly reverted
- *       (each wrap re-opens a door of the convoy / AIOOBE class).</li>
+ *   <li><b>Vanilla bytecode</b> — the exact wave-INVOKE seams the no-op
+ *       {@code @WrapOperation} binds to must still exist in the shipped
+ *       {@code DistanceManager}; if an MC update reshapes them, this fails at
+ *       build time, not as a silently-unapplied wrap in production.</li>
+ *   <li><b>Mixin source</b> — the wave drop must not be quietly reverted
+ *       (reopens the convoy / AIOOBE class) and the snapshot must not quietly
+ *       return (reintroduces the copy + the staleness under the cap).</li>
  * </ul>
  */
 class SpawnProximityReroutePinTest {
@@ -81,18 +88,6 @@ class SpawnProximityReroutePinTest {
         return false;
     }
 
-    private static boolean readsTrackerChunksField(MethodNode m) {
-        for (AbstractInsnNode insn = m.instructions.getFirst(); insn != null; insn = insn.getNext()) {
-            if (insn instanceof FieldInsnNode fi
-                    && fi.getOpcode() == Opcodes.GETFIELD
-                    && fi.owner.equals(TRACKER) && fi.name.equals("chunks")
-                    && fi.desc.equals("Lit/unimi/dsi/fastutil/longs/Long2ByteMap;")) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     @Test
     void vanillaSeamsTheWrapsBindToStillExist() throws IOException {
         ClassNode dm = load("/net/minecraft/server/level/DistanceManager.class");
@@ -101,21 +96,15 @@ class SpawnProximityReroutePinTest {
                 "hasPlayersNearby", "getNaturalSpawnChunkCount", "getSpawnCandidateChunks"}) {
             assertTrue(callsTrackerMethod(method(dm, reader), "runAllUpdates", "()V"),
                     reader + " must still contain the eager-wave INVOKE the no-op wrap "
-                            + "removes — if vanilla reshaped it, re-audit the reroute");
+                            + "removes — if vanilla reshaped it, re-audit the wave drop");
         }
-        assertTrue(callsTrackerMethod(method(dm, "hasPlayersNearby"), "getLevel", "(J)I"),
-                "hasPlayersNearby must still read the tracker level via getLevel(J)I "
-                        + "(snapshot-read wrap target)");
-        assertTrue(readsTrackerChunksField(method(dm, "getNaturalSpawnChunkCount")),
-                "getNaturalSpawnChunkCount must still GETFIELD tracker.chunks "
-                        + "(snapshot-map wrap target)");
-        assertTrue(readsTrackerChunksField(method(dm, "getSpawnCandidateChunks")),
-                "getSpawnCandidateChunks must still GETFIELD tracker.chunks "
-                        + "(snapshot-map wrap target)");
+        // The readers' data accesses (getLevel / chunks) are plain live-map
+        // reads now — no wrap binds to them, so no seam pin is needed; only
+        // the wave INVOKE above is load-bearing.
     }
 
     @Test
-    void rerouteAndSnapshotPublicationAreWired() throws IOException {
+    void waveDropIsWiredAndSnapshotStaysRemoved() throws IOException {
         Path dmMixin = findSource(
                 "src/main/java/com/axalotl/fabrolia/common/mixin/world/DistanceManagerMixin.java");
         Assumptions.assumeTrue(dmMixin != null, "source tree not available");
@@ -127,29 +116,29 @@ class SpawnProximityReroutePinTest {
         for (String reader : new String[]{
                 "\"hasPlayersNearby\"", "\"getNaturalSpawnChunkCount\"", "\"getSpawnCandidateChunks\""}) {
             assertTrue(src.contains(reader),
-                    reader + " must be covered by the reroute — each uncovered reader "
+                    reader + " must be covered by the wave drop — each uncovered reader "
                             + "is an open door back into the wave");
         }
-        assertFalse(src.matches("(?s).*fabrolia\\$noEagerWaveOnReads.{0,600}?original\\.call.*"),
-                "the no-op wrap must NOT call original — readers must never drive "
-                        + "the propagator");
-        assertTrue(src.contains("fabrolia$completedProximityLevel")
-                        && src.contains("fabrolia$completedProximityChunks"),
-                "level/size/keySet reads must come from the completed-wave snapshot, "
-                        + "not the propagator's live working map (mid-wave entries are "
-                        + "transient and setLevel remove()s past-maxDistance chunks)");
+        assertFalse(src.matches("(?s).*fabrolia\\$noEagerWaveOnReads.{0,900}?original\\.call.*"),
+                "the no-op wrap must NOT call original (not even behind a flag) — readers "
+                        + "must never drive the propagator; the wave drop is unconditional");
+        assertFalse(src.contains("CompletedPlayerProximityView")
+                        && src.contains("fabrolia$completedProximityLevel"),
+                "the proximity snapshot reroute is back — it pays a map copy per changed "
+                        + "wave and adds a wave of staleness directly under the mob cap; the "
+                        + "live map is concurrent, reads are already safe");
 
         Path trackerMixin = findSource(
                 "src/main/java/com/axalotl/fabrolia/common/mixin/server/FixedPlayerDistanceChunkTrackerMixin.java");
         Assumptions.assumeTrue(trackerMixin != null, "source tree not available");
         String tsrc = Files.readString(trackerMixin);
-        assertTrue(tsrc.contains("volatile Long2ByteOpenHashMap fabrolia$completedChunks"),
-                "snapshot must be published through a volatile (release fence for "
-                        + "worker readers)");
-        assertTrue(tsrc.matches("(?s).*method\\s*=\\s*\"runAllUpdates\",\\s*at\\s*=\\s*@At\\(\"RETURN\"\\).*"),
-                "snapshot must republish at runAllUpdates RETURN — completed waves only");
-        assertTrue(tsrc.contains("setLevel(JI)V"),
-                "the dirty mark must ride setLevel, the single mutation point");
+        assertTrue(tsrc.contains("Long2ByteConcurrentHashMap"),
+                "the tracker's chunks map must stay concurrent — it is the whole basis for "
+                        + "reading it live from spawn workers");
+        assertFalse(tsrc.contains("fabrolia$completedChunks"),
+                "the completed-wave snapshot publication is back on the tracker — with the "
+                        + "concurrent live map it is a pure copy-per-wave cost plus staleness "
+                        + "under the mob cap; keep it removed");
     }
 
     /** BinaryHeap left the SyncAll set on 2026-08-01 (audit #5: pure leaf,

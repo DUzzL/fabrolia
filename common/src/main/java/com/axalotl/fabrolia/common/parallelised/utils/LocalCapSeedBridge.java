@@ -25,4 +25,21 @@ public final class LocalCapSeedBridge {
     public static final ThreadLocal<Boolean> SEED_BYPASS = new ThreadLocal<>();
 
     public static final MobCategory[] CATS = MobCategory.values();
+
+    /** Per-thread scratch for the pack-reservation near-player walk — one
+     *  ThreadLocal (never removed, grow-only, overwritten each use) so the
+     *  approval path allocates nothing per chunk pass. Slots past the current
+     *  call's count may retain last use's small AtomicIntegerArray refs until
+     *  overwritten — bounded (≤ array length) and deliberate. */
+    private static final ThreadLocal<java.util.concurrent.atomic.AtomicIntegerArray[]> RESERVE_SCRATCH =
+            ThreadLocal.withInitial(() -> new java.util.concurrent.atomic.AtomicIntegerArray[8]);
+
+    public static java.util.concurrent.atomic.AtomicIntegerArray[] reserveScratch(int min) {
+        java.util.concurrent.atomic.AtomicIntegerArray[] a = RESERVE_SCRATCH.get();
+        if (a.length < min) {
+            a = new java.util.concurrent.atomic.AtomicIntegerArray[Math.max(min, a.length * 2)];
+            RESERVE_SCRATCH.set(a);
+        }
+        return a;
+    }
 }

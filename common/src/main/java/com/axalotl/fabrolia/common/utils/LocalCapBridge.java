@@ -45,6 +45,30 @@ public final class LocalCapBridge {
         void addMob(long handle, int categoryOrdinal, int chunkX, int chunkZ);
 
         void free(long handle);
+
+        /** Pack-reservation capability probe. While local-cap pack reservation
+         *  is enabled (default), an arena is only BUILT when this returns true —
+         *  a reservation-blind provider keeps the (fully reservation-capable)
+         *  Java path instead of silently reopening the parallel local-cap
+         *  window. Implementations must make {@link #tryReservePack} /
+         *  {@link #releasePack} atomic against concurrent canSpawn/addMob. */
+        default boolean supportsPackReservation() {
+            return false;
+        }
+
+        /** Atomic fused check+reserve, the native twin of
+         *  {@code LocalCapPackReservation.tryReserve}: ∃ near player with room
+         *  (vanilla canSpawn) ⇒ reserve {@code count} slots on EVERY near
+         *  player and return 1; no room ⇒ leave counts unchanged, return 0;
+         *  -1 = unsupported/error (caller falls back to the Java maps). */
+        default int tryReservePack(long handle, int categoryOrdinal, int chunkX, int chunkZ, int count) {
+            return -1;
+        }
+
+        /** Return an unconsumed reservation made by {@link #tryReservePack}
+         *  (−{@code count} on every near player of the chunk). */
+        default void releasePack(long handle, int categoryOrdinal, int chunkX, int chunkZ, int count) {
+        }
     }
 
     private static volatile Provider provider;

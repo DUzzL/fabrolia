@@ -139,6 +139,112 @@ public abstract class LocalMobCapCalculatorMixin implements com.axalotl.fabrolia
         }
     }
 
+    /** Chunk-pass approval fused with an atomic pack reservation (task #32
+     *  endgame — replaces the per-candidate recheck that starved farms at the
+     *  cap; algorithm + bound argument in {@link
+     *  com.axalotl.fabrolia.common.parallelised.utils.LocalCapPackReservation}).
+     *
+     *  <p>Routing mirrors {@code canSpawn}/{@code addMob}: arena handle
+     *  attached → native (the arena is only BUILT when the provider declares
+     *  {@code supportsPackReservation} — see ParallelSpawnHelper — so a
+     *  reservation-blind provider simply keeps the Java path with its full
+     *  replay seed); handle 0 / provider gone / provider error → the Java
+     *  shadow maps, the same fallback canSpawn takes. */
+    @Override
+    public int fabrolia$tryReservePack(long packedChunk, int categoryOrdinal, int pack) {
+        long h = this.fabrolia$capHandle;
+        if (h != 0L) {
+            com.axalotl.fabrolia.common.utils.LocalCapBridge.Provider p =
+                    com.axalotl.fabrolia.common.utils.LocalCapBridge.provider();
+            if (p != null) {
+                java.util.concurrent.atomic.AtomicInteger flight = fabrolia$capFlight;
+                if (flight != null) flight.incrementAndGet();
+                try {
+                    int r = p.tryReservePack(h, categoryOrdinal,
+                            ChunkPos.getX(packedChunk), ChunkPos.getZ(packedChunk), pack);
+                    if (r > 0) {
+                        return pack | com.axalotl.fabrolia.api.spawn.FabroliaLocalCapView.FABROLIA_NATIVE_RESERVATION;
+                    }
+                    if (r == 0) {
+                        return 0;
+                    }
+                    // r < 0: provider declares no support mid-session — Java fallback below.
+                } catch (Throwable t) {
+                    com.axalotl.fabrolia.common.utils.LocalCapBridge.disable(t);
+                } finally {
+                    if (flight != null) flight.decrementAndGet();
+                }
+            }
+        }
+        java.util.List<ServerPlayer> players = this.getPlayersNear(
+                new ChunkPos(ChunkPos.getX(packedChunk), ChunkPos.getZ(packedChunk)));
+        int n = players.size();
+        if (n == 0) {
+            return 0; // vanilla canSpawn: no near player → false
+        }
+        java.util.concurrent.atomic.AtomicIntegerArray[] scratch =
+                com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge.reserveScratch(n);
+        for (int i = 0; i < n; i++) {
+            LocalMobCapCalculator.MobCounts mc = this.playerMobCounts
+                    .computeIfAbsent(players.get(i), k -> new LocalMobCapCalculator.MobCounts());
+            scratch[i] = ((com.axalotl.fabrolia.api.spawn.FabroliaMobCountsView) (Object) mc)
+                    .fabrolia$countsArray();
+        }
+        int cap = com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge
+                .CATS[categoryOrdinal].getMaxInstancesPerChunk();
+        return com.axalotl.fabrolia.common.parallelised.utils.LocalCapPackReservation
+                .tryReserve(scratch, n, categoryOrdinal, cap, pack) ? pack : 0;
+    }
+
+    @Override
+    public void fabrolia$releasePack(long packedChunk, int categoryOrdinal, int token) {
+        int pack = token & ~com.axalotl.fabrolia.api.spawn.FabroliaLocalCapView.FABROLIA_NATIVE_RESERVATION;
+        if (pack <= 0) {
+            return;
+        }
+        if ((token & com.axalotl.fabrolia.api.spawn.FabroliaLocalCapView.FABROLIA_NATIVE_RESERVATION) != 0) {
+            long h = this.fabrolia$capHandle;
+            com.axalotl.fabrolia.common.utils.LocalCapBridge.Provider p =
+                    com.axalotl.fabrolia.common.utils.LocalCapBridge.provider();
+            if (h != 0L && p != null) {
+                java.util.concurrent.atomic.AtomicInteger flight = fabrolia$capFlight;
+                if (flight != null) flight.incrementAndGet();
+                try {
+                    p.releasePack(h, categoryOrdinal,
+                            ChunkPos.getX(packedChunk), ChunkPos.getZ(packedChunk), pack);
+                } catch (Throwable t) {
+                    com.axalotl.fabrolia.common.utils.LocalCapBridge.disable(t);
+                } finally {
+                    if (flight != null) flight.decrementAndGet();
+                }
+            }
+            // Detached mid-pack (next-tick build already ran): the arena is
+            // dying; a leaked reservation only over-counts for stale-cookie
+            // readers until the free — conservative and tick-bounded. NEVER
+            // fall through to the Java maps for a native reservation (path
+            // mismatch would drive Java counts negative).
+            return;
+        }
+        java.util.List<ServerPlayer> players = this.getPlayersNear(
+                new ChunkPos(ChunkPos.getX(packedChunk), ChunkPos.getZ(packedChunk)));
+        int n = players.size();
+        if (n == 0) {
+            return;
+        }
+        java.util.concurrent.atomic.AtomicIntegerArray[] scratch =
+                com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge.reserveScratch(n);
+        int m = 0;
+        for (int i = 0; i < n; i++) {
+            LocalMobCapCalculator.MobCounts mc = this.playerMobCounts.get(players.get(i));
+            if (mc != null) {
+                scratch[m++] = ((com.axalotl.fabrolia.api.spawn.FabroliaMobCountsView) (Object) mc)
+                        .fabrolia$countsArray();
+            }
+        }
+        com.axalotl.fabrolia.common.parallelised.utils.LocalCapPackReservation
+                .release(scratch, m, categoryOrdinal, pack);
+    }
+
     /** Live probe for /fabrolia regions debug spawncap (task #32): which layer
      *  approves a spawn at this chunk — native arena, Java maps, or neither. */
     @Override

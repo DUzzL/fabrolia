@@ -136,6 +136,9 @@ public class FabroliaConfig {
                 banner("Fabrolia subsystems", "Per-subsystem toggles. Each is also runtime-switchable via /fabrolia."),
                 "Fabrolia mob spawning (parallel candidate generation + serial cap claim). Profile-validated 2026-06-08.",
                 () -> enableFabroliaSpawn, v -> enableFabroliaSpawn = v));
+        e.add(bool("fabroliaSpawnLocalCapReservation", null,
+                "Atomic pack reservation at spawn chunk-pass approval (local per-player mob cap): parallel chunk passes immediately see approved packs' slots taken, so overshoot stays ≈ cap + one pack while packs still complete like vanilla. false = vanilla plain approval (packs complete, parallel overshoot window returns). Runtime: /fabrolia regions localcapreserve on|off.",
+                () -> fabroliaSpawnLocalCapReservation, v -> fabroliaSpawnLocalCapReservation = v));
         e.add(bool("enableFabroliaRandomTicks", null,
                 "Fabrolia random block ticks (parallel per-chunk). Default ON.",
                 () -> enableFabroliaRandomTicks, v -> enableFabroliaRandomTicks = v));

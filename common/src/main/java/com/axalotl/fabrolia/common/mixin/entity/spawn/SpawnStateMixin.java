@@ -37,39 +37,27 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
         throw new AssertionError("shadow");
     }
 
-    @Shadow
-    private boolean canSpawnForCategoryLocal(MobCategory mobCategory, net.minecraft.world.level.ChunkPos pos) {
-        throw new AssertionError("shadow");
-    }
+    // The task-#32 per-candidate LOCAL-cap recheck used to live here
+    // (@Inject at canSpawn HEAD, cancellable). It bounded the parallel
+    // overshoot but STARVED farms sitting AT the cap: after the cap filled,
+    // every further candidate was rejected individually, degrading vanilla's
+    // complete-the-pack behaviour to a trickle (wither-skeleton farm report).
+    // Replaced by atomic pack RESERVATION at chunk-pass approval —
+    // NaturalSpawnerMixin.fabrolia$approveAndReservePack — which restores the
+    // sequential visibility the recheck was faking without rejecting any
+    // candidate inside an already-approved pack. canSpawn is now pure vanilla
+    // (potential-energy check) plus the cadence diag below.
 
-    /** PARALLEL LOCAL-CAP OVERSHOOT BOUND (task #32 cod runaway, root cause 3 —
-     *  probe-proven): vanilla ticks spawning chunks SEQUENTIALLY, so chunk N's
-     *  local-cap check sees chunks 1..N-1's spawns — overshoot is bounded at
-     *  ~one pack. Fabrolia runs the chunk passes in parallel (pool / region
-     *  workers): every eligible chunk reads the count in the same open window
-     *  before any increment lands, approves together, and a whole
-     *  neighborhood's packs land at once — measured 2-7× the local cap in a
-     *  sawtooth (each despawn dip below cap re-opens the gate for another
-     *  multi-chunk burst; production reached ~142 with the global cap ~166 as
-     *  the only remaining bound). Re-checking the LOCAL cap per spawn
-     *  CANDIDATE restores sequential-visibility semantics: after the cap
-     *  fills, each concurrent chunk pass places at most one further mob
-     *  (its next candidate sees the atomic counts) — total bound ≈ cap +
-     *  parallel-lane count ≈ vanilla's cap + one pack. Predicate-false skips
-     *  the candidate exactly like a failed potential/cost check (no
-     *  chunk-attempt abort — the 2026-07-07 getMobForSpawn-null hazard class
-     *  is not touched). Gated to the Fabrolia parallel path; the vanilla
-     *  sequential path keeps vanilla's complete-the-pack behavior. The
-     *  shadowed vanilla method embeds DEBUG_IGNORE_LOCAL_MOB_CAP, ServerCore
-     *  overwrites, and the calculator routing (arena or Java) unchanged. */
+    /** Cadence instrumentation only (was fused with the removed recheck):
+     *  every candidate CHECK, per category — /fabrolia regions debug spawnrate
+     *  reads checks vs accepts. Never cancels. */
     @Inject(method = "canSpawn(Lnet/minecraft/world/entity/EntityType;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/chunk/ChunkAccess;)Z",
-            at = @At("HEAD"), cancellable = true)
-    private void fabrolia$parallelLocalCapRecheck(net.minecraft.world.entity.EntityType<?> type,
+            at = @At("HEAD"))
+    private void fabrolia$countCheck(net.minecraft.world.entity.EntityType<?> type,
             net.minecraft.core.BlockPos pos, net.minecraft.world.level.chunk.ChunkAccess chunk,
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
         if (com.axalotl.fabrolia.common.config.FabroliaConfig.disabled
                 || !com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaSpawn
-                || !com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaSpawnLocalCapRecheck
                 || ParallelProcessor.executor == null) {
             return;
         }
@@ -80,9 +68,6 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
         if (chunk instanceof net.minecraft.world.level.chunk.LevelChunk lc
                 && lc.getLevel() instanceof net.minecraft.server.level.ServerLevel sl) {
             com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onCheck(sl, cat);
-        }
-        if (!this.canSpawnForCategoryLocal(cat, chunk.getPos())) {
-            cir.setReturnValue(false);
         }
     }
 
@@ -126,6 +111,19 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
     @Override
     public boolean fabrolia$canSpawnForCategoryGlobal(MobCategory cat) {
         return this.canSpawnForCategoryGlobal(cat);
+    }
+
+    @Override
+    public int fabrolia$tryReserveLocalPack(MobCategory cat, long packedChunkPos) {
+        return ((com.axalotl.fabrolia.api.spawn.FabroliaLocalCapView) this.localMobCapCalculator)
+                .fabrolia$tryReservePack(packedChunkPos, cat.ordinal(),
+                        com.axalotl.fabrolia.common.parallelised.utils.LocalCapPackReservation.PACK_RESERVE);
+    }
+
+    @Override
+    public void fabrolia$releaseLocalPack(MobCategory cat, long packedChunkPos, int token) {
+        ((com.axalotl.fabrolia.api.spawn.FabroliaLocalCapView) this.localMobCapCalculator)
+                .fabrolia$releasePack(packedChunkPos, cat.ordinal(), token);
     }
 
     // Deliberately NO mid-tick global-cap bail in canSpawn. Vanilla evaluates the

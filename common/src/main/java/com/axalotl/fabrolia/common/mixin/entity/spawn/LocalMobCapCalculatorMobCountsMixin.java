@@ -36,7 +36,8 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
  * fixed at startup ({@code MobCategory.values().length}) — no resize hazard.
  */
 @Mixin(value = LocalMobCapCalculator.MobCounts.class, priority = 1100)
-public abstract class LocalMobCapCalculatorMobCountsMixin {
+public abstract class LocalMobCapCalculatorMobCountsMixin
+        implements com.axalotl.fabrolia.api.spawn.FabroliaMobCountsView {
 
     @Mutable
     @Final
@@ -70,5 +71,12 @@ public abstract class LocalMobCapCalculatorMobCountsMixin {
             return original.call(category);
         }
         return this.fabrolia$atomic.get(category.ordinal()) < category.getMaxInstancesPerChunk();
+    }
+
+    /** Pack-reservation access (LocalCapPackReservation): getAndAdd against the
+     *  SAME cells add/canSpawn observe — one source of truth. */
+    @Override
+    public AtomicIntegerArray fabrolia$countsArray() {
+        return this.fabrolia$atomic;
     }
 }

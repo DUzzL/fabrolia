@@ -454,62 +454,27 @@ public final class RegionCommand {
                                         return 1;
                                     } catch (Exception e) { send(ctx, "name: ", "player required", false); return 0; }
                                 }))));
-        // Mob-cap A/B switch. getNaturalSpawnChunkCount scales every category's
-        // cap by the spawnable-chunk count, so a snapshot smaller than the live
-        // map slows or stops spawning with no error anywhere. Printing the count
-        // per level with the snapshot ON and then OFF settles in two commands
-        // whether the reroute is responsible.
-        regionsCmd.then(literal("spawnsnapshot")
-                .requires(PlatformPermission.require("command.regions.toggle", 4))
-                .executes(ctx -> { spawnSnapshotReport(ctx); return 1; })
-                .then(literal("on").executes(ctx -> {
-                    FabroliaConfig.fabroliaSpawnProximitySnapshot = true;
-                    PlatformUtils.saveConfig();
-                    spawnSnapshotReport(ctx);
-                    return 1;
-                }))
-                .then(literal("off").executes(ctx -> {
-                    FabroliaConfig.fabroliaSpawnProximitySnapshot = false;
-                    PlatformUtils.saveConfig();
-                    spawnSnapshotReport(ctx);
-                    return 1;
-                }))
-                .then(literal("vanilla").executes(ctx -> {
-                    // Full vanilla: readers drive the wave AND read the live map.
-                    // Reopens the convoy — for A/B only.
-                    FabroliaConfig.fabroliaSpawnProximitySnapshot = false;
-                    FabroliaConfig.fabroliaSpawnProximityInlineWave = true;
-                    PlatformUtils.saveConfig();
-                    spawnSnapshotReport(ctx);
-                    return 1;
-                }))
-                .then(literal("cheap").executes(ctx -> {
-                    // Wave stays off main-only (convoy closed), reads go to the
-                    // live concurrent map: no copy, no staleness.
-                    FabroliaConfig.fabroliaSpawnProximitySnapshot = false;
-                    FabroliaConfig.fabroliaSpawnProximityInlineWave = false;
-                    PlatformUtils.saveConfig();
-                    spawnSnapshotReport(ctx);
-                    return 1;
-                })));
-        // Vanilla checks the local per-player cap ONCE per chunk pass and then
-        // completes a pack of up to four; the parallel path re-checks it per
-        // candidate, which bounds the overshoot but starves a farm that sits AT
-        // the cap. Flip it to restore vanilla pack completion; measure with
+        // Local-cap pack reservation (task #32 endgame). Approval of a chunk
+        // pass atomically reserves the pack's worth of per-player slots, so
+        // parallel passes see them taken (overshoot ≈ cap + one pack, vanilla's
+        // class) while packs still complete like vanilla (no per-candidate
+        // rejection — the farm-starve fix). OFF = vanilla plain approval:
+        // packs complete, the parallel overshoot window returns, and a
+        // reservation-blind native arena may attach again. Measure with
         // /fabrolia regions debug spawnrate.
-        regionsCmd.then(literal("localcaprecheck")
+        regionsCmd.then(literal("localcapreserve")
                 .requires(PlatformPermission.require("command.regions.toggle", 4))
-                .executes(ctx -> { localCapRecheckReport(ctx); return 1; })
+                .executes(ctx -> { localCapReserveReport(ctx); return 1; })
                 .then(literal("on").executes(ctx -> {
-                    FabroliaConfig.fabroliaSpawnLocalCapRecheck = true;
+                    FabroliaConfig.fabroliaSpawnLocalCapReservation = true;
                     PlatformUtils.saveConfig();
-                    localCapRecheckReport(ctx);
+                    localCapReserveReport(ctx);
                     return 1;
                 }))
                 .then(literal("off").executes(ctx -> {
-                    FabroliaConfig.fabroliaSpawnLocalCapRecheck = false;
+                    FabroliaConfig.fabroliaSpawnLocalCapReservation = false;
                     PlatformUtils.saveConfig();
-                    localCapRecheckReport(ctx);
+                    localCapReserveReport(ctx);
                     return 1;
                 })));
         regionsCmd.then(literal("tps").executes(ctx -> {
@@ -1049,32 +1014,20 @@ public final class RegionCommand {
     // ------------------------------------------------------------------
 
     /**
-     * Per-level spawnable-chunk count — the number the mob cap is scaled by.
-     * Run it with the snapshot on, then off: if the counts differ materially,
-     * the completed-wave reroute is starving the cap and
-     * {@code /fabrolia regions spawnsnapshot off} is the immediate mitigation.
+     * Reservation state plus the per-level spawnable-chunk count — the number
+     * the mob cap is scaled by, kept in the report as the one-command health
+     * check for the whole spawn path (it reads the live proximity tracker
+     * through the same getNaturalSpawnChunkCount the cap uses).
      */
-    private static void localCapRecheckReport(CommandContext<CommandSourceStack> ctx) {
-        send(ctx, "local mob-cap recheck: ",
-                FabroliaConfig.fabroliaSpawnLocalCapRecheck
-                        ? "ON (per candidate) — bounds the parallel overshoot, but a farm sitting AT "
-                          + "the local cap spawns one mob at a time instead of completing a pack"
-                        : "off (vanilla) — the local cap is checked once per chunk pass and the pack "
-                          + "completes; parallel chunk passes can overshoot the local cap again",
+    private static void localCapReserveReport(CommandContext<CommandSourceStack> ctx) {
+        send(ctx, "local mob-cap pack reservation: ",
+                FabroliaConfig.fabroliaSpawnLocalCapReservation
+                        ? "ON — chunk-pass approval atomically reserves the pack's slots; packs "
+                          + "complete like vanilla, parallel overshoot ≈ cap + one pack"
+                        : "off (vanilla plain approval) — packs complete, but parallel chunk "
+                          + "passes can overshoot the local cap again (task #32 cod runaway)",
                 false);
-        send(ctx, "measure with: ", "/fabrolia regions debug spawnrate (checks vs accepts per category)",
-                false);
-    }
-
-    private static void spawnSnapshotReport(CommandContext<CommandSourceStack> ctx) {
-        StringBuilder sb = new StringBuilder(160);
-        sb.append(FabroliaConfig.fabroliaSpawnProximitySnapshot
-                        ? "snapshot=ON (completed-wave copy)"
-                        : "snapshot=off (live concurrent map, no copy, no staleness)")
-          .append(FabroliaConfig.fabroliaSpawnProximityInlineWave
-                        ? "  inlineWave=ON (vanilla; readers drive the wave — reopens the "
-                          + "ChunkMap-monitor convoy)"
-                        : "  inlineWave=off (waves run only in DistanceManager.runAllUpdates)");
+        StringBuilder sb = new StringBuilder(120);
         var server = ctx.getSource().getServer();
         for (net.minecraft.server.level.ServerLevel sl : server.getAllLevels()) {
             int spawnable;
@@ -1083,7 +1036,7 @@ public final class RegionCommand {
             } catch (Throwable t) {
                 spawnable = -1;
             }
-            sb.append("\n  ").append(sl.dimension().identifier())
+            sb.append(sb.isEmpty() ? "" : "\n").append("  ").append(sl.dimension().identifier())
               .append(": spawnableChunks=").append(spawnable);
             if (spawnable >= 0) {
                 // Vanilla scales every category cap by chunks/289.
@@ -1091,7 +1044,9 @@ public final class RegionCommand {
                         spawnable / 289.0)).append(')');
             }
         }
-        send(ctx, "spawn proximity: ", sb.toString(), false);
+        send(ctx, "spawnable chunks: ", sb.toString(), false);
+        send(ctx, "measure with: ", "/fabrolia regions debug spawnrate (checks vs accepts per category)",
+                false);
     }
 
     private static void send(CommandContext<CommandSourceStack> ctx, String head, String highlight, boolean broadcast) {

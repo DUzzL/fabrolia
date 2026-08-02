@@ -1,9 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.world;
 
 import com.axalotl.fabrolia.api.utils.ConcurrentCollections;
-import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.api.fastutil.ConcurrentLongLinkedOpenHashSet;
-import com.axalotl.fabrolia.common.regions.CompletedPlayerProximityView;
 import com.axalotl.fabrolia.common.regions.CompletedSimulationView;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -15,7 +13,6 @@ import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ChunkLevel;
 import net.minecraft.server.level.DistanceManager;
 import net.minecraft.server.level.SimulationChunkTracker;
-import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Mutable;
@@ -94,8 +91,7 @@ public abstract class DistanceManagerMixin {
     }
 
     // -----------------------------------------------------------------------
-    // Completed-wave PLAYER-PROXIMITY reads (task #40, audit finding #1 — see
-    // CompletedPlayerProximityView for the full incident). Vanilla's three
+    // Spawn-proximity wave drop (task #40, audit finding #1). Vanilla's three
     // spawn-proximity readers each start by RUNNING the naturalSpawnChunkCounter
     // propagation wave inline — under the DynamicGraphMinFixedPoint blanket
     // monitor, unbounded, and (via getPlayersCloseForSpawning) while the calling
@@ -103,14 +99,24 @@ public abstract class DistanceManagerMixin {
     // convoys every worker in ChunkMap.move behind one parked spawn worker.
     // The unsynchronized door (anyPlayerCloseEnoughForSpawning) additionally let
     // workers run the wave themselves, racing playersPerChunk rehashes with no
-    // ChunkMap monitor (the 2026-06-10 AIOOBE class). The wraps below make all
-    // three readers PURE SNAPSHOT READS: the wave INVOKE is dropped (waves run
-    // only in DistanceManager.runAllUpdates — main-only via ServerChunkCacheMixin's
-    // off-main refusal + ChunkMap-monitor wrap), and level/size/keySet reads come
-    // from the immutable view published at wave completion. Vanilla's TriState
-    // ring logic and iteration shape stay untouched bytecode. Handlers take
-    // @Coerce Object because FixedPlayerDistanceChunkTracker is a private inner
-    // class (invisible to this mixin's source).
+    // ChunkMap monitor (the 2026-06-10 AIOOBE class). The wrap below drops the
+    // wave INVOKE from the readers — waves run only in
+    // DistanceManager.runAllUpdates (main-only via ServerChunkCacheMixin's
+    // off-main refusal + ChunkMap-monitor wrap).
+    //
+    // The completed-wave SNAPSHOT that used to sit on top of this
+    // (CompletedPlayerProximityView) was REMOVED 2026-08-02: the tracker's
+    // chunks map is already concurrent (FixedPlayerDistanceChunkTrackerMixin),
+    // so a mid-wave read cannot corrupt anything — worst case is one transient
+    // answer on one spawn check for one tick, self-healing — while the snapshot
+    // paid a full map copy per changed wave and added a wave of staleness
+    // directly under the mob cap. Readers now read the LIVE concurrent map:
+    // no copy, no staleness, convoy still closed. Main-thread readers
+    // (getNaturalSpawnChunkCount / getSpawnCandidateChunks in tickChunks) run
+    // strictly after this tick's consolidation, so they always see completed
+    // values; only worker-side hasPlayersNearby can race a wave, with the
+    // transient-answer tolerance above. The handler takes @Coerce Object
+    // because FixedPlayerDistanceChunkTracker is a private inner class.
     // -----------------------------------------------------------------------
 
     @WrapOperation(
@@ -122,37 +128,9 @@ public abstract class DistanceManagerMixin {
         // on) the propagator. Consolidation already ran this tick on main before
         // any consumer (DistanceManager.runAllUpdates drives
         // naturalSpawnChunkCounter first of the four trackers) — staleness bound
-        // is one wave, the CompletedSimulationView class of tolerance.
-        //
-        // Kill switch: this sits directly under the mob cap, so it must be
-        // revertible on a live server without a restart. See the config field.
-        if (FabroliaConfig.fabroliaSpawnProximityInlineWave) {
-            original.call(tracker);
-        }
-    }
-
-    @WrapOperation(
-            method = "hasPlayersNearby",
-            at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/level/DistanceManager$FixedPlayerDistanceChunkTracker;getLevel(J)I"))
-    private int fabrolia$completedProximityLevel(@Coerce Object tracker, long pos, Operation<Integer> original) {
-        return FabroliaConfig.fabroliaSpawnProximitySnapshot
-                ? ((CompletedPlayerProximityView) tracker).fabrolia$completedLevel(pos)
-                : original.call(tracker, pos);
-    }
-
-    /** getNaturalSpawnChunkCount reads {@code chunks.size()} (mob-cap scaling),
-     *  getSpawnCandidateChunks hands out {@code chunks.keySet().iterator()} —
-     *  both now read the immutable snapshot, so the iterator can never observe
-     *  a mid-wave remove (and never needs the live map's guarantees). */
-    @WrapOperation(
-            method = {"getNaturalSpawnChunkCount", "getSpawnCandidateChunks"},
-            at = @At(value = "FIELD",
-                    target = "Lnet/minecraft/server/level/DistanceManager$FixedPlayerDistanceChunkTracker;chunks:Lit/unimi/dsi/fastutil/longs/Long2ByteMap;",
-                    opcode = Opcodes.GETFIELD))
-    private Long2ByteMap fabrolia$completedProximityChunks(@Coerce Object tracker, Operation<Long2ByteMap> original) {
-        return FabroliaConfig.fabroliaSpawnProximitySnapshot
-                ? ((CompletedPlayerProximityView) tracker).fabrolia$completedChunks()
-                : original.call(tracker);
+        // is one wave, the CompletedSimulationView class of tolerance. This drop
+        // is the load-bearing half of task #40 and is unconditional: re-enabling
+        // the inline wave reopens the ChunkMap-monitor convoy and the
+        // playersPerChunk rehash race, so it must not be one command away.
     }
 }

@@ -193,56 +193,30 @@ public class FabroliaConfig {
      *  refuses every other entry at parse time. */
     public static volatile List<String> crossDimLinkedPairs = defaultCrossDimLinkedPairs();
 
-    /**
-     * Spawn-proximity reads answer from the last COMPLETED player-distance wave
-     * instead of driving the propagator inline (task #40). Kill switch, because
-     * this sits directly under the mob cap: {@code getNaturalSpawnChunkCount}
-     * scales every category's cap by the spawnable-chunk count, so if the
-     * snapshot were ever smaller than the live map, spawning would slow or stop
-     * with no error anywhere. Turning it off restores vanilla's inline
-     * {@code runAllUpdates()} on the three readers exactly — which is also how
-     * to A/B a suspected mob-cap regression on a live server in one command,
-     * without a restart or a rebuild.
-     *
-     * <p>/fabrolia regions spawnsnapshot on|off
-     */
-    public static volatile boolean fabroliaSpawnProximitySnapshot = true;
+    // (task #40 history) fabroliaSpawnProximitySnapshot / fabroliaSpawnProximityInlineWave
+    // were removed 2026-08-02 together with the completed-wave proximity snapshot:
+    // the wave drop (the load-bearing fix) is now unconditional in
+    // DistanceManagerMixin, and the three spawn-proximity readers read the live
+    // concurrent tracker map — no copy, no staleness, nothing left to toggle.
 
     /**
-     * Let the three spawn-proximity readers drive the player-distance wave
-     * inline, the way vanilla does. Vanilla=true; Fabrolia defaults to FALSE
-     * because that inline wave is the load-bearing half of task #40: a spawn
-     * worker calling hasPlayersNearby through ChunkMap.getPlayersCloseForSpawning
-     * parks on an unbounded relaxation wave WHILE HOLDING the ChunkMap monitor,
-     * convoying every other worker in ChunkMap.move behind it, and the
-     * unsynchronized door anyPlayerCloseEnoughForSpawning let a worker run the
-     * wave itself against concurrent playersPerChunk rehashes.
+     * Atomic pack RESERVATION at chunk-pass approval for the LOCAL per-player
+     * mob cap (task #32 endgame — replaces the per-candidate recheck, which
+     * bounded the parallel overshoot but starved farms sitting AT the cap).
+     * Approval reserves the pack's worth of slots in the same per-player
+     * counts it consulted, so concurrent chunk passes immediately see them
+     * taken; inside the pack spawning is exactly vanilla (no candidate gate),
+     * and the unconsumed reservation is returned at pack end. Overshoot bound:
+     * ≈ cap + one pack per player — vanilla's own sequential class.
      *
-     * <p>Split from {@link #fabroliaSpawnProximitySnapshot} deliberately: the
-     * wave drop is the correctness fix, the snapshot is only a coherence
-     * refinement on top of it. Turning the snapshot off while leaving this false
-     * reads the LIVE (already concurrent) map with no copy and no staleness —
-     * the cheapest configuration that still keeps the convoy closed.
-     */
-    public static volatile boolean fabroliaSpawnProximityInlineWave = false;
-
-    /**
-     * Re-check the LOCAL per-player mob cap per spawn CANDIDATE instead of once
-     * per chunk pass (task #32, the cod runaway). It exists because Fabrolia runs
-     * chunk passes in parallel: every eligible chunk reads the count in the same
-     * open window, approves together, and a whole neighbourhood's packs land at
-     * once (measured 2-7x the local cap).
-     *
-     * <p>The cost is under-spawning relative to vanilla at a farm that sits AT
-     * the local cap: vanilla checks once and then completes a pack of up to four,
-     * this rejects each candidate after the cap fills, so pack spawning degrades
-     * to a trickle. Turning it off restores vanilla's complete-the-pack behaviour
-     * exactly — at the price of the parallel overshoot coming back.
-     *
-     * <p>/fabrolia regions localcaprecheck on|off ; measure with
+     * <p>Kill switch, because this sits directly under the mob cap: OFF
+     * restores vanilla's plain once-per-pass approval (pack completion intact,
+     * parallel overshoot window back — measured 2-7x the local cap, the cod
+     * runaway) and lets a reservation-blind native local-cap arena attach
+     * again. /fabrolia regions localcapreserve on|off ; measure with
      * /fabrolia regions debug spawnrate (checks vs accepts per category).
      */
-    public static volatile boolean fabroliaSpawnLocalCapRecheck = true;
+    public static volatile boolean fabroliaSpawnLocalCapReservation = true;
 
     public static List<String> defaultCrossDimLinkedPairs() {
         return new ArrayList<>(List.of("minecraft:overworld=minecraft:the_nether"));

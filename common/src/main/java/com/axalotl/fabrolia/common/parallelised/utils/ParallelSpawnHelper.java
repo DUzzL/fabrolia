@@ -36,6 +36,7 @@ public final class ParallelSpawnHelper {
     private static Entity[] entityBuf = new Entity[1024];
 
     private static boolean fabrolia$localCapLogged = false;
+    private static boolean fabrolia$reservationDeclineLogged = false;
     /** Previous tick's local-cap arena state per level — freed at the next build for that level
      *  (by then this level's spawn phase is done, barrier-ordered). Carries the calculator the
      *  handle was attached to so the handle can be DETACHED (set 0) before the native free:
@@ -118,6 +119,22 @@ public final class ParallelSpawnHelper {
         CapArena d;
         while ((d = fabrolia$deferredFree.poll()) != null) {
             fabrolia$detachAndFree(p, d);
+        }
+        // Pack reservation (task #32 endgame) needs an atomic fused
+        // check+reserve the arena ABI must provide; a reservation-blind
+        // provider would reopen the parallel local-cap window the reservation
+        // exists to close. Decline the arena and keep the Java path (full
+        // replay seed below — reservation-capable by construction) until the
+        // provider ships supportsPackReservation. Runtime lever:
+        // /fabrolia regions localcapreserve off restores the arena as-is.
+        if (FabroliaConfig.fabroliaSpawnLocalCapReservation && !p.supportsPackReservation()) {
+            if (!fabrolia$reservationDeclineLogged) {
+                fabrolia$reservationDeclineLogged = true;
+                FabroliaConfig.LOGGER.info("[Fabrolia] Local mob-cap arena DECLINED — provider lacks "
+                        + "pack-reservation support; using the Java local-cap path (vanilla-equivalent). "
+                        + "Update the provider or /fabrolia regions localcapreserve off to re-enable the arena.");
+            }
+            return false;
         }
         int n = initialMobs.size();
         long[] chunks = fabrolia$mobChunkBuf;

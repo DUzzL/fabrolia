@@ -31,4 +31,17 @@ public interface FabroliaSpawnStateView {
     default Object fabrolia$localCalc() {
         return null;
     }
+
+    /** Chunk-pass local-cap approval as an atomic pack RESERVATION on this
+     *  cookie's calculator (see {@link FabroliaLocalCapView#fabrolia$tryReservePack}).
+     *  0 = rejected (vanilla's canSpawnForCategoryLocal false); non-zero =
+     *  approved, value is the release token. */
+    default int fabrolia$tryReserveLocalPack(MobCategory category, long packedChunkPos) {
+        return 0;
+    }
+
+    /** Release an unconsumed pack reservation made by
+     *  {@link #fabrolia$tryReserveLocalPack} (token passed through verbatim). */
+    default void fabrolia$releaseLocalPack(MobCategory category, long packedChunkPos, int token) {
+    }
 }

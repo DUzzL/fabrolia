@@ -47,4 +47,28 @@ public interface FabroliaLocalCapView {
     default String fabrolia$debugReport(long packedChunk) {
         return "no-impl";
     }
+
+    /** Marker bit in a {@link #fabrolia$tryReservePack} token: the reservation
+     *  landed in the NATIVE arena, so its release must go native too (never
+     *  the Java maps — a path mismatch would drive Java counts negative). */
+    int FABROLIA_NATIVE_RESERVATION = 1 << 30;
+
+    /** Atomic chunk-pass approval + pack reservation (task #32 → farm-starve
+     *  fix): vanilla's {@code canSpawn} ∃-room check and the pack's worth of
+     *  {@code addMob} increments, fused into one atomic step so a CONCURRENT
+     *  chunk pass immediately sees the slots taken. Returns 0 when no near
+     *  player has room (vanilla reject — nothing left behind), otherwise the
+     *  reserved count ({@code pack}, possibly OR'ed with
+     *  {@link #FABROLIA_NATIVE_RESERVATION}) to hand back to
+     *  {@link #fabrolia$releasePack} when the pack ends. */
+    default int fabrolia$tryReservePack(long packedChunk, int categoryOrdinal, int pack) {
+        return 0;
+    }
+
+    /** Return an unconsumed pack reservation ({@code token} exactly as
+     *  {@link #fabrolia$tryReservePack} produced it). The pack's ACTUAL spawns
+     *  arrive through vanilla {@code afterSpawn → addMob} as usual, so
+     *  releasing the full reservation leaves precisely the spawned count. */
+    default void fabrolia$releasePack(long packedChunk, int categoryOrdinal, int token) {
+    }
 }
