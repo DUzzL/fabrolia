@@ -125,6 +125,14 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
                 // load — and WITH Lithium they must fail LOUDLY if a target
                 // string rots (default require), which is why they are gated
                 // here rather than written with require = 0.
+                // Never-waking-hopper fix (2026-08-04): the invoker mixin
+                // targets a Lithium class outright; the hopper mixin shadows
+                // Lithium-merged members (block.hopper stamps + sleeping
+                // accessors) and constructs a Lithium record — neither may
+                // load without Lithium, and WITH Lithium they fail loudly if
+                // a target rots (default require), same as the Task-#38 trio.
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumSleepInvokerMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumHopperSleepMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiStorageMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiColumnIteratorMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiTakeAtMixin")) {
