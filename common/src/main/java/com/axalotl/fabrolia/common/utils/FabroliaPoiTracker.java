@@ -14,8 +14,8 @@ package com.axalotl.fabrolia.common.utils;
 public interface FabroliaPoiTracker {
 
     /**
-     * Record that a section's village-centre status may have changed. Lock-free
-     * and callable while holding any POI lock — that is the whole point.
+     * Record that a section's village-centre status may have changed. Takes only
+     * the pending-set leaf monitor, so it is callable while holding a POI lock.
      */
     void fabrolia$enqueueTrackerUpdate(long sectionPos);
 

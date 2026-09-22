@@ -1,19 +1,33 @@
 package com.axalotl.fabrolia.common.regions;
 
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
+import com.axalotl.fabrolia.common.mixin.server.ReentrantBlockableEventLoopAccessor;
+import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer;
+import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBatchScope;
+import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.entity.TickingBlockEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 
 /**
@@ -42,169 +56,1626 @@ public final class RegionScheduler {
 
     private static volatile MinecraftServer server;
     private static volatile RegionWorkerPool pool;
+    /** Startup failure/admission authority before the runtime is scheduler-visible. */
+    private static volatile RegionWorkerPool transitionPool;
+
+    /** Worker grants remain required throughout startup/drain, not just ACTIVE. */
+    static boolean requiresExclusiveWorkerGrants() {
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        return current != null && current.requiresExclusiveWorkerGrants();
+    }
+
+    /** Only unsupported native grid geometry requires whole-unit Main grants. */
+    static boolean requiresExclusiveUnitGrants() {
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        return current != null && current.requiresExclusiveUnitGrants();
+    }
+
+    static boolean isPhysicalGameplayMain(Thread thread) {
+        MinecraftServer current = server;
+        return current != null && thread == Thread.currentThread()
+                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(current);
+    }
+
+    private static final class MainExecutionState {
+        MinecraftServer globalServer;
+        int globalDepth;
+        int nativeDepth;
+    }
+
+    private static final ThreadLocal<MainExecutionState> MAIN_EXECUTION =
+            ThreadLocal.withInitial(MainExecutionState::new);
+
+    /** Native chunk callbacks are a progress venue, not global gameplay owners. */
+    public interface NativeChunkServiceExecutor {}
+
+    private static class MainControlTask extends TickTask {
+        private MainControlTask(int tick, Runnable body) {
+            super(tick, body);
+        }
+    }
+
+    public static void scheduleMainControlTask(MinecraftServer expected, Runnable body) {
+        if (expected == null || body == null) throw new NullPointerException();
+        expected.schedule(new MainControlTask(expected.getTickCount(), body));
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        if (current != null && current.servesGameplayServer(expected)) {
+            current.mainControlPublished();
+        }
+    }
+
+    private static final Object MAIN_CONTROL_LOCK = new Object();
+    private static final ArrayDeque<TrackedMainControlTask> PENDING_MAIN_CONTROLS =
+            new ArrayDeque<>();
+
+    /**
+     * A native queue slot whose accepted body pins its original pool. The census
+     * is for lifecycle progress/cancellation, never an alternate execution queue.
+     */
+    private static final class TrackedMainControlTask extends MainControlTask {
+        final RegionWorkerPool owner;
+        final MinecraftServer expected;
+        final Runnable tracked;
+        private boolean claimed;
+        /** Normal native schedule return, not body acceptance or authority. */
+        private boolean nativePublished;
+
+        TrackedMainControlTask(RegionWorkerPool owner, MinecraftServer expected,
+                               Runnable tracked) {
+            super(expected.getTickCount(), tracked);
+            this.owner = owner;
+            this.expected = expected;
+            this.tracked = tracked;
+        }
+
+        private boolean claim() {
+            synchronized (MAIN_CONTROL_LOCK) {
+                if (claimed) return false;
+                claimed = true;
+                PENDING_MAIN_CONTROLS.remove(this);
+                return true;
+            }
+        }
+
+        @Override
+        public void run() {
+            if (claim()) super.run();
+        }
+    }
+
+    /**
+     * Retain an accepted Main continuation through its original native task slot.
+     * Unlike a wake-only controller, this body must execute or cancel before its
+     * pool closes. The receipt grants lifetime, not gameplay or clean-drain authority.
+     * An unrelated root arriving during an exact turn retains a deferred publication;
+     * an already causal continuation still participates in the pre-turn fixed point.
+     */
+    public static void scheduleTrackedMainControlTask(
+            MinecraftServer expected, Runnable body) {
+        if (expected == null || body == null) throw new NullPointerException();
+        RegionWorkerPool current;
+        synchronized (LIFECYCLE_LOCK) {
+            current = failureGateLocked();
+            if (current == null && orphanFatalFailure != null) {
+                RegionScheduler.<RuntimeException>rethrow(orphanFatalFailure);
+            }
+            if (current == null && (lifecycleState != LifecycleState.STOPPED
+                    || lifecycleOwner != null)) {
+                throw new IllegalStateException(
+                        "tracked Main control publication has no live or terminal generation");
+            }
+        }
+        if (current == null) {
+            // The native server can outlive the regional runtime during a healthy
+            // serial cutover. Its queue remains the venue, not a dark routed queue.
+            scheduleMainControlTask(expected, body);
+            return;
+        }
+        current.executeTrackedMainControl(tracked -> {
+            TrackedMainControlTask task =
+                    new TrackedMainControlTask(current, expected, tracked);
+            synchronized (MAIN_CONTROL_LOCK) {
+                PENDING_MAIN_CONTROLS.addLast(task);
+            }
+            try {
+                expected.schedule(task);
+                synchronized (MAIN_CONTROL_LOCK) {
+                    task.nativePublished = true;
+                }
+                current.mainControlPublished();
+            } catch (Throwable failure) {
+                // schedule may have made the slot visible before throwing. The
+                // pool publication transaction selects W and cancels its receipt;
+                // any surviving native wake must not enter that wrapper again.
+                task.claim();
+                throw failure;
+            }
+        }, body);
+    }
+
+    private static TrackedMainControlTask pendingMainControl(RegionWorkerPool owner) {
+        synchronized (MAIN_CONTROL_LOCK) {
+            for (TrackedMainControlTask task : PENDING_MAIN_CONTROLS) {
+                if (task.owner == owner) return task;
+            }
+        }
+        return null;
+    }
+
+    static boolean hasTrackedMainControlTasks(RegionWorkerPool owner) {
+        return pendingMainControl(owner) != null;
+    }
+
+    /** One real native FIFO opportunity, then return to the other stop lanes. */
+    static void drainTrackedMainControlTasks(RegionWorkerPool owner) {
+        TrackedMainControlTask pending = pendingMainControl(owner);
+        if (pending == null) return;
+        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(pending.expected)) {
+            throw new IllegalStateException("tracked Main control drain lost physical Main");
+        }
+        // An ordinary poll may refuse a young task after the tick's time budget
+        // expires. Use native managedBlock admission, without fabricating a clean
+        // command frame or stealing the selected slot past older vanilla tasks.
+        pending.expected.managedBlock(new BooleanSupplier() {
+            private boolean polled;
+
+            @Override
+            public boolean getAsBoolean() {
+                throwWorkerFailureIfAny();
+                boolean done = polled;
+                polled = true;
+                return done;
+            }
+        });
+        throwWorkerFailureIfAny();
+    }
+
+    /**
+     * Finish a fixed prefix of published controls through their native FIFO.
+     * Only the retired canonical runAllTasks boundary may enter this service:
+     * no native task, managed wait, island claim or gameplay frame is inherited.
+     * The census controls termination only; native polling still selects every
+     * predecessor and each body obtains its own existing authority.
+     */
+    static void servicePublishedMainControls(MinecraftServer expected) {
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        if (current == null) return;
+        throwWorkerFailureIfAny();
+        ArrayList<TrackedMainControlTask> captured = null;
+        synchronized (MAIN_CONTROL_LOCK) {
+            for (TrackedMainControlTask task : PENDING_MAIN_CONTROLS) {
+                if (task.owner != current || task.expected != expected || !task.nativePublished) continue;
+                if (captured == null) captured = new ArrayList<>(PENDING_MAIN_CONTROLS.size());
+                captured.add(task);
+            }
+        }
+        if (captured == null) return;
+        if (expected != server
+                || !RegionalPlayerEntityTicksV2.isPhysicalServerThread(expected)
+                || expected.blockingCount != 0
+                || expected instanceof ReentrantBlockableEventLoopAccessor accessor
+                    && accessor.fabrolia$getReentrantCount() != 0
+                || inNativeMainService() || current.hasEnteredGameplayTurn()
+                || IslandCommands.fenceWindowHeld()
+                || IslandCommands.globalFenceTransitionInProgress()
+                || currentThreadHoldsLiveIslandClaim()) {
+            IslandCommands.publishAndPropagate(new IllegalStateException(
+                    "published Main control service lost its claim-free native boundary"));
+            return;
+        }
+        // Census order can differ from native publication order. Retain all
+        // captured identities; a single census tail is not a FIFO checkpoint.
+        ArrayList<TrackedMainControlTask> checkpoint = captured;
+        Throwable failure = null;
+        try {
+            RconCommandFenceScope.runNativeCheckpoint(expected, () -> expected.managedBlock(new BooleanSupplier() {
+                private int cursor;
+
+                @Override
+                public boolean getAsBoolean() {
+                    current.throwIfFailed();
+                    // A healthy lifecycle cutover closes this old checkpoint.
+                    // Never attach replacement-generation islands to its ledger.
+                    if (expected != server || current != (pool != null ? pool : transitionPool)) {
+                        return true;
+                    }
+                    synchronized (MAIN_CONTROL_LOCK) {
+                        while (cursor < checkpoint.size() && checkpoint.get(cursor).claimed) cursor++;
+                        if (cursor == checkpoint.size()) {
+                            return true;
+                        }
+                    }
+                    // This census owns queue lifetime, not island data. A
+                    // callback that touches an island takes its own target
+                    // claim (or global fence); unrelated units remain runnable.
+                    return false;
+                }
+            }));
+            // Native doRunTask can swallow an Exception after claiming the last slot.
+            current.throwIfFailed();
+        } catch (Throwable thrown) {
+            failure = current.publishAndSelectFatal(thrown);
+        }
+        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        current.throwIfFailed();
+    }
+
+    /**
+     * Resume one immutable gameplay FIFO cut after servicing the control census.
+     * Whole grants yield at the native Main deadline;
+     * successors and roots consumed by another venue cannot borrow old slots.
+     */
+    static void servicePublishedMainGameplay(MinecraftServer expected) {
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        if (current == null) return;
+        servicePublishedMainControls(expected);
+        current.throwIfFailed();
+        if (expected != server || current != (pool != null ? pool : transitionPool)) return;
+        RegionWorkerPool.PublishedGameplayCohort cohort = current.capturePublishedGameplay();
+        while (current.hasPublishedGameplay(cohort)) {
+            current.throwIfFailed();
+            if (expected != server || current != (pool != null ? pool : transitionPool)) return;
+            if (!RconCommandFenceScope.mayServicePublishedGameplay(expected)) return;
+            if (current.takePublishedGameplayCheckpoint()) {
+                // Poll under native blockingCount so even a young task is
+                // eligible. Return true from the predicate itself: falling
+                // through managedBlock's loop would park on an empty FIFO.
+                RconCommandFenceScope.runNativeCheckpoint(expected, () ->
+                        expected.managedBlock(() -> {
+                            current.throwIfFailed();
+                            if (expected == server
+                                    && current == (pool != null ? pool : transitionPool)) {
+                                expected.pollTask();
+                            }
+                            return true;
+                        }));
+                current.throwIfFailed();
+                if (expected != server || current != (pool != null ? pool : transitionPool)) return;
+            }
+            if (!runOptionalPublishedGameplayStep(expected, current, cohort)) return;
+        }
+        current.throwIfFailed();
+    }
+
+    private static boolean runOptionalPublishedGameplayStep(
+            MinecraftServer expected, RegionWorkerPool current,
+            RegionWorkerPool.PublishedGameplayCohort cohort) {
+        current.throwIfFailed();
+        if (expected != server || current != (pool != null ? pool : transitionPool)
+                || !RconCommandFenceScope.mayServicePublishedGameplay(expected)) return false;
+        if (!current.runPublishedGameplayStep(cohort)) return false;
+        RconCommandFenceScope.markPublishedGameplayServiced(expected);
+        return true;
+    }
+
+    static Throwable cancelTrackedMainControlTasks(
+            RegionWorkerPool owner, Throwable primary) {
+        Throwable failure = primary;
+        TrackedMainControlTask pending;
+        while ((pending = pendingMainControl(owner)) != null) {
+            if (!pending.claim()) continue;
+            try {
+                ((RegionTaskFanIn.CancellableQueueEntry) pending.tracked)
+                        .cancelQueuedBeforeStartWithFailure(failure);
+            } catch (Throwable cleanup) {
+                failure = owner.mergeCancellationFailure(failure, cleanup);
+            }
+        }
+        return failure;
+    }
+
+    public static boolean isMainControlTask(Runnable task) {
+        return task instanceof MainControlTask;
+    }
+
+    public static boolean inNativeMainService() {
+        return MAIN_EXECUTION.get().nativeDepth != 0;
+    }
+
+    public static void runNativeMainServiceBody(Runnable body) {
+        executeNativeMainService(body, null);
+    }
+
+    public static <T> T callNativeMainServiceBody(java.util.function.Supplier<T> body) {
+        return executeNativeMainService(null, body);
+    }
+
+    private static <T> T executeNativeMainService(
+            Runnable body, java.util.function.Supplier<T> resultBody) {
+        MainExecutionState state = MAIN_EXECUTION.get();
+        T result = null;
+        Throwable failure = null;
+        state.nativeDepth++;
+        try {
+            throwWorkerFailureIfAny();
+            if (resultBody != null) result = resultBody.get();
+            else body.run();
+            throwWorkerFailureIfAny();
+        } catch (Throwable thrown) {
+            failure = publishFatalAndSelectWinner(thrown);
+        } finally {
+            state.nativeDepth--;
+        }
+        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        return result;
+    }
+
+    /**
+     * Physical venue and failure boundary only. In particular, neither the
+     * complete tickServer stack nor a routed-result controller owns all islands
+     * or retains an ExternalPermit across its own lifecycle/pause barrier.
+     */
+    public static void runMainControlBody(MinecraftServer expected, Runnable body) {
+        try {
+            if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(expected)) {
+                throw new IllegalStateException("Main control body lost its physical server thread");
+            }
+            throwWorkerFailureIfAny();
+            body.run();
+            throwWorkerFailureIfAny();
+        } catch (Throwable failure) {
+            IslandCommands.publishAndPropagate(failure);
+        }
+    }
+
+    /** Acquire before an ordinary queued gameplay callback enters native code. */
+    public static void runGlobalMainBody(MinecraftServer expected, Runnable body) {
+        executeGlobalMainBody(expected, body, null);
+    }
+
+    public static <T> T callGlobalMainBody(
+            MinecraftServer expected, java.util.function.Supplier<T> body) {
+        return executeGlobalMainBody(expected, null, body);
+    }
+
+    /**
+     * Share real claims across a finite native batch of existing Main roots.
+     * The batch itself does not enter a gameplay-root depth: each callback must
+     * still use runGlobalMainBody/callGlobalMainBody, including its advancement
+     * drain and failure cut. Do not use this for a replenishing queue drain.
+     */
+    public static void runGlobalMainBatch(MinecraftServer expected, Runnable boundedRoots) {
+        boolean tookFence = false;
+        Throwable failure = null;
+        try {
+            tookFence = acquireGlobalMainFence(expected, MAIN_EXECUTION.get());
+            throwWorkerFailureIfAny();
+            boundedRoots.run();
+            throwWorkerFailureIfAny();
+        } catch (Throwable thrown) {
+            failure = publishFatalAndSelectWinner(thrown);
+        } finally {
+            if (tookFence) failure = IslandCommands.releaseAllExcept(failure);
+        }
+        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+    }
+
+    private static <T> T executeGlobalMainBody(
+            MinecraftServer expected, Runnable body, java.util.function.Supplier<T> resultBody) {
+        MainExecutionState state = MAIN_EXECUTION.get();
+        boolean tookFence = false;
+        boolean entered = false;
+        T result = null;
+        Throwable failure = null;
+        try {
+            tookFence = acquireGlobalMainFence(expected, state);
+            state.globalServer = expected;
+            state.globalDepth++;
+            entered = true;
+            // Old-resource keys must reach progress before reload clears/rebinds it.
+            if (state.globalDepth == 1 && !AdvancementBatchScope.active()) {
+                AdvancementBuffer.applyDeferred();
+                AdvancementBuffer.drainPendingFlushes();
+            }
+            throwWorkerFailureIfAny();
+            if (resultBody != null) result = resultBody.get();
+            else body.run();
+            throwWorkerFailureIfAny();
+        } catch (Throwable thrown) {
+            failure = publishFatalAndSelectWinner(thrown);
+        } finally {
+            if (entered && --state.globalDepth == 0) state.globalServer = null;
+            if (tookFence) failure = IslandCommands.releaseAllExcept(failure);
+        }
+        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        return result;
+    }
+
+    private static boolean acquireGlobalMainFence(MinecraftServer expected, MainExecutionState state) {
+        // Both a single root and a finite batch reject before acquisition.
+        // The enclosing caller retains the same sticky failure boundary.
+        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(expected)) {
+            throw new IllegalStateException("global Main body lost its physical server thread");
+        }
+        if (state.globalDepth != 0 && state.globalServer != expected) {
+            throw new IllegalStateException("global Main body crossed server generations");
+        }
+        Thread selected = RegionalPlayerEntityTicksV2.logicalServerThread(expected);
+        if (selected != null && selected != Thread.currentThread()
+                && !IslandCommands.delegatesGameplayFrom(selected, Thread.currentThread())) {
+            throw new IllegalStateException("Main gameplay callback overlaps an active logical owner");
+        }
+        boolean alreadyHeld = ownsExclusiveGameplay();
+        if (state.nativeDepth != 0 && !alreadyHeld) {
+            throw new IllegalStateException(
+                    "native chunk service cannot acquire fresh global gameplay ownership");
+        }
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        if (!alreadyHeld && current != null && current.hasEnteredGameplayTurn()) {
+            throw new IllegalStateException("global Main entry cannot borrow an entered worker turn");
+        }
+        throwWorkerFailureIfAny();
+        return !alreadyHeld && IslandCommands.quiesceAllExcept(null);
+    }
+
+    public static boolean ownsExclusiveGameplay() {
+        MainExecutionState state = MAIN_EXECUTION.get();
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        MinecraftServer observedServer = state.globalServer != null ? state.globalServer : server;
+        boolean physicalMain = RegionalPlayerEntityTicksV2.isPhysicalServerThread(observedServer);
+        if (physicalMain) {
+            // An outer Main frame may be suspended in a legitimate worker pump.
+            // Its inherited depth is not ownership of that worker's native wait.
+            if (current != null && current.hasEnteredGameplayTurn()) {
+                return current.ownsExclusiveGameplay(Thread.currentThread());
+            }
+            Thread logical = RegionalPlayerEntityTicksV2.logicalServerThread(observedServer);
+            if (logical != null && logical != Thread.currentThread()
+                    && !IslandCommands.delegatesGameplayFrom(logical, Thread.currentThread())) {
+                return false;
+            }
+            if (IslandCommands.fenceWindowHeld()) return true;
+        }
+        if (state.globalDepth != 0
+                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(state.globalServer)) {
+            return true;
+        }
+        if (RegionalPlayerEntityTicksV2.inExactPlayerActor()) return true;
+        return current == null
+                ? isPhysicalGameplayMain(Thread.currentThread())
+                : current.ownsExclusiveGameplay(Thread.currentThread());
+    }
+
+    public static Thread exclusiveGameplayWorkerOrNull(MinecraftServer expected) {
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        return current != null && current.servesGameplayServer(expected)
+                ? current.exclusiveGameplayWorkerOrNull() : null;
+    }
+
+    static boolean allowsRoutedProgress(Thread waitingWorker) {
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        return current == null || current.allowsRoutedProgress(waitingWorker);
+    }
+
+    public static boolean parkExclusiveWorkerForMainService() {
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        return current != null && current.parkExclusiveWorkerForMainService();
+    }
+
+
+
+    public static boolean hasLiveGameplayWorkers() {
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        return current != null && current.isRunning();
+    }
+
+    /** Residual service at the native Main poll return boundary. */
+    public static boolean serviceMainGameplayAfterPoll(MinecraftServer polledServer) {
+        if (RconCommandFenceScope.isNativeCheckpointPoll(polledServer)) {
+            throwWorkerFailureIfAny();
+            return false;
+        }
+        if (RconCommandFenceScope.exactRunAllTasksPoll(polledServer)) {
+            // Finish the native FIFO/control census before optional gameplay.
+            // Nested polls keep their mandatory progress protocol below.
+            throwWorkerFailureIfAny();
+            return false;
+        }
+        if (RconCommandFenceScope.exactManagedBlockPoll(polledServer)) {
+            RegionWorkerPool current = pool != null ? pool : transitionPool;
+            if (current == null || inNativeMainService()
+                    || !RegionalPlayerEntityTicksV2.isPhysicalServerThread(polledServer)) return false;
+            // This literal blockingCount poll already supplied the eligible
+            // native opportunity owed by the preceding terminal grant.
+            current.takePublishedGameplayCheckpoint();
+            return runOptionalPublishedGameplayStep(
+                    polledServer, current, current.capturePublishedGameplay());
+        }
+        return serviceMainGameplay();
+    }
+
+    /** One residual exclusive root after vanilla has had its native polling opportunity. */
+    public static boolean serviceMainGameplay() {
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        return current != null && !inNativeMainService()
+                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)
+                && current.runExclusiveWorkerStep();
+    }
+
+    /** Local topology ownership can borrow a global frame for an old-domain receipt. */
+    static boolean drainMainSafeForDomainRebase(ServerLevel level) {
+        RegionWorkerPool current = pool != null ? pool : transitionPool;
+        if (current == null || !current.hasPublishedMainSafeTask()) return false;
+        return callGlobalMainBody(level.getServer(), current::runOnePublishedMainSafeUnderMainOwnership);
+    }
+
+    /** Only the unit lane: used after sprint admission closes, before fromL capture. */
+    static void drainQueuedUnitAttempts() {
+        RegionWorkerPool current = pool;
+        if (current == null) throw new IllegalStateException("unit drain lost its pool");
+        while (current.runExclusiveWorkerStep(true)) {
+            throwWorkerFailureIfAny();
+        }
+    }
     private static volatile RegionGrid grid;
     private static final Map<ServerLevel, RegionizedServer> PER_LEVEL = new ConcurrentHashMap<>();
+    /**
+     * Stable BE-wrapper positions (2026-08-21 universal-crafter incident).
+     * Lithium's fully sleeping delegate reports {@code getPos()==null}; this
+     * registration stamp survives regions-off and lets the next bulk rebuild
+     * distinguish that sleeper from a genuinely positionless ticker.
+     */
+    private static final BlockEntityTickerPositionIndex<TickingBlockEntity, BlockPos>
+            BLOCK_ENTITY_TICKER_POSITIONS = new BlockEntityTickerPositionIndex<>();
     private static volatile boolean active;
+    private static volatile boolean accepting;
+    /** Short scheduler lifecycle lock.  It is never held while joining a worker. */
+    private static final Object LIFECYCLE_LOCK = new Object();
+    private enum LifecycleState { STOPPED, STARTING, RUNNING, STOPPING, FAILED }
+    private static LifecycleState lifecycleState = LifecycleState.STOPPED;
+    private static Thread lifecycleOwner;
+    private static long lifecycleGeneration;
+
+    /** Failure published while no pool reference is available (startup/teardown edge). */
+    private static volatile Throwable orphanFatalFailure;
+    /**
+     * Lifecycle commands entered from an accepted pool body cannot stop that
+     * pool inline: their enclosing ExternalPermit is itself part of stop's fixed
+     * point.  Keep those commands in a scheduler-owned FIFO until the exact
+     * physical-Main post-tickServer boundary has returned from every such body.
+     * The lock protects publication/inspection only and is never held while a
+     * transition quiesces or joins workers.
+     */
+    private static final Object DEFERRED_LIFECYCLE_LOCK = new Object();
+    private static final ArrayDeque<DeferredLifecycleTransition>
+            DEFERRED_LIFECYCLE_TRANSITIONS = new ArrayDeque<>();
+
+    private static RegionWorkerPool failureGateLocked() {
+        return pool != null ? pool : transitionPool;
+    }
+
+    private static final class StartDraft {
+        RegionGrid grid;
+        java.util.Map<ServerLevel, RegionizedServer> levels;
+        int bootstrappedEntities;
+    }
+
+    /**
+     * A lifecycle command can itself be nested in a pool-owned Main success body
+     * (for example the tickConnection console drain). Stopping that pool inline
+     * would wait for the command's own ExternalPermit. Publish one exact FIFO
+     * baton instead; the post-tickServer boundary enters it only after the
+     * complete command/tick stack has returned and retired that permit.
+     *
+     * @return true when the transition was accepted for detached execution.
+     */
+    public static boolean deferLifecycleTransitionFromCurrentBody(
+            MinecraftServer mcServer, Runnable transition) {
+        if (mcServer == null || transition == null) throw new NullPointerException();
+        if (RegionWorkerPool.currentThreadCausalOwnerOrNull() == null
+                && MAIN_EXECUTION.get().globalDepth == 0
+                && !IslandCommands.fenceWindowHeld()) return false;
+        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(mcServer)
+                || !RegionalPlayerEntityTicksV2
+                .schedulerLifecycleTransitionAllowed(mcServer)) {
+            throw new IllegalStateException(
+                    "region lifecycle deferral lost its between-phase physical Main");
+        }
+        DeferredLifecycleTransition task =
+                new DeferredLifecycleTransition(mcServer, transition);
+        // This command already owns a live causal permit, so the commit adds no
+        // second ExternalPermit.  Queue publication and first-W selection retain
+        // one cut; a W which won first leaves no accepted orphan baton.
+        commitSuccessIfHealthy(() -> {
+            synchronized (DEFERRED_LIFECYCLE_LOCK) {
+                DEFERRED_LIFECYCLE_TRANSITIONS.addLast(task);
+            }
+        });
+        return true;
+    }
+
+    /**
+     * Exact consumer for deferred lifecycle commands. Called only after the
+     * top-level {@code processPacketsAndTick -> tickServer} invocation returns.
+     * Consequently the command fence, tickChildren wrapper, and the publishing
+     * ExternalPermit have all closed before stop is allowed to await its pool.
+     */
+    public static void drainDeferredLifecycleTransitionsAtPostTickBoundary(
+            MinecraftServer mcServer) {
+        if (mcServer == null) throw new NullPointerException("mcServer");
+        requireDeferredLifecycleBoundary(mcServer);
+        NetherPortalTransfers.serviceMain(mcServer);
+        while (true) {
+            DeferredLifecycleTransition task;
+            synchronized (DEFERRED_LIFECYCLE_LOCK) {
+                task = DEFERRED_LIFECYCLE_TRANSITIONS.peekFirst();
+            }
+            if (task == null) return;
+            if (task.server != mcServer) {
+                throw new IllegalStateException(
+                        "deferred region lifecycle FIFO crossed its server identity");
+            }
+
+            task.runAtPostTickBoundary(mcServer);
+
+            // Retain the completed head until its terminal W cut has returned.
+            // No later FIFO request can overtake a failing or still-running head.
+            synchronized (DEFERRED_LIFECYCLE_LOCK) {
+                if (DEFERRED_LIFECYCLE_TRANSITIONS.peekFirst() != task
+                        || task.state() != DeferredLifecycleTransition.COMPLETE) {
+                    throw new IllegalStateException(
+                            "deferred region lifecycle FIFO lost its completed head");
+                }
+                DEFERRED_LIFECYCLE_TRANSITIONS.removeFirst();
+            }
+            requireDeferredLifecycleBoundary(mcServer);
+        }
+    }
+
+    private static void requireDeferredLifecycleBoundary(MinecraftServer mcServer) {
+        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(mcServer)
+                || !RegionalPlayerEntityTicksV2
+                .schedulerLifecycleTransitionAllowed(mcServer)
+                || RegionWorkerPool.currentThreadCausalOwnerOrNull() != null
+                || IslandCommands.fenceWindowHeld()) {
+            throw new IllegalStateException(
+                    "deferred region lifecycle drain lost its post-tick physical-Main boundary");
+        }
+    }
+
+    /** Exact-once body admission with no ExternalPermit for stop() to self-await. */
+    static final class DeferredLifecycleTransition {
+        static final int QUEUED = 0;
+        static final int RUNNING = 1;
+        static final int COMPLETE = 2;
+
+        private final MinecraftServer server;
+        private final Runnable transition;
+        private final AtomicInteger state = new AtomicInteger(QUEUED);
+
+        DeferredLifecycleTransition(MinecraftServer server, Runnable transition) {
+            if (server == null) throw new NullPointerException("server");
+            if (transition == null) throw new NullPointerException("transition");
+            this.server = server;
+            this.transition = transition;
+        }
+
+        void runAtPostTickBoundary(MinecraftServer boundaryServer) {
+            // The fixed CAS is the W-vs-entry linearization edge. In particular,
+            // do not use runSuccessBodyIfHealthy here: its ExternalPermit would
+            // recreate the exact self-deadlock this baton exists to remove.
+            commitSuccessIfHealthy(() -> {
+                if (server != boundaryServer) {
+                    throw new IllegalStateException(
+                            "deferred region lifecycle baton changed server identity");
+                }
+                if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)
+                        || !RegionalPlayerEntityTicksV2
+                        .schedulerLifecycleTransitionAllowed(server)
+                        || RegionWorkerPool.currentThreadCausalOwnerOrNull() != null
+                        || IslandCommands.fenceWindowHeld()) {
+                    throw new IllegalStateException(
+                            "deferred region lifecycle baton entered outside its post-tick boundary");
+                }
+                if (!state.compareAndSet(QUEUED, RUNNING)) {
+                    throw new IllegalStateException(
+                            "deferred region lifecycle task executed more than once");
+                }
+            });
+            transition.run();
+            // A clean transition must observe a peer W selected while start/stop
+            // was running before it can expose successful command completion.
+            commitSuccessIfHealthy(() -> {
+                if (!state.compareAndSet(RUNNING, COMPLETE)) {
+                    throw new IllegalStateException(
+                            "deferred region lifecycle task lost its running baton");
+                }
+            });
+        }
+
+        int state() {
+            return state.get();
+        }
+    }
 
     public static boolean isActive() { return active; }
     public static MinecraftServer getServer() { return server; }
     public static int workerCount() { return pool == null ? 0 : pool.size(); }
     public static RegionGrid grid() { return grid; }
 
-    public static synchronized void start(MinecraftServer mcServer) {
-        if (active) return;
-        FabroliaConfig.enforceSafetyInvariants();
-        if (!FabroliaConfig.enableRegionThreading) {
-            LOGGER.debug("RegionScheduler: enableRegionThreading=false, scheduler dormant");
-            return;
+    /**
+     * Exact scheduler-generation admission predicate for an island unit.
+     *
+     * <p>{@code active} alone is deliberately insufficient: normal stop keeps the
+     * old runtime visible while it drains already-accepted bodies.  A delayed pacer
+     * ticket from that runtime must be refused before body entry, and must never
+     * publish its lifecycle refusal into a later scheduler generation.
+     */
+    static boolean acceptsUnitFor(RegionizedServer expected) {
+        synchronized (LIFECYCLE_LOCK) {
+            return acceptsUnitForLocked(expected);
         }
-        server = mcServer;
-        // New session: retained final clocks belong to the previous scheduler
-        // lifetime's island ids (shutdown-order fix, 2026-07-21).
-        TickDomains.clearFinalClocks();
-        grid = new RegionGrid(RegionGrid.DEFAULT_SHIFT);
-        int n = FabroliaConfig.getRegionWorkerCount();
-        pool = new RegionWorkerPool(n);
-        pool.start();
-        active = true;
-        // Bootstrap the region-owned entity index from the current EntityTickList contents.
-        // At SERVER_STARTING there are no levels yet (index fills naturally as entities
-        // load); on a runtime /fabrolia regions on toggle this picks up everything alive.
-        int bootstrapped = 0;
-        for (ServerLevel lvl : mcServer.getAllLevels()) {
-            final int[] count = {0};
-            lvl.entityTickList.forEach(e -> { onEntityAdd(e); count[0]++; });
-            bootstrapped += count[0];
-            // F1 islands: chunks already FULL never re-fire updateChunkScheduling —
-            // seed the populated counts from the visible holder map (runtime
-            // /fabrolia regions on; at SERVER_STARTING there are no levels yet).
-            RegionizedServer rs = forLevel(lvl);
-            if (rs != null) {
-                var rta = (RegionTickingAccess) lvl.getChunkSource().chunkMap;
-                for (net.minecraft.server.level.ChunkHolder h : rta.fabrolia$visibleHolders()) {
-                    if (net.minecraft.server.level.ChunkLevel.fullStatus(h.getTicketLevel())
-                            .isOrAfter(net.minecraft.server.level.FullChunkStatus.FULL)) {
-                        rs.onChunkFullTransition(h.getPos().pack(), true, h.getTickingChunk());
+    }
+
+    static boolean ownsRuntimeGeneration(RegionizedServer expected) {
+        synchronized (LIFECYCLE_LOCK) {
+            return expected != null && pool != null
+                    && PER_LEVEL.get(expected.level) == expected;
+        }
+    }
+
+    /** Accepted synchronous player L retains this exact pool through normal stop. */
+    static boolean ownsRuntimeGeneration(RegionizedServer expected, RegionWorkerPool expectedPool) {
+        synchronized (LIFECYCLE_LOCK) {
+            return expectedPool != null && pool == expectedPool
+                    && expected != null && PER_LEVEL.get(expected.level) == expected;
+        }
+    }
+
+    private static boolean acceptsUnitForLocked(RegionizedServer expected) {
+        return expected != null
+                && lifecycleState == LifecycleState.RUNNING
+                && active && accepting && pool != null
+                && expected.asyncActive
+                && PER_LEVEL.get(expected.level) == expected;
+    }
+
+    /**
+     * Commit pacer bookkeeping/successors only against the pool generation that
+     * owns the ticket.  False means that generation retired before the commit;
+     * the caller must cancel its OFFERING receipt locally and publish no W.
+     */
+    static boolean commitUnitSuccessIfCurrent(RegionizedServer expected,
+                                              Runnable commit) {
+        if (commit == null) throw new NullPointerException("commit");
+        synchronized (LIFECYCLE_LOCK) {
+            if (!acceptsUnitForLocked(expected)) return false;
+            pool.commitSuccessIfHealthy(commit);
+            return true;
+        }
+    }
+
+    /**
+     * Run one autonomous-pacer stage against the pool generation which owns its
+     * {@code Entry.rs}.  A stale entry is bookkeeping only and returns false; it
+     * must never fall through to the static current/replacement pool.
+     *
+     * <p>The scheduler lock is released before the potentially unbounded exact-turn
+     * wait.  Normal stop first publishes {@code accepting=false}, then interrupts
+     * and joins this exact pacer daemon before retiring the captured pool, so a
+     * lifecycle race is reclassified by the body's own generation checks or exits
+     * through the normal-stop interrupt path.
+     */
+    static boolean runPacerBodyIfCurrent(RegionizedServer expected, Runnable body)
+            throws InterruptedException {
+        if (body == null) throw new NullPointerException("body");
+        RegionWorkerPool expectedPool;
+        synchronized (LIFECYCLE_LOCK) {
+            if (!acceptsUnitForLocked(expected)) return false;
+            expectedPool = pool;
+        }
+        return expectedPool.runPacerBodyIfHealthy(body);
+    }
+
+    public static void start(MinecraftServer mcServer) {
+        if (!RegionalPlayerEntityTicksV2.schedulerLifecycleTransitionAllowed(mcServer)) {
+            throw new IllegalStateException(
+                    "RegionScheduler.start requires physical main between server-tick phases");
+        }
+        boolean regionThreadingEnabled = callSuccessBooleanIfHealthy(() -> {
+            FabroliaConfig.enforceSafetyInvariants();
+            if (!FabroliaConfig.enableRegionThreading) {
+                LOGGER.debug("RegionScheduler: enableRegionThreading=false, scheduler dormant");
+                return false;
+            }
+            return true;
+        });
+        if (!regionThreadingEnabled) return;
+        final long generation;
+        synchronized (LIFECYCLE_LOCK) {
+            Throwable failure = orphanFatalFailure;
+            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+            if (lifecycleState == LifecycleState.RUNNING) return;
+            if (lifecycleState != LifecycleState.STOPPED) {
+                throw new IllegalStateException(
+                        "RegionScheduler cannot start from lifecycle state " + lifecycleState);
+            }
+            lifecycleState = LifecycleState.STARTING;
+            lifecycleOwner = Thread.currentThread();
+            generation = ++lifecycleGeneration;
+        }
+        RegionWorkerPool startedPool = null;
+        StartDraft draft = null;
+        Throwable failure = null;
+        try {
+            com.axalotl.fabrolia.common.utils.SensorCandidateBridge.sealBootstrap();
+            NativeEntityKnownModEnvelope.initialize();
+            int n = FabroliaConfig.getRegionWorkerCount();
+            StartDraft buildDraft = new StartDraft();
+            draft = buildDraft;
+            RegionWorkerPool transitionGate = new RegionWorkerPool(n, mcServer);
+            startedPool = transitionGate;
+            synchronized (LIFECYCLE_LOCK) {
+                Throwable failureBeforeTransition = orphanFatalFailure;
+                if (failureBeforeTransition != null) {
+                    RegionScheduler.<RuntimeException>rethrow(failureBeforeTransition);
+                }
+                if (lifecycleState != LifecycleState.STARTING
+                        || lifecycleOwner != Thread.currentThread()
+                        || lifecycleGeneration != generation
+                        || pool != null || transitionPool != null) {
+                    throw new IllegalStateException(
+                            "RegionScheduler start lost its transition-gate generation");
+                }
+                transitionPool = transitionGate;
+                // Keep the scheduler cut only through the bounded Thread.start
+                // publication. The pool commit owns its first-W cut and keeps every
+                // new worker behind the pool monitor until accepting=true is visible.
+                transitionGate.commitSuccessIfHealthy(transitionGate::start);
+            }
+
+            RegionWorkerPool bootstrapGate = transitionGate;
+            bootstrapGate.runSuccessBodyIfHealthy(() -> {
+                TickDomains.clearFinalClocks();
+                RegionGrid startedGrid = new RegionGrid(RegionGrid.DEFAULT_SHIFT);
+                java.util.Map<ServerLevel, RegionizedServer> startedLevels =
+                        new java.util.IdentityHashMap<>();
+                buildDraft.grid = startedGrid;
+                buildDraft.levels = startedLevels;
+
+                // Build the entire generation off to the side. Nothing publishes
+                // active=true, a grid, or a partially-filled PER_LEVEL map yet.
+                int bootstrapped = 0;
+                for (ServerLevel lvl : mcServer.getAllLevels()) {
+                    RegionizedServer rs = new RegionizedServer(lvl, startedGrid);
+                    startedLevels.put(lvl, rs);
+                    final int[] count = {0};
+                    lvl.entityTickList.forEach(e -> { rs.indexAdd(e); count[0]++; });
+                    bootstrapped += count[0];
+                    var rta = (RegionTickingAccess) lvl.getChunkSource().chunkMap;
+                    for (net.minecraft.server.level.ChunkHolder h : rta.fabrolia$visibleHolders()) {
+                        if (net.minecraft.server.level.ChunkLevel.fullStatus(h.getTicketLevel())
+                                .isOrAfter(net.minecraft.server.level.FullChunkStatus.FULL)) {
+                            rs.onChunkFullTransition(h.getPos().pack(), true, h.getTickingChunk());
+                        }
+                    }
+                }
+                buildDraft.bootstrappedEntities = bootstrapped;
+            });
+            if (buildDraft.bootstrappedEntities > 0) {
+                runSuccessBodyIfHealthy(() -> LOGGER.info(
+                        "RegionScheduler: bootstrapped {} entities into region index",
+                        buildDraft.bootstrappedEntities));
+            }
+            RegionWorkerPool poolToPublish = transitionGate;
+            synchronized (LIFECYCLE_LOCK) {
+                if (transitionPool != poolToPublish) {
+                    throw new IllegalStateException(
+                            "RegionScheduler start commit lost its transition pool");
+                }
+                poolToPublish.commitSuccessIfHealthy(() -> {
+                    if (lifecycleState != LifecycleState.STARTING
+                            || lifecycleOwner != Thread.currentThread()
+                            || lifecycleGeneration != generation
+                            || pool != null || transitionPool != poolToPublish) {
+                        throw new IllegalStateException(
+                                "RegionScheduler start commit lost its generation");
+                    }
+                    PER_LEVEL.clear();
+                    PER_LEVEL.putAll(buildDraft.levels);
+                    server = mcServer;
+                    grid = buildDraft.grid;
+                    pool = poolToPublish;
+                    transitionPool = null;
+                    active = true;
+                    accepting = true;
+                    lifecycleState = LifecycleState.RUNNING;
+                    lifecycleOwner = null;
+                    LIFECYCLE_LOCK.notifyAll();
+                });
+            }
+            runSuccessBodyIfHealthy(() -> LOGGER.warn(
+                    "RegionScheduler: ACTIVE with {} workers, grid shift={} ({}x{} chunks/region) — "
+                            + "experimental Fabrolia region threading. Report issues at "
+                            + "https://github.com/AxalotLDev/Fabrolia/issues with [region] tag",
+                    n, buildDraft.grid.shift,
+                    1 << buildDraft.grid.shift, 1 << buildDraft.grid.shift));
+            boolean playerTickPreferenceApplied = callSuccessBooleanIfHealthy(
+                    () -> RegionalPlayerEntityTicksV2.applyConfiguredPreference(mcServer));
+            runSuccessBodyIfHealthy(() -> {
+                if (!FabroliaConfig.enablePlayerTickActor) return;
+                if (playerTickPreferenceApplied) {
+                    LOGGER.info("RegionScheduler: restored saved player-tick ownership preference ON");
+                    return;
+                }
+                LOGGER.warn("RegionScheduler: saved player-tick ownership preference is ON, "
+                                + "but runtime activation was refused: {}",
+                        RegionalPlayerEntityTicksV2.refusalReason(mcServer));
+            });
+            // Runtime publication and the optional preference hook are distinct
+            // entered stages.  Do not report a healthy start over a pool W which
+            // won before this final success edge.
+            commitSuccessIfHealthy(() -> {});
+            return;
+        } catch (Throwable startFailure) {
+            // Thread.start/bootstrap and the post-ACTIVE preference hook are
+            // runtime-transition bodies. Close the new generation immediately;
+            // pool stop and index rollback below are mandatory cleanup only.
+            failure = startedPool == null
+                    ? startFailure : startedPool.publishAndSelectFatal(startFailure);
+            if (startedPool == null || startedPool != pool) {
+                failure = publishFatalAndSelectWinner(failure);
+            }
+        }
+
+        accepting = false;
+        if (startedPool != null) {
+            try {
+                startedPool.stop();
+            } catch (Throwable cleanup) {
+                failure = mergeFailure(failure, cleanup);
+            }
+        }
+        if (startedPool != null && !startedPool.isTerminated()) {
+            synchronized (LIFECYCLE_LOCK) {
+                lifecycleState = LifecycleState.FAILED;
+                lifecycleOwner = null;
+                LIFECYCLE_LOCK.notifyAll();
+            }
+            RegionScheduler.<RuntimeException>rethrow(failure != null ? failure
+                    : new IllegalStateException("partially-started region pool stayed live"));
+        }
+        active = false;
+        if (draft != null && draft.levels != null) {
+            for (RegionizedServer rs : draft.levels.values()) {
+                try { rs.regionizer().clear(); } catch (Throwable cleanup) {
+                    failure = mergeFailure(failure, cleanup);
+                }
+            }
+        }
+        PER_LEVEL.clear();
+        synchronized (LIFECYCLE_LOCK) {
+            Throwable retiredWinner = startedPool == null
+                    ? null : startedPool.fatalFailureOrNull();
+            if (retiredWinner != null) {
+                failure = mergeFailure(retiredWinner, failure);
+            }
+            if (failure != null) {
+                Throwable orphan = orphanFatalFailure;
+                if (orphan == null) {
+                    orphanFatalFailure = failure;
+                } else {
+                    failure = mergeFailure(orphan, failure);
+                }
+            }
+            if (pool == startedPool) pool = null;
+            if (transitionPool == startedPool) transitionPool = null;
+            grid = null;
+            server = null;
+            mainCurrentLevel = null;
+            boolean stopped = startedPool == null || startedPool.isTerminated();
+            lifecycleState = stopped && pool == null && transitionPool == null
+                    && orphanFatalFailure == null
+                    ? LifecycleState.STOPPED : LifecycleState.FAILED;
+            lifecycleOwner = null;
+            LIFECYCLE_LOCK.notifyAll();
+        }
+        RegionScheduler.<RuntimeException>rethrow(failure);
+    }
+
+    public static void stop() {
+        if (Thread.currentThread() instanceof RegionWorkerThread) {
+            throw new IllegalStateException(
+                    "RegionScheduler.stop cannot self-join a region worker; invoke it on main");
+        }
+        MinecraftServer currentServer = server;
+        if (currentServer != null
+                && !RegionalPlayerEntityTicksV2
+                .schedulerLifecycleTransitionAllowed(currentServer)) {
+            throw new IllegalStateException(
+                    "RegionScheduler.stop requires physical main between server-tick phases");
+        }
+        boolean interrupted = false;
+        synchronized (LIFECYCLE_LOCK) {
+            while (lifecycleState == LifecycleState.STARTING
+                    || lifecycleState == LifecycleState.STOPPING) {
+                if (lifecycleOwner == Thread.currentThread()) {
+                    throw new IllegalStateException(
+                            "RegionScheduler.stop re-entered from its own quiescence callback");
+                }
+                try {
+                    LIFECYCLE_LOCK.wait();
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+            MinecraftServer authoritativeServer = server;
+            if (authoritativeServer != null
+                    && !RegionalPlayerEntityTicksV2
+                    .schedulerLifecycleTransitionAllowed(authoritativeServer)) {
+                if (interrupted) Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "RegionScheduler.stop lost its between-phase physical-main authority");
+            }
+            if (lifecycleState == LifecycleState.STOPPED
+                    && !active && pool == null && transitionPool == null
+                    && server == null) {
+                if (interrupted) Thread.currentThread().interrupt();
+                Throwable failure = orphanFatalFailure;
+                if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+                return;
+            }
+            if (lifecycleState != LifecycleState.RUNNING
+                    && lifecycleState != LifecycleState.FAILED) {
+                throw new IllegalStateException(
+                        "RegionScheduler cannot stop from lifecycle state " + lifecycleState);
+            }
+            RegionWorkerPool drainingPool = failureGateLocked();
+            if (active && drainingPool == null) {
+                throw new IllegalStateException("active region scheduler had no worker pool");
+            }
+            // Publish scheduler retirement before stopping the autonomous pacer.
+            // Pool root admission deliberately remains open until that exact daemon
+            // has joined: it may still be terminalizing a poll-only AttemptReceipt,
+            // and that bookkeeping is an accepted child of the unit already owned by
+            // this generation rather than a fresh simulation root.
+            lifecycleState = LifecycleState.STOPPING;
+            lifecycleOwner = Thread.currentThread();
+            accepting = false;
+        }
+        Throwable failure = null;
+        try {
+            stopOutsideLifecycleLock();
+        } catch (Throwable thrown) {
+            failure = thrown;
+        } finally {
+            synchronized (LIFECYCLE_LOCK) {
+                Throwable terminalFailure = orphanFatalFailure;
+                if (terminalFailure != null) {
+                    failure = failure == null
+                            ? terminalFailure : mergeFailure(terminalFailure, failure);
+                }
+                boolean stopped = !active && pool == null && transitionPool == null
+                        && server == null
+                        && orphanFatalFailure == null;
+                lifecycleState = stopped ? LifecycleState.STOPPED : LifecycleState.FAILED;
+                lifecycleOwner = null;
+                LIFECYCLE_LOCK.notifyAll();
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+    }
+
+    /** Long quiescence/drain path.  Never call while holding LIFECYCLE_LOCK. */
+    private static void stopOutsideLifecycleLock() {
+        RegionWorkerPool stoppingPool = pool != null ? pool : transitionPool;
+        Throwable stopFailure = stoppingPool == null
+                ? orphanFatalFailure : stoppingPool.fatalFailureOrNull();
+        boolean failedGeneration = stopFailure != null;
+
+        // STOPPING + scheduler accepting=false is already visible, so no pacer
+        // ticket or completing unit can publish a successor. Retire and join the
+        // exact daemon before closing generic pool roots: a healthy receipt which
+        // became terminal at this boundary may otherwise try to return its local
+        // cadence authority through runSuccessBodyIfHealthy after beginDraining,
+        // where the pacer is intentionally neither Main nor a pool worker.
+        try {
+            TemporalControl.drainPacer();
+        } catch (Throwable pacerStopFailure) {
+            stopFailure = mergeFailure(stopFailure, pacerStopFailure);
+            if (stoppingPool != null) {
+                stoppingPool.publishFatalFailure(pacerStopFailure);
+                stopFailure = mergeFailure(
+                        stoppingPool.fatalFailureOrNull(), stopFailure);
+            }
+            failedGeneration = true;
+        }
+
+        // The pacer join above is bounded by that daemon alone; it does not wait
+        // for pool work. Any unrelated root which entered in this short interval
+        // is already tracked by the pool and is covered by the fixed-point drain.
+        // Close root admission even when pacer retirement selected W so failed-
+        // generation cancellation cannot race a late producer.
+        if (stoppingPool != null && !stoppingPool.isTerminated()) {
+            try {
+                stoppingPool.beginDraining(Thread.currentThread());
+            } catch (Throwable drainBoundaryFailure) {
+                stopFailure = mergeFailure(stopFailure, drainBoundaryFailure);
+                stoppingPool.publishFatalFailure(drainBoundaryFailure);
+                stopFailure = mergeFailure(
+                        stoppingPool.fatalFailureOrNull(), stopFailure);
+                failedGeneration = true;
+            }
+        }
+
+        java.util.List<RegionizedServer> stopLevels;
+        try {
+            stopLevels = new java.util.ArrayList<>(PER_LEVEL.values());
+        } catch (Throwable snapshotFailure) {
+            stopFailure = mergeFailure(stopFailure, snapshotFailure);
+            if (stoppingPool != null) {
+                stoppingPool.publishFatalFailure(snapshotFailure);
+                stopFailure = mergeFailure(stoppingPool.fatalFailureOrNull(), stopFailure);
+                failedGeneration = true;
+            }
+            stopLevels = java.util.List.of();
+        }
+        if (!failedGeneration) {
+            try {
+                RegionalPlayerEntityTicksV2.setEnabled(server, false);
+            } catch (Throwable transitionFailure) {
+                stopFailure = transitionFailure;
+                if (stoppingPool != null) {
+                    stoppingPool.publishFatalFailure(transitionFailure);
+                    stopFailure = mergeFailure(stoppingPool.fatalFailureOrNull(), stopFailure);
+                    failedGeneration = true;
+                }
+            }
+        }
+        // A region queue owned by an async island may deliberately wait for that
+        // island's next logical unit. Re-arming such a queue during generic pool
+        // drain either spins forever at ColorGate or executes a future tick early.
+        // First use the normal ASYNC->SYNC quiesce/carry/collapse protocol while
+        // the pool is still available; only wall-domain obligations enter stop().
+        if (!failedGeneration) {
+            for (RegionizedServer rs : stopLevels) {
+                if (stoppingPool != null && stoppingPool.hasFatalFailure()) {
+                    stopFailure = mergeFailure(
+                            stoppingPool.fatalFailureOrNull(), stopFailure);
+                    failedGeneration = true;
+                    break;
+                }
+                try {
+                    rs.prepareForSchedulerStop();
+                } catch (Throwable collapseFailure) {
+                    stopFailure = mergeFailure(stopFailure, collapseFailure);
+                    if (stoppingPool != null) {
+                        stoppingPool.publishFatalFailure(collapseFailure);
+                        stopFailure = mergeFailure(
+                                stoppingPool.fatalFailureOrNull(), stopFailure);
+                        failedGeneration = true;
+                    }
+                    break;
+                }
+            }
+        }
+        final java.util.List<RegionizedServer> drainLevels = stopLevels;
+        if (stoppingPool != null && !stoppingPool.isTerminated()) {
+            try {
+                Runnable drainProgress = () -> {
+                    MinecraftServer physicalOwner = server;
+                    if (!RegionalPlayerEntityTicksV2
+                            .isPhysicalServerThread(physicalOwner)) {
+                        throw new IllegalStateException(
+                                "region scheduler drain lost the physical server thread");
+                    }
+                    // Ticket/raid/portal writes are admitted pool roots, but only the
+                    // real server thread may enter them. Workers deliberately cannot
+                    // consume this lane, so Main services it on every fixed-point pass.
+                    stoppingPool.drainMainSafeAll(true);
+                    drainTrackedMainControlTasks(stoppingPool);
+                    for (RegionizedServer rs : drainLevels) {
+                        // An accepted worker can enqueue more than one cold-chunk bridge
+                        // before its active-step publication reaches the pool cut. Drain the
+                        // exact processor to empty; a one-item poll could leave callback #2
+                        // until after running=false, where its causal child would be refused.
+                        while (callSuccessBooleanIfHealthy(() -> rs.level
+                                .getChunkSource().mainThreadProcessor.pollTask())) {
+                            // fixed point for this level's main-thread bridge
+                        }
+                    }
+                    // Chunk processors above may be required to let a step
+                    // reach its finally chain.  MAIN_SYNC bodies below are
+                    // new simulation and are forbidden once any such task has
+                    // published the generation fatal.
+                    throwWorkerFailureIfAny();
+                    while (drainMainSyncTicks()) {
+                        // One root can publish another main-owned root.
+                    }
+                    healColorGate();
+                    rearmPendingRegionWork(stoppingPool, drainLevels);
+                    IslandCommands.drainRoutedBatch();
+                    // This must remain the last progress stage. Chunk callbacks,
+                    // MAIN_SYNC, heal, and re-arm can all expose more advancement
+                    // evaluation work. Tracked producers advance the pool's shutdown
+                    // activity epoch at terminal, so a completion after this drain
+                    // forces another full progress pass before generation close.
+                    AdvancementBuffer.drainShutdownPassIfPending();
+                };
+                stoppingPool.stop(drainProgress);
+            } catch (Throwable workerStopFailure) {
+                boolean workerFailedGeneration = stoppingPool.hasFatalFailure();
+                failedGeneration |= workerFailedGeneration;
+                stopFailure = workerFailedGeneration
+                        ? mergeFailure(workerStopFailure, stopFailure)
+                        : mergeFailure(stopFailure, workerStopFailure);
+            }
+            if (!stoppingPool.isTerminated()) {
+                // Pre-quiescence failure keeps the live runtime published for diagnosis/retry.
+                rethrow(stopFailure != null ? stopFailure : new IllegalStateException(
+                        "region worker pool stop returned before quiescence"));
+            }
+        }
+        if (stoppingPool != null && stoppingPool.hasFatalFailure()) {
+            failedGeneration = true;
+            stopFailure = mergeFailure(stoppingPool.fatalFailureOrNull(), stopFailure);
+        }
+
+        // Thread.join supplied the publication edge. Only now make the runtime dark and
+        // perform final-clock/portal/arrival persistence work. Any failure retains every
+        // registry/reference and leaves lifecycle FAILED; a later explicit stop can retry.
+        // A failed simulation generation is different: its queued obligations were
+        // explicitly terminalized, so success-only persistence/drain stages are forbidden
+        // and all runtime references are detached before the exact primary is rethrown.
+        active = false;
+        if (!MAIN_SYNC.isEmpty()) {
+            stopFailure = mergeFailure(stopFailure, new IllegalStateException(
+                    "MAIN_SYNC was non-empty after the worker-pool fixed point"));
+        }
+        for (RegionizedServer rs : stopLevels) {
+            try {
+                for (Region region : rs.snapshot()) {
+                    if (!region.queue().isEmpty() || !region.helpQueue.isEmpty()) {
+                        stopFailure = mergeFailure(stopFailure, new IllegalStateException(
+                                "region work survived the worker-pool fixed point: "
+                                        + rs.level.dimension().identifier() + "/"
+                                        + Long.toHexString(region.gridKey)));
+                    }
+                }
+            } catch (Throwable inspectionFailure) {
+                stopFailure = mergeFailure(stopFailure, inspectionFailure);
+            }
+        }
+        for (RegionizedServer rs : stopLevels) {
+            try {
+                ((com.axalotl.fabrolia.common.parallelised.utils.TickingChunksAccess)
+                        rs.entityManagerHandle()).fabrolia$finishStatusTransitions(!failedGeneration);
+            } catch (Throwable statusFailure) {
+                stopFailure = mergeFailure(publishFatalAndSelectWinner(statusFailure), stopFailure);
+                failedGeneration = true;
+            }
+        }
+        if (!failedGeneration) {
+            stopFailure = finishQuiescedRuntime(stopLevels, stopFailure);
+            if (stopFailure != null) rethrow(stopFailure);
+        }
+
+        Throwable clearFailure = failedGeneration ? stopFailure : null;
+        for (RegionizedServer rs : stopLevels) {
+            try {
+                rs.regionizer().clear();
+            } catch (Throwable cleanup) {
+                clearFailure = mergeFailure(clearFailure, cleanup);
+            }
+        }
+        if (!failedGeneration && clearFailure != null) rethrow(clearFailure);
+        try {
+            PER_LEVEL.clear();
+        } catch (Throwable cleanup) {
+            clearFailure = mergeFailure(clearFailure, cleanup);
+        }
+        try {
+            LOGGER.info("RegionScheduler: stopped");
+        } catch (Throwable diagnosticFailure) {
+            clearFailure = mergeFailure(clearFailure, diagnosticFailure);
+        }
+        synchronized (LIFECYCLE_LOCK) {
+            Throwable retiredWinner = stoppingPool == null
+                    ? null : stoppingPool.fatalFailureOrNull();
+            if (retiredWinner != null) {
+                clearFailure = mergeFailure(retiredWinner, clearFailure);
+            }
+            if (clearFailure != null) {
+                Throwable orphan = orphanFatalFailure;
+                if (orphan == null) {
+                    orphanFatalFailure = clearFailure;
+                } else {
+                    clearFailure = mergeFailure(orphan, clearFailure);
+                }
+            }
+            if (pool == stoppingPool) pool = null;
+            if (transitionPool == stoppingPool) transitionPool = null;
+            grid = null;
+            server = null;
+            mainCurrentLevel = null;
+            asyncLive = false;
+        }
+        if (clearFailure != null) rethrow(clearFailure);
+    }
+
+    private static Throwable finishQuiescedRuntime(
+            java.util.List<RegionizedServer> levels, Throwable failure) {
+        try {
+            TickDomains.retainFinalClocks(levels);
+        } catch (Throwable cleanup) {
+            failure = mergeFailure(failure, cleanup);
+        }
+        try {
+            TickDomains.collapseAllToWall(levels);
+            RedstoneTorchHistory.collapseAllToWall(levels);
+        } catch (Throwable cleanup) {
+            failure = mergeFailure(failure, cleanup);
+        }
+        try {
+            NetherPortalTransfers.flushQuiescent();
+        } catch (Throwable cleanup) {
+            failure = mergeFailure(failure, cleanup);
+        }
+        try {
+            CrossDimArrivals.flushAll(levels);
+        } catch (Throwable cleanup) {
+            failure = mergeFailure(failure, cleanup);
+        }
+        try {
+            CrossDimLinks.reset();
+        } catch (Throwable cleanup) {
+            failure = mergeFailure(failure, cleanup);
+        }
+        return failure;
+    }
+
+    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
+        if (primary == null) return secondary;
+        if (primary != secondary) {
+            try {
+                if (primary.getSuppressed().length >= 8) return primary;
+                primary.addSuppressed(secondary);
+            } catch (Throwable ignored) {
+                // Cleanup diagnostics cannot replace the exact primary failure.
+            }
+        }
+        return primary;
+    }
+
+    /**
+     * Failed-generation queue cut, called only after the pool has closed admission and
+     * every worker step/root publisher is quiescent. Entries are detached, never run.
+     * Explicit cancellation hooks terminalize nested fan-ins/futures and every queued
+     * MAIN_SYNC permit; cleanup failures remain bounded diagnostics on the exact primary.
+     * Only the registered generation owns these global lanes. Its lifecycle cannot
+     * detach or replace it until pool stop returns; never hold LIFECYCLE_LOCK across
+     * cancellation callbacks, which may complete outstanding pool obligations.
+     */
+    static Throwable cancelFailedGenerationQueues(
+            RegionWorkerPool expectedPool, Throwable primary) {
+        synchronized (LIFECYCLE_LOCK) {
+            if (expectedPool == null
+                    || (pool != expectedPool && transitionPool != expectedPool)) return primary;
+        }
+        Throwable failure = primary;
+        try {
+            failure = cancelTrackedMainControlTasks(expectedPool, failure);
+        } catch (Throwable cleanup) {
+            failure = expectedPool.mergeCancellationFailure(failure, cleanup);
+        }
+        try {
+            failure = NetherPortalTransfers.cancelFailedGeneration(failure);
+        } catch (Throwable cleanup) {
+            failure = expectedPool.mergeCancellationFailure(failure, cleanup);
+        }
+        try {
+            failure = IslandCommands.cancelFailedGeneration(failure);
+        } catch (Throwable cleanup) {
+            failure = expectedPool.mergeCancellationFailure(failure, cleanup);
+        }
+        MainSyncTask mainTask;
+        try {
+            while ((mainTask = MAIN_SYNC.poll()) != null) {
+                failure = expectedPool.cancelQueuedPermit(mainTask.permit(), failure);
+            }
+        } catch (Throwable cleanup) {
+            failure = expectedPool.mergeCancellationFailure(failure, cleanup);
+        }
+        java.util.ArrayList<RegionizedServer> levels;
+        try {
+            levels = new java.util.ArrayList<>(PER_LEVEL.values());
+        } catch (Throwable cleanup) {
+            return expectedPool.mergeCancellationFailure(failure, cleanup);
+        }
+        for (int li = 0, ln = levels.size(); li < ln; li++) {
+            RegionizedServer rs = levels.get(li);
+            java.util.List<Region> regions;
+            try {
+                regions = rs.snapshot();
+            } catch (Throwable cleanup) {
+                failure = expectedPool.mergeCancellationFailure(failure, cleanup);
+                continue;
+            }
+            for (int ri = 0, rn = regions.size(); ri < rn; ri++) {
+                Region region = regions.get(ri);
+                try {
+                    failure = cancelFailedGenerationRegionQueues(
+                            expectedPool, region, failure);
+                } catch (Throwable cleanup) {
+                    failure = expectedPool.mergeCancellationFailure(failure, cleanup);
+                }
+            }
+        }
+        return failure;
+    }
+
+    static boolean failedGenerationQueuesEmpty(RegionWorkerPool expectedPool) {
+        synchronized (LIFECYCLE_LOCK) {
+            if (expectedPool == null
+                    || (pool != expectedPool && transitionPool != expectedPool)) return true;
+        }
+        try {
+            if (pendingMainControl(expectedPool) != null) return false;
+            if (!IslandCommands.failedGenerationQueuesEmpty()) return false;
+            if (!MAIN_SYNC.isEmpty()) return false;
+            if (NetherPortalTransfers.hasPending()) return false;
+            for (RegionizedServer rs : PER_LEVEL.values()) {
+                for (Region region : rs.snapshot()) {
+                    if (!failedGenerationRegionQueuesEmpty(region)) return false;
+                }
+            }
+            return true;
+        } catch (Throwable cleanup) {
+            // A failed inspection cannot replace the generation primary or authorize
+            // teardown over an unknown queue. Retain it as bounded diagnostics and let
+            // the stop thread retry the cancellation/inspection fixed point.
+            expectedPool.recordCancellationFailure(cleanup);
+            return false;
+        }
+    }
+
+    /**
+     * Detach every body obligation owned by one region generation without ever
+     * entering its simulation body.  The ordinary, helper and post-rebase lanes
+     * share admissionLock for this terminal sweep so a concurrent rebase flush
+     * cannot move the final accepted ExternalTask behind the emptiness check.
+     */
+    static Throwable cancelFailedGenerationRegionQueues(
+            RegionWorkerPool expectedPool, Region region, Throwable primary) {
+        Throwable failure = primary;
+        for (;;) {
+            Runnable queued;
+            synchronized (region.admissionLock) {
+                queued = region.queue().poll();
+                if (queued == null) queued = region.helpQueue.poll();
+                if (queued == null) {
+                    queued = region.pollDomainRebaseDeferredTaskForCancellation();
+                }
+                if (queued == null) {
+                    region.clearDomainRebaseDeferredReadyForCancellation();
+                    return failure;
+                }
+            }
+            failure = expectedPool.cancelQueuedEntry(queued, failure);
+        }
+    }
+
+    /** Fixed-point view paired with cancelFailedGenerationRegionQueues. */
+    static boolean failedGenerationRegionQueuesEmpty(Region region) {
+        synchronized (region.admissionLock) {
+            return region.queue().isEmpty()
+                    && region.helpQueue.isEmpty()
+                    && region.domainRebaseDeferredAdmissionsEmpty();
+        }
+    }
+
+    private static void rearmPendingRegionWork(RegionWorkerPool drainingPool,
+                                               java.util.List<RegionizedServer> levels) {
+        boolean armed = false;
+        for (RegionizedServer rs : levels) {
+            for (Region region : rs.snapshot()) {
+                if (region.currentWorker() == null
+                        && (!region.queue().isEmpty() || !region.helpQueue.isEmpty())) {
+                    if (!drainingPool.rerouteClosedRegionForShutdown(region)) {
+                        armed |= drainingPool.enqueueReady(region);
                     }
                 }
             }
         }
-        if (bootstrapped > 0) {
-            LOGGER.info("RegionScheduler: bootstrapped {} entities into region index", bootstrapped);
-        }
-        LOGGER.warn("RegionScheduler: ACTIVE with {} workers, grid shift={} ({}x{} chunks/region) — " +
-                "experimental Folia-style region threading. Report issues at " +
-                "https://github.com/AxalotLDev/Fabrolia/issues with [region] tag",
-                n, grid.shift, 1 << grid.shift, 1 << grid.shift);
+        if (armed) drainingPool.wakeAll();
     }
 
-    public static synchronized void stop() {
-        if (!active) {
-            // No live pool: resolve queued transfers (see the note at the other
-            // flushAll below), flush any straggler arrivals, then release refs.
-            try {
-                com.axalotl.fabrolia.common.parallelised.utils.PortalTeleportationManager
-                        .drainPending();
-            } catch (Throwable t) {
-                LOGGER.error("portal transfer drain at stop failed", t);
-            }
-            try {
-                // Explicit list: allLevels() is already dark here (!active).
-                CrossDimArrivals.flushAll(new java.util.ArrayList<>(PER_LEVEL.values()));
-            } catch (Throwable t) {
-                LOGGER.error("cross-dim arrival flush at stop failed", t);
-            }
-            server = null;
-            return;
-        }
-        // SHUTDOWN-ORDER FIX (2026-07-21): capture the level list and retain every
-        // island's final logical clock BEFORE active=false makes the gated accessors
-        // (allLevels/forLevel) go dark — the old order turned the shutdown collapse
-        // into a silent no-op AND made the final save's tag resolution fail for
-        // every island-tagged container ("cannot be resolved" flood; saved triggers
-        // shifted by the island offset).
-        java.util.List<RegionizedServer> stopLevels = new java.util.ArrayList<>(PER_LEVEL.values());
-        active = false;
-        try {
-            // ORDER (2026-07-18 audit #2): stop workers FIRST — an in-flight
-            // island unit can stage/seal cross-dim arrivals; flushing before
-            // the pool is quiet let those land after the flush and be dropped
-            // by PER_LEVEL.clear() with the entities already removed from
-            // their source level (permanent loss on stop / regions off).
-            if (pool != null) pool.stop();
-            // Retain final clocks FIRST: the collapse below resolves tags through
-            // resolveNow, whose live-registry path is already dark (active=false) —
-            // the retained snapshot is what it resolves against. It also serves any
-            // container that reaches the final save still tagged (chunks loading
-            // mid-shutdown, a collapse throw) — including across dimension teardown.
-            try {
-                TickDomains.retainFinalClocks(stopLevels);
-            } catch (Throwable t) {
-                LOGGER.error("final-clock retention failed", t);
-            }
-            // Task #31: collapse every island-tagged tick container to WALL
-            // while tags are still resolvable — the final world save (which
-            // runs AFTER SERVER_STOPPING) then packs true remaining delays.
-            // Skipping this was the production farm killer: island-L triggers
-            // saved against the wall basis future-dated pending ticks by the
-            // whole sprint/rate offset, permanently dedup-blocking positions.
-            try {
-                TickDomains.collapseAllToWall(stopLevels);
-            } catch (Throwable t) {
-                LOGGER.error("tick-domain shutdown collapse failed", t);
-            }
-            // task #26: RESOLVE QUEUED PORTAL TRANSFERS BEFORE the arrival flush.
-            // A transfer sits in PortalTeleportationManager.PENDING between the
-            // source worker's submit and main's next entity-batch epilogue. At
-            // stop that epilogue never comes: shutdown() simply cleared the
-            // queue — and because ParallelProcessor.stop() runs AFTER this
-            // method, the drop happened after flushAll, i.e. after the only
-            // thing that could have published the arrival. The source cart was
-            // then saved at rest inside the portal with its cooldown already
-            // armed by handlePortal, which vanilla's setAsInsidePortal re-arms
-            // every tick on reload — a permanently trapped loader produced by
-            // nothing but a server restart. Draining here executes the teleport
-            // on main and stages the arrival, which the flushAll below then
-            // publishes: the transfer completes instead of being lost.
-            try {
-                com.axalotl.fabrolia.common.parallelised.utils.PortalTeleportationManager
-                        .drainPending();
-            } catch (Throwable t) {
-                LOGGER.error("portal transfer drain at stop failed", t);
-            }
-            try {
-                // MUST use the captured stopLevels: active=false above makes
-                // allLevels() return empty, which silently no-op'd this entire
-                // flush and destroyed every in-flight arrival. Same reason
-                // retainFinalClocks/collapseAllToWall take the list.
-                CrossDimArrivals.flushAll(stopLevels);
-            } catch (Throwable t) {
-                LOGGER.error("cross-dim arrival flush at stop failed", t);
-            }
-            TemporalControl.drainPacer();
-            CrossDimLinks.reset();
-        } finally {
-            for (RegionizedServer rs : PER_LEVEL.values()) {
-                try { rs.regionizer().clear(); } catch (Throwable t) {
-                    LOGGER.warn("clear() threw for {}", rs.level.dimension().identifier(), t);
-                }
-            }
-            PER_LEVEL.clear();
-            pool = null;
-            grid = null;
-            server = null;
-            mainCurrentLevel = null;
-        }
-        LOGGER.info("RegionScheduler: stopped");
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 
     public static RegionizedServer forLevel(ServerLevel level) {
         if (!active) return null;
-        return PER_LEVEL.computeIfAbsent(level, lvl -> new RegionizedServer(lvl, grid));
+        RegionizedServer existing = PER_LEVEL.get(level);
+        if (existing != null || !accepting) return existing;
+        // Creation is cold (once per dimension), so linearize it with the lifecycle cut.
+        // A stop snapshot can no longer miss a computeIfAbsent that observed stale true.
+        synchronized (LIFECYCLE_LOCK) {
+            existing = PER_LEVEL.get(level);
+            if (existing != null || !active || !accepting) return existing;
+            RegionWorkerPool current = pool;
+            RegionGrid currentGrid = grid;
+            if (current == null) {
+                Throwable failure = publishFatalAndSelectWinner(
+                        new IllegalStateException(
+                                "active RegionScheduler has no pool for level creation"));
+                RegionScheduler.<RuntimeException>rethrow(failure);
+                return null;
+            }
+            if (lifecycleState != LifecycleState.RUNNING || currentGrid == null) {
+                Throwable failure = current.publishAndSelectFatal(
+                        new IllegalStateException(
+                                "active RegionScheduler has no running generation for level creation"));
+                RegionScheduler.<RuntimeException>rethrow(failure);
+                return null;
+            }
+
+            final RegionizedServer[] prepared;
+            try {
+                prepared = new RegionizedServer[1];
+            } catch (Throwable preparationFailure) {
+                Throwable failure = current.publishAndSelectFatal(preparationFailure);
+                RegionScheduler.<RuntimeException>rethrow(failure);
+                return null;
+            }
+            try {
+                // Construction reads fallible ServerLevel state. It is therefore an
+                // admitted body of this exact generation, not cold work which may run
+                // after a peer W or escape without selecting its Throwable globally.
+                current.runSuccessBodyIfHealthy(
+                        () -> prepared[0] = new RegionizedServer(level, currentGrid));
+            } catch (Throwable constructionFailure) {
+                Throwable failure = current.publishAndSelectFatal(constructionFailure);
+                RegionScheduler.<RuntimeException>rethrow(failure);
+                return null;
+            }
+            RegionizedServer created = prepared[0];
+            try {
+                // LIFECYCLE_LOCK fixes the owning generation; the pool cut fixes
+                // map visibility before W. If ConcurrentHashMap publication itself
+                // throws, that exact Throwable becomes W and the partial key is
+                // removed by the failure envelope below.
+                current.commitSuccessIfHealthy(() -> PER_LEVEL.put(level, created));
+                return created;
+            } catch (Throwable publicationFailure) {
+                Throwable failure = current.publishAndSelectFatal(publicationFailure);
+                try {
+                    PER_LEVEL.remove(level, created);
+                } catch (Throwable cleanupFailure) {
+                    failure = current.publishAndSelectFatal(
+                            mergeFailure(failure, cleanupFailure));
+                }
+                RegionScheduler.<RuntimeException>rethrow(failure);
+                return null;
+            }
+        }
+    }
+
+    /**
+     * Resolve a manager against published runtime identity, including the
+     * stop/OFF interval after async intent is cleared but before entered
+     * claims have quiesced. Absence from allAsync is not exclusion authority.
+     */
+    public static RegionizedServer forEntityManager(Object manager) {
+        for (RegionizedServer runtime : PER_LEVEL.values()) {
+            if (runtime.entityManagerHandle() == manager) return runtime;
+        }
+        return null;
     }
 
     static Collection<RegionizedServer> allLevels() {
         return active ? PER_LEVEL.values() : Collections.emptyList();
+    }
+
+    /** Published identities remain authoritative while stop retires entered work. */
+    static Collection<RegionizedServer> publishedLevels() {
+        return PER_LEVEL.values();
+    }
+
+    static RegionizedServer publishedForLevel(ServerLevel level) {
+        return PER_LEVEL.get(level);
     }
 
     /**
@@ -218,6 +1689,206 @@ public final class RegionScheduler {
     public static CompletableFuture<Void> dispatchOwnedEntityTicks(ServerLevel level) {
         if (!active) return CompletableFuture.completedFuture(null);
         return forLevel(level).dispatchOwnedEntityTicks();
+    }
+
+    /** Queue-only barrier used by exact-ordinal player mode. */
+    public static CompletableFuture<Void> dispatchPreEntityWork(ServerLevel level) {
+        if (!active) return CompletableFuture.completedFuture(null);
+        RegionizedServer owner = forLevel(level);
+        if (owner == null) {
+            throw new IllegalStateException(
+                    "exact player pre-entity dispatch has no active level owner");
+        }
+        return owner.dispatchPreEntityWork();
+    }
+
+    /**
+     * Stop every region worker at one lifecycle-lock edge before handing a
+     * canonical EntityTickList slot to the logical-server actor. Publications
+     * remain queued until {@link #resumeExactPlayerTurn()}.
+     */
+    public static void pauseExactPlayerTurn() {
+        pauseExactPlayerTurn(false);
+    }
+
+    /** Retain next-unit FIFO; false defers preparation until routed Main work can finish. */
+    static boolean pauseMainPreparationTurn() {
+        return pauseExactPlayerTurn(true);
+    }
+
+    private static boolean pauseExactPlayerTurn(boolean retainQueuedRegions) {
+        RegionWorkerPool current = pool;
+        if (!active || current == null) {
+            throw new IllegalStateException("exact player turn requires a live region pool");
+        }
+        MinecraftServer owner = server;
+        if (owner == null
+                || !RegionalPlayerEntityTicksV2.isPhysicalServerThread(owner)) {
+            throw new IllegalStateException(
+                    "exact player turn pause lost the physical server thread");
+        }
+        Runnable progress = () -> {
+            // Workers are now fenced or completing their last admitted step. Drain
+            // both worker-safe and physical-Main-only roots before validating the
+            // exact-turn fixed point; no worker is authorized to consume ticket roots.
+            current.drainMainSafeAll(true);
+            for (ServerLevel level : owner.getAllLevels()) {
+                while (callSuccessBooleanIfHealthy(() -> level.getChunkSource()
+                        .mainThreadProcessor.pollTask())) {
+                    // Drain causal chunk-main work to a fixed point. The pool
+                    // revalidates its queues and permits after the final fenced pass.
+                }
+            }
+            throwWorkerFailureIfAny();
+            // A causal worker may have published a main-owned entity obligation
+            // immediately before the exact-turn request. External permits keep the
+            // fixed point open until physical main finishes those accepted entries.
+            drainMainSyncTicks();
+            if (!retainQueuedRegions) {
+                IslandCommands.drainRoutedBatch();
+                // Mandatory V2 turns run outside autonomous mode and enter before
+                // the exact actor acquires its level/connection slot. Finish each
+                // accepted native control through the real FIFO while REQUESTED,
+                // never by pumping predecessors inside the final PAUSED turn.
+                if (!current.ownsPausedExactTurn(Thread.currentThread())) {
+                    drainTrackedMainControlTasks(current);
+                }
+            }
+        };
+        if (retainQueuedRegions) return current.pauseMainPreparationAndAwait(progress);
+        current.pauseExactTurnAndAwait(progress);
+        return true;
+    }
+
+    public static void resumeExactPlayerTurn() {
+        RegionWorkerPool current = pool;
+        if (current == null) {
+            throw new IllegalStateException("exact player turn lost its region pool");
+        }
+        current.resumeExactTurn();
+    }
+
+    /** The pool fence, not a mirrored phase flag, is the physical-owner authority. */
+    static boolean ownsExactExecutionTurn() {
+        RegionWorkerPool current = pool;
+        RegionWorkerPool failureGate = current != null ? current : transitionPool;
+        if (failureGate != null) {
+            // Fast-fail the authorization probe.  This is not by itself a body
+            // admission: every true branch must still use runSuccessBodyIfHealthy
+            // so a W racing the probe cannot be followed by an inline root.
+            failureGate.throwIfFailed();
+        } else {
+            Throwable failure = orphanFatalFailure;
+            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        }
+        return RegionalPlayerEntityTicksV2.inExactPlayerActor()
+                || current != null && current.ownsPausedExactTurn(Thread.currentThread());
+    }
+
+    static boolean isExactPlayerTurnPausedBy(Thread thread) {
+        RegionWorkerPool current = pool;
+        return current != null && current.ownsPausedExactTurn(thread);
+    }
+
+    /**
+     * Affirmative spatial execution authority for the public island API. This
+     * observes existing claims/turn fences; it neither acquires one nor admits
+     * a success body past the fatal cut.
+     */
+    public static boolean ownsCurrentContext(ServerLevel level, BlockPos pos) {
+        if (NetherPortalTransfers.owns(level, pos)) return true;
+        Thread caller = Thread.currentThread();
+        MinecraftServer physicalServer = level.getServer();
+        if (physicalServer != null && physicalServer == server && ownsExclusiveGameplay()) return true;
+        boolean physicalMain = RegionalPlayerEntityTicksV2
+                .isPhysicalServerThread(physicalServer);
+        RegionizedServer runtime = PER_LEVEL.get(level);
+        if (ownsRuntimeGeneration(runtime)) {
+            if (runtime.currentThreadHoldsAllClaims()) return true;
+            Region target = runtime.regionizer().peekRegionForChunk(
+                    ChunkPos.pack(pos));
+            if (target != null && runtime.ownsRegion(target)) {
+                Thread targetWorker = target.currentWorker();
+                if (targetWorker == caller) return true;
+                EpochDomain domain = target.domain;
+                IslandRegistry.PIsland owner = domain != null ? domain.owner : null;
+                if (owner != null && owner.domain == domain
+                        && owner.domainLevel() == level && !owner.retired) {
+                    if (physicalMain && IslandCommands.mainHolds(owner)) return true;
+                    if (caller instanceof RegionWorkerThread worker
+                            && worker.currentDomain == domain
+                            && owner.unitClaim.get() && owner.claimHolder == caller
+                            && targetWorker == null
+                            && (worker.currentRegion == null
+                                || runtime.ownsRegion(worker.currentRegion)
+                                && worker.currentRegion.domain == domain
+                                && worker.currentRegion.currentWorker() == caller)) {
+                        // Serial member work retains its coordinator's whole-unit
+                        // footprint, but a conflicting claim or foreign active
+                        // region cannot borrow an inherited domain stamp.
+                        return true;
+                    }
+                }
+            }
+        }
+        // Logical server-thread identity alone does not fence region workers.
+        if (physicalServer != null && physicalServer == server
+                && (physicalMain || RegionalPlayerEntityTicksV2
+                        .logicalServerThread(physicalServer) == caller)) {
+            return ownsExactExecutionTurn();
+        }
+        // Disabled guards or apparent idleness are not quiescence receipts.
+        return false;
+    }
+
+    /**
+     * Explicit causal-context propagation for a region worker which hands work to
+     * another executor before joining it.  Callers submit the returned wrapper to
+     * that executor; late execution after the parent step closes is safely treated
+     * as a post-turn root.
+     * This retains causal lifetime only; a foreign executor does not inherit
+     * gameplay ownership and must route owner mutations through executeAt.
+     */
+    public static Runnable wrapCausalRegionHandoff(Runnable body) {
+        RegionWorkerPool current = pool;
+        if (current == null) {
+            throw new IllegalStateException("causal handoff requires a live region pool");
+        }
+        return current.wrapCausalHandoff(body);
+    }
+
+    /**
+     * Publish a success-only task to a foreign executor with a generation permit
+     * reserved before executor visibility. Region shutdown therefore waits for the
+     * exact accepted body; when no region generation exists, the task retains its
+     * ordinary flat-runtime ownership.
+     */
+    public static void executeTrackedExternal(Executor executor, Runnable body) {
+        executeTrackedExternal(executor, body, null);
+    }
+
+    /**
+     * Variant which publishes a retained-result marker immediately before executor
+     * visibility under the same generation admission as {@code body}.
+     */
+    public static void executeTrackedExternal(Executor executor, Runnable body,
+                                              Runnable beforeExecutorVisibility) {
+        if (executor == null) throw new NullPointerException("executor");
+        if (body == null) throw new NullPointerException("body");
+        RegionWorkerPool current;
+        synchronized (LIFECYCLE_LOCK) {
+            current = failureGateLocked();
+            Throwable failure = orphanFatalFailure;
+            if (current == null && failure != null) {
+                RegionScheduler.<RuntimeException>rethrow(failure);
+            }
+        }
+        if (current != null) {
+            current.executeTrackedExternal(executor, body, beforeExecutorVisibility);
+        } else {
+            if (beforeExecutorVisibility != null) beforeExecutorVisibility.run();
+            executor.execute(body);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -238,6 +1909,17 @@ public final class RegionScheduler {
         if (rs != null) rs.indexRemove(e);
     }
 
+    /** Exact-ordinal mode's post-list auxiliary-index reconciliation. */
+    public static void reconcileCanonicalEntityIndex(ServerLevel level) {
+        if (!active) return;
+        RegionizedServer owner = PER_LEVEL.get(level);
+        if (owner == null) {
+            throw new IllegalStateException(
+                    "canonical entity-index reconciliation lost its level owner");
+        }
+        owner.reconcileCanonicalEntityIndex();
+    }
+
     /**
      * Per-region FULL-chunk population, driven by the loader's reliable chunk load/unload
      * event (Fabric {@code ServerChunkEvents}, NeoForge {@code ChunkEvent}). A LevelChunk
@@ -256,47 +1938,401 @@ public final class RegionScheduler {
 
     // ---------------------------------------------------------------------
     // Main-thread sync queue: entities a region task may not tick (modded API
-    // contract, UUID blacklist, players when enableRegionPlayerTicks=false).
+    // contract, UUID blacklist, and every direct ServerPlayer entry).
     // Main drains this inside the barrier pump, overlapping the region work.
     // ---------------------------------------------------------------------
 
-    private static final ConcurrentLinkedQueue<Entity> MAIN_SYNC =
+    private static final ConcurrentLinkedQueue<MainSyncTask> MAIN_SYNC =
             new ConcurrentLinkedQueue<>();
 
+    private record MainSyncTask(Entity entity, RegionWorkerPool.ExternalPermit permit,
+                                BooleanSupplier admission, Runnable completion,
+                                boolean vanillaGuarded, boolean allIslandsFenced) implements Runnable {
+        @Override
+        public void run() {
+            // runWithMainEntityClaim has established this entity's current level
+            // and owner before entering this already-allocated queue body.
+            if (!(entity.level() instanceof ServerLevel level)) {
+                throw new IllegalStateException("MAIN_SYNC entity left its claimed server level");
+            }
+            if (((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return;
+            entity.checkDespawn();
+            if (!entity.isRemoved()) {
+                if (vanillaGuarded) ParallelProcessor.tickEntityVanillaGuarded(level, entity, false);
+                else ParallelProcessor.tickEntity(level, entity, false);
+            }
+        }
+    }
+
     static void queueMainSyncTick(Entity e) {
-        MAIN_SYNC.add(e);
+        queueMainSyncTick(e, () -> true, null, false, false);
+    }
+
+    /**
+     * Publishes a Main-owned entity body with a completion edge which runs on
+     * physical Main after the body but before its pool obligation is released.  A5 uses
+     * this edge to keep island admission closed until an ordered fallback body has
+     * actually finished; merely enqueueing the body is not a completed handoff.
+     */
+    static void queueMainSyncTick(Entity e, Runnable completion) {
+        queueMainSyncTick(e, () -> true, completion, false, false);
+    }
+
+    /**
+     * A cancelable Main body.  A closed admission is a successful no-op and still
+     * runs completion; a failed body is fail-stop and must not publish a success
+     * transition from that completion edge.
+     */
+    static void queueMainSyncTick(Entity e, BooleanSupplier admission,
+                                  Runnable completion) {
+        queueMainSyncTick(e, admission, completion, false, false);
+    }
+
+    /**
+     * A5 transition body with the exact vanilla crash boundary.  Compatibility-lane
+     * entities and A5 players both propagate their vanilla crash unchanged.  The
+     * guarded variant additionally authenticates the exact A5 body; neither lane may
+     * consume an exception and reopen ownership as if the entity tick completed.
+     */
+    static void queueMainSyncGuardedTick(Entity e, BooleanSupplier admission,
+                                         Runnable completion) {
+        queueMainSyncTick(e, admission, completion, true, false);
+    }
+
+    /** Ordered A5 fallback retaining both its exact body guard and global scope. */
+    static void queueMainSyncFencedGuardedTick(Entity e, BooleanSupplier admission,
+                                               Runnable completion) {
+        queueMainSyncTick(e, admission, completion, true, true);
+    }
+
+    /**
+     * A rare cross-owner entity body. Admission is evaluated only after physical
+     * Main has quiesced every autonomous island, so it may read live ticket and
+     * ownership state that the region task's coherent per-chunk memo predates.
+     */
+    static void queueMainSyncFencedTick(Entity e, BooleanSupplier admission,
+                                        Runnable completion) {
+        queueMainSyncTick(e, admission, completion, false, true);
+    }
+
+    private static void queueMainSyncTick(Entity e, BooleanSupplier admission,
+                                          Runnable completion, boolean vanillaGuarded,
+                                          boolean allIslandsFenced) {
+        if (admission == null) throw new NullPointerException("admission");
+        RegionWorkerPool owner = pool;
+        if (owner == null) {
+            throw new IllegalStateException("MAIN_SYNC publication without a live region pool");
+        }
+        if (!owner.publishExternalRoot(permit ->
+                MAIN_SYNC.add(new MainSyncTask(e, permit, admission, completion,
+                        vanillaGuarded, allIslandsFenced)))) {
+            throw new IllegalStateException("MAIN_SYNC publication rejected by worker-pool lifecycle");
+        }
+    }
+
+    /**
+     * Runs one physical-Main entity operation while its exact current island is
+     * quiescent. MAIN_SYNC entities still share world/interaction state with
+     * autonomous neighbours; Main ownership alone is not mutual exclusion.
+     */
+    public static void runWithMainEntityClaim(Entity entity, Runnable body) {
+        runWithMainEntityClaim(entity, body, null);
+    }
+
+    /**
+     * A specific queued obligation may become terminal while Main waits for a
+     * claim. Its owner may close that exact obligation before any world body;
+     * ordinary callers retain the strict identity contract above.
+     */
+    public static void runWithMainEntityClaim(Entity entity, Runnable body,
+                                              java.util.function.BooleanSupplier finishWithoutBody) {
+        if (entity == null || body == null) throw new NullPointerException();
+        if (!(entity.level() instanceof ServerLevel level)) {
+            Throwable failure = null;
+            try {
+                runSuccessBodyIfHealthy(body);
+            } catch (Throwable primary) {
+                failure = publishFatalAndSelectWinner(primary);
+            }
+            if (failure != null) {
+                RegionScheduler.<RuntimeException>rethrow(
+                        publishFatalAndSelectWinner(failure));
+            }
+            return;
+        }
+        MinecraftServer minecraftServer = level.getServer();
+        if (minecraftServer != null
+                && !RegionalPlayerEntityTicksV2
+                        .isPhysicalServerThread(minecraftServer)) {
+            throw new IllegalStateException(
+                    "MAIN_SYNC entity claim entered off physical Main");
+        }
+        RegionizedServer runtime = publishedForLevel(level);
+        if (runtime == null || !IslandCommands.requiresMainFence(runtime)
+                || runtime.currentThreadHoldsAllClaims()) {
+            if (entity.level() != level) {
+                if (finishWithoutBody != null && callSuccessBooleanIfHealthy(finishWithoutBody)) return;
+                throw new IllegalStateException(
+                        "MAIN_SYNC entity changed level before unclaimed body");
+            }
+            Throwable failure = null;
+            try {
+                runSuccessBodyIfHealthy(body);
+            } catch (Throwable primary) {
+                failure = publishFatalAndSelectWinner(primary);
+            }
+            if (failure != null) {
+                RegionScheduler.<RuntimeException>rethrow(
+                        publishFatalAndSelectWinner(failure));
+            }
+            return;
+        }
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (finishWithoutBody != null && callSuccessBooleanIfHealthy(finishWithoutBody)) return;
+            if (entity.level() != level || publishedForLevel(level) != runtime) {
+                if (finishWithoutBody != null && callSuccessBooleanIfHealthy(finishWithoutBody)) return;
+                throw new IllegalStateException(
+                        "MAIN_SYNC entity changed level/runtime before claim");
+            }
+            IslandRegistry.PIsland owner = runtime.islandOwnerOfChunk(
+                    entity.chunkPosition().pack());
+            if (owner == null) {
+                if (entity.level() != level || publishedForLevel(level) != runtime) {
+                    if (finishWithoutBody != null && callSuccessBooleanIfHealthy(finishWithoutBody)) return;
+                    throw new IllegalStateException(
+                            "MAIN_SYNC entity changed level/runtime at owner gap");
+                }
+                Throwable failure = null;
+                try {
+                    runSuccessBodyIfHealthy(body);
+                } catch (Throwable primary) {
+                    failure = publishFatalAndSelectWinner(primary);
+                }
+                if (failure != null) {
+                    RegionScheduler.<RuntimeException>rethrow(
+                            publishFatalAndSelectWinner(failure));
+                }
+                return;
+            }
+            boolean release;
+            try {
+                release = IslandCommands.mainClaimScoped(owner);
+            } catch (Throwable claimFailure) {
+                RegionScheduler.<RuntimeException>rethrow(
+                        publishFatalAndSelectWinner(claimFailure));
+                return;
+            }
+            Throwable failure = null;
+            boolean bodyCompleted = false;
+            try {
+                if (finishWithoutBody != null && callSuccessBooleanIfHealthy(finishWithoutBody)) {
+                    bodyCompleted = true;
+                } else if (entity.level() == level && publishedForLevel(level) == runtime
+                        && runtime.islandOwnerOfChunk(entity.chunkPosition().pack()) == owner
+                        && !owner.retired) {
+                    // The permit admitted this Main operation, but another entered body can
+                    // still win the shared fatal slot while Main waits for the exact claim.
+                    // Give the actual vanilla body its own atomic admission after the
+                    // wait/revalidation; a plain health read here has a W-vs-entry race.
+                    runSuccessBodyIfHealthy(body);
+                    bodyCompleted = true;
+                }
+            } catch (Throwable primary) {
+                failure = publishFatalAndSelectWinner(primary);
+            } finally {
+                if (release) {
+                    try {
+                        IslandCommands.mainRelease(owner);
+                    } catch (Throwable releaseFailure) {
+                        failure = publishFatalAndSelectWinner(
+                                mergeFailure(failure, releaseFailure));
+                    }
+                }
+            }
+            if (failure == null) {
+                try {
+                    // Release is mandatory cleanup, but a peer W selected
+                    // during it still forbids a normal body return.  The empty
+                    // fixed commit is the post-cleanup success linearization edge.
+                    commitSuccessIfHealthy(() -> {});
+                } catch (Throwable peerFailure) {
+                    failure = publishFatalAndSelectWinner(peerFailure);
+                }
+            }
+            if (failure != null) {
+                RegionScheduler.<RuntimeException>rethrow(
+                        publishFatalAndSelectWinner(failure));
+            }
+            if (bodyCompleted) return;
+        }
+        if (finishWithoutBody != null && callSuccessBooleanIfHealthy(finishWithoutBody)) return;
+        throw new IllegalStateException(
+                "MAIN_SYNC entity changed island during claim acquisition");
+    }
+
+    /**
+     * Publishes a failed Main operation into the generation's first-wins fatal slot
+     * and returns that exact authoritative object. A concurrent winner remains
+     * primary; this operation (including cleanup diagnostics already attached to it)
+     * is then context only.
+     */
+    public static Throwable publishFatalAndSelectWinner(Throwable candidate) {
+        synchronized (LIFECYCLE_LOCK) {
+            RegionWorkerPool observedPool = failureGateLocked();
+            Throwable publicationFailure = null;
+            try {
+                publishFatalFailure(candidate);
+            } catch (Throwable cleanup) {
+                publicationFailure = cleanup;
+            }
+
+            return selectFatalWinner(observedPool, candidate, publicationFailure);
+        }
+    }
+
+    /**
+     * Select W only in the pool generation which owns {@code expected}.
+     * A late callback from a retired runtime must never publish into the pool
+     * currently stored in the scheduler's static slot.
+     */
+    static Throwable publishFatalAndSelectWinner(RegionizedServer expected,
+                                                 Throwable candidate) {
+        if (candidate == null) candidate = new NullPointerException("fatal failure");
+        RegionWorkerPool expectedPool;
+        synchronized (LIFECYCLE_LOCK) {
+            expectedPool = expected != null
+                    && PER_LEVEL.get(expected.level) == expected ? pool : null;
+        }
+        return expectedPool == null
+                ? candidate : expectedPool.publishAndSelectFatal(candidate);
+    }
+
+    private static Throwable selectFatalWinner(RegionWorkerPool observedPool,
+                                               Throwable candidate,
+                                               Throwable publicationFailure) {
+        Throwable winner = observedPool == null
+                ? null : observedPool.fatalFailureOrNull();
+        RegionWorkerPool currentPool = failureGateLocked();
+        if (winner == null && currentPool != null) {
+            winner = currentPool.fatalFailureOrNull();
+        }
+        if (winner == null) winner = orphanFatalFailure;
+        if (winner == null) winner = candidate;
+        if (winner != candidate) winner = mergeFailure(winner, candidate);
+        if (publicationFailure != null) {
+            winner = mergeFailure(winner, publicationFailure);
+        }
+        return winner;
+    }
+
+    private static void runMainSyncEntityTask(MainSyncTask queued) {
+        Entity e = queued.entity();
+        if (!queued.admission().getAsBoolean()
+                || e.isRemoved() || !(e.level() instanceof ServerLevel)) {
+            return;
+        }
+        runWithMainEntityClaim(e, queued);
     }
 
     /** Main thread only. @return true if at least one entity was ticked. */
     public static boolean drainMainSyncTicks() {
-        Entity e = MAIN_SYNC.poll();
-        if (e == null) return false;
+        MainSyncTask queued = MAIN_SYNC.poll();
+        if (queued == null) return false;
         do {
-            if (!e.isRemoved() && e.level() instanceof ServerLevel sl) {
-                ParallelProcessor.tickEntity(sl, e, false);
+            MainSyncTask task = queued;
+            Throwable failure = null;
+            boolean permitStarted = false;
+            try {
+                if (!queued.permit().beginMainSync()) {
+                    throw new IllegalStateException("MAIN_SYNC entry executed more than once");
+                }
+                permitStarted = true;
+                if (task.allIslandsFenced()) {
+                    // Admission and the complete native producer need global Main
+                    // authority even when no autonomous island requires a fence.
+                    runGlobalMainBody(server, () -> runSuccessBodyIfHealthy(
+                            () -> runMainSyncEntityTask(task)));
+                } else {
+                    runMainSyncEntityTask(task);
+                }
+            } catch (Throwable thrown) {
+                failure = publishFatalAndSelectWinner(thrown);
+            } finally {
+                // This is a success continuation, not resource cleanup.  In
+                // particular A5's callback reopens/schedules the listener lane;
+                // running it after a partial entity mutation would consume the
+                // failed turn as if vanilla had completed it.  The pool permit is
+                // the actual resource and is released below for both outcomes.
+                if (permitStarted) {
+                    if (failure == null && queued.completion() != null) {
+                        try {
+                            // Completion reopens/schedules a successor lane. A worker
+                            // fatal which won while the claimed body was running must
+                            // stop it atomically at the last possible point before entry;
+                            // a health read followed by Runnable.run has a W race.
+                            runSuccessBodyIfHealthy(queued.completion());
+                        } catch (Throwable completionFailure) {
+                            failure = publishFatalAndSelectWinner(
+                                    mergeFailure(failure, completionFailure));
+                        }
+                    }
+                    failure = queued.permit().finish(failure);
+                    if (failure != null) {
+                        failure = publishFatalAndSelectWinner(failure);
+                    }
+                }
             }
-        } while ((e = MAIN_SYNC.poll()) != null);
+            if (failure != null) {
+                RegionScheduler.<RuntimeException>rethrow(
+                        publishFatalAndSelectWinner(failure));
+            }
+        } while ((queued = MAIN_SYNC.poll()) != null);
         return true;
     }
 
-    /** Generic submit at (level, chunk). Inline when scheduler dormant. */
+    /** Generic submit at (level, chunk). Inline under authenticated existing ownership. */
     public static void executeAt(ServerLevel level, ChunkPos pos, Runnable task) {
-        if (!active) { task.run(); return; }
-        RegionizedServer rs = forLevel(level);
-        Region r = rs.regionFor(pos);
-        // R4 color gate: regions outside this epoch's dispatch participant set
-        // must not be claimed late. A DONE region may already have higher-color
-        // neighbors running; a born-after-dispatch orphan was never ordered by
-        // the color DAG at all. Run these tasks on the main-safe lane instead:
-        // same tick, no region claim, tickLockOr falls back to global locks.
-        if (shouldRunMainSafe(rs, r)) {
-            enqueueGlobalMainSafe(task);
-            wakeWorkers();
+        boolean exactRoot = ownsExactRootExecution(task);
+        if (!active) {
+            executeGlobal(task);
             return;
         }
-        r.queue().submit(task);
-        enqueueReady(r);
-        wakeWorkers();
+        RegionizedServer rs = forLevel(level);
+        if (rs == null) {
+            throw new IllegalStateException(
+                    "region task targeted a level outside the active scheduler generation");
+        }
+        // An idle eviction can retire the Region after lookup but before the pool's
+        // in-lock ownsRuntime check. A fresh replacement starts with idleStreak=0, so one
+        // retry is sufficient and cannot duplicate: enqueueRegionTask returns true only
+        // after the task has escaped into the old queue; partial publication throws.
+        for (int attempt = 0; attempt < 2; attempt++) {
+            Region r = rs.regionFor(pos);
+            if (exactRoot) {
+                runRegionRootInlineIfHealthy(r, task);
+                return;
+            }
+            // An already-held region/unit/Main claim is also execution authority.
+            // Enqueueing behind that same claim would deadlock callers awaiting
+            // their synchronous owner callback. The claim remains held through
+            // the ordinary generation/failure body admission and callback.
+            if (ownsCurrentContext(level, pos.getWorldPosition())) {
+                runRootInlineIfHealthy(task);
+                return;
+            }
+            // The pool chooses region-claim versus claim-free main-safe routing
+            // while holding this exact region's admissionLock.  A direct check
+            // here would let a domain-rebase cut publish between the check and
+            // the body receipt/publication.
+            if (enqueueRegionTask(r, task)) {
+                wakeWorkers();
+                return;
+            }
+            if (!active || PER_LEVEL.get(level) != rs) break;
+            if (r.state() == RegionState.ACTIVE && rs.ownsRegion(r)) break;
+        }
+        throw new IllegalStateException(
+                "region task rejected at the scheduler drain/retirement boundary");
     }
 
     static boolean shouldRunMainSafe(RegionizedServer rs, Region r) {
@@ -347,13 +2383,47 @@ public final class RegionScheduler {
     }
 
     public static void executeForEntity(Entity entity, Runnable task) {
-        if (!active) { task.run(); return; }
-        if (!(entity.level() instanceof ServerLevel sl)) { task.run(); return; }
+        if (!active) { executeGlobal(task); return; }
+        if (!(entity.level() instanceof ServerLevel sl)) {
+            executeGlobal(task);
+            return;
+        }
         executeAt(sl, entity.chunkPosition(), task);
     }
 
     public static void executeGlobal(Runnable task) {
-        task.run();
+        if (!inNativeMainService() && AdvancementCaptureOwnership.ownsGlobalProducerEnvelope()) {
+            runRootInlineIfHealthy(task);
+            return;
+        }
+        enqueueGlobalMainGameplay(task);
+    }
+
+    /**
+     * Retain a complete gameplay producer for physical Main with global ownership.
+     * Unlike executeGlobal, never inline on an already-owning gameplay worker;
+     * unlike the Main-only control lane, acquire ownership before body entry.
+     */
+    public static void enqueueGlobalMainGameplay(Runnable task) {
+        RegionWorkerPool current = pool;
+        if (current != null) {
+            if (current.enqueueGlobalMainGameplay(task)) {
+                current.wake(1);
+                return;
+            }
+            Throwable failure = current.fatalFailureOrNull();
+            if (failure == null) {
+                failure = new IllegalStateException("global Main gameplay rejected at the pool drain boundary");
+            }
+            RegionScheduler.<RuntimeException>rethrow(cancelRejectedRoot(current, task, failure));
+            return;
+        }
+        MinecraftServer physicalServer = ParallelProcessor.getServer();
+        if (physicalServer == null) {
+            throw new IllegalStateException("global gameplay callback has no Main owner");
+        }
+        physicalServer.execute(() -> runGlobalMainBody(
+                physicalServer, () -> runRootInlineIfHealthy(task)));
     }
 
     public static int regionCountFor(ServerLevel level) {
@@ -374,29 +2444,370 @@ public final class RegionScheduler {
 
     /** Push a region onto the worker pool's ready-queue (O(1) claim path). */
     public static void enqueueReady(Region r) {
+        RegionizedServer owner = PER_LEVEL.get(r.level);
+        if (owner == null || !owner.ownsRegion(r)) {
+            throw new IllegalStateException("stale region ready task crossed scheduler generation");
+        }
         RegionWorkerPool p = pool;
-        if (p != null) p.enqueueReady(r);
+        if (p == null || !p.enqueueReady(r)) {
+            throw new IllegalStateException("region ready task rejected by worker-pool lifecycle");
+        }
+    }
+
+    /**
+     * Publish a ready entry carrying the exact current entity-dispatch receipt.
+     * The receipt opens before CLQ visibility and follows the detached entry
+     * through its complete workOnce outcome/contribution tail.
+     */
+    static boolean enqueueEntityReady(Region r) {
+        RegionizedServer owner = PER_LEVEL.get(r.level);
+        if (owner == null || !owner.ownsRegion(r)) {
+            throw new IllegalStateException(
+                    "stale entity-ready task crossed scheduler generation");
+        }
+        EpochDomain domain = r.domain;
+        if (domain == null) {
+            throw new IllegalStateException(
+                    "entity-ready task has no epoch domain");
+        }
+        long epoch = domain.epoch;
+        EpochDomain.EntityDispatchPublication publication =
+                domain.entityDispatchPublication;
+        RegionWorkerPool p = pool;
+        if (p == null || !p.enqueueEntityReady(r, publication, epoch)) {
+            throw new IllegalStateException(
+                    "entity-ready task rejected by worker-pool lifecycle");
+        }
+        return true;
+    }
+
+    /** Atomically publish a region task and its ready-lane signal. */
+    public static boolean enqueueRegionTask(Region region, Runnable task) {
+        if (ownsExactRootExecution(task)) {
+            runRegionRootInlineIfHealthy(region, task);
+            return true;
+        }
+        RegionizedServer owner = PER_LEVEL.get(region.level);
+        if (owner == null || !owner.ownsRegion(region)) return false;
+        RegionWorkerPool p = pool;
+        if (p == null || !p.enqueueRegionTask(region, task)) return false;
+        p.wake(1);
+        return true;
+    }
+
+    /** Final generation/identity check executed inside Region admission. */
+    static boolean ownsRuntime(RegionWorkerPool expectedPool, Region region) {
+        if (!active || pool != expectedPool || region == null
+                || region.state() != RegionState.ACTIVE) return false;
+        RegionizedServer owner = PER_LEVEL.get(region.level);
+        return owner != null && owner.ownsRegion(region);
+    }
+
+    /** Atomically publish a dense-region helper and its ready-lane signal. */
+    public static boolean enqueueHelpTask(Region region, Runnable task) {
+        if (ownsExactRootExecution(task)) {
+            runRegionRootInlineIfHealthy(region, task);
+            return true;
+        }
+        RegionizedServer owner = PER_LEVEL.get(region.level);
+        if (owner == null || !owner.ownsRegion(region)) return false;
+        RegionWorkerPool p = pool;
+        if (p == null || !p.enqueueHelpTask(region, task)) return false;
+        p.wake(1);
+        return true;
+    }
+
+    /**
+     * Attach an explicit failure terminal to a root without putting recovery logic in its
+     * simulation body. Failed-generation sweep calls only the cancellation hook; normal
+     * execution calls only {@code body.run()}. The local state is defensive -- pool queue
+     * wrappers provide the generation-wide linearization edge, while this one guarantees
+     * that an enqueue rejection and a detached queue entry cannot notify twice.
+     */
+    public static Runnable cancellableRoot(Runnable body, Consumer<Throwable> cancellation) {
+        if (body == null || cancellation == null) throw new NullPointerException();
+        return new FailureCancellableRoot(body, cancellation);
+    }
+
+    private static final class FailureCancellableRoot
+            implements Runnable, RegionTaskFanIn.CancellableQueueEntry {
+        private static final int QUEUED = 0;
+        private static final int RUNNING = 1;
+        private static final int TERMINAL = 2;
+        private static final int CANCELLED = 3;
+
+        private final Runnable body;
+        private final Consumer<Throwable> cancellation;
+        private final AtomicInteger state = new AtomicInteger(QUEUED);
+
+        private FailureCancellableRoot(Runnable body, Consumer<Throwable> cancellation) {
+            this.body = body;
+            this.cancellation = cancellation;
+        }
+
+        @Override
+        public void run() {
+            if (!state.compareAndSet(QUEUED, RUNNING)) {
+                if (state.get() == CANCELLED) return;
+                throw new IllegalStateException("cancellable root executed more than once");
+            }
+            Throwable failure = null;
+            try {
+                body.run();
+                // A peer W selected while this body was running must become the
+                // observed terminal result before this wrapper exposes TERMINAL.
+                throwWorkerFailureIfAny();
+            } catch (Throwable thrown) {
+                // This wrapper owns a terminal marker which failed-generation sweep
+                // can observe independently of the outer queue wrapper.  Select the
+                // exact W before publishing that marker; otherwise TERMINAL could be
+                // visible during the unwind while the generation still looked healthy.
+                failure = publishFatalAndSelectWinner(thrown);
+            } finally {
+                state.set(TERMINAL);
+            }
+            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        }
+
+        @Override
+        public void cancelQueuedBeforeStart() {
+            cancelQueuedBeforeStartWithFailure(new CancellationException(
+                    "queued region root cancelled before execution"));
+        }
+
+        @Override
+        public void cancelQueuedBeforeStartWithFailure(Throwable primary) {
+            if (!state.compareAndSet(QUEUED, CANCELLED)) return;
+            cancellation.accept(primary != null ? primary : new CancellationException(
+                    "queued region root cancelled before execution"));
+        }
+    }
+
+    private static Throwable cancelRejectedRoot(RegionWorkerPool owner, Runnable task,
+                                                Throwable primary) {
+        if (owner != null) return owner.cancelQueuedEntry(task, primary);
+        Throwable failure = primary;
+        if (task instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
+            try {
+                cancellable.cancelQueuedBeforeStartWithFailure(primary);
+            } catch (Throwable cleanup) {
+                failure = mergeFailure(failure, cleanup);
+            }
+        }
+        return failure;
+    }
+
+    /** Inline roots still need the same atomic W-vs-entry cut as queued roots. */
+    private static void runRootInlineIfHealthy(Runnable task) {
+        try {
+            runSuccessBodyIfHealthy(task);
+        } catch (Throwable failure) {
+            RegionScheduler.<RuntimeException>rethrow(
+                    cancelRejectedRoot(pool, task, failure));
+        }
+    }
+
+    /**
+     * The exact player turn globally fences workers, but region topology still
+     * needs an explicit lifetime witness: future topology callers must not be
+     * able to mistake a claim-free inline body for a quiescent rebase point.
+     * Open under region admission and close only after the inline root's W/body
+     * terminal, exactly like an ExternalTask moved to mainSafeTasks.
+     */
+    private static void runRegionRootInlineIfHealthy(Region region, Runnable task) {
+        boolean receiptOpen = false;
+        boolean bodyAdmissionAttempted = false;
+        Throwable failure = null;
+        try {
+            synchronized (region.admissionLock) {
+                RegionizedServer owner = PER_LEVEL.get(region.level);
+                if (!active || owner == null || !owner.ownsRegion(region)) {
+                    throw new IllegalStateException(
+                            "exact region root lost its scheduler runtime");
+                }
+                EpochDomain domain = region.domain;
+                long epoch = domain == null ? Long.MIN_VALUE : domain.epoch;
+                if (!region.tryOpenMainSafeBodyTransaction(domain, epoch)) {
+                    throw new IllegalStateException(
+                            "exact region root crossed a domain-rebase cut");
+                }
+                receiptOpen = true;
+            }
+            bodyAdmissionAttempted = true;
+            runRootInlineIfHealthy(task);
+        } catch (Throwable primary) {
+            failure = publishFatalAndSelectWinner(primary);
+        }
+        if (receiptOpen) {
+            try {
+                region.finishClaimTransaction();
+            } catch (Throwable cleanup) {
+                failure = publishFatalAndSelectWinner(
+                        mergeFailure(failure, cleanup));
+            }
+        }
+        if (failure != null) {
+            if (!bodyAdmissionAttempted) {
+                failure = cancelRejectedRoot(pool, task, failure);
+            }
+            RegionScheduler.<RuntimeException>rethrow(
+                    publishFatalAndSelectWinner(failure));
+        }
+    }
+
+    private static boolean ownsExactRootExecution(Runnable task) {
+        try {
+            return ownsExactExecutionTurn();
+        } catch (Throwable failure) {
+            RegionScheduler.<RuntimeException>rethrow(
+                    cancelRejectedRoot(pool, task, failure));
+            return false;
+        }
     }
 
     /** Submit a pool-level region-group work unit (dispatch coalescing). */
     public static void enqueueGlobal(Runnable task) {
+        if (ownsExactRootExecution(task)) {
+            runRootInlineIfHealthy(task);
+            return;
+        }
         RegionWorkerPool p = pool;
-        if (p != null) p.enqueueGlobal(task);
+        if (p != null && p.enqueueGlobal(task)) {
+            p.wake(1);
+            return;
+        }
+        Throwable failure = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
+        if (failure == null) {
+            failure = new IllegalStateException(
+                    "global region task rejected by worker-pool lifecycle");
+        }
+        RegionScheduler.<RuntimeException>rethrow(cancelRejectedRoot(p, task, failure));
     }
 
     /** Submit a pool-level task that the barrier pump may also steal (no claim-spins). */
     public static void enqueueGlobalMainSafe(Runnable task) {
+        if (ownsExactRootExecution(task)) {
+            runRootInlineIfHealthy(task);
+            return;
+        }
         RegionWorkerPool p = pool;
-        if (p != null) p.enqueueGlobalMainSafe(task);
+        if (p != null && p.enqueueGlobalMainSafe(task)) {
+            p.wake(1);
+            return;
+        }
+        Throwable fatal = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
+        if (fatal != null) {
+            RegionScheduler.<RuntimeException>rethrow(
+                    cancelRejectedRoot(p, task, fatal));
+        }
+        MinecraftServer current = server;
+        if (!active || p == null || p.isTerminated()) {
+            if (current != null && !current.isSameThread()) {
+                Throwable rejection = new IllegalStateException(
+                        "main-safe task submitted off-main after scheduler termination");
+                RegionScheduler.<RuntimeException>rethrow(
+                        cancelRejectedRoot(p, task, rejection));
+            }
+            runRootInlineIfHealthy(task);
+            return;
+        }
+        Throwable rejection = new IllegalStateException(
+                "main-safe task rejected at worker-pool drain boundary");
+        RegionScheduler.<RuntimeException>rethrow(
+                cancelRejectedRoot(p, task, rejection));
+    }
+
+    /**
+     * Submit a vanilla-single-writer body which may execute only on physical Main.
+     *
+     * <p>This queue deliberately does not use {@link #ownsExactRootExecution(Runnable)}:
+     * only physical Main may drain it. The separately authenticated exact-player
+     * actor ticket path executes synchronously under its exact-turn fence; it does
+     * not enqueue here or authorize workers to consume this lane. Re-entry on the
+     * real server thread runs inline through the same atomic success/failure gate
+     * as every other root; all other live callers publish to the dedicated lane.
+     */
+    public static void enqueueGlobalMainOnly(Runnable task) {
+        MinecraftServer current = server;
+        if (RegionalPlayerEntityTicksV2.isPhysicalServerThread(current)) {
+            runRootInlineIfHealthy(task);
+            return;
+        }
+        RegionWorkerPool p = pool;
+        if (p != null && p.enqueueGlobalMainOnly(task)) {
+            p.wake(1);
+            return;
+        }
+        Throwable fatal = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
+        if (fatal != null) {
+            RegionScheduler.<RuntimeException>rethrow(
+                    cancelRejectedRoot(p, task, fatal));
+        }
+        Throwable rejection = new IllegalStateException(
+                !active || p == null || p.isTerminated()
+                        ? "main-only task submitted off-main after scheduler termination"
+                        : "main-only task rejected at worker-pool drain boundary");
+        RegionScheduler.<RuntimeException>rethrow(
+                cancelRejectedRoot(p, task, rejection));
     }
 
     /** A2: submit an island tick-unit coordinator (dedicated lane — only the
      *  top-level worker loop starts units; coordinators never nest). */
-    public static void enqueueUnit(Runnable task) {
+    public static boolean enqueueUnit(Runnable task) {
+        if (ownsExactRootExecution(task)) {
+            runRootInlineIfHealthy(task);
+            return true;
+        }
         RegionWorkerPool p = pool;
-        if (p != null) {
-            p.enqueueUnit(task);
+        if (p != null && p.enqueueUnit(task)) {
             p.wake(1);
+            return true;
+        }
+        Throwable fatal = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
+        if (fatal != null) {
+            RegionScheduler.<RuntimeException>rethrow(
+                    cancelRejectedRoot(p, task, fatal));
+        }
+        return false;
+    }
+
+    /**
+     * Generation-bound island-unit publication.
+     *
+     * <p>A {@code false} result is possible only before the task becomes visible,
+     * when {@code expected} has already left unit admission.  A rejection by the
+     * still-current running pool is an invariant failure and therefore selects W;
+     * it is never converted into a skipped tick or a later retry.
+     */
+    static boolean enqueueUnit(RegionizedServer expected, IslandTickUnit.UnitPublication task) {
+        if (task == null) throw new NullPointerException("task");
+
+        if (ownsExactExecutionTurn()) {
+            synchronized (LIFECYCLE_LOCK) {
+                if (!acceptsUnitForLocked(expected)) return false;
+            }
+            // Exact-turn ownership excludes a concurrent legal lifecycle
+            // transition; do not hold LIFECYCLE_LOCK across a simulation body.
+            runRootInlineIfHealthy(task);
+            return true;
+        }
+
+        synchronized (LIFECYCLE_LOCK) {
+            if (!acceptsUnitForLocked(expected)) return false;
+            RegionWorkerPool expectedPool = pool;
+            if (expectedPool.enqueueUnit(task)) {
+                expectedPool.wake(1);
+                return true;
+            }
+            Throwable failure = expectedPool.fatalFailureOrNull();
+            if (failure == null) {
+                failure = new IllegalStateException(
+                        "current island runtime rejected a unit publication");
+            }
+            failure = expectedPool.publishAndSelectFatal(failure);
+            RegionScheduler.<RuntimeException>rethrow(
+                    cancelRejectedRoot(expectedPool, task, failure));
+            return false;
         }
     }
 
@@ -412,6 +2823,21 @@ public final class RegionScheduler {
             }
         }
         return null;
+    }
+
+    /**
+     * Pure global desire consumed by both the wall-phase snapshot and every
+     * per-level mode latch. Keeping one predicate prevents a configured ON from
+     * opening the synchronous player venue and autonomous island venues in the
+     * same wall tick. Live-runtime and wall-phase state are separate cuts.
+     */
+    static boolean asyncModeWantedAtLevelHead() {
+        return FabroliaConfig.asyncIslands
+                && !FabroliaConfig.asyncFailClosedTripped
+                && FabroliaConfig.regionEventScheduler
+                && FabroliaConfig.useRegionColorGate()
+                && FabroliaConfig.enableRegionThreading
+                && !FabroliaConfig.disabled;
     }
 
     /** Hot-path async liveness flag (detector gate): maintained by the
@@ -446,34 +2872,6 @@ public final class RegionScheduler {
         return false;
     }
 
-    /** A8: service ONE island's pending SHARD lane opportunistically (idle
-     *  worker or a parked waiter, claim-protected try — claim held means its
-     *  coordinator cannot run, preserving the single-servicer invariant).
-     *  SHARDS ONLY: cadence-bound island tasks (tick functions) run at unit
-     *  start exclusively. @return true if work was done. */
-    static boolean serviceOneIslandLane() {
-        if (!active) return false;
-        for (RegionizedServer rs : PER_LEVEL.values()) {
-            if (!rs.asyncActive) continue;
-            for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
-                boolean pending;
-                synchronized (p.pendingCommandShards) {
-                    pending = !p.pendingCommandShards.isEmpty();
-                }
-                if (pending && p.unitClaim.compareAndSet(false, true)) {
-                    p.noteClaim("lane@" + Thread.currentThread().getName());
-                    try {
-                        CommandShards.serviceShards(rs, p);
-                    } finally {
-                        p.clearClaim();
-                        p.unitClaim.set(false);
-                    }
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
 
     /** A2: is the worker pool alive? Coordinators bound their barrier pump on
      *  this so a unit stranded across shutdown exits instead of spinning. */
@@ -490,20 +2888,320 @@ public final class RegionScheduler {
                 && w.currentDomain != null && w.currentDomain.owner == owner;
     }
 
-    /** A2 coordinator help-pump: one work step (region claim / help batch /
-     *  global task — never another unit) on the CALLING worker thread while a
-     *  unit coordinator waits on its own barrier. @return true if work ran. */
-    static boolean workerHelpOnce() {
+    /**
+     * Cold-path ownership proof for a direct worker-to-Main blocking-wait guard.
+     * A non-worker helper can legitimately hold an autonomous island claim, so
+     * worker fields and the pool's causal token are not a complete witness.
+     */
+    static boolean currentThreadHoldsLiveIslandClaim() {
+        Thread current = Thread.currentThread();
+        for (RegionizedServer runtime : PER_LEVEL.values()) {
+            for (IslandRegistry.PIsland island : runtime.islandRegistry.identitySnapshot()) {
+                if (island.unitClaim.get() && island.claimHolder == current) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Pump global/Main-safe dependencies without taking unrelated ready work
+     * while the coordinator retains its own island claim. */
+    static boolean workerHelpBarrierDependenciesOnce() {
+        if (requiresExclusiveWorkerGrants()) return false;
         RegionWorkerPool p = pool;
         return p != null
                 && Thread.currentThread() instanceof RegionWorkerThread me
-                && p.workOnce(me, false);
+                && p.workBarrierDependenciesOnce(me);
     }
 
-    /** Barrier-pump steal: one non-blocking unit of region work on the main thread. */
+    /**
+     * Owner-first entity-barrier step.  This does not publish a new simulation
+     * root: dispatch already published the exact region obligation and this
+     * coordinator is executing inside its existing causal step.  The pool's
+     * ordinary ready-entry transaction supplies claim exclusion, fatal-cut
+     * admission, entity completion and the one barrier contribution.
+     */
+    static boolean workerHelpOwnEntityOnce(
+            Region region,
+            EpochDomain.EntityDispatchPublication publication,
+            long epoch) {
+        RegionWorkerPool p = pool;
+        if (p == null || !(Thread.currentThread() instanceof RegionWorkerThread me)) {
+            return false;
+        }
+        return p.helpAcceptedEntityRegion(me, region, publication, epoch);
+    }
+
+    /** Barrier-pump step. Physical Main consumes only explicit Main lanes;
+     *  non-Main callers may additionally help the autonomous ready lane. */
     public static boolean stealOneRegionTask() {
         RegionWorkerPool p = pool;
-        return p != null && p.stealOne();
+        MinecraftServer current = server;
+        boolean physicalMain = RegionalPlayerEntityTicksV2
+                .isPhysicalServerThread(current);
+        return p != null && p.stealOne(physicalMain);
+    }
+
+    /** Surface an off-thread tick failure unchanged on the current caller. */
+    public static void throwWorkerFailureIfAny() {
+        Throwable failure = workerFailureOrNull();
+        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+    }
+
+    /** Non-throwing read used to suppress success-only tails after a peer selected W. */
+    static Throwable workerFailureOrNull() {
+        RegionWorkerPool p = pool;
+        if (p == null) p = transitionPool;
+        Throwable failure = p == null ? null : p.fatalFailureOrNull();
+        return failure != null ? failure : orphanFatalFailure;
+    }
+
+    /**
+     * Accept a prepared success publication only if no generation-wide fatal
+     * winner has linearized first. Unowned pool-backed commits use the exact
+     * monitor used by {@link RegionWorkerPool#publishFatalFailure(Throwable)};
+     * already-pinned causal commits use the generation's volatile W slot. The
+     * orphan path uses the scheduler lifecycle monitor which owns orphanFatalFailure.
+     */
+    public static void commitSuccessIfHealthy(Runnable commit) {
+        if (commit == null) throw new NullPointerException("commit");
+        RegionWorkerPool causalOwner =
+                RegionWorkerPool.currentThreadCausalOwnerOrNull();
+        if (causalOwner != null) {
+            // Its step/permit pins the generation, so both admission and terminal
+            // W observations can stay lock-free. The callback consequently holds
+            // neither lifecycle monitor and cannot create their former convoy.
+            causalOwner.commitSuccessIfHealthy(commit);
+            return;
+        }
+        // Unowned callers retain the canonical scheduler -> pool monitor order and
+        // the cold atomic commit cut: no external lifetime pins this generation.
+        synchronized (LIFECYCLE_LOCK) {
+            RegionWorkerPool p = failureGateLocked();
+            if (p != null) {
+                p.commitSuccessIfHealthy(commit);
+                return;
+            }
+            Throwable failure = orphanFatalFailure;
+            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+            try {
+                commit.run();
+                return;
+            } catch (Throwable thrown) {
+                if (orphanFatalFailure == null) orphanFatalFailure = thrown;
+                RegionScheduler.<RuntimeException>rethrow(orphanFatalFailure);
+            }
+        }
+    }
+
+    /**
+     * Run the exact actor's captured vanilla consumer after an atomic W-vs-entry
+     * cut.  The body runs outside both lifecycle monitors and deliberately owns
+     * no ExternalPermit: physical Main retains the paused turn and waits for this
+     * actor synchronously, so such a permit would be both cyclic and unauthorized.
+     */
+    private static void commitPausedExactActorEntryIfHealthy(Thread physicalOwner) {
+        if (physicalOwner == null) throw new NullPointerException("physicalOwner");
+        synchronized (LIFECYCLE_LOCK) {
+            RegionWorkerPool current = pool;
+            if (current == null) {
+                RegionWorkerPool failureGate = failureGateLocked();
+                if (failureGate != null) failureGate.throwIfFailed();
+                if (orphanFatalFailure != null) {
+                    RegionScheduler.<RuntimeException>rethrow(orphanFatalFailure);
+                }
+                IllegalStateException refusal = new IllegalStateException(
+                        "exact player actor lost its active pool generation");
+                if (failureGate != null) {
+                    RegionScheduler.<RuntimeException>rethrow(
+                            failureGate.publishAndSelectFatal(refusal));
+                }
+                orphanFatalFailure = refusal;
+                RegionScheduler.<RuntimeException>rethrow(orphanFatalFailure);
+            }
+            current.commitPausedExactActorEntryIfHealthy(
+                    physicalOwner, Thread.currentThread());
+        }
+    }
+
+    static void runPausedExactActorBodyIfHealthy(Thread physicalOwner, Runnable body) {
+        if (body == null) throw new NullPointerException("body");
+        commitPausedExactActorEntryIfHealthy(physicalOwner);
+        try {
+            body.run();
+        } catch (Throwable thrown) {
+            // Publish before returning control to mod/vanilla callers.  Even a
+            // caller which catches this rethrow cannot reopen the next body.
+            RegionScheduler.<RuntimeException>rethrow(
+                    publishFatalAndSelectWinner(thrown));
+        }
+        // A peer W may win while the already-admitted vanilla body is running.
+        // Refuse a locally clean return before the actor begins its completion
+        // bookkeeping; the caller then publishes/retains W and exhausts cleanup.
+        try {
+            commitSuccessIfHealthy(() -> {});
+        } catch (Throwable terminalFailure) {
+            RegionScheduler.<RuntimeException>rethrow(
+                    publishFatalAndSelectWinner(terminalFailure));
+        }
+    }
+
+    private static boolean callPausedExactActorBooleanIfHealthy(
+            Thread physicalOwner, java.util.function.BooleanSupplier body) {
+        commitPausedExactActorEntryIfHealthy(physicalOwner);
+        boolean result;
+        try {
+            result = body.getAsBoolean();
+        } catch (Throwable thrown) {
+            RegionScheduler.<RuntimeException>rethrow(
+                    publishFatalAndSelectWinner(thrown));
+            return false;
+        }
+        try {
+            commitSuccessIfHealthy(() -> {});
+        } catch (Throwable terminalFailure) {
+            RegionScheduler.<RuntimeException>rethrow(
+                    publishFatalAndSelectWinner(terminalFailure));
+        }
+        return result;
+    }
+
+    /**
+     * Select the body gate and, when no live pool admission is required, linearize
+     * logical entry directly. A null return is an admitted direct body, not an
+     * unchecked pool snapshot. It normally means no pool exists. The one other
+     * case is the exact lifecycle owner finishing post-join persistence while a
+     * healthy, terminated generation remains published as the failure authority.
+     * The caller must finish either case through
+     * {@link #finishNoPoolSuccessBody(Throwable)}.
+     */
+    private static RegionWorkerPool beginSuccessBodyIfHealthy() {
+        synchronized (LIFECYCLE_LOCK) {
+            RegionWorkerPool current = failureGateLocked();
+            if (current != null) {
+                if (lifecycleState == LifecycleState.STOPPING
+                        && lifecycleOwner == Thread.currentThread()
+                        && current.isTerminated()) {
+                    // Worker join is the exclusive execution edge for the final
+                    // clock/portal/arrival drain. The generation must stay published
+                    // so a failure in one of those vanilla bodies still becomes its
+                    // exact W. This empty commit is the atomic W-vs-entry cut; the
+                    // matching terminal cut remains in finishNoPoolSuccessBody.
+                    current.commitSuccessIfHealthy(() -> {});
+                    return null;
+                }
+                return current;
+            }
+            Throwable failure = orphanFatalFailure;
+            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+            return null;
+        }
+    }
+
+    /**
+     * Terminal edge for a directly admitted body. Runtime activation may have
+     * installed a pool from inside a no-pool body (the regions-on command is the
+     * intentional case), while post-join teardown deliberately retains its
+     * terminated pool as the failure authority. A clean return must therefore
+     * commit against the gate which is current now, not merely reread the orphan
+     * slot.
+     */
+    private static Throwable finishNoPoolSuccessBody(Throwable primary) {
+        synchronized (LIFECYCLE_LOCK) {
+            if (primary != null) return publishFatalAndSelectWinner(primary);
+            RegionWorkerPool current = failureGateLocked();
+            if (current != null) {
+                try {
+                    current.commitSuccessIfHealthy(() -> {});
+                    return null;
+                } catch (Throwable failure) {
+                    return failure;
+                }
+            }
+            return orphanFatalFailure;
+        }
+    }
+
+    /**
+     * Run one fallible success-only stage only if it atomically wins body entry
+     * before the current pool generation's first fatal Throwable.  Unlike
+     * {@link #commitSuccessIfHealthy(Runnable)}, this method never invokes the
+     * supplied body while holding the pool lifecycle monitor.
+     */
+    public static void runSuccessBodyIfHealthy(Runnable body) {
+        if (body == null) throw new NullPointerException("body");
+        Thread exactPhysicalOwner =
+                RegionalPlayerEntityTicksV2.exactActorPhysicalOwnerOrNull();
+        if (exactPhysicalOwner != null) {
+            runPausedExactActorBodyIfHealthy(exactPhysicalOwner, body);
+            return;
+        }
+        RegionWorkerPool causalOwner =
+                RegionWorkerPool.currentThreadCausalOwnerOrNull();
+        if (causalOwner != null) {
+            causalOwner.runSuccessBodyIfHealthy(body);
+            return;
+        }
+        RegionWorkerPool p = beginSuccessBodyIfHealthy();
+        if (p != null) {
+            p.runSuccessBodyIfHealthy(body);
+            return;
+        }
+        Throwable failure = null;
+        try {
+            body.run();
+        } catch (Throwable thrown) {
+            failure = thrown;
+        }
+        failure = finishNoPoolSuccessBody(failure);
+        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+    }
+
+    /** Allocation-free boolean form of {@link #runSuccessBodyIfHealthy(Runnable)}. */
+    public static boolean callSuccessBooleanIfHealthy(
+            java.util.function.BooleanSupplier body) {
+        if (body == null) throw new NullPointerException("body");
+        Thread exactPhysicalOwner =
+                RegionalPlayerEntityTicksV2.exactActorPhysicalOwnerOrNull();
+        if (exactPhysicalOwner != null) {
+            return callPausedExactActorBooleanIfHealthy(exactPhysicalOwner, body);
+        }
+        RegionWorkerPool causalOwner =
+                RegionWorkerPool.currentThreadCausalOwnerOrNull();
+        if (causalOwner != null) {
+            return causalOwner.callSuccessBooleanIfHealthy(body);
+        }
+        RegionWorkerPool p = beginSuccessBodyIfHealthy();
+        if (p != null) return p.callSuccessBooleanIfHealthy(body);
+        Throwable failure = null;
+        boolean result;
+        try {
+            result = body.getAsBoolean();
+        } catch (Throwable thrown) {
+            failure = thrown;
+            result = false;
+        }
+        failure = finishNoPoolSuccessBody(failure);
+        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        return result;
+    }
+
+    /**
+     * Publish a failure caught by a Fabrolia physical-Main task. Vanilla's
+     * BlockableEventLoop may log ordinary task exceptions and continue, so the
+     * shared first-wins slot is the crash authority checked by tick boundaries.
+     */
+    public static void publishFatalFailure(Throwable failure) {
+        if (failure == null) throw new NullPointerException("failure");
+        synchronized (LIFECYCLE_LOCK) {
+            RegionWorkerPool p = failureGateLocked();
+            if (p != null) {
+                p.publishFatalFailure(failure);
+            } else if (orphanFatalFailure == null) {
+                orphanFatalFailure = failure;
+            }
+        }
     }
 
     /** F2b: registration-time cell stamp for the persistent BE index. Deliberately
@@ -512,17 +3210,37 @@ public final class RegionScheduler {
      *  (its first partitioned pass bulk-builds). Called under LevelMixin's
      *  addBlockEntityTicker lock, so stash order matches the vanilla list order. */
     public static void onBlockEntityTickerAdded(net.minecraft.world.level.Level level,
-                                                net.minecraft.world.level.block.entity.TickingBlockEntity ticker) {
+                                                TickingBlockEntity ticker) {
         if (!(level instanceof ServerLevel sl)) return;
+        // Deliberately BEFORE the PER_LEVEL lookup and independent of `active`:
+        // LevelChunk registers the wrapper while it still delegates to the real
+        // BoundTickingBlockEntity. Lithium may replace that delegate with its
+        // posless SLEEPING_BLOCK_ENTITY_TICKER before regions are enabled or
+        // before this level has built a RegionizedServer.
+        BlockPos pos = ticker.getPos();
+        if (pos != null) {
+            BLOCK_ENTITY_TICKER_POSITIONS.remember(ticker, pos.immutable());
+        }
         RegionizedServer rs = PER_LEVEL.get(sl);
         if (rs != null) rs.stashPendingBeAdd(ticker);
     }
 
-    /** Main thread: drain the main-safe lane to empty (tick boundary and
-     *  before island phase fan-outs — see RegionWorkerPool.drainMainSafeAll). */
+    /**
+     * Resolve a wrapper's current position, falling back to the position seen
+     * at registration. Routing only: ticking still consults the live
+     * {@code getPos()} so a sleeping delegate remains a no-op.
+     */
+    static BlockPos resolveBlockEntityTickerPosition(TickingBlockEntity ticker) {
+        return BLOCK_ENTITY_TICKER_POSITIONS.resolve(ticker, ticker.getPos());
+    }
+
+    /** Drain worker-safe roots; physical Main additionally drains its exclusive lane. */
     public static void drainMainSafeNow() {
         RegionWorkerPool p = pool;
-        if (p != null) p.drainMainSafeAll();
+        MinecraftServer current = server;
+        boolean physicalMain = RegionalPlayerEntityTicksV2
+                .isPhysicalServerThread(current);
+        if (p != null) p.drainMainSafeAll(physicalMain);
     }
 
     /**
@@ -555,15 +3273,23 @@ public final class RegionScheduler {
 
     public static void healColorGate() {
         if (!active || !FabroliaConfig.useRegionColorGate()) return;
+        runSuccessBodyIfHealthy(RegionScheduler::healColorGateEntered);
+    }
+
+    /** One admitted liveness-maintenance pass; nested executable roots keep their cuts. */
+    private static void healColorGateEntered() {
+        if (!active || !FabroliaConfig.useRegionColorGate()) return;
+        throwWorkerFailureIfAny();
         // Main-thread caller only (the barrier pump) — plain fields suffice.
         long now = System.nanoTime();
         if (now - lastHealNanos < healIntervalNanos) return;
         lastHealNanos = now;
         boolean effect = false;
-        boolean eventSched = FabroliaConfig.regionEventScheduler;
         for (RegionizedServer rs : PER_LEVEL.values()) {
+            throwWorkerFailureIfAny();
             var regions = rs.healSnapshot(now);
             for (int i = 0, n = regions.size(); i < n; i++) {
+                throwWorkerFailureIfAny();
                 Region r = regions.get(i);
                 if (r.state() != RegionState.ACTIVE) continue;
                 // A2: every check runs in the REGION's own timeline — with async
@@ -574,18 +3300,16 @@ public final class RegionScheduler {
                 EpochDomain d = r.domain;
                 long epoch = d.epoch;
                 if (d.dispatchedEpoch != epoch) continue; // pre-dispatch: undecidable
-                boolean pending = eventSched
-                        && d.entityBarrierArmedEpoch == epoch && d.entityPending.get() > 0;
-                if (r.doneEpoch < epoch) {
-                    ColorGate.tryMarkDone(r, rs);
-                    if (r.doneEpoch >= epoch) effect = true;
-                }
-                // R5 liveness backstop: any owing region my push-analysis might have
-                // missed gets re-armed here (duplicates benign — the claim + entityEpoch
-                // guard makes double execution impossible), and a phase that ran without
-                // contributing (crash path) is settled into the barrier.
+                boolean pending = d.isEventEntityEpoch(epoch) && d.entityPending.get() > 0;
+                boolean wasSealedDone = r.hasSealedDone(epoch);
+                ColorGate.tryMarkDone(r, rs);
+                if (!wasSealedDone && r.hasSealedDone(epoch)) effect = true;
+                // A queued or detached notification is still a retained progress
+                // witness. Slow consumption is not a lost wake: repeatedly
+                // re-arming it can bury the original behind millions of duplicates.
                 if (pending && rs.owesEntityPhase(r)) {
-                    if (ColorGate.eligible(r, rs) && r.currentWorker() == null) {
+                    if (r.readyNotifications == 0 && r.currentWorker() == null
+                            && ColorGate.eligible(r, rs)) {
                         enqueueReady(r);
                         wakeWorkers(1);
                         effect = true;
@@ -600,21 +3324,13 @@ public final class RegionScheduler {
                 // whose future main is pumping) has no re-arm path when it is
                 // not owed an entity phase — a ready entry consumed-and-
                 // dropped in the claim race stranded the pump with all 30
-                // workers idle-parked. Re-arm ANY active, unclaimed region
-                // with pending work; duplicate ready entries are tolerated by
-                // design (claim CAS + drain idempotence).
+                // workers idle-parked. Re-arm only eligible, unwitnessed work:
+                // blocked colors and next-epoch queues cannot be consumed yet.
                 if (r.currentWorker() == null
+                        && r.readyNotifications == 0
                         && (!r.queue().isEmpty() || !r.helpQueue.isEmpty())
-                        // A2 ownership fix: island regions outside their unit
-                        // window are QUEUED-BY-DESIGN (the next unit's entity
-                        // phase is the consumer) — not stranded. Re-arming
-                        // them here would spin claim-refusal churn forever.
-                        && com.axalotl.fabrolia.common.regions.ColorGate.inUnitWindow(r, rs)) {
-                    // Two consecutive heal sightings (≥2ms apart) — freshly
-                    // submitted work is claimed within microseconds, so a
-                    // second sighting means the ready entry was lost. Gating
-                    // avoids re-arming hundreds of mid-flight regions every
-                    // heal pass (the unpark-storm class R5 removed).
+                        && ColorGate.eligible(r, rs)) {
+                    // Two consecutive sightings with no retained notification.
                     if (r.strandedQueueSightings++ >= 1) {
                         r.strandedQueueSightings = 0;
                         enqueueReady(r);
@@ -664,12 +3380,29 @@ public final class RegionScheduler {
                         ((RegionWorkerThread) holder).currentRegion = null;
                         r.stampRelease("heal-dead");
                         r.release(holder);
-                        if (!r.queue().isEmpty() || !r.helpQueue.isEmpty()
-                                || rs.owesEntityPhase(r)) {
-                            enqueueReady(r);
-                            wakeWorkers(1);
+                        try {
+                            if (!r.queue().isEmpty() || !r.helpQueue.isEmpty()
+                                    || (pending && rs.owesEntityPhase(r))) {
+                                enqueueReady(r);
+                                wakeWorkers(1);
+                            }
+                            ColorGate.tryMarkDone(r, rs);
+                            // The dead worker may have committed entityEpoch and
+                            // then died before release/done/contribution.  The
+                            // earlier heal attempt could not contribute while
+                            // its claim still blocked the done seal, so recovery
+                            // owns that exact remaining success tail as well.
+                            // Keep the claim transaction open through it: domain
+                            // rebase must not overtake an old-domain barrier
+                            // decrement merely because currentWorker is null.
+                            if (pending && !rs.owesEntityPhase(r)) {
+                                rs.contributeEntityBarrier(r);
+                            }
+                        } finally {
+                            // The dead holder opened this receipt at tryClaim.
+                            // Recovery owns its exact synthetic completion tail.
+                            r.finishClaimTransaction();
                         }
-                        ColorGate.tryMarkDone(r, rs);
                         effect = true;
                     } else if (r.staleClaimGenSeen != gen) {
                         // First mismatch sighting for THIS acquisition.
@@ -704,7 +3437,7 @@ public final class RegionScheduler {
                 }
             }
             int owingTotal = rs.entityPendingCount();
-            boolean barrierPending = eventSched && owingTotal > 0;
+            boolean barrierPending = owingTotal > 0;
             long oldestArmedNanos = barrierPending ? now - rs.entityBarrierAgeNanos(now) : Long.MAX_VALUE;
             // A2: a pending ISLAND barrier wedging would hang the combined pump
             // just as silently — fold the oldest pending island domain into the
@@ -713,9 +3446,9 @@ public final class RegionScheduler {
             if (rs.asyncActive) {
                 for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
                     EpochDomain d = p.domain;
-                    int ip = d.entityBarrierArmedEpoch == d.epoch ? d.entityPending.get() : 0;
+                    int ip = d.isEventEntityEpoch(d.epoch) ? d.entityPending.get() : 0;
                     if (ip > 0) {
-                        barrierPending = eventSched;
+                        barrierPending = true;
                         owingTotal += ip;
                         oldestArmedNanos = Math.min(oldestArmedNanos, d.entityBarrierArmedNanos);
                     }
@@ -755,6 +3488,7 @@ public final class RegionScheduler {
                 }
             }
         }
+        throwWorkerFailureIfAny();
         healIntervalNanos = effect ? 2_000_000L : Math.min(healIntervalNanos << 1, 16_000_000L);
     }
 

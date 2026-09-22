@@ -27,20 +27,51 @@ public abstract class DragonFightTickMixin {
     @WrapMethod(method = "tick")
     private void fabrolia$ownerSafeFightTick(Operation<Void> original) {
         RegionizedServer rs = RegionScheduler.forLevel(this.level);
-        if (rs == null || !rs.asyncActive || rs.mainHoldsAllClaims()) {
-            original.call();
+        if (rs == null || !rs.asyncActive || rs.currentThreadHoldsAllClaims()) {
+            RegionScheduler.runSuccessBodyIfHealthy(() -> original.call());
             return;
         }
         IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(ChunkPos.pack(0, 0));
         if (owner == null) {
-            original.call();
+            RegionScheduler.runSuccessBodyIfHealthy(() -> original.call());
             return;
         }
         IslandCommands.mainClaim(owner);
+        Throwable failure = null;
         try {
-            original.call();
-        } finally {
-            IslandCommands.mainRelease(owner);
+            RegionScheduler.runSuccessBodyIfHealthy(() -> original.call());
+        } catch (Throwable bodyFailure) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);
         }
+        try {
+            IslandCommands.mainRelease(owner);
+        } catch (Throwable cleanupFailure) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(
+                    fabrolia$mergeFailure(failure, cleanupFailure));
+        }
+        if (failure == null) {
+            try {
+                // Claim release is mandatory cleanup, not a success edge.
+                // Linearize the normal return against a peer generation W.
+                RegionScheduler.commitSuccessIfHealthy(() -> {});
+            } catch (Throwable peerFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
+            }
+        }
+        if (failure != null) {
+            IslandCommands.publishAndPropagate(failure);
+        }
+    }
+
+    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
+        if (primary == null) return cleanup;
+        if (cleanup != null && cleanup != primary) {
+            try {
+                primary.addSuppressed(cleanup);
+            } catch (Throwable ignored) {
+                // Already fail-stop; suppression must not replace the fight primary.
+            }
+        }
+        return primary;
     }
 }

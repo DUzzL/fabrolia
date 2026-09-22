@@ -1,7 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.utils;
 
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
-import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
+import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
@@ -29,11 +29,13 @@ public abstract class PortalTicketMixin {
     @Inject(method = "placePortalTicket", at = @At("HEAD"), cancellable = true)
     private void fabrolia$deferPortalTicket(BlockPos pos, CallbackInfo ci) {
         Entity self = (Entity) (Object) this;
-        if (!(Thread.currentThread() instanceof RegionWorkerThread)) {
-            return; // main / vanilla context: unchanged
+        var server = self.level().getServer();
+        if (server == null
+                || RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
+            return; // physical Main / vanilla context: unchanged
         }
         BlockPos immutable = pos.immutable();
-        RegionScheduler.enqueueGlobalMainSafe(() -> {
+        RegionScheduler.enqueueGlobalMainOnly(() -> {
             if (!self.isRemoved()) {
                 self.placePortalTicket(immutable);
             }

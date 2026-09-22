@@ -2,6 +2,8 @@ package com.axalotl.fabrolia.common.regions;
 
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Level;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,8 +17,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * proves region-local in practice; its live counters on real contraption
  * tests ARE the campaign's go/no-go data.
  *
- * <p>Observation-only: counts + rate-limited stack logs. Default-off
- * (fabroliaDebugRegionAccess) — a volatile read per setBlock when disabled.
+ * <p>Enabled during live async execution or explicit debug observation.
+ * Cross-domain writes log their origin and fail the generation at the write site.
  */
 public final class RegionAccessDetector {
 
@@ -30,9 +32,9 @@ public final class RegionAccessDetector {
     private static final AtomicLong OFF_WORKER = new AtomicLong();
     /** A7 islands mode: writes that left the writer's TIMELINE — landed in a
      *  region whose domain differs from the execution context's. With async
-     *  islands on, vanilla mechanics can never produce one (separation
-     *  invariant); any hit is a mod touching state it does not own and is the
-     *  escalation ladder's detection signal. Certification: soaks must show 0. */
+     *  islands on, every such hit violates the separation invariant, whether
+     *  caused by our topology/admission or an external writer. The origin is
+     *  diagnostic only: either cause must stop the generation before this write. */
     private static final AtomicLong CROSS_DOMAIN = new AtomicLong();
     private static final AtomicLong LOGGED = new AtomicLong();
     private static volatile boolean FAIL_CLOSED_LATCHED;
@@ -40,19 +42,34 @@ public final class RegionAccessDetector {
 
     private RegionAccessDetector() {}
 
-    public static void onBlockWrite(BlockPos pos) {
+    public static void onBlockWrite(Level level, BlockPos pos) {
         // Production audit 2026-07-12: the detector is LIVE whenever async
         // islands run (fail-closed depends on it) — one static volatile read
         // per setBlock when everything is off.
         if (!FabroliaConfig.fabroliaDebugRegionAccess && !RegionScheduler.asyncLive()) {
             return;
         }
+        if (!(level instanceof ServerLevel targetLevel)) return;
         Thread t = Thread.currentThread();
         if (!(t instanceof RegionWorkerThread w)) {
             OFF_WORKER.incrementAndGet();   // main / pool / IO — out of scope
             return;
         }
         Region r = w.currentRegion;
+        EpochDomain sourceDomain = r != null && r.domain != null ? r.domain : w.currentDomain;
+        ServerLevel sourceLevel = r != null ? r.level
+                : sourceDomain != null && sourceDomain.owner != null
+                        ? sourceDomain.owner.domainLevel() : null;
+        if (sourceLevel != null && sourceLevel != targetLevel && sourceDomain != null) {
+            if (NetherPortalTransfers.owns(targetLevel, pos)) return;
+            RegionizedServer targetRuntime = RegionScheduler.forLevel(targetLevel);
+            Region target = targetRuntime == null ? null : targetRuntime.regionizer()
+                    .peekByGridKey(targetRuntime.regionizer().grid
+                            .keyFor(pos.getX() >> 4, pos.getZ() >> 4));
+            recordCrossDomain(targetLevel, pos, w, r, target, sourceDomain,
+                    target == null ? null : target.domain);
+            return;
+        }
         if (r == null) {
             // Coordinator-context write (island task / BE phase / deferral
             // replay — currentDomain set, no claim): previously INVISIBLE to
@@ -63,7 +80,7 @@ public final class RegionAccessDetector {
                 OFF_WORKER.incrementAndGet();
                 return;
             }
-            RegionizedServer rsd = RegionScheduler.forLevel(mine.owner.domainLevel());
+            RegionizedServer rsd = RegionScheduler.forLevel(targetLevel);
             if (rsd == null) {
                 OFF_WORKER.incrementAndGet();
                 return;
@@ -72,13 +89,13 @@ public final class RegionAccessDetector {
             Region target = rsd.regionizer().peekByGridKey(wk);
             EpochDomain theirs = target != null ? target.domain : null;
             if (theirs != null && theirs != mine) {
-                recordCrossDomain(pos, w, null, target, mine, theirs);
+                recordCrossDomain(targetLevel, pos, w, null, target, mine, theirs);
             } else {
                 IN_REGION.incrementAndGet();
             }
             return;
         }
-        RegionizedServer rs = RegionScheduler.forLevel(r.level);
+        RegionizedServer rs = RegionScheduler.forLevel(targetLevel);
         if (rs == null) {
             OFF_WORKER.incrementAndGet();
             return;
@@ -100,7 +117,7 @@ public final class RegionAccessDetector {
             EpochDomain mine = r.domain != null ? r.domain : w.currentDomain;
             EpochDomain theirs = target.domain;
             if (mine != null && theirs != null && mine != theirs) {
-                recordCrossDomain(pos, w, r, target, mine, theirs);
+                recordCrossDomain(targetLevel, pos, w, r, target, mine, theirs);
             }
         }
         // Stack-log only the UNSAFE class: a cross write into an idle
@@ -140,8 +157,9 @@ public final class RegionAccessDetector {
             String cls = f.getClassName();
             String m = f.getMethodName();
             int h = m.indexOf('$');
-            if (h >= 0) {
-                // mixin-grafted frame inside any class: handler$tag$modid$name
+            if (h >= 0 && !m.startsWith("lambda$")) {
+                // Mixin-grafted frame: handler$tag$modid$name. A Java lambda's
+                // numeric suffix is not a mod ID, even for a dollar-named method.
                 String[] parts = m.split("\\$");
                 if (parts.length >= 3) {
                     String modid = parts[2];
@@ -174,7 +192,7 @@ public final class RegionAccessDetector {
         return CrossDomainOrigin.UNKNOWN;
     }
 
-    private static void recordCrossDomain(BlockPos pos, RegionWorkerThread w,
+    private static void recordCrossDomain(ServerLevel targetLevel, BlockPos pos, RegionWorkerThread w,
                                           Region claimed, Region target,
                                           EpochDomain mine, EpochDomain theirs) {
         long n = CROSS_DOMAIN.incrementAndGet();
@@ -197,16 +215,17 @@ public final class RegionAccessDetector {
             String tgt = target != null
                     ? "region " + Long.toHexString(target.gridKey)
                         + " island#" + target.islandId
-                        + (theirs.owner != null
-                            ? " domain=island#" + theirs.owner.id + "@e" + theirs.epoch
-                                + " L" + theirs.owner.logicalTick
-                                + " unitClaim=" + theirs.owner.unitClaim.get()
-                            : " domain=global@e" + theirs.epoch)
+                        + (theirs == null ? " domain=<unpublished>"
+                            : theirs.owner != null
+                                ? " domain=island#" + theirs.owner.id + "@e" + theirs.epoch
+                                    + " L" + theirs.owner.logicalTick
+                                    + " unitClaim=" + theirs.owner.unitClaim.get()
+                                : " domain=global@e" + theirs.epoch)
                     : "region <unmapped>";
-            LOGGER.error("[region-access] CROSS-DOMAIN write @ {} (chunk [{}, {}]) — target {} vs executing {} on {} "
+            LOGGER.error("[region-access] CROSS-DOMAIN write in {} @ {} (chunk [{}, {}]) — target {} vs executing {} on {} "
                     + "(currentRegion={} currentDomain={}) — origin={}{} — the execution timeline does not own "
                     + "the target; report this full block",
-                    pos.toShortString(), pos.getX() >> 4, pos.getZ() >> 4,
+                    targetLevel.dimension().identifier(), pos.toShortString(), pos.getX() >> 4, pos.getZ() >> 4,
                     tgt, exec, w.getName(),
                     w.currentRegion == null ? "-" : Long.toHexString(w.currentRegion.gridKey),
                     w.currentDomain == null ? "-"
@@ -215,31 +234,21 @@ public final class RegionAccessDetector {
                     cls, culprit.length() == 0 ? "" : " culprit=" + culprit,
                     origin);
         }
-        // FAIL-CLOSED (production safety): a cross-domain write may already
-        // have corrupted the target island's LIVE structures — no post-hoc
-        // response can undo that, and a live async→sync collapse wedges too
-        // (both proven by the violation rig). Designed containment: scream
-        // and collapse to sync for the REST OF THIS SESSION — never persisted
-        // (2026-07-18 policy: crash state must not gate later boots).
-        // Saves remain quiesce-protected throughout. One-shot latch.
-        if (FabroliaConfig.asyncFailClosed && !FAIL_CLOSED_LATCHED) {
-            FAIL_CLOSED_LATCHED = true;
-            FabroliaConfig.asyncFailClosedTripped = true;
-            String advice = switch (cls) {
-                case MOD_CROSS_DOMAIN_WRITE -> "A MOD wrote across island ownership ("
-                        + culprit + "). Remove/fix that mod; async stays disabled for THIS session "
-                        + "and re-arms on restart.";
-                case TOPOLOGY_FRONTIER_VIOLATION, STALE_OWNERSHIP_CONTEXT, VANILLA_SCHEDULER_BUG ->
-                        "This is a FABROLIA scheduler/topology defect (" + cls + ") — NOT a mod issue; "
-                        + "do NOT remove mods. Report the stack above to Fabrolia; async stays disabled "
-                        + "for THIS session and re-arms on restart.";
-                default -> "Origin UNKNOWN — capture the stack above and report it; async stays "
-                        + "disabled for THIS session and re-arms on restart.";
-            };
-            LOGGER.error("[region-access] FAIL-CLOSED TRIPPED ({}): {} Async collapses to SYNC at the next "
-                    + "tick head (live containment) for the rest of this session; a restart re-arms it.",
-                    cls, advice);
-        }
+        // This setBlock has not entered its native body. Its enclosing producer
+        // may already have performed other effects, so neither a later replay
+        // nor an async-to-sync retry can repair the ownership violation.
+        FAIL_CLOSED_LATCHED = true;
+        FabroliaConfig.asyncFailClosedTripped = true;
+        String detail = switch (cls) {
+            case MOD_CROSS_DOMAIN_WRITE -> "mod cross-domain writer " + culprit;
+            case TOPOLOGY_FRONTIER_VIOLATION, STALE_OWNERSHIP_CONTEXT,
+                    VANILLA_SCHEDULER_BUG -> "Fabrolia scheduler/topology defect " + cls;
+            default -> "unclassified cross-domain writer";
+        };
+        IllegalStateException failure = new IllegalStateException(
+                "cross-domain live write at " + pos.toShortString() + ": " + detail,
+                origin);
+        IslandCommands.publishAndPropagate(failure);
     }
 
     /** TEST-ONLY containment injection (/fabrolia regions debug tripfailclosed,

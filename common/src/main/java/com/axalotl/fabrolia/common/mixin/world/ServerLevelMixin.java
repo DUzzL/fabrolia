@@ -2,12 +2,16 @@ package com.axalotl.fabrolia.common.mixin.world;
 
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
-import com.axalotl.fabrolia.common.mixin.lithium.LithiumServerLevel;
+import com.axalotl.fabrolia.common.parallelised.utils.FabroliaNavigationBatch;
+import com.axalotl.fabrolia.common.parallelised.utils.PlayerChunkIndex;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.api.utils.ConcurrentCollections;
 import com.axalotl.fabrolia.api.utils.SnapshotList;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
 import it.unimi.dsi.fastutil.objects.ObjectLinkedOpenHashSet;
 import net.minecraft.core.Holder;
 import net.minecraft.core.RegistryAccess;
@@ -18,21 +22,19 @@ import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvent;
-import net.minecraft.util.profiling.Profiler;
-import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.util.random.WeightedList;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.boss.enderdragon.EnderDragonPart;
 import net.minecraft.world.level.*;
 import net.minecraft.world.level.dimension.DimensionType;
+import net.minecraft.world.level.dimension.end.EnderDragonFight;
 import net.minecraft.world.level.entity.EntityTickList;
 import net.minecraft.world.level.storage.WritableLevelData;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.objectweb.asm.Opcodes;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Mutable;
@@ -43,7 +45,6 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
@@ -52,9 +53,6 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import com.axalotl.fabrolia.common.utils.SpawnFutureTaker;
 import com.axalotl.fabrolia.common.regions.FabroliaLocks;
-import net.minecraft.server.level.ChunkHolder;
-import net.minecraft.world.TickRateManager;
-import net.minecraft.server.level.DistanceManager;
 
 @SuppressWarnings("all")
 @Mixin(value = ServerLevel.class, priority = 1500)
@@ -76,6 +74,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     @Shadow @Final private ServerChunkCache chunkSource;
     @Shadow @Final @Mutable Set<Mob> navigatingMobs;
     @Shadow @Mutable @Final private List<ServerPlayer> players;
+    @Shadow @Mutable @Final private Int2ObjectMap<EnderDragonPart> dragonParts;
 
     @Shadow public abstract @NotNull ServerLevel getLevel();
 
@@ -89,6 +88,9 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
      *  duplicate block event fired the piston twice → flying machines broke on themselves. */
     @Unique
     final Object fabrolia$blockEventLock = new Object();
+    @Unique
+    private final com.axalotl.fabrolia.common.regions.IslandBlockEvents.Publications
+            fabrolia$blockEventPublications = new com.axalotl.fabrolia.common.regions.IslandBlockEvents.Publications();
 
     protected ServerLevelMixin(WritableLevelData levelData, ResourceKey<Level> dimension, RegistryAccess registryAccess, Holder<DimensionType> dimensionTypeRegistration, boolean isClientSide, boolean isDebug, long biomeZoomSeed, int maxChainedNeighborUpdates) {
         super(levelData, dimension, registryAccess, dimensionTypeRegistration, isClientSide, isDebug, biomeZoomSeed, maxChainedNeighborUpdates);
@@ -100,89 +102,492 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         // SnapshotList: login/logout = rare write rebuilding snapshot; broadcast =
         // very hot lock-free iteration over the volatile snapshot array.
         players = new SnapshotList<>();
+        // Entity-target packets may resolve an EnderDragonPart on physical Main
+        // while an owning island publishes dragon teardown. Keep the exact
+        // vanilla id index linearizable; the default synchronized wrapper uses
+        // itself as the mutex for get/put/remove and its collection views.
+        dragonParts = Int2ObjectMaps.synchronize(dragonParts);
+    }
+
+    @WrapMethod(method = "dragonParts")
+    private Collection<EnderDragonPart> fabrolia$snapshotDragonParts(
+            Operation<Collection<EnderDragonPart>> original) {
+        synchronized (dragonParts) {
+            return List.copyOf(original.call());
+        }
     }
 
     /**
-     * F1 — island-partitioned scheduled block/fluid ticks (the user's
-     * Folia-batch strategy). One handler covers both call sites (block +
-     * fluid schedulers share the target signature). Falls through to vanilla
-     * whenever the partition declines (<2 islands, regions off, flag off).
+     * Autonomous islands own their scheduled lanes; Main services only the
+     * residual native complement. Regions-off retains the original scheduler
+     * under global authority. Both block and fluid call sites use this boundary.
      */
     @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
-            method = "tick",
+            method = "tick(Ljava/util/function/BooleanSupplier;)V",
             at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/world/ticks/LevelTicks;tick(JILjava/util/function/BiConsumer;)V"))
+                    target = "Lnet/minecraft/world/ticks/LevelTicks;"
+                            + "tick(JILjava/util/function/BiConsumer;)V"),
+            require = 2,
+            allow = 2)
     private <T> void fabrolia$islandScheduledTicks(net.minecraft.world.ticks.LevelTicks<T> instance,
                                                 long gameTime, int maxTicks,
                                                 java.util.function.BiConsumer<net.minecraft.core.BlockPos, T> ticker,
                                                 Operation<Void> original) {
-        if (com.axalotl.fabrolia.common.regions.IslandScheduledTicks.slotPartitionedAsync(
-                instance, this.getLevel(), gameTime, maxTicks, ticker)) {
-            return;
-        }
-        if (com.axalotl.fabrolia.common.regions.IslandScheduledTicks.tickPartitioned(
-                instance, this.getLevel(), gameTime, maxTicks, ticker)) {
-            return;
-        }
-        original.call(instance, gameTime, maxTicks, ticker);
+        RegionScheduler.runMainControlBody(this.getServer(), () -> {
+            if (com.axalotl.fabrolia.common.regions.IslandScheduledTicks
+                    .slotPartitionedAsync(
+                            instance, this.getLevel(), gameTime, maxTicks, ticker)) {
+                return;
+            }
+            // Master OFF is a real vanilla control: do not retain any Fabrolia
+            // cell frontier after the autonomous scheduler declined the slot.
+            RegionScheduler.runGlobalMainBody(this.getServer(),
+                    () -> original.call(instance, gameTime, maxTicks, ticker));
+        });
     }
 
-    @WrapMethod(method = "tickNonPassenger")
+    @WrapMethod(method = "tickNonPassenger(Lnet/minecraft/world/entity/Entity;)V")
     private void fabrolia$guardTickNonPassenger(Entity entity, Operation<Void> original) {
         ParallelProcessor.TickGuard guard = (ParallelProcessor.TickGuard) entity;
-        if (!guard.fabrolia$tryBeginTick()) {
+        if (guard.fabrolia$tickLease().isArrivalPending()) return;
+        boolean inheritedReservation = com.axalotl.fabrolia.common.regions
+                .RegionalPlayerEntityTicksV2.ownsReservedEntityTick(entity);
+        boolean acquired = false;
+        if (!inheritedReservation && !guard.fabrolia$tryBeginTick()) {
+            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                    .failIfClaimedTickGuardContention(entity, "tickNonPassenger");
             return;
         }
+        if (!inheritedReservation) acquired = true;
+        Throwable failure = null;
         try {
+            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                    .rejectReservedExternalEntityConsumer(entity);
+            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                    .markVanillaEntityConsumerEntered(entity);
             original.call(entity);
+        } catch (Throwable thrown) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         } finally {
-            guard.fabrolia$endTick();
+            try {
+                com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                        .finishPlayerEntityBody(entity);
+            } catch (Throwable cleanup) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        fabrolia$mergePlayerTickFailure(failure, cleanup));
+            }
+            if (acquired) {
+                try {
+                    guard.fabrolia$endTick();
+                } catch (Throwable cleanup) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            fabrolia$mergePlayerTickFailure(failure, cleanup));
+                }
+            }
         }
+        if (failure != null) ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
     }
 
-    @WrapMethod(method = "tickPassenger")
+    @Unique
+    private static Throwable fabrolia$mergePlayerTickFailure(Throwable primary,
+                                                              Throwable cleanup) {
+        if (primary == null) return cleanup;
+        if (primary != cleanup) {
+            try {
+                primary.addSuppressed(cleanup);
+            } catch (Throwable ignored) {
+                // Cleanup diagnostics cannot replace the exact tick failure.
+            }
+        }
+        return primary;
+    }
+
+    @Unique
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void fabrolia$throwPlayerTickFailure(
+            Throwable failure) throws T {
+        throw (T) failure;
+    }
+
+
+    @WrapMethod(method = "tickPassenger(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/entity/Entity;)V")
     private void fabrolia$guardTickPassenger(Entity vehicle, Entity entity, Operation<Void> original) {
+        if (((ParallelProcessor.TickGuard) vehicle).fabrolia$tickLease().isArrivalPending()
+                || ((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return;
+        // The source ride is retained for the between-unit transfer, not dead.
+        // Vanilla's pre-body isRemoved gate would otherwise dismount a rider
+        // hidden by this same source frame's temporary departure visibility.
+        if (vehicle.getRemovalReason() == null && entity.getRemovalReason() == null
+                && (com.axalotl.fabrolia.common.regions.NetherPortalTransfers.isSourceMutationBlocked(vehicle)
+                || com.axalotl.fabrolia.common.regions.NetherPortalTransfers.isSourceMutationBlocked(entity))) return;
         ParallelProcessor.TickGuard guard = (ParallelProcessor.TickGuard) entity;
-        if (!guard.fabrolia$tryBeginTick()) {
+        boolean inheritedReservation = com.axalotl.fabrolia.common.regions
+                .RegionalPlayerEntityTicksV2.ownsReservedEntityTick(entity);
+        boolean acquired = false;
+        if (!inheritedReservation && !guard.fabrolia$tryBeginTick()) {
+            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                    .failIfClaimedTickGuardContention(entity, "tickPassenger");
             return;
         }
+        if (!inheritedReservation) acquired = true;
+        Throwable failure = null;
         try {
+            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                    .rejectReservedExternalEntityConsumer(entity);
             original.call(vehicle, entity);
+        } catch (Throwable thrown) {
+            // Close the generation before either ownership witness becomes
+            // visible again. An outer entity/tick boundary is too late: both
+            // cleanup calls below release admission for another consumer.
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         } finally {
-            guard.fabrolia$endTick();
+            try {
+                com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                        .finishPlayerEntityBody(entity);
+            } catch (Throwable cleanup) {
+                Throwable candidate = fabrolia$mergePlayerTickFailure(failure, cleanup);
+                failure = RegionScheduler.publishFatalAndSelectWinner(candidate);
+            }
+            if (acquired) {
+                try {
+                    guard.fabrolia$endTick();
+                } catch (Throwable cleanup) {
+                    Throwable candidate = fabrolia$mergePlayerTickFailure(failure, cleanup);
+                    failure = RegionScheduler.publishFatalAndSelectWinner(candidate);
+                }
+            }
         }
+        if (failure != null) ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
     }
 
-    @Unique
-    private static final Logger FABROLIA_LOGGER = LoggerFactory.getLogger("Fabrolia-EntityTick");
+    /**
+     * tickPassenger has removal/vehicle gates before its actual body. Stamp only at the
+     * exact setOldPosAndRot invoke, not at wrapper HEAD, or an early return would suppress
+     * a later legitimate standalone consumer in the same global phase.
+     */
+    @WrapOperation(
+            method = "tickPassenger(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/entity/Entity;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/entity/Entity;setOldPosAndRot()V"),
+            require = 1)
+    private void fabrolia$stampPassengerBody(Entity entity, Operation<Void> original) {
+        com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                .markPlayerEntityBodyPhase(entity);
+        original.call(entity);
+    }
 
-    @Unique
-    private int fabrolia$lastBatchSize = 256;
+    /**
+     * Exact vanilla ordinal seam. Every lambda gate, checkDespawn call, profiler
+     * section and vehicle decision has already run on physical main. Only the one
+     * guardEntityTick invocation for an eligible standalone real player migrates.
+     */
+    @WrapOperation(
+            method = "lambda$tick$0(Lnet/minecraft/world/TickRateManager;"
+                    + "Lnet/minecraft/util/profiling/ProfilerFiller;"
+                    + "Lnet/minecraft/world/entity/Entity;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerLevel;guardEntityTick("
+                            + "Ljava/util/function/Consumer;"
+                            + "Lnet/minecraft/world/entity/Entity;)V",
+                    ordinal = 0),
+            require = 1,
+            allow = 1)
+    private void fabrolia$exactOrdinalPlayerBody(
+            ServerLevel level, Consumer<Entity> ticker, Entity entity,
+            Operation<Void> original) {
+        if (com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                .executeExactOrdinal(level, entity,
+                        () -> original.call(level, ticker, entity))) {
+            return;
+        }
+        // An ineligible/non-player entity still executes the exact vanilla
+        // guard body at this canonical ordinal.  The exact actor owns the
+        // paused pool here, so a fresh body permit is legal and prevents a
+        // peer W from being followed by this fallback mutation.
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> original.call(level, ticker, entity));
+    }
 
-    @Unique
-    private int fabrolia$lastLiveSize = 256;
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/attribute/EnvironmentAttributeSystem;"
+                            + "invalidateTickCache()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitEnvironmentTickCacheInvalidation(
+            net.minecraft.world.attribute.EnvironmentAttributeSystem instance,
+            Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+    }
 
-    @Unique
-    private ArrayList<Entity> fabrolia$syncBuf;
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/level/border/WorldBorder;tick()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitWorldBorderTick(
+            net.minecraft.world.level.border.WorldBorder instance,
+            Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+    }
 
-    @Unique
-    private ArrayList<Entity> fabrolia$liveBuf;
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerLevel;advanceWeatherCycle()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitWeatherTick(
+            ServerLevel instance, Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+    }
 
-    @Redirect(method = "tick", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/entity/EntityTickList;forEach(Ljava/util/function/Consumer;)V"))
-    private void overwriteEntityTicking(EntityTickList entityTickList, Consumer<Entity> consumer) {
-        ProfilerFiller profilerfiller = Profiler.get();
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/players/SleepStatus;areEnoughSleeping(I)Z"),
+            require = 1, allow = 1)
+    private boolean fabrolia$admitSleepingCount(
+            net.minecraft.server.players.SleepStatus instance, int percentage,
+            Operation<Boolean> original) {
+        boolean[] result = new boolean[1];
+        RegionScheduler.runGlobalMainBody(this.getServer(),
+                () -> result[0] = original.call(instance, percentage));
+        return result[0];
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/players/SleepStatus;"
+                            + "areEnoughDeepSleeping(ILjava/util/List;)Z"),
+            require = 1, allow = 1)
+    private boolean fabrolia$admitDeepSleepingPlayers(
+            net.minecraft.server.players.SleepStatus instance, int percentage,
+            List<ServerPlayer> players, Operation<Boolean> original) {
+        boolean[] result = new boolean[1];
+        RegionScheduler.runGlobalMainBody(this.getServer(),
+                () -> result[0] = original.call(instance, percentage, players));
+        return result[0];
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/clock/ServerClockManager;"
+                            + "moveToTimeMarker(Lnet/minecraft/core/Holder;"
+                            + "Lnet/minecraft/resources/ResourceKey;)Z"),
+            require = 1,
+            allow = 1)
+    private boolean fabrolia$admitSleepTimeAdvance(
+            net.minecraft.world.clock.ServerClockManager instance,
+            Holder<?> clock, ResourceKey<?> marker, Operation<Boolean> original) {
+        boolean[] result = new boolean[1];
+        RegionScheduler.runGlobalMainBody(this.getServer(),
+                () -> result[0] = original.call(instance, clock, marker));
+        return result[0];
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerLevel;wakeUpAllPlayers()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitWakePlayers(
+            ServerLevel instance, Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerLevel;resetWeatherCycle()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitWeatherReset(
+            ServerLevel instance, Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerLevel;updateSkyBrightness()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitSkyBrightnessUpdate(
+            ServerLevel instance, Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerLevel;tickTime()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitLevelTimeTick(
+            ServerLevel instance, Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(), () -> {
+            original.call(instance);
+            RegionScheduler.throwWorkerFailureIfAny();
+            // tickTime advances W and runs scheduled functions. Publish the
+            // resulting player census before releasing this same writer frame;
+            // a HEAD snapshot becomes stale as soon as native time advances.
+            PlayerChunkIndex.rebuild(instance);
+        });
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/entity/raid/Raids;"
+                            + "tick(Lnet/minecraft/server/level/ServerLevel;)V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitRaidCollectionTick(
+            net.minecraft.world.entity.raid.Raids instance, ServerLevel level,
+            Operation<Void> original) {
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> original.call(instance, level));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerChunkCache;"
+                            + "tick(Ljava/util/function/BooleanSupplier;Z)V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitChunkSourceTick(
+            ServerChunkCache instance, java.util.function.BooleanSupplier haveTime,
+            boolean tickChunks, Operation<Void> original) {
+        RegionScheduler.runMainControlBody(this.getServer(),
+                () -> original.call(instance, haveTime, tickChunks));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerLevel;resetEmptyTime()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitEmptyTimeReset(
+            ServerLevel instance, Operation<Void> original) {
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "FIELD",
+                    target = "Lnet/minecraft/server/level/ServerLevel;emptyTime:I",
+                    opcode = Opcodes.PUTFIELD),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitEmptyTimeIncrement(
+            ServerLevel instance, int value, Operation<Void> original) {
+        // Vanilla has already calculated old emptyTime + 1, but no state was
+        // changed yet. Linearize the sole PUTFIELD against W instead of
+        // retaining a permit across the level's later exact-pause boundary.
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> original.call(instance, value));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/level/dimension/end/"
+                            + "EnderDragonFight;tick()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitEnderDragonFightTick(
+            EnderDragonFight instance, Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerLevel;tickBlockEntities()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitBlockEntityTick(
+            ServerLevel instance, Operation<Void> original) {
+        RegionScheduler.runMainControlBody(this.getServer(), () -> original.call(instance));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/level/entity/"
+                            + "PersistentEntitySectionManager;tick()V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitEntityManagerTick(
+            net.minecraft.world.level.entity.PersistentEntitySectionManager<?> instance,
+            Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/level/redstone/"
+                            + "CollectingNeighborUpdater;"
+                            + "setDebugListener(Ljava/util/function/Consumer;)V"),
+            require = 2,
+            allow = 2)
+    private void fabrolia$admitNeighborDebugListener(
+            net.minecraft.world.level.redstone.CollectingNeighborUpdater instance,
+            java.util.function.Consumer<?> listener, Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(),
+                () -> original.call(instance, listener));
+    }
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/util/debug/LevelDebugSynchronizers;"
+                            + "tick(Lnet/minecraft/util/debug/ServerDebugSubscribers;)V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$admitLevelDebugSynchronizersTick(
+            net.minecraft.util.debug.LevelDebugSynchronizers instance,
+            net.minecraft.util.debug.ServerDebugSubscribers subscribers,
+            Operation<Void> original) {
+        RegionScheduler.runGlobalMainBody(this.getServer(),
+                () -> original.call(instance, subscribers));
+    }
+
+    /** Retain the worker exclusion fence through vanilla's block-entity tail. */
+    @WrapMethod(method = "tick(Ljava/util/function/BooleanSupplier;)V")
+    private void fabrolia$exactPlayerLevelTurn(java.util.function.BooleanSupplier hasTimeLeft,
+                                               Operation<Void> original) {
+        Throwable failure = null;
+        try {
+            // Logical entry is selected under the global W lock, but no external
+            // permit survives this cut: beginExactLevelIteration later waits for
+            // externalObligations == 0 and must never wait on its own level body.
+            RegionScheduler.commitSuccessIfHealthy(() -> {});
+            original.call(hasTimeLeft);
+        } catch (Throwable thrown) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+        }
+        try {
+            failure = com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                    .finishLevelTurn((ServerLevel) (Object) this, failure);
+        } catch (Throwable cleanup) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(
+                    fabrolia$mergePlayerTickFailure(failure, cleanup));
+        }
+        if (failure == null) {
+            try {
+                // finishLevelTurn may release the exact-level pause. Refuse a
+                // normal return if peer W won during that mandatory cleanup.
+                RegionScheduler.commitSuccessIfHealthy(() -> {});
+            } catch (Throwable peerFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
+            }
+        }
+        if (failure != null) ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+    }
+
+
+    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/level/entity/EntityTickList;forEach(Ljava/util/function/Consumer;)V",
+                    ordinal = 0),
+            require = 1,
+            allow = 1)
+    private void overwriteEntityTicking(EntityTickList entityTickList, Consumer<Entity> consumer,
+                                        Operation<Void> originalEntityList) {
         ServerLevel self = this.getLevel();
         long batchStart = System.nanoTime();
 
-        // Tracker barrier: the VMP tracker tick (vanilla: before entities) was moved
-        // off-main overlapping the chunk phase — it MUST complete before any entity
-        // mutates a position (tracking reads pre-tick positions, exactly vanilla).
-        if (((Object) this.chunkSource) instanceof SpawnFutureTaker taker0) {
-            CompletableFuture<Void> trackerFut = taker0.fabrolia$takeTrackerFuture();
-            if (trackerFut != null && !trackerFut.isDone()) {
-                ParallelProcessor.pumpUntilDone(trackerFut);
-            }
-        }
 
         // Region-owned path: regions iterate their OWN entity sets and run the full
         // vanilla per-entity sequence (frozen/range/holder/vehicle gates, per-entity
@@ -203,13 +608,23 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             // race them inside player-area chunks) and before entity dispatch (ColorGate
             // submit-before-dispatch invariant, per-region FIFO preserved).
             var rsLease = RegionScheduler.forLevel(self);
+            boolean exactPlayerOrder = com.axalotl.fabrolia.common.regions
+                    .RegionalPlayerEntityTicksV2.exactOrdinalActive(rsLease);
             if (rsLease != null) {
                 com.axalotl.fabrolia.common.regions.CrossDimArrivals.rearmPendingLeases(rsLease);
             }
             if (((Object) this.chunkSource) instanceof SpawnFutureTaker armTaker) {
-                armTaker.fabrolia$armDeferredChunkWork();
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        armTaker::fabrolia$armDeferredChunkWork);
             }
-            CompletableFuture<Void> regionAll = RegionScheduler.dispatchOwnedEntityTicks(self);
+            java.util.concurrent.atomic.AtomicReference<CompletableFuture<Void>> regionAllRef =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            RegionScheduler.runSuccessBodyIfHealthy(() -> regionAllRef.set(
+                    exactPlayerOrder
+                            ? RegionScheduler.dispatchPreEntityWork(self)
+                            : RegionScheduler.dispatchOwnedEntityTicks(self)));
+            CompletableFuture<Void> regionAll = java.util.Objects.requireNonNull(
+                    regionAllRef.get(), "region dispatch did not publish its barrier");
             if (((Object) this.chunkSource) instanceof SpawnFutureTaker t) {
                 CompletableFuture<Void> regionSpawnFut = t.fabrolia$takeSpawnFuture();
                 if (regionSpawnFut != null) {
@@ -220,7 +635,62 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                     regionAll = CompletableFuture.allOf(regionAll, regionBlockTicks);
                 }
             }
-            ParallelProcessor.pumpUntilDone(regionAll);
+            // Parked island coordinators can occupy every worker while this
+            // remainder/chunk barrier is pending. Service their exact routed
+            // receipts here; the arbitrary server task queue must stay closed.
+            ParallelProcessor.pumpUntilDone(regionAll, true);
+            // Ordinary region producers are now quiescent. Drain the established
+            // main-owned entity lane before acquiring the exact-turn pool fence.
+            RegionScheduler.drainMainSyncTicks();
+            if (exactPlayerOrder) {
+                Throwable exactFailure = null;
+                boolean opened = false;
+                try {
+                    com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                            .beginExactLevelIteration(rsLease);
+                    opened = true;
+                    // Invoke the actual transformed call operation and its actual
+                    // synthetic vanilla Consumer. Gates/profiler/vehicle handling and
+                    // EntityTickList ordinal therefore remain canonical on main. The
+                    // exact pause is already held before this permit is acquired, and
+                    // the permit terminates before endExactLevelIteration/release.
+                    RegionScheduler.runSuccessBodyIfHealthy(
+                            () -> originalEntityList.call(entityTickList, consumer));
+                } catch (Throwable failure) {
+                    // The transformed EntityTickList body may already have changed
+                    // vanilla/Fabric state.  Its exact W must become generation-fatal
+                    // before the exact-level ThreadLocal/fence cleanup is observable.
+                    exactFailure = RegionScheduler.publishFatalAndSelectWinner(failure);
+                } finally {
+                    if (opened) {
+                        try {
+                            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                                    .endExactLevelIteration(rsLease);
+                        } catch (Throwable cleanup) {
+                            exactFailure = RegionScheduler.publishFatalAndSelectWinner(
+                                    fabrolia$mergePlayerTickFailure(exactFailure, cleanup));
+                        }
+                    }
+                }
+                if (exactFailure == null) {
+                    try {
+                        // ThreadLocal teardown is outside the entity-list permit.
+                        // Do not publish finishLevel or any following stage after
+                        // a peer W which won during that mandatory cleanup.
+                        RegionScheduler.commitSuccessIfHealthy(() -> {});
+                    } catch (Throwable peerFailure) {
+                        exactFailure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
+                    }
+                }
+                if (exactFailure != null) {
+                    ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(exactFailure);
+                }
+            }
+            // Every exact actor consumer (or pre-entry main fallback) has completed
+            // synchronously at its canonical list ordinal before this seal.
+            RegionScheduler.runSuccessBodyIfHealthy(() ->
+                    com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                            .finishLevel(rsLease));
             // Cross-region effects the workers deferred (writes / neighbour updates that
             // left their claimed region) — replay on main now that every region is
             // quiescent, so boundary-crossing redstone completes within this tick,
@@ -238,149 +708,24 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 // time instead of a whole tick.
                 if (rsDefer.asyncActive
                         && com.axalotl.fabrolia.common.regions.IslandCommands.hasRoutedPending()) {
-                    com.axalotl.fabrolia.common.regions.IslandCommands.drainRoutedBatch(2_000_000L);
+                    RegionScheduler.runSuccessBodyIfHealthy(
+                            () -> com.axalotl.fabrolia.common.regions.IslandCommands
+                                    .drainRoutedBatch());
                 }
             }
             // Tail entries queued just before the last region task completed.
             RegionScheduler.drainMainSyncTicks();
-            ParallelProcessor.onEntityTickBatchEnd(batchStart);
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> ParallelProcessor.onEntityTickBatchEnd(batchStart));
             return;
         }
 
-        DistanceManager distanceManager = this.chunkSource.chunkMap.getDistanceManager();
-        TickRateManager tickRateManager = this.tickRateManager();
-
-        ArrayList<Entity> live = fabrolia$liveBuf;
-        if (live == null) {
-            live = new ArrayList<>(fabrolia$lastLiveSize);
-            fabrolia$liveBuf = live;
-        } else {
-            live.clear();
-        }
-        final ArrayList<Entity> liveList = live;
-        this.entityTickList.forEach(e -> {
-            if (e == null || e.isRemoved()) return;
-            if (tickRateManager.isEntityFrozen(e)) return;
-            liveList.add(e);
-        });
-        final int liveCount = live.size();
-        fabrolia$lastLiveSize = Math.max(64, liveCount + (liveCount >> 2));
-        if (FabroliaConfig.enableFabroliaDespawn && !FabroliaConfig.disabled && liveCount > 0) {
-            ExecutorService dexec = ParallelProcessor.executor;
-            int dpool = Math.max(1, ParallelProcessor.getPoolSize());
-            // poolSize fan-out, min 16 entities/batch — checkDespawn is dirt cheap so a
-            // higher per-batch floor avoids worker startup dominating the work.
-            int dchunkSize = Math.max(16, (liveCount + dpool - 1) / dpool);
-            int dchunks = (liveCount + dchunkSize - 1) / dchunkSize;
-            CompletableFuture<?>[] dfutures = new CompletableFuture<?>[dchunks];
-            for (int c = 0, i = 0; c < dchunks; c++, i += dchunkSize) {
-                final int from = i;
-                final int to = Math.min(i + dchunkSize, liveCount);
-                dfutures[c] = CompletableFuture.runAsync(() -> {
-                    for (int j = from; j < to; j++) {
-                        Entity ent = liveList.get(j);
-                        if (ent.isRemoved()) continue;
-                        try {
-                            ent.checkDespawn();
-                        } catch (Exception ex) {
-                            FABROLIA_LOGGER.error("Fabrolia checkDespawn failed for {} ({})",
-                                    ent.getType(), ent.getUUID(), ex);
-                        }
-                    }
-                }, dexec);
-            }
-            ParallelProcessor.pumpUntilDone(CompletableFuture.allOf(dfutures));
-        } else {
-            profilerfiller.push("checkDespawn");
-            for (int i = 0; i < liveCount; i++) {
-                Entity ent = live.get(i);
-                if (!ent.isRemoved()) ent.checkDespawn();
-            }
-            profilerfiller.pop();
-        }
-
-        ArrayList<Entity> pendingFabrolia = new ArrayList<>(fabrolia$lastBatchSize);
-        ArrayList<Entity> syncList = fabrolia$syncBuf;
-        if (syncList == null) {
-            syncList = new ArrayList<>(64);
-            fabrolia$syncBuf = syncList;
-        } else {
-            syncList.clear();
-        }
-
-        final ArrayList<Entity> syncDeferred = syncList;
-        for (int i = 0; i < liveCount; i++) {
-            Entity entity = live.get(i);
-            if (entity.isRemoved()) continue;
-            if (tickRateManager.isEntityFrozen(entity)) continue;
-
-            if (!(entity instanceof ServerPlayer) && !distanceManager.inEntityTickingRange(entity.chunkPosition().pack())) continue;
-            if (!(entity instanceof ServerPlayer)) {
-                long entityChunkPos = entity.chunkPosition().pack();
-                ChunkHolder holder = this.chunkSource.getVisibleChunkIfPresent(entityChunkPos);
-                if (holder == null || holder.getTickingChunk() == null) continue;
-            }
-
-            Entity vehicle = entity.getVehicle();
-            if (vehicle != null) {
-                if (!vehicle.isRemoved() && vehicle.hasPassenger(entity)) continue;
-                entity.stopRiding();
-            }
-
-            if (FabroliaConfig.disabled || ParallelProcessor.shouldTickSynchronously(entity)) {
-                syncDeferred.add(entity);
-            } else {
-                pendingFabrolia.add(entity);
-            }
-        }
-
-        int n = pendingFabrolia.size();
-        fabrolia$lastBatchSize = Math.max(64, n + (n >> 2));
-        CompletableFuture<Void> all = null;
-        if (n > 0) {
-            // Chunked fabrolia-pool dispatch (region mode returns early above with the
-            // region-owned path — this is the proven FJ fallback).
-            ExecutorService exec = ParallelProcessor.executor;
-            int pool = Math.max(1, ParallelProcessor.getPoolSize());
-            // poolSize fan-out (memory: never per-entity CF; gather + fan-out poolSize chunks).
-            // Min 8 entities/batch so tiny entity counts don't pay scheduling overhead.
-            int chunkSize = Math.max(8, (n + pool - 1) / pool);
-            int chunks = (n + chunkSize - 1) / chunkSize;
-
-            final ArrayList<Entity> pending = pendingFabrolia;
-            CompletableFuture<?>[] futures = new CompletableFuture<?>[chunks];
-            for (int c = 0, i = 0; c < chunks; c++, i += chunkSize) {
-                final int from = i;
-                final int to = Math.min(i + chunkSize, n);
-                futures[c] = CompletableFuture.runAsync(() -> {
-                    for (int j = from; j < to; j++) {
-                        ParallelProcessor.tickEntity(self, pending.get(j), true);
-                    }
-                }, exec);
-            }
-            all = CompletableFuture.allOf(futures);
-        }
-        // Spawn-barrier overlap: adopt this level's in-flight parallel-spawn future
-        // (launched in tickChunks, deliberately not awaited there — see
-        // ServerChunkCacheMixin.fabrolia$waitSpawnThenBlockTick) so the single barrier
-        // below covers max(entityBatch, spawn) instead of two sequential parks.
-        CompletableFuture<Void> spawnFut =
-                ((Object) this.chunkSource) instanceof SpawnFutureTaker taker
-                        ? taker.fabrolia$takeSpawnFuture() : null;
-        if (spawnFut != null) {
-            all = all == null ? spawnFut : CompletableFuture.allOf(all, spawnFut);
-        }
-
-        int sz = syncDeferred.size();
-        if (sz > 0) {
-            profilerfiller.push("tickSync");
-            for (int i = 0; i < sz; i++) {
-                ParallelProcessor.tickEntity(self, syncDeferred.get(i), false);
-            }
-            profilerfiller.pop();
-        }
-        if (all != null) ParallelProcessor.pumpUntilDone(all);
-        ParallelProcessor.onEntityTickBatchEnd(batchStart);
+        // Regions off retains the actual vanilla list, gates, consumer and order.
+        // Acquire before entering any entity predicate or mutation, never from it.
+        RegionScheduler.runGlobalMainBody(self.getServer(),
+                () -> originalEntityList.call(entityTickList, consumer));
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> ParallelProcessor.onEntityTickBatchEnd(batchStart));
     }
 
     @Shadow @Final private ObjectLinkedOpenHashSet<BlockEventData> blockEvents;
@@ -395,6 +740,11 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         return blockEvents;
     }
 
+    @Override
+    public com.axalotl.fabrolia.common.regions.IslandBlockEvents.Publications fabrolia$blockEventPublications() {
+        return fabrolia$blockEventPublications;
+    }
+
     /**
      * A2 increment 3 — with async islands live, the block-event slot processes
      * only GLOBAL-domain events here; island-owned events are stashed (in
@@ -404,10 +754,80 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
      */
     @WrapMethod(method = "runBlockEvents")
     private void fabrolia$islandBlockEvents(Operation<Void> original) {
-        if (com.axalotl.fabrolia.common.regions.IslandBlockEvents.runPartitioned(this.getLevel())) {
+        RegionScheduler.runMainControlBody(this.getServer(), () -> {
+            if (!com.axalotl.fabrolia.common.regions.IslandBlockEvents
+                    .runPartitioned(this.getLevel())) {
+                RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call());
+            }
+        });
+    }
+
+    /**
+     * SavedData encode quiesce (2026-08-13, island raid ticks): vanilla's
+     * save path runs {@code saveLevelData} (SavedDataStorage encode of Raids
+     * & co) BEFORE {@code chunkSource.save} — i.e. before the
+     * ServerChunkCacheMixin quiesce. With island-dispatched raid ticks a
+     * worker may be mutating {@code Raid} state exactly while the encode
+     * reads it. Quiesce this level's islands around the WHOLE save; the
+     * nested chunk-save quiesce then no-ops through mainHoldsAllClaims.
+     * No-op when async is off (claims always free).
+     */
+    @WrapMethod(method = "save")
+    private void fabrolia$quiesceIslandsForLevelSave(net.minecraft.util.ProgressListener listener,
+                                                     boolean flush, boolean skipSave,
+                                                     Operation<Void> original) {
+        com.axalotl.fabrolia.common.regions.RegionizedServer rsq =
+                com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(this.getLevel());
+        if (rsq == null || !rsq.asyncActive
+                || rsq.currentThreadHoldsAllClaims()) {
+            // This is still the real vanilla save body. Another level may own
+            // the live worker generation even when this level has no claims to
+            // take, so bypassing the quiesce must not bypass W-vs-body entry.
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                com.axalotl.fabrolia.common.regions.RegionTickingAccess chunkMap =
+                        (com.axalotl.fabrolia.common.regions.RegionTickingAccess)
+                                (Object) this.chunkSource.chunkMap;
+                chunkMap.fabrolia$flushDeferredOwnerUnloads();
+                original.call(listener, flush, skipSave);
+                chunkMap.fabrolia$flushDeferredOwnerUnloads();
+            });
             return;
         }
-        original.call();
+        boolean took = rsq.quiesceAllIslands();
+        Throwable failure = null;
+        try {
+            // Claims cover both accepted unload continuations and the vanilla
+            // level save. Flush before the save, then close work whose save
+            // futures became ready inside the successful vanilla body.
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                com.axalotl.fabrolia.common.regions.RegionTickingAccess chunkMap =
+                        (com.axalotl.fabrolia.common.regions.RegionTickingAccess)
+                                (Object) this.chunkSource.chunkMap;
+                chunkMap.fabrolia$flushDeferredOwnerUnloads();
+                original.call(listener, flush, skipSave);
+                chunkMap.fabrolia$flushDeferredOwnerUnloads();
+            });
+        } catch (Throwable primary) {
+            // Select the exact generation W before mandatory claim release.
+            // Cleanup may add diagnostics, but can never replace this winner.
+            failure = RegionScheduler.publishFatalAndSelectWinner(primary);
+        }
+        if (took) {
+            failure = rsq.releaseAllIslands(failure);
+        }
+        if (failure == null) {
+            try {
+                // Claim release is cleanup, not permission to report success.
+                // A peer W selected during it forbids the normal return.
+                RegionScheduler.commitSuccessIfHealthy(() -> {});
+            } catch (Throwable peerFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
+            }
+        }
+        if (failure != null) {
+            ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
+        }
     }
 
     // All five redirects now operate on the REAL vanilla blockEvents set (insertion-ordered SET
@@ -422,15 +842,24 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         if (com.axalotl.fabrolia.common.regions.IslandBlockEvents.captureLocal((ServerLevel) (Object) this, (BlockEventData) object)) {
             return true;
         }
-        synchronized (fabrolia$blockEventLock) {
-            return set.add((BlockEventData) object);
-        }
+        return com.axalotl.fabrolia.common.regions.IslandBlockEvents.publishShared(
+                (ServerLevel) (Object) this, (BlockEventData) object);
     }
 
     @Redirect(method = "clearBlockEvents", at = @At(value = "INVOKE", target = "Lit/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet;removeIf(Ljava/util/function/Predicate;)Z", remap = false))
     private boolean overwriteQueueRemoveIf(ObjectLinkedOpenHashSet<BlockEventData> set, Predicate<BlockEventData> filter) {
         synchronized (fabrolia$blockEventLock) {
-            return set.removeIf(filter);
+            boolean changed = false;
+            var iterator = set.iterator();
+            while (iterator.hasNext()) {
+                BlockEventData event = iterator.next();
+                if (filter.test(event)) {
+                    iterator.remove();
+                    fabrolia$blockEventPublications.remove(event);
+                    changed = true;
+                }
+            }
+            return changed;
         }
     }
 
@@ -446,14 +875,19 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         synchronized (fabrolia$blockEventLock) {
             // The runBlockEvents loop only calls this after its own isEmpty() check; main is the
             // sole drainer (workers only add), so the set is non-empty here. Guard defensively.
-            return set.isEmpty() ? null : set.removeFirst();
+            if (set.isEmpty()) return null;
+            BlockEventData event = set.removeFirst();
+            fabrolia$blockEventPublications.remove(event);
+            return event;
         }
     }
 
     @Redirect(method = "runBlockEvents", at = @At(value = "INVOKE", target = "Lit/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet;addAll(Ljava/util/Collection;)Z", remap = false))
     private boolean overwriteQueueAddAll(ObjectLinkedOpenHashSet<BlockEventData> set, Collection<? extends BlockEventData> c) {
         synchronized (fabrolia$blockEventLock) {
-            return set.addAll(c);
+            boolean changed = false;
+            for (BlockEventData event : c) changed |= fabrolia$blockEventPublications.add(set, event);
+            return changed;
         }
     }
 
@@ -513,25 +947,56 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             Operation<Void> original
     ) {
         synchronized (FabroliaLocks.tickLockOr(this.fabrolia$explosionLock)) {
-            // A throw out of the explosion used to leave suppress=true forever:
-            // every later sendBlockUpdated then parked navigations in
-            // fabrolia$pendingRecompute with nothing ever draining it — mobs stop
-            // repathing on block changes for the rest of the session and the set
-            // grows without bound. Audit 2026-07-26.
-            ((LithiumServerLevel) (Object) this).fabrolia$setSuppress(true);
+            FabroliaNavigationBatch navigationState = (Object) this instanceof FabroliaNavigationBatch batch
+                    ? batch : null;
+            final boolean[] restoreRequired = {false};
+            Throwable failure = null;
             try {
-                original.call(
-                        source, damageSource, damageCalculator,
-                        x, y, z, radius, fire,
-                        explosionInteraction,
-                        smallExplosionParticles,
-                        largeExplosionParticles,
-                        particleInfo,
-                        explosionSound
-                );
-            } finally {
-                ((LithiumServerLevel) (Object) this).fabrolia$setSuppress(false);
-                ((LithiumServerLevel) (Object) this).fabrolia$recomputeAllNavigations();
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    // Only an admitted, successfully entered optional batch owns cleanup.
+                    if (navigationState != null) {
+                        navigationState.fabrolia$beginNavigationBatch();
+                        restoreRequired[0] = true;
+                    }
+                    original.call(
+                            source, damageSource, damageCalculator,
+                            x, y, z, radius, fire,
+                            explosionInteraction,
+                            smallExplosionParticles,
+                            largeExplosionParticles,
+                            particleInfo,
+                            explosionSound
+                    );
+                });
+            } catch (Throwable bodyFailure) {
+                // Select the exact vanilla/Fabric W before making the suppression
+                // cleanup visible. A cleanup Throwable must never replace it.
+                failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);
+            }
+
+            // Balance only this entered batch; nested/overlapping explosions
+            // retain their own suppression. Cleanup never dispatches navigation.
+            if (restoreRequired[0]) {
+                try {
+                    navigationState.fabrolia$endNavigationBatch();
+                } catch (Throwable cleanupFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            fabrolia$mergePlayerTickFailure(failure, cleanupFailure));
+                }
+            }
+
+            if (failure == null && restoreRequired[0]) {
+                try {
+                    // Recomputing paths mutates simulation state; it is a success
+                    // tail, not resource cleanup. Give it a fresh global W cut.
+                    RegionScheduler.runSuccessBodyIfHealthy(
+                            navigationState::fabrolia$drainNavigationBatch);
+                } catch (Throwable tailFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(tailFailure);
+                }
+            }
+            if (failure != null) {
+                ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
             }
         }
     }

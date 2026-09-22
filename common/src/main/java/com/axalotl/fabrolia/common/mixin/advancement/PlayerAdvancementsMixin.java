@@ -1,33 +1,72 @@
 package com.axalotl.fabrolia.common.mixin.advancement;
 
+import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership;
+import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementListenerMap;
+import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementRequirements;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.advancements.AdvancementHolder;
+import net.minecraft.advancements.AdvancementProgress;
+import net.minecraft.advancements.CriterionTriggerInstance;
+import net.minecraft.advancements.triggers.CriterionTrigger;
+import net.minecraft.advancements.triggers.Criterion;
 import net.minecraft.server.PlayerAdvancements;
 import net.minecraft.server.ServerAdvancementManager;
+import net.minecraft.server.level.ServerPlayer;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Final;
+import org.spongepowered.asm.mixin.Unique;
 
-/**
- * Trigger-map mutation monitor (2026-07-13 production CME): vanilla confines
- * {@code activeTriggers} (and its inner per-trigger maps) to the server thread —
- * criteria (un)register as advancements progress, and triggers fire on main.
- * Under Fabrolia, triggers ALSO fire from region workers (a bot pushed by a
- * region task fired ENTER_BLOCK inside the entity phase), and the worker-side
- * buffer snapshot ({@code AdvancementBuffer.buildPending}) iterates the same
- * plain {@code HashMap} main is mutating — live CME, fixmix3 23:03.
- *
- * <p>Every mutator below takes the instance monitor; the snapshot iteration in
- * {@code buildPending} takes the same one. Sections are tiny (map put/remove,
- * a short filtered copy), per-player, and nothing inside them takes another
- * lock — uncontended in practice, safe by pairing. {@code getTriggerMapForType}
- * (the read that only fetches the map reference) stays lock-free; the DEEP read
- * (iteration) is what synchronizes.
- */
+import java.util.Map;
+
+/** Capture owns the exact player; reward/resource mutation owns the global envelope. */
 @Mixin(PlayerAdvancements.class)
-public abstract class PlayerAdvancementsMixin {
+public abstract class PlayerAdvancementsMixin implements AdvancementRequirements.ActiveListeners {
+    @Shadow private ServerPlayer player;
+    @Shadow @Final private Map<CriterionTrigger<?>,
+            Map<PlayerAdvancements.TriggerInstanceKey, ? extends CriterionTriggerInstance>> activeTriggers;
+    @Unique private final AdvancementRequirements.ListenerIndex fabrolia$listenerIndex =
+            new AdvancementRequirements.ListenerIndex();
+
+    @Override
+    public Map<CriterionTrigger<?>, Map<PlayerAdvancements.TriggerInstanceKey, ? extends CriterionTriggerInstance>>
+            fabrolia$activeTriggers() {
+        return activeTriggers;
+    }
+
+    @Override
+    public boolean fabrolia$hasUnindexedListeners(AdvancementRequirements requirements) {
+        return fabrolia$listenerIndex.hasUnindexedListeners(requirements, activeTriggers);
+    }
+
+    @WrapMethod(method = "addListener")
+    private void fabrolia$indexInsertion(Criterion<?> criterion, PlayerAdvancements.TriggerInstanceKey key,
+                                         Operation<Void> original) {
+        AdvancementCaptureOwnership.requireGlobalProducerEnvelope();
+        synchronized (this) {
+            CriterionTrigger<?> trigger = criterion.trigger();
+            var listeners = activeTriggers.get(trigger);
+            if (!(listeners instanceof AdvancementListenerMap<?>)) {
+                var tracked = new AdvancementListenerMap<CriterionTriggerInstance>(this,
+                        instance -> fabrolia$observeInsertion(trigger, instance));
+                if (listeners != null) tracked.putAll(listeners);
+                // Native getOrCreateTriggerMapForType must never publish a raw HashMap.
+                activeTriggers.put(trigger, tracked);
+            }
+            original.call(criterion, key);
+        }
+    }
+
+    @Unique
+    private void fabrolia$observeInsertion(CriterionTrigger<?> trigger, CriterionTriggerInstance instance) {
+        var requirements = AdvancementCaptureOwnership.observeListenerInsertion(player, trigger, instance);
+        fabrolia$listenerIndex.observeInsertion(requirements, trigger, instance);
+    }
 
     @WrapMethod(method = "registerListeners(Lnet/minecraft/server/ServerAdvancementManager;)V")
     private void fabrolia$lockRegisterAll(ServerAdvancementManager manager, Operation<Void> original) {
+        AdvancementCaptureOwnership.requireGlobalProducerEnvelope();
         synchronized (this) {
             original.call(manager);
         }
@@ -35,6 +74,7 @@ public abstract class PlayerAdvancementsMixin {
 
     @WrapMethod(method = "registerListeners(Lnet/minecraft/advancements/AdvancementHolder;)V")
     private void fabrolia$lockRegister(AdvancementHolder holder, Operation<Void> original) {
+        AdvancementCaptureOwnership.requireGlobalProducerEnvelope();
         synchronized (this) {
             original.call(holder);
         }
@@ -42,95 +82,69 @@ public abstract class PlayerAdvancementsMixin {
 
     @WrapMethod(method = "unregisterListeners(Lnet/minecraft/advancements/AdvancementHolder;)V")
     private void fabrolia$lockUnregister(AdvancementHolder holder, Operation<Void> original) {
+        AdvancementCaptureOwnership.requireGlobalProducerEnvelope();
         synchronized (this) {
             original.call(holder);
         }
     }
 
-    /** Same ownership rule for the flush itself: a mod calling flushDirty
-     *  off-main (or the vanilla in-tick call under regional player ticking —
-     *  also routed by ServerPlayerMixin) queues for the main batch-end drain. */
-    @WrapMethod(method = "flushDirty(Lnet/minecraft/server/level/ServerPlayer;Z)V")
-    private void fabrolia$mainOwnFlush(net.minecraft.server.level.ServerPlayer player, boolean force,
-                                       Operation<Void> original) {
-        if (fabrolia$offMain()) {
-            com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer.queueFlush(player);
-            return;
-        }
-        original.call(player, force);
-    }
-
     @WrapMethod(method = "clearTriggers()V")
     private void fabrolia$lockClear(Operation<Void> original) {
+        AdvancementCaptureOwnership.requireGlobalProducerEnvelope();
         synchronized (this) {
             original.call();
+            fabrolia$listenerIndex.clearIfEmpty(activeTriggers);
         }
     }
 
-    @org.spongepowered.asm.mixin.Unique
-    private static final java.util.concurrent.atomic.AtomicLong fabrolia$lastBeltWarn =
-            new java.util.concurrent.atomic.AtomicLong();
-
-    @org.spongepowered.asm.mixin.Unique
-    private static void fabrolia$beltWarn(String what, Object id) {
-        long now = System.nanoTime();
-        long last = fabrolia$lastBeltWarn.get();
-        if (now - last > 5_000_000_000L && fabrolia$lastBeltWarn.compareAndSet(last, now)) {
-            org.slf4j.LoggerFactory.getLogger("Fabrolia-Advancement").warn(
-                    "[async-islands] direct {} for '{}' arrived on a region worker "
-                    + "(a mod bypassing the trigger path) — deferred to the main "
-                    + "advancement drain (rate-limited warning)", what, id);
-        }
+    @WrapMethod(method = "reload")
+    private void fabrolia$ownedReload(ServerAdvancementManager manager, Operation<Void> original) {
+        AdvancementCaptureOwnership.requireGlobalProducerEnvelope();
+        original.call(manager);
     }
 
-    /**
-     * Worker belt (2026-07-17 trigger-path redesign audit): award() mutates
-     * progress, (un)registers listeners, and runs REWARDS — loot, recipes,
-     * experience, and the reward FUNCTION through the command fence. That
-     * chain is main-owned; the buffer routes all trigger-raised awards to
-     * main drains, but a mod may call player.getAdvancements().award()
-     * directly from an island-ticked context. Defer the call itself to the
-     * main drain (FIFO with the trigger-raised awards). Returns false to the
-     * worker-side caller ("not newly awarded in this call") — the award
-     * applies on main within the tick.
-     */
-    @org.spongepowered.asm.mixin.Unique
-    private static boolean fabrolia$offMain() {
-        // task #15 widen (2026-07-22): the original belt caught only region
-        // workers — a scarpet async task / mod thread running /advancement
-        // grant executed award() on ITS OWN thread, mutating progressChanged
-        // and rootsToUpdate against main's batch-end flush (stress rig CME on
-        // the main-side iterator). Advancement state is main-owned, full stop:
-        // ANY off-main caller defers.
-        var s = com.axalotl.fabrolia.common.ParallelProcessor.getServer();
-        return s != null && !s.isSameThread();
+    @WrapMethod(method = "setPlayer")
+    private void fabrolia$ownedRebind(ServerPlayer replacement, Operation<Void> original) {
+        AdvancementCaptureOwnership.requireGlobalProducerEnvelope();
+        original.call(replacement);
     }
 
+    @WrapMethod(method = "getOrStartProgress")
+    private AdvancementProgress fabrolia$ownedProgress(AdvancementHolder holder,
+                                                      Operation<AdvancementProgress> original) {
+        AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(player);
+        return original.call(holder);
+    }
+
+    @WrapMethod(method = "flushDirty(Lnet/minecraft/server/level/ServerPlayer;Z)V")
+    private void fabrolia$ownedFlush(ServerPlayer recipient, boolean force, Operation<Void> original) {
+        AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(player);
+        AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(recipient);
+        original.call(recipient, force);
+    }
+
+
+    @WrapMethod(method = "save")
+    private void fabrolia$ownedSave(Operation<Void> original) {
+        AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(player);
+        original.call();
+    }
+
+    @WrapMethod(method = "setSelectedTab")
+    private void fabrolia$ownedSelectedTab(AdvancementHolder holder, Operation<Void> original) {
+        AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(player);
+        original.call(holder);
+    }
     @WrapMethod(method = "award(Lnet/minecraft/advancements/AdvancementHolder;Ljava/lang/String;)Z")
-    private boolean fabrolia$mainOwnAward(AdvancementHolder holder, String criterion,
-                                          Operation<Boolean> original) {
-        if (fabrolia$offMain()) {
-            PlayerAdvancements self = (PlayerAdvancements) (Object) this;
-            fabrolia$beltWarn("award", holder.id());
-            com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer
-                    .deferDirect(() -> self.award(holder, criterion));
-            return false;
-        }
+    private boolean fabrolia$ownedAward(AdvancementHolder holder, String criterion, Operation<Boolean> original) {
+        // This is a synchronous API. Refusal is before body, never enqueue + false.
+        AdvancementCaptureOwnership.requireGlobalProducerEnvelope();
         return original.call(holder, criterion);
     }
 
-    /** Same belt for revoke — progress mutation + listener re-registration
-     *  are main-owned state. */
     @WrapMethod(method = "revoke(Lnet/minecraft/advancements/AdvancementHolder;Ljava/lang/String;)Z")
-    private boolean fabrolia$mainOwnRevoke(AdvancementHolder holder, String criterion,
-                                           Operation<Boolean> original) {
-        if (fabrolia$offMain()) {
-            PlayerAdvancements self = (PlayerAdvancements) (Object) this;
-            fabrolia$beltWarn("revoke", holder.id());
-            com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer
-                    .deferDirect(() -> self.revoke(holder, criterion));
-            return false;
-        }
+    private boolean fabrolia$ownedRevoke(AdvancementHolder holder, String criterion, Operation<Boolean> original) {
+        AdvancementCaptureOwnership.requireGlobalProducerEnvelope();
         return original.call(holder, criterion);
     }
 }

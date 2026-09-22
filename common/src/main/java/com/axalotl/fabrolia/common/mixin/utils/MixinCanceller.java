@@ -6,6 +6,7 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
     private boolean LITHIUM = false;
     private boolean VMP = false;
     private boolean C2ME = false;
+    private boolean VANISH = false;
 
     @Override
     public boolean shouldCancel(List<String> targetClassNames, String mixinClassName) {
@@ -17,6 +18,30 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
         }
         if (mixinClassName.contains("ishland.vmp") && !mixinClassName.contains("fabrolia")) {
             VMP = true;
+        }
+        if (mixinClassName.equals("me.drex.vanish.mixin.VanishedServerPlayerMixin")) {
+            VANISH = true;
+        }
+        // C2ME 0.4.2-alpha.0.41: this class contains no state and exactly one
+        // injection handler.  Its @WrapOperation makes ServerLevel#getNextEntityId
+        // call hasEntityWithId only when IWorld#getThread equals currentThread.
+        // The exact-player actor is a synchronously authenticated logical owner,
+        // so the unmodified C2ME predicate gives it a false negative.  Cancel the
+        // one-method provider and replace its complete semantics in the paired
+        // Fabrolia wrapper; do not broaden this to the package or module.
+        if (mixinClassName.equals(
+                "com.ishland.c2me.fixes.worldgen.threading_issues.mixin.threading.MixinServerWorld")) {
+            return true;
+        }
+        // VMP 0.2.0+beta.7.236: this stateless mixin only redirects checkDespawn's
+        // nearest-player query. Its bounded lookup falls back to players() and a
+        // direct NO_SPECTATORS.test, bypassing our live observer backend. Restore
+        // the native unbounded query, including native distance/tie semantics;
+        // ServerLevelNearestPlayerMixin wins over VMP's world lookup at 1200.
+        // Keep VMP's area maps, tracking, spawn density and rich alive query intact.
+        if (mixinClassName.equals(
+                "com.ishland.vmp.mixins.playerwatching.optimize_nearby_player_lookups.MixinMobEntity")) {
+            return true;
         }
         // ai.task.launch — a genuine target conflict, NOT a crutch.
         //
@@ -120,6 +145,11 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumBrainMemoryCounterMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumBrainMemoryBumpMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumClassGroupFilterableListMixin") ||
+                // Exact-player actor compatibility: one hook wraps a method
+                // Lithium merges onto Level; the other targets Lithium's own
+                // ChunkStatusTracker class. Neither may load without Lithium.
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumLevelActorThreadMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumChunkStatusTrackerActorThreadMixin") ||
                 // Task #38: these three target Lithium-merged methods / a
                 // Lithium anonymous class, so without Lithium they must not
                 // load — and WITH Lithium they must fail LOUDLY if a target
@@ -133,15 +163,42 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
                 // a target rots (default require), same as the Task-#38 trio.
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumSleepInvokerMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumHopperSleepMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumInBlockStateMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiStorageMixin") ||
-                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiColumnIteratorMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiSectionSnapshotMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiTakeAtMixin")) {
             return !LITHIUM;
         }
         if (mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.TheChunkSystemMixin") ||
                 // Task #38 (review D3): wraps the C2ME-merged c2me$unloadPoi.
-                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.PoiUnloadGuardMixin")) {
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.PoiUnloadGuardMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2mePoiResidencyMixin") ||
+                // Exact-player actor compatibility. The accessor/wrapper form a
+                // pair and must both disappear when C2ME is not present.
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meLevelThreadAccessor") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meServerLevelActorThreadMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meChunkShortcutActorThreadMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meMidTickActorThreadMixin") ||
+                // Targets two handlers from C2ME's general async-save catcher.
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meSaveActorThreadMixin")) {
             return !C2ME;
+        }
+        // Exact VMP 0.2.0+beta.7.236 player-watching hardening.  Although the
+        // mixin is @Pseudo, gate it as well: with VMP absent there is no target;
+        // with VMP present every required WrapMethod must bind or fail loudly.
+        if (mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.vmp."
+                + "FabroliaVmpAreaMapAccessor")
+                || mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.vmp."
+                + "FabroliaVmpAreaPlayerChunkWatchingManagerMixin")
+                || mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.vmp."
+                + "FabroliaVmpSpawnCandidateMixin")) {
+            return !VMP;
+        }
+        // Wraps Vanish-merged methods on ServerPlayer, not a loadable mod class.
+        // With the provider absent neither required method exists.
+        if (mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.vanish."
+                + "VanishPlayerObserverCacheMixin")) {
+            return !VANISH;
         }
         return mixinClassName.endsWith("com.cupboard.mixin.ServerAddEntityMixin");
     }

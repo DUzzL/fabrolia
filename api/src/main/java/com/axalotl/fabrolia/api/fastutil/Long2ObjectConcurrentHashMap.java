@@ -167,10 +167,26 @@ public final class Long2ObjectConcurrentHashMap<V> implements Long2ObjectMap<V> 
         return set;
     }
 
+    /**
+     * Return the same weakly-consistent, detached values snapshot as {@link #values()},
+     * with a concrete list type for callers that already need a {@link List}.
+     *
+     * <p>Build the fastutil list directly. {@code ArrayList.addAll(map.values())}
+     * asks {@link ConcurrentHashMap}'s values view for an intermediate array and
+     * the former implementation then copied that list into an {@code ObjectArrayList}
+     * as well. A direct traversal retains the backing map's encounter order and
+     * weak-consistency contract while allocating only the returned snapshot storage.
+     */
+    public ObjectArrayList<V> valuesSnapshot() {
+        ObjectArrayList<V> snapshot = new ObjectArrayList<>(size());
+        for (V value : map.values()) {
+            snapshot.add(value);
+        }
+        return snapshot;
+    }
+
     @Override public ObjectCollection<V> values() {
-        List<V> list = new ArrayList<>(size());
-        list.addAll(map.values());
-        return new ObjectArrayList<>(list);
+        return valuesSnapshot();
     }
 
     private final class FastEntrySetView implements FastEntrySet<V> {

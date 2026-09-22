@@ -1,7 +1,10 @@
 package com.axalotl.fabrolia.common.regions;
 
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityReference;
+import net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEnderpearl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,6 +41,15 @@ public final class CrossDimArrivals {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("Fabrolia-XDim");
 
+    /** Synthetic lease strength by purpose. Destination publication keeps
+     * vanilla's radius-3 PORTAL semantics. A live portal-active entity needs
+     * only its own chunk entity-ticking (radius 2); a frozen source handoff
+     * needs loading only (radius 1). The narrower source radii must never
+     * propagate ENTITY_TICKING into neighbouring stasis machinery. */
+    static final int DESTINATION_LEASE_RADIUS = 3;
+    static final int PORTAL_ACTIVE_LEASE_RADIUS = 2;
+    static final int PENDING_SOURCE_LEASE_RADIUS = 1;
+
     /** One staged destination-side operation, in vanilla execution order.
      *  {@code sourceTick} is the SOURCE simulation epoch (island L, or wall
      *  for main-context stages; -1 = unknown → deliver immediately) and
@@ -51,10 +63,106 @@ public final class CrossDimArrivals {
      *  (null for regens) — read ONLY by the End-platform handoff gate to
      *  recognize falling-block cohorts; never mutated pre-publish. */
     public record StagedOp(ServerLevel dest, long chunkKey, Runnable op, String kind,
-                           long sourceTick, long sourceDomain, Entity entity) {
+                           long sourceTick, long sourceDomain, Entity entity,
+                           RouteReceipt routeReceipt) {
+        public StagedOp {
+            WorldGenEntityConstruction.revoke(entity);
+            if (routeReceipt == null) routeReceipt = RouteReceipt.ACCEPTED_RECEIPT;
+        }
+
+        public StagedOp(ServerLevel dest, long chunkKey, Runnable op, String kind,
+                        long sourceTick, long sourceDomain, Entity entity) {
+            this(dest, chunkKey, op, kind, sourceTick, sourceDomain, entity,
+                    RouteReceipt.ACCEPTED_RECEIPT);
+        }
+
         public StagedOp(ServerLevel dest, long chunkKey, Runnable op, String kind,
                         long sourceTick, long sourceDomain) {
-            this(dest, chunkKey, op, kind, sourceTick, sourceDomain, null);
+            this(dest, chunkKey, op, kind, sourceTick, sourceDomain, null,
+                    RouteReceipt.ACCEPTED_RECEIPT);
+        }
+
+        StagedOp withRouteReceipt(RouteReceipt receipt) {
+            return new StagedOp(dest, chunkKey, op, kind, sourceTick, sourceDomain,
+                    entity, receipt);
+        }
+    }
+
+    /** Queue visibility receipt shared by every destination bucket of one seal. */
+    static final class RouteReceipt {
+        private static final int OFFERING = 0;
+        private static final int ACCEPTED = 1;
+        private static final int CANCELLED = 2;
+        private static final RouteReceipt ACCEPTED_RECEIPT =
+                new RouteReceipt(ACCEPTED);
+
+        private final java.util.concurrent.atomic.AtomicInteger state;
+
+        private RouteReceipt() {
+            this(OFFERING);
+        }
+
+        private RouteReceipt(int initial) {
+            state = new java.util.concurrent.atomic.AtomicInteger(initial);
+        }
+
+        void accept() {
+            if (!state.compareAndSet(OFFERING, ACCEPTED)) {
+                throw new IllegalStateException("cross-dimension route was already decided");
+            }
+        }
+
+        void cancel() {
+            state.compareAndSet(OFFERING, CANCELLED);
+        }
+
+        boolean awaitAccepted() {
+            int observed;
+            while ((observed = state.get()) == OFFERING) {
+                Thread.onSpinWait();
+            }
+            return observed == ACCEPTED;
+        }
+    }
+
+    /**
+     * A fully offered but not yet executable cohort.  Destination phase heads
+     * may already hold its queue nodes, but every one waits on the shared
+     * receipt until the source unit commits.  Cancellation therefore removes
+     * the entire unentered cohort logically even after an offer-then-throw.
+     */
+    static final class PreparedSeal {
+        private static final PreparedSeal EMPTY = new PreparedSeal(null, 0);
+
+        private final RouteReceipt receipt;
+        private final int members;
+        private NetherSourceCohorts.Prepared<?> nether;
+
+        private PreparedSeal(RouteReceipt receipt, int members) {
+            this.receipt = receipt;
+            this.members = members;
+        }
+
+        void commit() {
+            if (nether != null) nether.commit();
+            if (receipt == null) return;
+            receipt.accept();
+            COHORTS_SEALED.incrementAndGet();
+            COHORT_MEMBERS.addAndGet(members);
+            MAX_COHORT.accumulateAndGet(members, Math::max);
+        }
+
+        Throwable cancel(Throwable primary) {
+            Throwable failure = selectFailure(primary);
+            if (nether != null) failure = nether.cancel(failure);
+            if (receipt != null) {
+                try {
+                    receipt.cancel();
+                } catch (Throwable cleanup) {
+                    failure = selectFailure(mergeFailure(failure, cleanup));
+                }
+            }
+            return failure;
         }
     }
 
@@ -62,10 +170,9 @@ public final class CrossDimArrivals {
      *  paths (the staging mixins pass through while set). */
     public static final ThreadLocal<Boolean> PUBLISHING = ThreadLocal.withInitial(() -> false);
 
-    /** task #19/#20: source simulation {epoch, clock domain} carried across
-     *  the main-deferred portal handoff (set by PortalTeleportationManager
-     *  around the drain) — the drain runs in MAIN context, which would stamp
-     *  every burst member with one wall tick in the wall domain. */
+    /** Source simulation {epoch, clock domain} carried across an exact Nether
+     *  body whose between-unit worker has no current region/domain. Nested
+     *  staging must not replace this source identity with a global wall tick. */
     public static final ThreadLocal<long[]> CARRIED_SOURCE = new ThreadLocal<>();
 
     // counters
@@ -81,12 +188,113 @@ public final class CrossDimArrivals {
 
     private CrossDimArrivals() {}
 
+    /**
+     * Logout durability bridge for pearl arrival copies which already exist
+     * but have not reached their destination phase head yet.
+     *
+     * <p>PRECONDITION: the caller owns the all-level island fence. Never
+     * publish or reorder an arrival here: {@link #flushAll} is deliberately a
+     * shutdown/teardown operation and bypasses the normal cohort release/gate.
+     * A cross-dimension pearl copy can nevertheless sit in an open/sealed
+     * arrival queue while its source has already been removed. Because its
+     * owner is in another level, vanilla's destination-side setOwner lookup
+     * cannot register that copy until its first tick. A concurrent player
+     * logout would then serialize neither source nor destination.
+     *
+     * <p>The union also includes the hidden-aware loaded-pearl index. An
+     * arrival may have been published into PSEM at unit head and then miss its
+     * first entity tick because scheduled-tick admission held that unit; it is
+     * no longer queued, but still has not run vanilla's owner-registration
+     * renewal. Registering these already-created identities is side-effect-free
+     * for the arrival queues and makes the ordinary playerdata save
+     * authoritative. UWP removal marks a queued copy removed; its eventual
+     * publication op observes that state and aborts. Incomplete portal tasks
+     * have no arrival copy yet, so their still-live source remains the
+     * serialized authority.
+     */
+    public static int registerPendingPearls(ServerPlayer owner) {
+        int[] registered = new int[1];
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> registered[0] = fabrolia$registerPendingPearlsEntered(owner));
+        return registered[0];
+    }
+
+    private static int fabrolia$registerPendingPearlsEntered(ServerPlayer owner) {
+        java.util.UUID ownerUuid = owner.getUUID();
+        java.util.IdentityHashMap<ThrownEnderpearl, Boolean> seen =
+                new java.util.IdentityHashMap<>();
+        for (RegionizedServer rs : new java.util.ArrayList<>(RegionScheduler.allLevels())) {
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                Object manager =
+                        ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor)
+                                rs.level).fabrolia$entityManager();
+                ((com.axalotl.fabrolia.common.parallelised.utils.LoadedPearlIndexAccess) manager)
+                        .fabrolia$forEachResidentPearl(
+                                pearl -> fabrolia$registerPearlIfHealthy(
+                                        pearl, owner, ownerUuid, seen));
+            });
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> fabrolia$registerPendingPearls(
+                            rs.globalDomain.crossDimStage, owner, ownerUuid, seen));
+            for (IslandRegistry.PIsland island : rs.islandRegistry.islands()) {
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        () -> fabrolia$registerPendingPearls(
+                                island.domain.crossDimStage, owner, ownerUuid, seen));
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    synchronized (island.pendingArrivals) {
+                        fabrolia$registerPendingPearls(
+                                island.pendingArrivals, owner, ownerUuid, seen);
+                    }
+                });
+            }
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                synchronized (rs.globalArrivalsLock) {
+                    fabrolia$registerPendingPearls(
+                            rs.globalArrivals, owner, ownerUuid, seen);
+                }
+            });
+        }
+        return seen.size();
+    }
+
+    private static void fabrolia$registerPendingPearls(
+            Iterable<StagedOp> ops, ServerPlayer owner, java.util.UUID ownerUuid,
+            java.util.IdentityHashMap<ThrownEnderpearl, Boolean> seen) {
+        for (StagedOp op : ops) {
+            if (op.entity() instanceof ThrownEnderpearl pearl) {
+                fabrolia$registerPearlIfHealthy(pearl, owner, ownerUuid, seen);
+            }
+        }
+    }
+
+    private static void fabrolia$registerPearlIfHealthy(
+            ThrownEnderpearl pearl, ServerPlayer owner, java.util.UUID ownerUuid,
+            java.util.IdentityHashMap<ThrownEnderpearl, Boolean> seen) {
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> fabrolia$registerPearl(pearl, owner, ownerUuid, seen));
+    }
+
+    private static void fabrolia$registerPearl(
+            ThrownEnderpearl pearl, ServerPlayer owner, java.util.UUID ownerUuid,
+            java.util.IdentityHashMap<ThrownEnderpearl, Boolean> seen) {
+        if (pearl.isRemoved() || seen.containsKey(pearl)) {
+            return;
+        }
+        EntityReference<Entity> reference =
+                ((com.axalotl.fabrolia.common.mixin.entity.ProjectileOwnerAccessor)
+                        (Object) pearl).fabrolia$getOwnerReference();
+        if (reference == null || !ownerUuid.equals(reference.getUUID())) {
+            return;
+        }
+        seen.put(pearl, Boolean.TRUE);
+        owner.registerEnderPearl(pearl);
+    }
+
     /** Is this destination chunk owned by an ISLAND domain (vs global/main)?
      *  Used by the staging mixin's main-thread decision (package access to
      *  Region/EpochDomain internals). */
     public static boolean islandOwnedDestination(RegionizedServer destRs, long chunkKey) {
-        Region region = destRs.regionizer().peekByGridKey(destRs.regionizer().grid.keyFor(chunkKey));
-        return region != null && region.domain != null && region.domain.owner != null;
+        return destRs.islandOwnerOfChunk(chunkKey) != null;
     }
 
     /** Stage one destination-side op on the CURRENT execution context's
@@ -169,60 +377,183 @@ public final class CrossDimArrivals {
     }
 
     /** Seal the domain's open stage into one cohort batch and route it to
-     *  the destination owner. Called at source-phase end (island unit tail /
-     *  main entity-batch end) — MUST be reachable from the unit's finally so
-     *  a contained phase throwable cannot strand a batch. */
+     *  the destination owner. Called only from a healthy source-phase tail
+     *  (island unit / main entity batch); a failed vanilla body never releases
+     *  the partial stage as successor work. */
     public static void seal(EpochDomain d) {
-        if (d == null || d.crossDimStage.isEmpty()) {
-            return;
-        }
-        ArrayList<StagedOp> batch = new ArrayList<>(8);
-        StagedOp op;
-        while ((op = d.crossDimStage.poll()) != null) {
-            batch.add(op);
-        }
-        if (batch.isEmpty()) {
-            return;
-        }
-        COHORTS_SEALED.incrementAndGet();
-        COHORT_MEMBERS.addAndGet(batch.size());
-        MAX_COHORT.accumulateAndGet(batch.size(), Math::max);
-        route(batch);
+        PreparedSeal prepared = prepareSeal(d);
+        commitPreparedSeal(prepared);
     }
 
-    private static void route(ArrayList<StagedOp> batch) {
-        // ONE owner bucket per destination level, resolved ONCE from the
-        // batch's first op for that level. Per-op resolution split a cohort
-        // when the destination island formed mid-loop (2026-07-15 sprint A/B:
-        // publishedBatches=24 for 22 seals, cohort 1 double-placed) — a
-        // cohort must cross exactly one publish boundary. Multi-level batches
-        // split per level only (spatially independent destinations).
-        java.util.HashMap<ServerLevel, ArrayList<StagedOp>> byLevel = new java.util.HashMap<>(2);
-        for (StagedOp op : batch) {
-            byLevel.computeIfAbsent(op.dest(), l -> new ArrayList<>(batch.size())).add(op);
-        }
-        for (var e : byLevel.entrySet()) {
-            ArrayList<StagedOp> ops = e.getValue();
-            RegionizedServer destRs = RegionScheduler.forLevel(e.getKey());
-            IslandRegistry.PIsland owner = null;
-            if (destRs != null && destRs.asyncActive) {
-                long cellKey = destRs.regionizer().grid.keyFor(ops.get(0).chunkKey());
-                Region region = destRs.regionizer().peekByGridKey(cellKey);
-                owner = region != null && region.domain != null ? region.domain.owner : null;
-                if (owner == null) {
-                    owner = destRs.islandRegistry.byCell(cellKey);
-                }
+    /** Offer every bucket but keep it non-executable until {@link PreparedSeal#commit()}. */
+    static PreparedSeal prepareSeal(EpochDomain d) {
+        NetherSourceCohorts.Prepared<?> nether = NetherPortalTransfers.prepareSeal(d);
+        if ((d == null || d.crossDimStage.isEmpty()) && nether.isEmpty()) return PreparedSeal.EMPTY;
+        PreparedSeal prepared = null;
+        try {
+            ArrayList<StagedOp> batch = new ArrayList<>(8);
+            if (d != null) {
+                StagedOp op;
+                while ((op = d.crossDimStage.poll()) != null) batch.add(op);
             }
-            if (owner != null && enqueueUnlessRetired(owner, ops)) {
-                // delivered to the live island's arrival queue
-            } else if (destRs != null) {
-                appendGlobalLane(destRs.globalArrivals, destRs.globalArrivalsLock, ops);
+            prepared = batch.isEmpty() ? new PreparedSeal(null, 0) : prepareRoute(batch);
+            prepared.nether = nether;
+            return prepared;
+        } catch (Throwable thrown) {
+            Throwable failure = selectFailure(thrown);
+            if (prepared != null) failure = prepared.cancel(failure);
+            failure = nether.cancel(failure);
+            CrossDimArrivals.<RuntimeException>rethrow(failure);
+            return PreparedSeal.EMPTY;
+        }
+    }
+
+
+    /**
+     * The offered cohort and its success telemetry become visible in the same
+     * generation cut.  If W won first, cancel the still-OFFERING receipt and
+     * rethrow the exact selected object; no destination body can enter.
+     */
+    private static void commitPreparedSeal(PreparedSeal prepared) {
+        Throwable failure = null;
+        try {
+            if (RegionScheduler.isActive()) {
+                RegionScheduler.commitSuccessIfHealthy(prepared::commit);
             } else {
-                for (StagedOp op : ops) {
-                    runPublished(op.op()); // scheduler-less destination: inline
+                prepared.commit();
+            }
+            return;
+        } catch (Throwable thrown) {
+            failure = selectFailure(thrown);
+        }
+        failure = prepared.cancel(failure);
+        CrossDimArrivals.<RuntimeException>rethrow(selectFailure(failure));
+    }
+
+    private record RouteTarget(IslandRegistry.PIsland owner, ArrayList<StagedOp> ops) {}
+
+    private static PreparedSeal prepareRoute(ArrayList<StagedOp> batch) {
+        RouteReceipt receipt = new RouteReceipt();
+        try {
+            ArrayList<StagedOp> offered = new ArrayList<>(batch.size());
+            for (StagedOp op : batch) offered.add(op.withRouteReceipt(receipt));
+            ArrayList<StagedOp> inline = offerRoutes(offered, false);
+            // Queued destinations remain OFFERING until all inline work succeeds.
+            if (inline != null) {
+                for (StagedOp op : inline) {
+                    RegionScheduler.runSuccessBodyIfHealthy(() -> runPublished(op.op()));
+                }
+            }
+            return new PreparedSeal(receipt, batch.size());
+        } catch (Throwable failure) {
+            Throwable winner = selectFailure(failure);
+            try {
+                receipt.cancel();
+            } catch (Throwable cleanup) {
+                winner = selectFailure(mergeFailure(winner, cleanup));
+            }
+            CrossDimArrivals.<RuntimeException>rethrow(winner);
+            return PreparedSeal.EMPTY;
+        }
+    }
+
+    /**
+     * A snapshot is a routing hint, not permission to run on Main. Re-resolve
+     * each whole destination batch under the topology admission cut. A foreign
+     * router observing an in-progress topology retains the batch for Main;
+     * it never waits for the rebuild while holding its source claim.
+     */
+    private static ArrayList<StagedOp> offerRoutes(
+            ArrayList<StagedOp> ordered, boolean prepend) {
+        java.util.IdentityHashMap<ServerLevel, RegionizedServer> destinations =
+                new java.util.IdentityHashMap<>();
+        java.util.IdentityHashMap<RegionizedServer, ArrayList<StagedOp>> batches =
+                new java.util.IdentityHashMap<>();
+        ArrayList<StagedOp> inline = null;
+        for (StagedOp op : ordered) {
+            if (!destinations.containsKey(op.dest())) {
+                destinations.put(op.dest(), RegionScheduler.forLevel(op.dest()));
+            }
+            RegionizedServer destination = destinations.get(op.dest());
+            if (destination == null) {
+                if (inline == null) inline = new ArrayList<>();
+                inline.add(op);
+            } else {
+                batches.computeIfAbsent(destination, rs -> new ArrayList<>()).add(op);
+            }
+        }
+        for (var entry : batches.entrySet()) {
+            RegionizedServer destination = entry.getKey();
+            destination.enterTrackingTopologyRouting();
+            try {
+                synchronized (destination.globalArrivalsLock) {
+                    var transition = destination.trackingTopologyTransitionReceipt();
+                    // Once a prefix is retained, later seals follow it. Otherwise
+                    // fresh direct offers could overtake the older transport lane.
+                    var current = (transition != null && transition.owner != Thread.currentThread())
+                            || (!prepend && !destination.globalArrivals.isEmpty())
+                            ? null : currentTargets(destination, entry.getValue());
+                    ArrayList<StagedOp> global = current == null
+                            ? entry.getValue() : offerCurrentTargets(current, prepend);
+                    if (global != null) {
+                        if (prepend) {
+                            prependGlobalLane(destination.globalArrivals,
+                                    destination.globalArrivalsLock, global);
+                        } else {
+                            appendGlobalLane(destination.globalArrivals,
+                                    destination.globalArrivalsLock, global);
+                        }
+                    }
+                }
+            } finally {
+                destination.exitTrackingTopologyRouting();
+            }
+        }
+        return inline;
+    }
+
+    /** Caller holds routing admission and the level's transport monitor. */
+    private static ArrayList<RouteTarget> currentTargets(
+            RegionizedServer destination, ArrayList<StagedOp> ordered) {
+        var snapshot = destination.arrivalOwnerSnapshot();
+        java.util.IdentityHashMap<IslandRegistry.PIsland, ArrayList<StagedOp>> buckets =
+                new java.util.IdentityHashMap<>();
+        for (StagedOp op : ordered) {
+            EpochDomain domain = snapshot == null ? null
+                    : snapshot.get(destination.regionizer().grid.keyFor(op.chunkKey()));
+            IslandRegistry.PIsland owner = domain == null ? null : domain.owner;
+            // The retirement-to-snapshot window is not global ownership.
+            if (owner != null && owner.retired) return null;
+            buckets.computeIfAbsent(owner, p -> new ArrayList<>()).add(op);
+        }
+        // Bound even adversarial snapshot replacement: retain the WHOLE batch,
+        // never retry a partially offered set or spin waiting for topology.
+        if (destination.arrivalOwnerSnapshot() != snapshot) return null;
+        ArrayList<RouteTarget> targets = new ArrayList<>(buckets.size());
+        for (var entry : buckets.entrySet()) {
+            targets.add(new RouteTarget(entry.getKey(), entry.getValue()));
+        }
+        return targets;
+    }
+
+    /** No receipt waits or destination bodies under either routing monitor. */
+    private static ArrayList<StagedOp> offerCurrentTargets(
+            ArrayList<RouteTarget> targets, boolean prepend) {
+        ArrayList<StagedOp> global = null;
+        for (RouteTarget target : targets) {
+            IslandRegistry.PIsland owner = target.owner();
+            if (owner == null) {
+                global = target.ops();
+            } else {
+                synchronized (owner.pendingArrivals) {
+                    if (prepend) owner.pendingArrivals.addAll(0, target.ops());
+                    else if (!enqueueUnlessRetired(owner, target.ops())) {
+                        throw new IllegalStateException("arrival owner retired inside topology admission");
+                    }
                 }
             }
         }
+        return global;
     }
 
     /**
@@ -233,11 +564,11 @@ public final class CrossDimArrivals {
      * islands). Re-checking {@code retired} INSIDE the {@code pendingArrivals}
      * monitor — the same monitor reroute drains under — closes the race: either
      * the ops are in the list when reroute drains them, or the writer observes
-     * {@code retired} and the caller falls through to the destination's global
-     * lane. Package-private for the unit test.
+     * {@code retired} and the caller retains the cohort for re-resolution.
+     * Package-private for the unit test.
      *
      * @return true if the ops were queued on a live island; false = the island
-     *         retired first and the caller must deliver via the global lane.
+     *         retired first and the caller must re-resolve before publication.
      */
     static boolean enqueueUnlessRetired(IslandRegistry.PIsland owner,
                                         java.util.List<StagedOp> ops) {
@@ -254,30 +585,6 @@ public final class CrossDimArrivals {
      *  UNDER THE UNIT CLAIM, before scheduled ticks and the entity phase —
      *  the vanilla-equivalent boundary (arrivals precede the destination's
      *  whole tick). */
-    /** Backlog-compression guard (tasks #19/#20). Transfers that originated
-     *  on DISTINCT source simulation ticks must not receive simulation
-     *  progress in one destination epoch just because a stall, a burst drain
-     *  or a save batched their delivery; transfers from the SAME source tick
-     *  (a teleport's [regen, entity] pair; genuinely simultaneous portal
-     *  entries) deliver together — vanilla same-tick semantics, cohort
-     *  atomicity and FIFO unchanged.
-     *
-     *  <p>Release rule: at most ONE distinct source cohort per clock domain
-     *  per destination epoch. No source-delta preservation: preserving full
-     *  deltas turned any backlog into standing historical debt that NEVER
-     *  converged when the feed rate matched the drain rate (the 2026-07-19
-     *  production lesson that forced pacing out entirely, and task #20's
-     *  permanent post-stall lag). The 1-epoch floor is the whole invariant:
-     *  distinct source ticks land on distinct destination epochs, a backlog
-     *  drains at ≥1 cohort/epoch (debt converges), and no clamp constant or
-     *  timeline-reset heuristic is needed.
-     *
-     *  <p>Chains are PER SOURCE CLOCK DOMAIN ({@link StagedOp#sourceDomain}):
-     *  ticks from different islands are incomparable (arbitrary birth
-     *  offsets), so a shared chain saw every cross-source interleave as a
-     *  timeline reset and released it un-spaced (task #20's repeated stacked
-     *  placements). A domain's first cohort after idle delivers immediately
-     *  (no wall-clock debt); the map resets when the queue drains. */
     /**
      * Delegates to {@link ArrivalReleaseRule}. See that class for why the release
      * rule is causal rather than rate-paced: holding a completed source cohort
@@ -360,21 +667,47 @@ public final class CrossDimArrivals {
         // (exactly-once, cohort integrity, arrival-before-tick ordering,
         // endpoint leases, retirement rerouting, shutdown flush) lives in
         // route/seal/flush; this method only applies the release rule above.
-        ArrayList<StagedOp> ops = null;
-        synchronized (island.pendingArrivals) {
-            if (!island.pendingArrivals.isEmpty()) {
-                long destNow = island.logicalTick;
-                int take = fabrolia$eligiblePrefix(island.pendingArrivals, destNow, island.arrivalChains);
-                if (take > 0) {
-                    RegionizedServer destRs = RegionScheduler.forLevel(island.domainLevel());
-                    ops = fabrolia$gatedExtract(island.pendingArrivals, take,
-                            destRs != null ? destRs.platformHandoff : null);
+        int[] published = new int[1];
+        // Cohort detachment and every member's vanilla destination body are one
+        // admitted unit.  A plain health read before pendingArrivals removal
+        // could strand an accepted cohort when peer W wins in the gap; a second
+        // per-member admission after removal could refuse the detached suffix.
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            ArrayList<StagedOp> ops = null;
+            int capturedSize = -1;
+            for (;;) {
+                RouteReceipt offering;
+                synchronized (island.pendingArrivals) {
+                    if (capturedSize < 0) capturedSize = island.pendingArrivals.size();
+                    // The claim excludes another consumer. Producers may append
+                    // while we await an offer, but that tail belongs to the next head.
+                    java.util.List<StagedOp> prefix =
+                            island.pendingArrivals.subList(0, capturedSize);
+                    offering = firstOffering(prefix);
+                    if (offering == null) {
+                        discardCancelledRoutes(prefix);
+                        if (!prefix.isEmpty()) {
+                            int take = fabrolia$eligiblePrefix(
+                                    prefix, island.logicalTick, island.arrivalChains);
+                            if (take > 0) {
+                                RegionizedServer destRs =
+                                        RegionScheduler.forLevel(island.domainLevel());
+                                ops = fabrolia$gatedExtract(prefix, take,
+                                        destRs != null ? destRs.platformHandoff : null);
+                            }
+                        } else {
+                            island.arrivalChains.clear();
+                        }
+                        break;
+                    }
                 }
-            } else {
-                island.arrivalChains.clear(); // idle: next arrival re-anchors
+                // Never hold a queue monitor while waiting for the producer:
+                // its remaining owner buckets may need that same monitor.
+                offering.awaitAccepted();
             }
-        }
-        publish(ops);
+            published[0] = publishEntered(ops);
+        });
+        commitPublishMetrics(published[0]);
     }
 
     /** audit13 — atomic global-lane batch append (package-private for the unit
@@ -390,61 +723,136 @@ public final class CrossDimArrivals {
         }
     }
 
+    private static void prependGlobalLane(ConcurrentLinkedQueue<StagedOp> lane,
+                                          Object lock, java.util.List<StagedOp> ops) {
+        if (ops.isEmpty()) return;
+        synchronized (lock) {
+            ArrayList<StagedOp> tail = new ArrayList<>(lane);
+            lane.clear();
+            lane.addAll(ops);
+            lane.addAll(tail);
+        }
+    }
+
+    private static RouteReceipt firstOffering(java.util.List<StagedOp> ops) {
+        for (StagedOp op : ops) {
+            if (op.routeReceipt().state.get() == RouteReceipt.OFFERING) return op.routeReceipt();
+        }
+        return null;
+    }
+
     /**
-     * audit13 — the drain → release-rule → gate → requeue step of the global
-     * lane, as ONE atomic window under {@code lock} (the same monitor every
-     * batch append takes). Returns the ops to publish now (null = none); held
-     * head + untaken tail are back in the lane, FIFO preserved, before the
-     * monitor is released. The lock is NEVER held across publication — the
-     * caller publishes the returned batch afterwards. Package-private for the
-     * unit test (cohort-integrity battery drives it against concurrent
-     * appends with plain collections).
+     * Capture this head's prefix under the producer ordering monitor, await its
+     * shared receipts outside the monitor, then release/gate/requeue exactly
+     * that prefix. Main is the sole consumer; concurrent producer appends stay
+     * behind held members and cannot enter this head's publication boundary.
      */
     static ArrayList<StagedOp> takeGlobalBatch(
             java.util.concurrent.ConcurrentLinkedQueue<StagedOp> lane, Object lock,
             java.util.HashMap<Long, long[]> chains, long destNow,
             EndPlatformHandoff.Tracker tracker) {
+        return takeGlobalBatch(lane, lock, chains, destNow, tracker, null);
+    }
+
+    /**
+     * Resolve the captured transport prefix BEFORE release-rule/handoff tracking.
+     * A registered destination's owned members wait for their island head. The
+     * runtime-free lane form above has no island ownership to resolve.
+     */
+    private static ArrayList<StagedOp> takeGlobalBatch(
+            ConcurrentLinkedQueue<StagedOp> lane, Object lock,
+            java.util.HashMap<Long, long[]> chains, long destNow,
+            EndPlatformHandoff.Tracker tracker, RegionizedServer rs) {
+        ArrayList<StagedOp> pending;
         synchronized (lock) {
             if (lane.isEmpty()) {
-                chains.clear(); // idle: next arrival re-anchors
+                chains.clear();
                 return null;
             }
-            ArrayList<StagedOp> pending = new ArrayList<>(8);
-            StagedOp op;
-            while ((op = lane.poll()) != null) {
-                pending.add(op);
+            pending = new ArrayList<>(lane);
+        }
+        int capturedSize = pending.size();
+        discardCancelledRoutes(pending);
+        if (rs != null) rs.enterTrackingTopologyRouting();
+        try {
+            synchronized (lock) {
+                ArrayList<RouteTarget> targets = null;
+                if (rs != null) {
+                    var transition = rs.trackingTopologyTransitionReceipt();
+                    if (transition != null && transition.owner != Thread.currentThread()) return null;
+                    targets = currentTargets(rs, pending);
+                    if (targets == null) return null;
+                }
+                for (int i = 0; i < capturedSize; i++) lane.remove();
+                ArrayList<StagedOp> global = targets == null
+                        ? pending : offerCurrentTargets(targets, false);
+                if (global == null || global.isEmpty()) {
+                    chains.clear();
+                    return null;
+                }
+                int take = fabrolia$eligiblePrefix(global, destNow, chains);
+                ArrayList<StagedOp> released = take > 0
+                        ? fabrolia$gatedExtract(global, take, tracker) : null;
+                prependGlobalLane(lane, lock, global);
+                return released;
             }
-            int take = fabrolia$eligiblePrefix(pending, destNow, chains);
-            ArrayList<StagedOp> ops = null;
-            if (take > 0) {
-                // Handoff gate for the global lane too: an End platform in a
-                // global-owned (island-less) destination has the same airborne-
-                // cohort hazard. Held ops stay at the head of `pending`.
-                ops = fabrolia$gatedExtract(pending, take, tracker);
-            }
-            for (int i = 0; i < pending.size(); i++) {
-                lane.add(pending.get(i)); // FIFO preserved: held head + tail re-queued
-            }
-            return ops;
+        } finally {
+            if (rs != null) rs.exitTrackingTopologyRouting();
         }
     }
 
-    /** Publish the level's global-lane arrivals. Main thread, pre-dispatch. */
+    /** Publish only authoritatively global arrivals. Main thread, pre-dispatch. */
     public static void publishGlobal(RegionizedServer rs) {
-        long destNow = IslandClock.wallTime(rs.level);
-        ArrayList<StagedOp> ops = takeGlobalBatch(rs.globalArrivals, rs.globalArrivalsLock,
-                rs.globalArrivalChains, destNow, rs.platformHandoff);
-        publish(ops);
+        int[] published = new int[1];
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            long destNow = IslandClock.wallTime(rs.level);
+            ArrayList<StagedOp> ops = takeGlobalBatch(rs.globalArrivals, rs.globalArrivalsLock,
+                    rs.globalArrivalChains, destNow, rs.platformHandoff, rs);
+            published[0] = publishEntered(ops);
+        });
+        commitPublishMetrics(published[0]);
     }
 
-    private static void publish(ArrayList<StagedOp> ops) {
+    /** Caller owns the one admission covering detachment and the whole cohort. */
+    private static int publishEntered(ArrayList<StagedOp> ops) {
         if (ops == null || ops.isEmpty()) {
-            return;
+            return 0;
         }
-        PUBLISHED_BATCHES.incrementAndGet();
-        PUBLISHED_OPS.addAndGet(ops.size());
+        int published = 0;
         for (StagedOp op : ops) {
+            if (!op.routeReceipt().awaitAccepted()) continue;
+            // All members of one released activation cohort share the caller's
+            // admission.  Do not insert a nested gate here: after detachment it
+            // could refuse member N and split the vanilla-atomic cohort.
             runPublished(op.op());
+            published++;
+        }
+        return published;
+    }
+
+    private static void commitPublishMetrics(int published) {
+        // Success telemetry is a commit marker for the whole released cohort,
+        // never a count of a prefix whose vanilla arrival body later failed.
+        if (published != 0) {
+            final int committed = published;
+            if (RegionScheduler.isActive()) {
+                RegionScheduler.commitSuccessIfHealthy(() -> {
+                    PUBLISHED_BATCHES.incrementAndGet();
+                    PUBLISHED_OPS.addAndGet(committed);
+                });
+            } else {
+                PUBLISHED_BATCHES.incrementAndGet();
+                PUBLISHED_OPS.addAndGet(committed);
+            }
+        }
+    }
+
+    /** Await each exact offer receipt and erase cancelled cohorts before any
+     *  release-rule or handoff-tracker success state can observe them. */
+    private static void discardCancelledRoutes(java.util.List<StagedOp> ops) {
+        var it = ops.iterator();
+        while (it.hasNext()) {
+            if (!it.next().routeReceipt().awaitAccepted()) it.remove();
         }
     }
 
@@ -454,34 +862,50 @@ public final class CrossDimArrivals {
         // restore it — a nested publish cleared PUBLISHING for its caller, so
         // the remainder of the outer op re-entered the staging mixins and got
         // re-queued: a machine-generated cohort split. Save and restore.
-        Boolean prevPublishing = PUBLISHING.get();
-        PUBLISHING.set(Boolean.TRUE);
+        Boolean prevPublishing = null;
+        boolean previousRead = false;
+        Throwable failure = null;
         try {
+            prevPublishing = PUBLISHING.get();
+            previousRead = true;
+            PUBLISHING.set(Boolean.TRUE);
             op.run();
-        } catch (Throwable t) {
-            LOGGER.error("cross-dimension arrival op failed", t);
-        } finally {
-            PUBLISHING.set(prevPublishing);
+        } catch (Throwable thrown) {
+            failure = selectFailure(thrown);
         }
+        if (previousRead) {
+            try {
+                PUBLISHING.set(prevPublishing);
+            } catch (Throwable cleanup) {
+                failure = selectFailure(mergeFailure(failure, cleanup));
+            }
+        }
+        if (failure != null) CrossDimArrivals.<RuntimeException>rethrow(failure);
     }
 
-    /** End index (inclusive) of the cohort starting at {@code i}: the maximal
-     *  contiguous run sharing (sourceDomain, sourceTick); unknown epochs
-     *  (negative sourceTick) are singletons — the same grouping the release
-     *  rule and the handoff gate use. Package-private for the unit test. */
-    static int cohortEnd(java.util.List<StagedOp> ops, int i) {
-        long tick = ops.get(i).sourceTick();
-        if (tick < 0) {
-            return i;
-        }
-        long dom = ops.get(i).sourceDomain();
-        int j = i;
-        while (j + 1 < ops.size() && ops.get(j + 1).sourceTick() == tick
-                && ops.get(j + 1).sourceDomain() == dom) {
-            j++;
-        }
-        return j;
+    private static Throwable selectFailure(Throwable candidate) {
+        return RegionScheduler.isActive()
+                ? RegionScheduler.publishFatalAndSelectWinner(candidate)
+                : candidate;
     }
+
+    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
+        if (primary == null) return secondary;
+        if (secondary != null && secondary != primary) {
+            try {
+                primary.addSuppressed(secondary);
+            } catch (Throwable ignored) {
+                // Diagnostic suppression cannot replace the first failure.
+            }
+        }
+        return primary;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
+    }
+
 
     /** Topology rebuild carry: a retiring/re-shaped island's queued arrivals
      *  re-route by current ownership — never lost, order preserved.
@@ -495,70 +919,71 @@ public final class CrossDimArrivals {
      *  queue was drained and re-enqueued onto itself, then retired — stranded
      *  forever.
      *
-     *  <p>audit13: routes COHORT-WISE, not the whole drained queue as one
-     *  batch. {@code route()} resolves ONE owner per destination level from a
-     *  batch's FIRST op — correct for a sealed cohort (one activation, one
-     *  chunk area) but wrong for a drained queue spanning many chunks: after
-     *  a SPLIT, ops belonging to the other fragment were delivered to — and
-     *  published under — the wrong island's claim, an off-owner mutation of
-     *  the true owner's structures. Per-cohort routing preserves both the
-     *  one-publish-boundary-per-cohort invariant and per-owner FIFO. */
+     *  <p>Carry uses one topology cut for the entire old queue, preserving
+     *  each inherited owner's FIFO and the ORIGINAL acceptance receipts.
+     *  Inherited prefixes precede arrivals offered against the new topology.
+     *  Main holds the affected claims; carry never waits for source acceptance
+     *  or executes destination callbacks while holding queue monitors. */
     public static void reroute(RegionizedServer rs, IslandRegistry.PIsland retiring) {
-        ArrayList<StagedOp> ops = null;
+        ArrayList<StagedOp> ops;
         synchronized (retiring.pendingArrivals) {
-            if (!retiring.pendingArrivals.isEmpty()) {
-                ops = new ArrayList<>(retiring.pendingArrivals);
-                retiring.pendingArrivals.clear();
+            if (retiring.pendingArrivals.isEmpty()) return;
+            for (StagedOp op : retiring.pendingArrivals) {
+                if (RegionScheduler.forLevel(op.dest()) != rs) {
+                    throw new IllegalStateException("arrival carry lost its destination runtime");
+                }
             }
+            ops = new ArrayList<>(retiring.pendingArrivals);
+            retiring.pendingArrivals.clear();
         }
-        if (ops != null) {
-            REROUTED.addAndGet(ops.size());
-            int i = 0;
-            while (i < ops.size()) {
-                int j = cohortEnd(ops, i);
-                route(new ArrayList<>(ops.subList(i, j + 1)));
-                i = j + 1;
-            }
-        }
+        // Main owns the affected claims. Release the old queue before acquiring
+        // routing admission / the transport monitor (producer order is the
+        // opposite: admission -> transport -> destination queue).
+        offerRoutes(ops, true);
+        REROUTED.addAndGet(ops.size());
     }
 
     /**
      * IN-FLIGHT LEASE (2026-07-18 portal-link architecture): every pending
      * arrival pins its destination chunk with the SAME ticket vanilla's
      * synchronous teleport places (PORTAL, radius 3, wall-timed), re-armed
-     * each main tick while the cohort waits. Vanilla never has a gap between
-     * departure and arrival; the async model reintroduces one whenever the
-     * destination island lags — without the lease, wall-clock ticket expiry
-     * could unload the endpoint under the pending cohort (portal chunk
-     * loaders with one lagging side died exactly this way: renewal traffic
-     * ran on island cadence, expiry on wall cadence). The lease holds for as
-     * long as — and ONLY as long as — traffic is actually in flight, so no
-     * cadence coupling and no cross-island stalls; cycles of links each pin
-     * only their own endpoints. Main-only.
+     * each main tick while the cohort waits. Synthetic source-side windows use
+     * narrower radii below: they owe only the exact loading/simulation footprint
+     * which vanilla's synchronous execution never has to preserve.
+     *
+     * <p>The async model reintroduces an endpoint gap whenever the destination
+     * island lags. Without these leases wall-clock ticket expiry could unload
+     * an endpoint under the pending cohort. Each lease holds for as long as —
+     * and only as long as — its traffic is actually in flight, so there is no
+     * cadence coupling or cross-island stall. Main-only.
      */
     public static void rearmPendingLeases(RegionizedServer rs) {
+        RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$rearmPendingLeasesEntered(rs));
+    }
+
+    private static void fabrolia$rearmPendingLeasesEntered(RegionizedServer rs) {
         // Handoff-tracker housekeeping (main, wall-paced, cheap): purge settled
         // members even if the machine never queries that chunk again, so a
         // stopped duper's last cohort is not strongly retained. Unconditional —
         // tracked state may outlive an async ON→OFF flip.
         rs.platformHandoff.sweep();
         if (!rs.asyncActive) return;
-        it.unimi.dsi.fastutil.longs.LongOpenHashSet done =
-                new it.unimi.dsi.fastutil.longs.LongOpenHashSet(8);
+        it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap armedRadius =
+                new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(8);
+        armedRadius.defaultReturnValue((byte) -1);
         for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
             java.util.ArrayList<StagedOp> pend = p.pendingArrivals;
             // isEmpty() must be read under the same monitor every mutator uses; a
             // stale size skipped the whole island's PORTAL lease re-arm for a tick,
             // which is exactly the expiry this lease exists to prevent.
+            java.util.ArrayList<StagedOp> pendingSnapshot;
             synchronized (pend) {
                 if (pend.isEmpty()) continue;
-                for (StagedOp op : pend) {
-                    if (done.add(op.chunkKey())) {
-                        op.dest().getChunkSource().addTicketWithRadius(
-                                net.minecraft.server.level.TicketType.PORTAL,
-                                new net.minecraft.world.level.ChunkPos(net.minecraft.world.level.ChunkPos.getX(op.chunkKey()), net.minecraft.world.level.ChunkPos.getZ(op.chunkKey())), 3);
-                    }
-                }
+                pendingSnapshot = new java.util.ArrayList<>(pend);
+            }
+            for (StagedOp op : pendingSnapshot) {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$rearmLease(
+                        armedRadius, op.dest(), op.chunkKey(), DESTINATION_LEASE_RADIUS));
             }
         }
         // task #26 lease completion (portal-minecart audit): the contract is
@@ -572,52 +997,49 @@ public final class CrossDimArrivals {
         //     entity, which then publishes into an unloaded chunk and goes
         //     inert in pending-entity storage until a player wanders by.
         for (StagedOp op : rs.globalArrivals) {
-            if (op.dest() == rs.level && done.add(op.chunkKey())) {
-                rs.level.getChunkSource().addTicketWithRadius(
-                        net.minecraft.server.level.TicketType.PORTAL,
-                        new net.minecraft.world.level.ChunkPos(
-                                net.minecraft.world.level.ChunkPos.getX(op.chunkKey()),
-                                net.minecraft.world.level.ChunkPos.getZ(op.chunkKey())), 3);
+            if (op.dest() == rs.level) {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$rearmLease(
+                        armedRadius, rs.level, op.chunkKey(), DESTINATION_LEASE_RADIUS));
             }
         }
         // (b) The SOURCE chunk of every queued PTM handoff: the entity is
         //     frozen portal-pending IN the source world until main drains the
         //     transfer — an unload there tears the transaction (the entity
         //     saves to disk mid-handoff and the transfer silently aborts).
-        //     Vanilla has no such window (teleport is synchronous); the pin
-        //     restores the vanilla guarantee for exactly as long as the
-        //     window exists.
-        com.axalotl.fabrolia.common.parallelised.utils.PortalTeleportationManager
-                .forEachPendingSourceChunk(rs.level, key -> {
-                    if (done.add(key)) {
-                        rs.level.getChunkSource().addTicketWithRadius(
-                                net.minecraft.server.level.TicketType.PORTAL,
-                                new net.minecraft.world.level.ChunkPos(
-                                        net.minecraft.world.level.ChunkPos.getX(key),
-                                        net.minecraft.world.level.ChunkPos.getZ(key)), 3);
-                    }
-                });
-        // (c) task #26 async-island fix: the chunk of every PORTAL-ACTIVE entity
-        //     (inside a portal, or on cooldown between crossings). A portal
-        //     loader's destination chunk is held only by the PORTAL ticket the
-        //     last crossing placed (300 MAIN ticks); the NEXT crossing that would
-        //     renew it is produced by the loader ISLAND'S tick, so a starved /
-        //     below-wall-rate island lets the wall-timed ticket lapse and unload
-        //     the chunk under the cart — the async-islands-only portal-loader
-        //     break (async off ticks the whole level per main tick, so the rate
-        //     gap never opens). Re-arming here (main, wall-paced) keeps the chunk
-        //     loaded while any entity is actively portaling, independent of the
-        //     island's rate — vanilla's guarantee restored.
-        com.axalotl.fabrolia.common.parallelised.utils.PortalTeleportationManager
-                .forEachPortalActiveChunk(rs.level, key -> {
-                    if (done.add(key)) {
-                        rs.level.getChunkSource().addTicketWithRadius(
-                                net.minecraft.server.level.TicketType.PORTAL,
-                                new net.minecraft.world.level.ChunkPos(
-                                        net.minecraft.world.level.ChunkPos.getX(key),
-                                        net.minecraft.world.level.ChunkPos.getZ(key)), 3);
-                    }
-                });
+        //     Vanilla has no such window, so this synthetic pin owes loading,
+        //     not simulation. Radius 1 keeps the entry chunk plus its one-chunk
+        //     footprint FULL without making any chunk ENTITY_TICKING.
+        RegionScheduler.runSuccessBodyIfHealthy(() ->
+                com.axalotl.fabrolia.common.regions.NetherPortalTransfers.forEachPendingSourceChunk(rs.level, key -> {
+                    RegionScheduler.runSuccessBodyIfHealthy(() ->
+                            fabrolia$rearmLease(armedRadius, rs.level, key,
+                                    PENDING_SOURCE_LEASE_RADIUS));
+                }));
+        // (c) The chunk of every genuinely live PORTAL-ACTIVE entity. PTM
+        //     excludes departed and portal-pending source identities: (b)
+        //     already holds those frozen transactions. A live loader must keep
+        //     ticking itself, but no vanilla invariant requires synthetic
+        //     ENTITY_TICKING propagation into neighbouring chunks. Radius 2
+        //     makes the exact entity chunk level 31 and its neighbours level 32.
+        RegionScheduler.runSuccessBodyIfHealthy(() ->
+                com.axalotl.fabrolia.common.regions.NetherPortalTransfers.forEachPortalActiveChunk(rs.level, key -> {
+                    RegionScheduler.runSuccessBodyIfHealthy(() ->
+                            fabrolia$rearmLease(armedRadius, rs.level, key,
+                                    PORTAL_ACTIVE_LEASE_RADIUS));
+                }));
+    }
+
+    private static void fabrolia$rearmLease(
+            it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap armedRadius,
+            ServerLevel level, long chunkKey, int radius) {
+        int previousRadius = armedRadius.get(chunkKey);
+        if (previousRadius >= radius) return;
+        armedRadius.put(chunkKey, (byte) radius);
+        level.getChunkSource().addTicketWithRadius(
+                net.minecraft.server.level.TicketType.PORTAL,
+                new net.minecraft.world.level.ChunkPos(
+                        net.minecraft.world.level.ChunkPos.getX(chunkKey),
+                        net.minecraft.world.level.ChunkPos.getZ(chunkKey)), radius);
     }
 
     /** Save/stop/collapse flush: staged or queued entities exist in NO level
@@ -710,26 +1132,37 @@ public final class CrossDimArrivals {
      *  sealing: callers seal first (per their ownership scope). */
     private static void publishLevelPending(RegionizedServer rs) {
         for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
-            ArrayList<StagedOp> ops = null;
-            synchronized (p.pendingArrivals) {
-                if (!p.pendingArrivals.isEmpty()) {
-                    ops = new ArrayList<>(p.pendingArrivals);
-                    p.pendingArrivals.clear();
+            int[] published = new int[1];
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                ArrayList<StagedOp> ops = null;
+                synchronized (p.pendingArrivals) {
+                    if (!p.pendingArrivals.isEmpty()) {
+                        ops = new ArrayList<>(p.pendingArrivals);
+                        p.pendingArrivals.clear();
+                    }
                 }
-            }
-            if (ops != null) {
-                FLUSHED_AT_SAVE.addAndGet(ops.size());
-                // audit13: a flush publishes gate-HELD machine cohorts by
-                // design (delivery beats entity loss under a quiesced save) —
-                // but their falling-block members must still be REGISTERED as
-                // airborne, or the machine's NEXT cohort finds no record and
-                // releases mid-fall (window ≈ one hold per save per level).
-                EndPlatformHandoff.trackAll(fabrolia$gateView(ops, ops.size()),
-                        rs.platformHandoff);
-                publish(ops);
-            }
-            synchronized (p.pendingArrivals) {
-                p.arrivalChains.clear();
+                if (ops != null) {
+                    discardCancelledRoutes(ops);
+                    // audit13: a flush publishes gate-HELD machine cohorts by
+                    // design (delivery beats entity loss under a quiesced save) —
+                    // but their falling-block members must still be REGISTERED as
+                    // airborne, or the machine's NEXT cohort finds no record and
+                    // releases mid-fall (window ≈ one hold per save per level).
+                    if (!ops.isEmpty()) {
+                        EndPlatformHandoff.trackAll(fabrolia$gateView(ops, ops.size()),
+                                rs.platformHandoff);
+                        published[0] = publishEntered(ops);
+                    }
+                }
+                synchronized (p.pendingArrivals) {
+                    p.arrivalChains.clear();
+                }
+            });
+            commitPublishMetrics(published[0]);
+            if (published[0] != 0) {
+                int committed = published[0];
+                RegionScheduler.commitSuccessIfHealthy(
+                        () -> FLUSHED_AT_SAVE.addAndGet(committed));
             }
         }
         // Global lane force-drain: the paced publishGlobal may hold a spacing
@@ -738,19 +1171,30 @@ public final class CrossDimArrivals {
         // ordering monitor so a concurrent route() batch (another level's
         // worker sealing into this level) is taken whole or left whole —
         // never a fragment of a cohort.
-        ArrayList<StagedOp> gops = new ArrayList<>(8);
-        synchronized (rs.globalArrivalsLock) {
-            StagedOp gop;
-            while ((gop = rs.globalArrivals.poll()) != null) {
-                gops.add(gop);
+        int[] globalPublished = new int[1];
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            ArrayList<StagedOp> gops = new ArrayList<>(8);
+            synchronized (rs.globalArrivalsLock) {
+                StagedOp gop;
+                while ((gop = rs.globalArrivals.poll()) != null) {
+                    gops.add(gop);
+                }
+                rs.globalArrivalChains.clear();
             }
-            rs.globalArrivalChains.clear();
-        }
-        if (!gops.isEmpty()) {
-            FLUSHED_AT_SAVE.addAndGet(gops.size());
-            EndPlatformHandoff.trackAll(fabrolia$gateView(gops, gops.size()),
-                    rs.platformHandoff);
-            publish(gops);
+            if (!gops.isEmpty()) {
+                discardCancelledRoutes(gops);
+                if (!gops.isEmpty()) {
+                    EndPlatformHandoff.trackAll(fabrolia$gateView(gops, gops.size()),
+                            rs.platformHandoff);
+                    globalPublished[0] = publishEntered(gops);
+                }
+            }
+        });
+        commitPublishMetrics(globalPublished[0]);
+        if (globalPublished[0] != 0) {
+            int committed = globalPublished[0];
+            RegionScheduler.commitSuccessIfHealthy(
+                    () -> FLUSHED_AT_SAVE.addAndGet(committed));
         }
     }
 

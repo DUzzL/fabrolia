@@ -1,70 +1,130 @@
 package com.axalotl.fabrolia.api.utils;
 
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 
-import java.util.function.BiFunction;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Sync wrap for custom pickUpItem / item-intake paths (mob pickup, hopper/minecart intake,
- * dolphin/fox/allay/… item grabs). Serializes them so two entities can't dup the same item.
- *
- * <h2>Monitor scope</h2>
- * The monitor is keyed by the ITEM's region when a {@code monitorResolver} is registered
- * (common wires {@code FabroliaLocks.itemLockOr}): the lock of the region that owns the item's
- * chunk, {@link #fallback()} when the region scheduler is inactive. Keying by the ITEM (not by
- * the current thread) is load-bearing: every toucher of item I — region worker, help-fanout
- * helper, the main-thread barrier pump running a stolen help batch ({@code RegionWorkerPool
- * .stealOne}), main-sync-lane entities, island BE hopper intake — resolves the SAME monitor,
- * so the mutual exclusion the old JVM-wide static lock provided survives main/worker mixing
- * (the mixed-monitor dupe window found 2026-07-01).
- *
- * <p>Deadlock-freedom: on a region worker the item's region is the worker's own region (or an
- * adjacent one that ColorGate guarantees is not concurrently ticking), so nesting with the
- * sibling thread-scoped monitors ({@code MinecartHopper.suckInItems} / {@code Mob.tryEquip},
- * which use {@code FabroliaLocks.tickLockOr}) is a plain reentrant lock — the AB-BA wedge fixed
- * 2026-07-01 stays dead. Main only ever holds one region lock at a time here and workers never
- * take the fallback, so no cross-thread cycle through {@link #FALLBACK} exists either.
- *
- * <h2>Usage</h2>
- * <pre>{@code
- * SyncItemPickup.wrap(level, entity, () -> { this.onItemPickup(entity); ... });
- * }</pre>
+ * Exact-identity ownership for item intake and consumable simulation. No region
+ * lane is acquired by pickup: callers may already hold a region or world claim.
+ * Portal capture never waits for this ownership while retaining such a claim.
  */
 public class SyncItemPickup {
+    public interface PortalReservation {
+        boolean fabrolia$isPortalPending();
+        boolean fabrolia$isPortalResolutionOwner();
+    }
 
-    /** JVM-wide fallback monitor — scheduler inactive, or before the resolver is registered. */
+    public interface Guarded {
+        Guard fabrolia$consumptionGuard();
+    }
+
+    /** Stable per-entity ownership; consumption is distinct from a reentrant tick. */
+    public static final class Guard extends ReentrantLock {
+        private int consumptionDepth;
+
+        public void enterActivity() {
+            lock();
+        }
+
+        public void exitActivity() {
+            unlock();
+        }
+
+        public void enterConsumption() {
+            lock();
+            consumptionDepth++;
+        }
+
+        public void exitConsumption() {
+            if (!isHeldByCurrentThread() || consumptionDepth == 0)
+                throw new IllegalMonitorStateException("Consumable guard is not consuming");
+            consumptionDepth--;
+            unlock();
+        }
+
+        /** An own tick may reserve; even an own native consumer may not. */
+        public boolean tryEnterReservation() {
+            if (!tryLock()) return false;
+            if (consumptionDepth != 0) {
+                unlock();
+                return false;
+            }
+            return true;
+        }
+
+        public void exitReservation() {
+            unlock();
+        }
+
+        public boolean consumingOnCurrentThread() {
+            return isHeldByCurrentThread() && consumptionDepth != 0;
+        }
+    }
+
+    /** Shared fallback merge/tick lane for synchronous or unowned execution. */
     private static final Object FALLBACK = new Object();
-
-    /** Item-region monitor resolver, registered by common ({@code FabroliaLocks.itemLockOr}). */
-    private static volatile BiFunction<ServerLevel, ItemEntity, Object> monitorResolver;
 
     private SyncItemPickup() {
         throw new UnsupportedOperationException("Utility class");
     }
 
-    /** The JVM-wide fallback monitor — pass this as the {@code FabroliaLocks.itemLockOr} fallback. */
     public static Object fallback() {
         return FALLBACK;
     }
 
-    /** Register the item-region monitor resolver
-     *  (common: {@code (level, item) -> FabroliaLocks.itemLockOr(level, item, fallback())}). */
-    public static void setMonitorResolver(BiFunction<ServerLevel, ItemEntity, Object> resolver) {
-        monitorResolver = resolver;
+    /** Nonconsumables need no additional identity lock during source capture. */
+    public static Guard guard(Entity entity) {
+        if (!(entity instanceof ItemEntity || entity instanceof ExperienceOrb)) return null;
+        if (entity instanceof Guarded guarded) {
+            Guard guard = guarded.fabrolia$consumptionGuard();
+            if (guard != null) return guard;
+        }
+        throw new IllegalStateException("Consumable entity has no consumption guard");
     }
 
-    /**
-     * Executes {@code action} under the (item-region-keyed, reentrant) item-sync monitor,
-     * skipping it if {@code entity} was already removed (picked up / merged by another path).
-     */
+    /** Preparatory custody cannot revoke an already admitted tick or consumer. */
+    public static boolean holdsUnreservedConsumption(Entity entity) {
+        Guard guard = guard(entity);
+        return guard != null && guard.isHeldByCurrentThread()
+                && (!(entity instanceof PortalReservation reservation)
+                    || !reservation.fabrolia$isPortalPending());
+    }
+
+    /** Rechecked under ownership, including after waiting for a native consumer. */
+    public static boolean isAvailable(Entity entity) {
+        if (entity.isRemoved()) return false;
+        return !(entity instanceof PortalReservation reservation)
+                || !reservation.fabrolia$isPortalPending()
+                || reservation.fabrolia$isPortalResolutionOwner();
+    }
+
+    /** Whole ticks may submit their own portal source reentrantly. */
+    public static void wrapTick(Entity entity, Runnable action) {
+        Guard guard = guard(entity);
+        if (guard == null) {
+            if (isAvailable(entity)) action.run();
+            return;
+        }
+        guard.enterActivity();
+        try {
+            if (isAvailable(entity)) action.run();
+        } finally {
+            guard.exitActivity();
+        }
+    }
+
+    /** Native intake remains synchronous, but cannot reserve mid-consumption. */
     public static void wrap(ServerLevel level, ItemEntity entity, Runnable action) {
-        BiFunction<ServerLevel, ItemEntity, Object> r = monitorResolver;
-        Object monitor = (r != null) ? r.apply(level, entity) : FALLBACK;
-        synchronized (monitor) {
-            if (!entity.isRemoved()) {
-                action.run();
-            }
+        Guard guard = guard(entity);
+        guard.enterConsumption();
+        try {
+            if (isAvailable(entity)) action.run();
+        } finally {
+            guard.exitConsumption();
         }
     }
 }

@@ -16,12 +16,59 @@ package com.axalotl.fabrolia.common.regions;
  * claimed region's domain (covers entity phases, helper fan-out batches, and
  * queue drains — drains between units read the completed-ticks value, exactly
  * vanilla's between-ticks semantics); a unit-coordinator segment without a
- * claim answers with the published {@code currentDomain}. Everything else —
- * main thread, chunk workers, IO — reads the level's real game time (W-lane
- * callers and sync mode are byte-identical: {@code unitGameTime} is only ever
- * non-zero on island domains that have dispatched a unit).
+ * claim answers with the published {@code currentDomain}. An exact typed
+ * unit rendezvous carries its source clock and effective phase onto Main;
+ * nested native chunk service still reads WALL. All other Main/chunk/IO work
+ * reads real time. Domains without a dispatched unit also read real time.
  */
 public final class IslandClock {
+
+    private static final ThreadLocal<net.minecraft.server.level.ServerLevel> handlingLevel =
+            new ThreadLocal<>();
+
+    /** Source context only; carrying a clock does not grant gameplay ownership. */
+    record MainUnitSource(net.minecraft.server.level.ServerLevel level, long time, long id,
+                          boolean handlingTick) {}
+
+    private static final ThreadLocal<MainUnitSource> mainUnitSource = new ThreadLocal<>();
+
+    static void runMainUnitSource(MainUnitSource source, Runnable body) {
+        enterMainUnitSource(source);
+        try {
+            body.run();
+        } finally {
+            mainUnitSource.remove();
+        }
+    }
+    static boolean callMainUnitSource(MainUnitSource source, java.util.function.BooleanSupplier body) {
+        enterMainUnitSource(source);
+        try {
+            return body.getAsBoolean();
+        } finally {
+            mainUnitSource.remove();
+        }
+    }
+
+    private static void enterMainUnitSource(MainUnitSource source) {
+        if (mainUnitSource.get() != null) {
+            throw new IllegalStateException("nested unit source clock");
+        }
+        mainUnitSource.set(source);
+    }
+
+
+    /** Chunk work may execute after main has left vanilla's handling-tick
+     * window. Bind the actual body, including helpers and main-thread steals. */
+    public static <T> void runHandlingTick(net.minecraft.server.level.ServerLevel level,
+                                         T value, java.util.function.Consumer<T> action) {
+        net.minecraft.server.level.ServerLevel previous = handlingLevel.get();
+        handlingLevel.set(level);
+        try {
+            action.accept(value);
+        } finally {
+            handlingLevel.set(previous);
+        }
+    }
 
     /** ServerLevel.isHandlingTick redirect (piston D1): a region worker
      *  executing an island unit of THIS level answers from its own
@@ -29,6 +76,9 @@ public final class IslandClock {
      *  racing main's flag. null = caller should use the vanilla field
      *  (main thread, cross-level query, no context). */
     public static Boolean workerHandlingTick(net.minecraft.server.level.ServerLevel level) {
+        MainUnitSource source = currentMainUnitSource();
+        if (source != null && source.level() == level) return source.handlingTick();
+        if (handlingLevel.get() == level) return true;
         if (!(Thread.currentThread() instanceof RegionWorkerThread w)) {
             return null;
         }
@@ -43,10 +93,8 @@ public final class IslandClock {
             }
             return d.handlingTickPhase;
         }
-        RegionizedServer rs = RegionScheduler.forLevel(level);
-        if (rs != null && rs.ownsGlobalDomain(d)) {
-            return d.handlingTickPhase;
-        }
+        // Global work outside an explicit chunk body executes in the native
+        // phase. The global domain has no island unit to publish its flag.
         return null;
     }
 
@@ -76,23 +124,32 @@ public final class IslandClock {
      *  Hot path: two reference loads on worker threads, one type check on
      *  everything else; no allocation. */
     public static long contextTime() {
-        if (!(Thread.currentThread() instanceof RegionWorkerThread w)) {
-            return -1L;
+        EpochDomain domain = workerSourceDomain();
+        if (domain != null) return domain.unitGameTime != 0 ? domain.unitGameTime : -1L;
+        if (Thread.currentThread() instanceof RegionWorkerThread) return -1L;
+        MainUnitSource source = currentMainUnitSource();
+        return source == null ? -1L : source.time();
+    }
+
+    /** Identity of the same clock used by getGameTime, including typed Main unit work. */
+    static long contextId() {
+        EpochDomain domain = workerSourceDomain();
+        if (domain != null) {
+            return domain.unitGameTime != 0 && domain.owner != null
+                    ? domain.owner.id : FabroliaTickDomain.WALL;
         }
-        Region r = w.currentRegion;
-        if (r != null) {
-            EpochDomain d = r.domain;
-            if (d != null) {
-                long t = d.unitGameTime;
-                if (t != 0) return t;
-            }
-            return -1L;
-        }
-        EpochDomain d = w.currentDomain;
-        if (d != null) {
-            long t = d.unitGameTime;
-            if (t != 0) return t;
-        }
-        return -1L;
+        if (Thread.currentThread() instanceof RegionWorkerThread) return FabroliaTickDomain.WALL;
+        MainUnitSource source = currentMainUnitSource();
+        return source == null ? FabroliaTickDomain.WALL : source.id();
+    }
+
+    private static MainUnitSource currentMainUnitSource() {
+        MainUnitSource source = mainUnitSource.get();
+        return source != null && !RegionScheduler.inNativeMainService() ? source : null;
+    }
+
+    private static EpochDomain workerSourceDomain() {
+        if (!(Thread.currentThread() instanceof RegionWorkerThread worker)) return null;
+        return worker.currentRegion != null ? worker.currentRegion.domain : worker.currentDomain;
     }
 }

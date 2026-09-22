@@ -6,7 +6,9 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 
 import java.util.Set;
+import java.util.ArrayDeque;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -27,6 +29,8 @@ import java.util.Comparator;
  */
 public final class Region {
     private static final AtomicLong NEXT_ID = new AtomicLong();
+    private static final AtomicLongFieldUpdater<Region> DONE_EPOCH =
+            AtomicLongFieldUpdater.newUpdater(Region.class, "doneEpoch");
 
     public final long id = NEXT_ID.incrementAndGet();
     public final long gridKey;
@@ -53,14 +57,20 @@ public final class Region {
      *  UNCLAIMED region with pending queue work (lost ready entry). */
     int strandedQueueSightings;
 
-    /** Last epoch this region fully completed (queue drained + entity phase). */
+    /** Outstanding real ready notifications, including detached consumers.
+     *  Coalescing retains the last pin while callbacks remain. This is not
+     *  claim authority or a quiescence receipt. */
+    volatile int readyNotifications;
+
+    /** Last epoch whose queue/entity phase cutoff was published. Queue/help
+     *  admissions retained beyond that cutoff belong to the following epoch. */
     public volatile long doneEpoch;
     /** Epoch whose entity phase has run (the final per-region act of a tick). */
     public volatile long entityEpoch;
     /** Epoch in which this region was included in entity dispatch — such a
-     *  region OWES an entity phase before it may complete; one that wasn't
-     *  completes as soon as its queue drains (late-armed work can't wedge
-     *  the color DAG waiting for an entity phase that will never come). */
+     *  region OWES an entity phase before it may complete; one that wasn't is
+     *  sealed at the accepted dispatch cutoff (a concurrent late arm remains
+     *  queued for the next epoch instead of wedging the color DAG). */
     public volatile long groupedEpoch;
 
     /** R5 event scheduler: epoch of the last ENTITY-phase ready-lane push. CAS-gated so
@@ -87,6 +97,51 @@ public final class Region {
      *  demote path; counts stayed high forever and islands never split).
      *  Main-thread mutations only (both event sources deliver on main). */
     public final LongOpenHashSet fullChunks = new LongOpenHashSet(64);
+
+    /**
+     * Result of applying one FULL-status delivery to this cell's authoritative
+     * membership set.  Island connectivity depends on the cell's populated
+     * predicate ({@code fullChunkCount > 0}), not on which of its 64 chunks are
+     * FULL, so only {@link #POPULATION_BOUNDARY} requires a topology rebuild.
+     */
+    enum FullChunkTransition {
+        REDUNDANT,
+        MEMBERSHIP_ONLY,
+        POPULATION_BOUNDARY
+    }
+
+    /**
+     * Apply one idempotent FULL-status transition. Main-thread only: this owns
+     * the same plain fastutil set as the old inline RegionizedServer code.
+     *
+     * <p>The membership set and derived count still advance for every accepted
+     * chunk transition. The return value only separates a local membership
+     * change from a 0↔1 populated-cell edge, because only the latter can alter
+     * radius-2 island connectivity or queue/tracking ownership.</p>
+     */
+    FullChunkTransition applyFullChunkTransition(long packedChunkPos, boolean nowFull) {
+        if (nowFull) {
+            if (!fullChunks.add(packedChunkPos)) {
+                return FullChunkTransition.REDUNDANT;
+            }
+            int populatedChunks = fullChunkCount.incrementAndGet();
+            return populatedChunks == 1
+                    ? FullChunkTransition.POPULATION_BOUNDARY
+                    : FullChunkTransition.MEMBERSHIP_ONLY;
+        }
+
+        if (!fullChunks.remove(packedChunkPos)) {
+            return FullChunkTransition.REDUNDANT;
+        }
+        int populatedChunks = fullChunkCount.decrementAndGet();
+        if (populatedChunks < 0) {
+            throw new IllegalStateException("negative FULL chunk population for region "
+                    + gridKey);
+        }
+        return populatedChunks == 0
+                ? FullChunkTransition.POPULATION_BOUNDARY
+                : FullChunkTransition.MEMBERSHIP_ONLY;
+    }
 
     /** Island id this region was assigned at the last rebuild; -1 = no-man's
      *  land (unpopulated). Stamped by RegionizedServer.rebuildIslandsIfDirty
@@ -126,9 +181,9 @@ public final class Region {
             Comparator.comparingInt(Entity::getId));
 
     /**
-     * Exact size of {@link #entities} (skip-list size() is O(n); the dense-region
-     * fan-out check reads this every dispatch). Maintained by RegionizedServer index
-     * ops — incremented/decremented only when the set op actually changed the set.
+     * Exact size of {@link #entities} (skip-list size() is O(n)), used by load
+     * balancing and diagnostics. Index operations update it only when the set
+     * operation actually changes membership.
      */
     public final AtomicLong entityCount = new AtomicLong();
 
@@ -139,17 +194,19 @@ public final class Region {
 
     // ---- /fabrolia regions top diagnostics (phase owner writes, command reads) ----
     public volatile long lastPhaseNanos;
-    public volatile int lastFanoutBatches;
-    public volatile long lastBatchMaxNanos;
-    public volatile long lastOrderedNanos;
 
     /**
-     * Intra-region fan-out lane (dense regions): parallel sub-batches of this region's
-     * entity tick that ANY region worker may execute WITHOUT claiming the region — the
-     * claim stays with the coordinating worker for the whole drain. Runners must set
-     * {@code currentRegion} to this region while executing (lock discipline: tickLockOr
-     * then returns THIS region's monitor, so a dense village's contention stays scoped
-     * to itself instead of serializing every dense blob on global static locks).
+     * Claim-private completion draft.  The entity body may finish before its
+     * portal visibility frame has been published; keep diagnostics here until
+     * that frame closes successfully.  These fields are never read by commands
+     * or dispatch and therefore are not a successful-phase publication.
+     */
+    long stagedPhaseNanos;
+
+    /**
+     * Chunk-phase helper lane. The coordinator retains the region claim until
+     * every published helper finishes; entity bodies never enter this queue.
+     * Helpers install this region's execution context and lock discipline.
      */
     public final ConcurrentLinkedQueue<Runnable> helpQueue =
             new ConcurrentLinkedQueue<>();
@@ -157,7 +214,40 @@ public final class Region {
     private final LongOpenHashSet observedChunks = new LongOpenHashSet();
     private final RegionizedTaskQueue queue = new RegionizedTaskQueue();
     private final AtomicReference<RegionState> state = new AtomicReference<>(RegionState.NEW);
-    private final AtomicReference<Thread> currentWorker = new AtomicReference<>();
+    /**
+     * Claim and done-publication share one CAS word.  DONE_SEAL is held only
+     * while ColorGate validates and publishes a quiescent completion; a
+     * claimant can therefore be before that publication or after it, never
+     * inside its null-check -> done-write window.
+     */
+    private static final Object DONE_SEAL = new Object();
+    private static final Object DOMAIN_REBASE_SEAL = new Object();
+    private final AtomicReference<Object> currentWorker = new AtomicReference<>();
+    /**
+     * Exact claim-transaction admission cut for a domain migration.  Bit zero
+     * is CLOSED_FOR_REBASE; every admitted claim attempt owns one count unit
+     * (value 2) until either its CAS refuses or its complete body + successor
+     * publication + barrier/ready receipt tail has terminated.  A topology
+     * rebase first closes bit zero and then waits for the value to become
+     * exactly {@link #CLAIM_REBASE_CLOSED}.  Consequently currentWorker==null
+     * is never mistaken for transaction completion: workOnce/stealOne release
+     * that CAS before their ColorGate/contribution/receipt tail.
+     */
+    private static final long CLAIM_REBASE_CLOSED = 1L;
+    private static final long CLAIM_TRANSACTION_UNIT = 2L;
+    private final AtomicLong claimTransactionState = new AtomicLong();
+    /** Task admissions which linearized after CLOSED_FOR_REBASE. Guarded by
+     * admissionLock and moved to the ordinary FIFO only after domain-last
+     * publication, so a migration cannot execute a post-cut task in the old
+     * timeline or lose its already-accepted external permit. */
+    private final ArrayDeque<Runnable> domainRebaseDeferredTasks = new ArrayDeque<>();
+    /** Duplicate-tolerant ready nudge admitted after the same cut. Guarded by
+     * admissionLock; one fresh new-domain publication represents all nudges. */
+    private boolean domainRebaseDeferredReady;
+    /** Epoch whose done stamp was published while DONE_SEAL owned the CAS word. */
+    volatile long sealedDoneEpoch = Long.MIN_VALUE;
+    /** Serializes task admission with idle retirement. Lock order: region -> pool. */
+    final Object admissionLock = new Object();
 
     // ------------------------------------------------------------------
     // Claim ledger (2026-07-13, production "SUSPECT LEAKED CLAIM" audit).
@@ -221,15 +311,357 @@ public final class Region {
         return state.compareAndSet(expected, next);
     }
 
-    boolean tryClaim(Thread worker) {
-        return currentWorker.compareAndSet(null, worker);
+    /**
+     * Claim only for the exact eligibility generation captured by the caller.
+     * Domain rebases hold the same CAS word, but a delayed old claimant can
+     * reach CAS after that marker releases; identity+epoch validation is the
+     * required post-CAS fence against entering the replacement timeline.
+     */
+    boolean tryClaim(Thread worker, EpochDomain expectedDomain, long expectedEpoch) {
+        if (worker == null) throw new NullPointerException("worker");
+        if (expectedDomain != null && expectedDomain.epoch != expectedEpoch) {
+            return false;
+        }
+        if (!tryOpenClaimTransaction()) return false;
+        boolean retainedTransaction = false;
+        try {
+            if (!currentWorker.compareAndSet(null, worker)) return false;
+            // A claimant may have read ColorGate eligibility before a concurrent
+            // done publisher acquired/released DONE_SEAL or before a topology
+            // migration closed claim admission. These post-CAS reads are the
+            // other half of both handshakes: an old claimant either belongs to
+            // the complete old transaction or self-releases before body entry.
+            EpochDomain observedDomain = domain;
+            if (claimRebaseClosed()
+                    || observedDomain != expectedDomain
+                    || (observedDomain != null
+                        && (observedDomain.epoch != expectedEpoch
+                            || sealedDoneEpoch >= expectedEpoch))) {
+                if (!currentWorker.compareAndSet(worker, null)) {
+                    throw new IllegalStateException(
+                            "region claim changed while refusing a stale/sealed/rebasing epoch");
+                }
+                return false;
+            }
+            retainedTransaction = true;
+            return true;
+        } finally {
+            if (!retainedTransaction) finishClaimTransaction();
+        }
+    }
+
+    /** Open one attempt/transaction only on the pre-rebase side of the cut. */
+    private boolean tryOpenClaimTransaction() {
+        for (;;) {
+            long state = claimTransactionState.get();
+            if ((state & CLAIM_REBASE_CLOSED) != 0L) return false;
+            if (state > Long.MAX_VALUE - CLAIM_TRANSACTION_UNIT) {
+                throw new IllegalStateException("region claim transaction counter overflow");
+            }
+            if (claimTransactionState.compareAndSet(
+                    state, state + CLAIM_TRANSACTION_UNIT)) return true;
+        }
+    }
+
+    /**
+     * Reserve one claim-free, region-targeted body on the pre-rebase side of
+     * the same cut as {@link #tryClaim}. Main-safe publication calls this before
+     * CLQ visibility; the exact-turn path calls it before inline body entry.
+     * Both own {@link #admissionLock}. A domain rebase therefore either closes
+     * first or waits for this exact queued/running body terminal.
+     */
+    boolean tryOpenMainSafeBodyTransaction(
+            EpochDomain expectedDomain, long expectedEpoch) {
+        if (!Thread.holdsLock(admissionLock)) {
+            throw new IllegalStateException(
+                    "main-safe body transaction opened without admissionLock");
+        }
+        if (domain != expectedDomain
+                || (expectedDomain != null
+                    && expectedDomain.epoch != expectedEpoch)) {
+            return false;
+        }
+        return tryOpenClaimTransaction();
+    }
+
+    /** Exact terminal of a successful tryClaim, after its complete tail. */
+    void finishClaimTransaction() {
+        for (;;) {
+            long state = claimTransactionState.get();
+            long active = state & ~CLAIM_REBASE_CLOSED;
+            if (active < CLAIM_TRANSACTION_UNIT) {
+                throw new IllegalStateException(
+                        "region claim transaction completed without an open receipt");
+            }
+            if (claimTransactionState.compareAndSet(
+                    state, state - CLAIM_TRANSACTION_UNIT)) return;
+        }
+    }
+
+    /** Caller owns admissionLock. Linearization point which fences fresh claims. */
+    boolean tryCloseClaimTransactionsForDomainRebase() {
+        if (!Thread.holdsLock(admissionLock)) {
+            throw new IllegalStateException(
+                    "domain rebase claim cut published without admissionLock");
+        }
+        for (;;) {
+            long state = claimTransactionState.get();
+            if ((state & CLAIM_REBASE_CLOSED) != 0L) return false;
+            if (claimTransactionState.compareAndSet(
+                    state, state | CLAIM_REBASE_CLOSED)) return true;
+        }
+    }
+
+    boolean claimTransactionsDrainedForDomainRebase() {
+        return claimTransactionState.get() == CLAIM_REBASE_CLOSED;
+    }
+
+    int activeClaimTransactions() {
+        long active = claimTransactionState.get() >>> 1;
+        return active > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) active;
+    }
+
+    boolean claimRebaseClosed() {
+        return (claimTransactionState.get() & CLAIM_REBASE_CLOSED) != 0L;
+    }
+
+    /** Caller owns admissionLock; domain-last commit and seal release precede this. */
+    void reopenClaimTransactionsAfterDomainRebase() {
+        if (!Thread.holdsLock(admissionLock)) {
+            throw new IllegalStateException(
+                    "domain rebase claim cut reopened without admissionLock");
+        }
+        if (!claimTransactionState.compareAndSet(CLAIM_REBASE_CLOSED, 0L)) {
+            throw new IllegalStateException(
+                    "domain rebase claim cut reopened with live transactions");
+        }
+    }
+
+    /**
+     * Rebase-owner-only claim. Ordinary claim admission is already closed and
+     * every old transaction terminal; this claim settles the finite pre-cut
+     * FIFO without opening a new old-domain successor transaction.
+     */
+    boolean tryClaimForDomainRebase(
+            Thread worker, EpochDomain expectedDomain, long expectedEpoch) {
+        if (worker == null) throw new NullPointerException("worker");
+        if (!Thread.holdsLock(admissionLock)
+                || !claimTransactionsDrainedForDomainRebase()) {
+            throw new IllegalStateException(
+                    "domain rebase queue claim without a closed, drained claim cut");
+        }
+        if (expectedDomain != null && expectedDomain.epoch != expectedEpoch) {
+            return false;
+        }
+        if (!currentWorker.compareAndSet(null, worker)) return false;
+        EpochDomain observedDomain = domain;
+        if (observedDomain != expectedDomain
+                || (observedDomain != null
+                    && (observedDomain.epoch != expectedEpoch
+                        || sealedDoneEpoch >= expectedEpoch))) {
+            if (!currentWorker.compareAndSet(worker, null)) {
+                throw new IllegalStateException(
+                        "domain rebase queue claim changed while self-refusing");
+            }
+            return false;
+        }
+        return true;
+    }
+
+    /** Caller owns admissionLock. Post-cut task stays behind domain publication. */
+    boolean deferTaskForDomainRebase(Runnable task) {
+        if (!Thread.holdsLock(admissionLock)) {
+            throw new IllegalStateException(
+                    "domain rebase task deferral without admissionLock");
+        }
+        if (!claimRebaseClosed()) return false;
+        domainRebaseDeferredTasks.addLast(task);
+        return true;
+    }
+
+    /** Failed-generation sweep only. Caller owns {@link #admissionLock}. */
+    Runnable pollDomainRebaseDeferredTaskForCancellation() {
+        if (!Thread.holdsLock(admissionLock)) {
+            throw new IllegalStateException(
+                    "domain rebase deferred cancellation without admissionLock");
+        }
+        return domainRebaseDeferredTasks.pollFirst();
+    }
+
+    /** Failed-generation sweep only. Caller owns {@link #admissionLock}. */
+    void clearDomainRebaseDeferredReadyForCancellation() {
+        if (!Thread.holdsLock(admissionLock)) {
+            throw new IllegalStateException(
+                    "domain rebase deferred-ready cancellation without admissionLock");
+        }
+        domainRebaseDeferredReady = false;
+    }
+
+    /** Failed-generation fixed-point inspection. Caller owns admissionLock. */
+    boolean domainRebaseDeferredAdmissionsEmpty() {
+        if (!Thread.holdsLock(admissionLock)) {
+            throw new IllegalStateException(
+                    "domain rebase deferred inspection without admissionLock");
+        }
+        return domainRebaseDeferredTasks.isEmpty() && !domainRebaseDeferredReady;
+    }
+
+    /** Caller owns admissionLock. Returns true when the nudge was deferred. */
+    boolean deferReadyForDomainRebase() {
+        if (!Thread.holdsLock(admissionLock)) {
+            throw new IllegalStateException(
+                    "domain rebase ready deferral without admissionLock");
+        }
+        if (!claimRebaseClosed()) return false;
+        domainRebaseDeferredReady = true;
+        return true;
+    }
+
+    /**
+     * Caller owns admissionLock. Move every accepted post-cut task behind the
+     * new domain before reopening claim admission; returns whether one fresh
+     * ready publication is required after leaving the monitor.
+     */
+    boolean flushDomainRebaseDeferredAdmissions() {
+        if (!Thread.holdsLock(admissionLock)) {
+            throw new IllegalStateException(
+                    "domain rebase admission flush without admissionLock");
+        }
+        boolean moved = false;
+        Runnable task;
+        // Keep the accepted obligation owned by this lane until its destination
+        // publication succeeds.  poll-before-submit loses the only ExternalTask
+        // permit if CLQ allocation fails.
+        while ((task = domainRebaseDeferredTasks.peekFirst()) != null) {
+            queue.submit(task);
+            domainRebaseDeferredTasks.removeFirst();
+            moved = true;
+        }
+        boolean ready = moved || domainRebaseDeferredReady
+                || !queue.isEmpty() || !helpQueue.isEmpty();
+        domainRebaseDeferredReady = false;
+        return ready;
     }
 
     void release(Thread worker) {
         currentWorker.compareAndSet(worker, null);
     }
 
-    public Thread currentWorker() { return currentWorker.get(); }
+    public Thread currentWorker() {
+        Object holder = currentWorker.get();
+        return holder instanceof Thread thread ? thread : null;
+    }
+
+    /** Admission/retirement view: unlike currentWorker(), includes internal seals. */
+    boolean hasClaimOrDoneSeal() {
+        return currentWorker.get() != null;
+    }
+
+    /**
+     * Called with {@link #admissionLock} held. The epoch read is the fast
+     * admission refusal; the authoritative post-CAS validation lives in
+     * ColorGate. The domain clock may advance after that validation while this
+     * exact old-epoch seal remains held.
+     */
+    boolean tryBeginDoneSeal(long epoch) {
+        EpochDomain observedDomain = domain;
+        return observedDomain != null && observedDomain.epoch == epoch
+                && currentWorker.compareAndSet(null, DONE_SEAL);
+    }
+
+    /**
+     * Publish the validated epoch while DONE_SEAL is still held. An autonomous
+     * pacer may legally advance {@code expectedDomain.epoch} after ColorGate's
+     * post-CAS validation; that does not revoke this seal's authority to stamp
+     * its old epoch. The monotonic CAS also prevents that old tail from
+     * regressing a direct next-epoch done writer.
+     */
+    void commitDoneSeal(EpochDomain expectedDomain, long epoch) {
+        if (expectedDomain == null || currentWorker.get() != DONE_SEAL
+                || domain != expectedDomain) {
+            throw new IllegalStateException(
+                    "region done seal lost its exact claim/domain ownership");
+        }
+        long observedDone = doneEpoch;
+        while (observedDone < epoch
+                && !DONE_EPOCH.compareAndSet(this, observedDone, epoch)) {
+            observedDone = doneEpoch;
+        }
+        // Final publication token: readers which observe this volatile stamp
+        // also observe the preceding doneEpoch CAS and all completed work.
+        sealedDoneEpoch = Math.max(sealedDoneEpoch, epoch);
+    }
+
+    /** Cleanup after either a committed or refused done publication. */
+    void releaseDoneSeal() {
+        if (!currentWorker.compareAndSet(DONE_SEAL, null)) {
+            throw new IllegalStateException("region done seal was not held");
+        }
+    }
+
+    boolean hasSealedDone(long epoch) {
+        return sealedDoneEpoch >= epoch && doneEpoch >= epoch;
+    }
+    /**
+     * Publish the complete epoch baseline before this region becomes visible
+     * in the regionizer map. A region admitted before the current entity
+     * dispatch membership cut must remain eligible for that decision
+     * ({@code E - 1}); one admitted after the cut belongs to the next epoch
+     * ({@code E}). Initializing the enqueue and contribution CAS gates with
+     * the same baseline also prevents a post-cut region, which was not counted
+     * in {@code entityPending}, from contributing to that already-armed barrier.
+     */
+    void initializeDomainAtCreation(EpochDomain target) {
+        if (target == null) {
+            throw new NullPointerException("target");
+        }
+        if (domain != null) {
+            throw new IllegalStateException("region creation domain already initialized");
+        }
+        long epoch = target.epoch;
+        long baselineEpoch =
+                target.entityDispatchCutEpoch == epoch ? epoch : epoch - 1L;
+        sealedDoneEpoch = baselineEpoch;
+        doneEpoch = baselineEpoch;
+        groupedEpoch = baselineEpoch;
+        entityEpoch = baselineEpoch;
+        entityEnqueuedEpoch.set(baselineEpoch);
+        entityBarrierEpoch.set(baselineEpoch);
+        // Volatile publication is last: map readers see one coherent baseline.
+        domain = target;
+    }
+
+    /**
+     * Close claim admission for an exact domain/epoch rebase.  The caller also
+     * owns {@link #admissionLock}; failure means its advertised topology safe
+     * point was false and must be fatal rather than repaired over a live owner.
+     */
+    boolean tryBeginDomainRebaseSeal() {
+        return currentWorker.compareAndSet(null, DOMAIN_REBASE_SEAL);
+    }
+
+    /** Fixed-field safe-point commit while DOMAIN_REBASE_SEAL remains held. */
+    void commitDomainRebaseSeal(EpochDomain target, long baselineEpoch) {
+        if (target == null || currentWorker.get() != DOMAIN_REBASE_SEAL) {
+            throw new IllegalStateException(
+                    "region domain rebase lost its exclusive seal");
+        }
+        sealedDoneEpoch = baselineEpoch;
+        doneEpoch = baselineEpoch;
+        groupedEpoch = baselineEpoch;
+        entityEpoch = baselineEpoch;
+        entityEnqueuedEpoch.set(baselineEpoch);
+        entityBarrierEpoch.set(baselineEpoch);
+        // Volatile publication is LAST: any delayed old-domain claimant which
+        // acquires after seal release sees the complete new baseline.
+        domain = target;
+    }
+
+    void releaseDomainRebaseSeal() {
+        if (!currentWorker.compareAndSet(DOMAIN_REBASE_SEAL, null)) {
+            throw new IllegalStateException("region domain rebase seal was not held");
+        }
+    }
 
     /** Note a chunk that touched this region. Cheap, no-op if already observed. */
     public synchronized void noteChunk(long packedChunkPos) {

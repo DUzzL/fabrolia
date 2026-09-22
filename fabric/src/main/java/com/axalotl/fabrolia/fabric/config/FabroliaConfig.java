@@ -160,24 +160,18 @@ public class FabroliaConfig {
                 banner("Region threading", "Folia-style region-owned entity ticks. Core architecture toggle."),
                 "Master switch for region threading. ON = chunks partition into a fixed grid; entity ticks group by owning region and run on a dedicated worker pool (cross-region parallel). Runtime: /fabrolia regions on|off.",
                 () -> enableRegionThreading, v -> enableRegionThreading = v));
+        e.add(bool("enablePlayerTickActor", null,
+                "Player-tick ownership mode. With async islands, supported real players and audited Carpet fakes tick on their autonomous island; otherwise the awaited exact-ordinal compatibility actor is used. The saved preference is restored after scheduler startup. Runtime: /fabrolia regions playerticks on|off.",
+                () -> enablePlayerTickActor, v -> enablePlayerTickActor = v));
         e.add(intEntry("regionWorkerCount", null,
                 "Region worker thread count. -1 = auto (cores-2). No effect unless enableRegionThreading=true.",
                 () -> regionWorkerCount, v -> regionWorkerCount = v));
-        e.add(intEntry("regionDenseFanoutThreshold", null,
-                "Dense-region intra-region fan-out: a region exceeding this entity count splits its tick into sub-batches run by other workers under the region's own lock (sync to the region, not main). synchronizedEntities types keep exact mutual order on the coordinator. 0 or negative = always region-serial.",
-                () -> regionDenseFanoutThreshold, v -> regionDenseFanoutThreshold = v));
-        e.add(bool("enableRegionPlayerTicks", null,
-                "Tick ServerPlayer on region workers when region threading is active. Inert unless enableRegionThreading=true. Default ON: parallel player ticks are the single largest serial cost regions remove (~14% of server thread at 50 players).",
-                () -> enableRegionPlayerTicks, v -> enableRegionPlayerTicks = v));
         e.add(bool("enableSpawnBarrierOverlap", null,
                 "Let the parallel-spawn future ride to the entity-phase barrier instead of awaiting it at the end of tickChunks. Main parks once for max(spawn, entities). Random/fluid ticks are still awaited before chunk phase ends (vanilla order preserved).",
                 () -> enableSpawnBarrierOverlap, v -> enableSpawnBarrierOverlap = v));
         e.add(bool("regionEventScheduler", null,
-                "R5 event-driven entity dispatch: regions are the tasks; markDone pushes each dependent the moment its last color-DAG blocker completes, barrier is a counter. Identical semantics to the legacy group dispatch (same DAG/FIFO/ordered lane), removes continuation polling + unpark storms. false = legacy group path (rollback). Runtime: /fabrolia regions eventsched.",
+                "R5 event-driven entity dispatch: regions are the tasks; markDone pushes each dependent when its last color-DAG blocker completes. Both dispatchers preserve the same DAG, chunk-task FIFO and serial entity order. false = legacy group dispatch. Runtime: /fabrolia regions eventsched.",
                 () -> regionEventScheduler, v -> regionEventScheduler = v));
-        e.add(bool("fabroliaTntSegmentedLane", null,
-                "R6 TNT lane: ordered-lane runs of vanilla TNT that will not detonate this tick (deterministic fuse) tick in parallel; items/orbs/exploding/modded TNT stay exact-order serial barriers — every explosion still observes earlier moves and mutates later entities before they move (bit-identical to serial). false = fully serial ordered lane. Runtime: /fabrolia regions tntlane.",
-                () -> fabroliaTntSegmentedLane, v -> fabroliaTntSegmentedLane = v));
 
         // ── Island parallelism ─────────────────────────────────────────
         e.add(bool("fabroliaRegionColorGate",
@@ -207,7 +201,7 @@ public class FabroliaConfig {
                 () -> new ArrayList<>(crossDimLinkedPairs),
                 v -> crossDimLinkedPairs = new ArrayList<>(v)));
         e.add(bool("asyncFailClosed", null,
-                "Fail-closed safety: a detected cross-island ownership write (crossDOMAIN, requires the access detector for stacks) auto-disables asyncIslands, collapsing to byte-identical sync mode instead of risking world state. Leave ON in production.",
+                "Legacy debug-drill containment toggle. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.",
                 () -> asyncFailClosed, v -> asyncFailClosed = v));
         e.add(bool("asyncIslands", null,
                 "A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. DEFAULT OFF while the phase rewire completes. Runtime: /fabrolia regions async.",
@@ -228,19 +222,13 @@ public class FabroliaConfig {
         LOGGER.info("Initializing Fabrolia Config...");
         CONFIG = configSupplier.get();
 
-        try {
-            if (!CONFIG.getFile().exists()) {
-                LOGGER.warn("Configuration not found. Creating defaults...");
-                saveConfig();
-                com.axalotl.fabrolia.common.config.FabroliaConfig.onConfigLoaded();
-            } else {
-                CONFIG.load();
-                loadConfigValues();
-                saveConfig();
-                com.axalotl.fabrolia.common.config.FabroliaConfig.onConfigLoaded();
-            }
-        } catch (Throwable t) {
-            LOGGER.error("Error loading configuration. Resetting to defaults.", t);
+        if (!CONFIG.getFile().exists()) {
+            LOGGER.warn("Configuration not found. Creating defaults...");
+            saveConfig();
+            com.axalotl.fabrolia.common.config.FabroliaConfig.onConfigLoaded();
+        } else {
+            CONFIG.load();
+            loadConfigValues();
             saveConfig();
             com.axalotl.fabrolia.common.config.FabroliaConfig.onConfigLoaded();
         }
@@ -272,11 +260,7 @@ public class FabroliaConfig {
         for (Entry entry : ENTRIES) {
             Object value = CONFIG.get(entry.key());
             if (value != null) {
-                try {
-                    entry.write(value);
-                } catch (Throwable t) {
-                    LOGGER.warn("Failed to load config key '{}': {}. Falling back to default.", entry.key(), t.getMessage());
-                }
+                entry.write(value);
             }
         }
         // Re-apply all comments (file may have been edited by the user — we

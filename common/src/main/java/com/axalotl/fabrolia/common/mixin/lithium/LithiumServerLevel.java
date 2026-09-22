@@ -1,9 +1,14 @@
 package com.axalotl.fabrolia.common.mixin.lithium;
 
+import com.axalotl.fabrolia.common.parallelised.utils.FabroliaPushableEntityQuery;
 import com.axalotl.fabrolia.common.parallelised.utils.FabroliaSafeNavigation;
+import com.axalotl.fabrolia.common.parallelised.utils.FabroliaNavigationBatch;
+import com.axalotl.fabrolia.common.parallelised.utils.NavigationBatchState;
 import com.llamalad7.mixinextras.sugar.Local;
 import net.caffeinemc.mods.lithium.common.entity.NavigatingEntity;
+import net.caffeinemc.mods.lithium.common.entity.pushable.PushableEntityClassGroup;
 import net.caffeinemc.mods.lithium.common.world.ServerWorldExtended;
+import net.caffeinemc.mods.lithium.common.world.WorldHelper;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.RegistryAccess;
@@ -13,8 +18,11 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.WorldGenLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySelector;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.dimension.DimensionType;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.level.storage.WritableLevelData;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -22,42 +30,36 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Mixin(value = ServerLevel.class, priority = 1500)
 public abstract class LithiumServerLevel extends Level implements WorldGenLevel, ServerWorldExtended,
+        FabroliaPushableEntityQuery, FabroliaNavigationBatch,
         com.axalotl.fabrolia.common.parallelised.utils.FabroliaNavAudit {
 
     @Unique
-    private final Set<PathNavigation> fabrolia$activeNavigationsOver = Collections.newSetFromMap(new ConcurrentHashMap<>());
-
-    /** Snapshot of {@link #fabrolia$activeNavigationsOver} for the sendBlockUpdated hot loop:
-     *  that loop runs PER CHANGED BLOCK (a /fill = thousands of calls), and iterating a CHM
-     *  key set costs ∝ table CAPACITY, not size — 7.4% of the server thread was pure
-     *  ConcurrentHashMap$Traverser.advance during the TNT-polygon fills (BY3YNeuoXI,
-     *  2026-07-02). Membership changes (mob starts/stops navigating) are orders of magnitude
-     *  rarer than block updates, so rebuild-on-write + plain array scan on read. A racing
-     *  add publishes its own rebuild right after (same weakly-consistent window the direct
-     *  CHM iteration had). */
-    @Unique
-    private volatile PathNavigation[] fabrolia$activeNavSnapshot = new PathNavigation[0];
-
-    @Unique
-    private void fabrolia$rebuildNavSnapshot() {
-        fabrolia$activeNavSnapshot = fabrolia$activeNavigationsOver.toArray(new PathNavigation[0]);
-    }
-
-    @Unique
-    private volatile boolean fabrolia$suppressNavigationUpdates = false;
-
-    @Unique
-    private final Set<PathNavigation> fabrolia$pendingRecompute = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final NavigationBatchState<PathNavigation> fabrolia$navigationState = new NavigationBatchState<>();
 
     protected LithiumServerLevel(WritableLevelData levelData, ResourceKey<Level> dimension, RegistryAccess registryAccess, Holder<DimensionType> dimensionTypeRegistration, boolean isClientSide, boolean isDebug, long biomeZoomSeed, int maxChainedNeighborUpdates) {
         super(levelData, dimension, registryAccess, dimensionTypeRegistration, isClientSide, isDebug, biomeZoomSeed, maxChainedNeighborUpdates);
+    }
+
+    /**
+     * Lithium's adaptive push cache uses a mutable ReferenceMaskedList. The
+     * Fabrolia class-group duck instead exposes a concurrent MAYBE_PUSHABLE set:
+     * retain Lithium's exact per-instance predicate while avoiding one full
+     * ClassInstanceMultiMap snapshot allocation for every living-entity push.
+     */
+    @Override
+    public List<Entity> fabrolia$getPushableEntities(Entity pusher, AABB boundingBox) {
+        var cache = WorldHelper.getEntityCacheOrNull(this);
+        if (cache == null) {
+            return getEntities(pusher, boundingBox, EntitySelector.pushableBy(pusher));
+        }
+        return WorldHelper.getEntitiesOfEntityGroupWithoutDragonPieces(
+                cache, pusher, PushableEntityClassGroup.MAYBE_PUSHABLE,
+                boundingBox, EntitySelector.pushableBy(pusher));
     }
 
     @Inject(
@@ -68,23 +70,15 @@ public abstract class LithiumServerLevel extends Level implements WorldGenLevel,
             )
     )
     private void updateActiveListeners(BlockPos pos, BlockState oldState, BlockState newState, int arg3, CallbackInfo ci, @Local(ordinal = 0) List<PathNavigation> list) {
-        PathNavigation[] navs = fabrolia$activeNavSnapshot;
-        if (fabrolia$suppressNavigationUpdates) {
-            for (int i = 0, n = navs.length; i < n; i++) {
-                PathNavigation nav = navs[i];
-                net.minecraft.world.entity.Mob m = ((FabroliaSafeNavigation) nav).fabrolia$navMob();
-                if (m == null || m.isRemoved()) continue; // leaked entry (task #24): dead mobs get no notify
-                if (((FabroliaSafeNavigation) nav).fabrolia$shouldRecomputePathSafe(pos)) {
-                    fabrolia$pendingRecompute.add(nav);
-                }
-            }
-            return;
-        }
-        for (int i = 0, n = navs.length; i < n; i++) {
-            PathNavigation nav = navs[i];
-            net.minecraft.world.entity.Mob m = ((FabroliaSafeNavigation) nav).fabrolia$navMob();
-            if (m == null || m.isRemoved()) continue; // leaked entry (task #24)
-            if (((FabroliaSafeNavigation) nav).fabrolia$shouldRecomputePathSafe(pos)) {
+        List<PathNavigation> navs = fabrolia$navigationState.activeSnapshot();
+        for (int i = 0, n = navs.size(); i < n; i++) {
+            PathNavigation nav = navs.get(i);
+            Mob mob = ((FabroliaSafeNavigation) nav).fabrolia$navMob();
+            if (mob == null || mob.isRemoved()) continue;
+            if (((FabroliaSafeNavigation) nav).fabrolia$shouldRecomputePathSafe(pos)
+                    && !fabrolia$navigationState.defer(nav)) {
+                // A batch may have closed while the safe predicate ran. Its
+                // notification still reaches the normal owner-routed list.
                 list.add(nav);
             }
         }
@@ -93,23 +87,19 @@ public abstract class LithiumServerLevel extends Level implements WorldGenLevel,
     @Override
     public void lithium$setNavigationActive(Mob mobEntity) {
         PathNavigation nav = ((NavigatingEntity) mobEntity).lithium$getRegisteredNavigation();
-        if (nav != null && fabrolia$activeNavigationsOver.add(nav)) {
-            fabrolia$rebuildNavSnapshot();
-        }
+        if (nav != null) fabrolia$navigationState.activate(nav);
     }
 
     @Override
     public void lithium$setNavigationInactive(Mob mobEntity) {
         PathNavigation nav = ((NavigatingEntity) mobEntity).lithium$getRegisteredNavigation();
-        if (nav != null && fabrolia$activeNavigationsOver.remove(nav)) {
-            fabrolia$rebuildNavSnapshot();
-        }
+        if (nav != null) fabrolia$navigationState.deactivate(nav);
     }
 
     @Override
     public String fabrolia$navStats() {
-        PathNavigation[] navs = fabrolia$activeNavSnapshot;
-        int total = navs.length;
+        List<PathNavigation> navs = fabrolia$navigationState.activeSnapshot();
+        int total = navs.size();
         int removed = 0;
         int sectionLeak = 0;
         int liveActive = 0;
@@ -126,8 +116,8 @@ public abstract class LithiumServerLevel extends Level implements WorldGenLevel,
         }
         return "navs total=" + total + " live=" + liveActive
                 + " removedLeak=" + removed + " sectionLeak=" + sectionLeak
-                + " setSize=" + fabrolia$activeNavigationsOver.size()
-                + " pendingRecompute=" + fabrolia$pendingRecompute.size();
+                + " setSize=" + fabrolia$navigationState.activeSnapshot().size()
+                + " pendingRecompute=" + fabrolia$navigationState.pendingCount();
     }
 
     /** Leak sweep (task #24 watchdog wedges): the lithium-compat active set
@@ -141,38 +131,37 @@ public abstract class LithiumServerLevel extends Level implements WorldGenLevel,
      *  membership (vanilla's set only ever holds currently-ticking mobs). */
     @Override
     public void fabrolia$sweepNavLeaks() {
-        boolean changed = false;
+        List<PathNavigation> leaks = new ArrayList<>();
         net.minecraft.server.level.ServerLevel self = (net.minecraft.server.level.ServerLevel) (Object) this;
-        for (PathNavigation nav : fabrolia$activeNavigationsOver) {
-            net.minecraft.world.entity.Mob m = ((FabroliaSafeNavigation) nav).fabrolia$navMob();
-            if (com.axalotl.fabrolia.common.parallelised.utils.NavAuditSupport.gone(self, m)) {
-                if (fabrolia$activeNavigationsOver.remove(nav)) {
-                    changed = true;
-                    fabrolia$pendingRecompute.remove(nav);
-                }
+        for (PathNavigation nav : fabrolia$navigationState.activeSnapshot()) {
+            Mob mob = ((FabroliaSafeNavigation) nav).fabrolia$navMob();
+            if (com.axalotl.fabrolia.common.parallelised.utils.NavAuditSupport.gone(self, mob)) {
+                leaks.add(nav);
             }
         }
-        if (changed) {
-            fabrolia$rebuildNavSnapshot();
-        }
+        // Entity-section lookup above must never run under the publication lock.
+        if (!leaks.isEmpty()) fabrolia$navigationState.deactivateAll(List.copyOf(leaks));
     }
 
-    @Unique
-    public void fabrolia$setSuppress(boolean suppress) {
-        this.fabrolia$suppressNavigationUpdates = suppress;
+    @Override
+    public void fabrolia$beginNavigationBatch() {
+        fabrolia$navigationState.beginBatch();
+    }
+
+    @Override
+    public void fabrolia$endNavigationBatch() {
+        fabrolia$navigationState.endBatch();
     }
 
     /** Task #32: the explosion drain runs on the exploding thread (owner of
      *  the blast region), but the collected navs may belong to OTHER islands
      *  whose workers hold their nav monitors — route each recompute through
      *  the owner instead of entering the monitor cross-thread. */
-    @Unique
-    public void fabrolia$recomputeAllNavigations() {
-        if (fabrolia$pendingRecompute.isEmpty()) return;
-        for (PathNavigation nav : fabrolia$pendingRecompute) {
+    @Override
+    public void fabrolia$drainNavigationBatch() {
+        for (PathNavigation nav : fabrolia$navigationState.detachReady()) {
             com.axalotl.fabrolia.common.regions.NavRecompute.recomputeOwnerSafe(
                     (net.minecraft.server.level.ServerLevel) (Object) this, nav);
         }
-        fabrolia$pendingRecompute.clear();
     }
 }

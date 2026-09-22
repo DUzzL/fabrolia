@@ -14,8 +14,8 @@ import java.util.concurrent.locks.StampedLock;
 
 /**
  * A delegating {@link Long2ObjectMap} that serialises every operation on a
- * per-instance {@link StampedLock}, with optimistic reads on the hot lookup
- * path. Built for {@code SectionStorage.storage} (task #38), where the map that
+ * per-instance {@link StampedLock}. Built for {@code SectionStorage.storage}
+ * (task #38), where the map that
  * is actually installed at runtime is decided by ANOTHER mod:
  *
  * <p>Lithium's {@code ai.poi.SectionStorageMixin} {@code @Inject}s at
@@ -33,12 +33,9 @@ import java.util.concurrent.locks.StampedLock;
  *
  * <h2>Locking rules</h2>
  * <ul>
- *   <li>{@code get}/{@code containsKey}: {@link StampedLock#tryOptimisticRead()}
- *       → probe → {@link StampedLock#validate(long)}, falling back to the
- *       pessimistic read lock. The {@code catch (Throwable)} inside the
- *       optimistic block is load-bearing: a probe torn by a concurrent rehash
- *       can throw, and that must demote to "failed optimistic read", not
- *       propagate.</li>
+ *   <li>{@code get}/{@code containsKey}: one pessimistic read-lock pass. The
+ *       delegate body is never entered optimistically and then replayed after
+ *       a caught failure.</li>
  *   <li>writes: exclusive write lock; delegate listeners run inside it.</li>
  *   <li>collection views: <b>locked snapshots</b>, never live views — there are
  *       zero iteration sites over {@code storage} in vanilla 26.2 / Lithium /
@@ -78,24 +75,10 @@ public final class LockedLong2ObjectMap<V> implements Long2ObjectMap<V> {
         return this.delegate;
     }
 
-    // --- Hot reads: optimistic --------------------------------------------
+    // --- Reads -------------------------------------------------------------
 
     @Override
     public V get(long key) {
-        long stamp = this.lock.tryOptimisticRead();
-        if (stamp != 0L) {
-            V result;
-            try {
-                result = this.delegate.get(key);
-            } catch (Throwable t) {
-                // Writer caught us mid-probe; fall through to the read lock.
-                stamp = 0L;
-                result = null;
-            }
-            if (stamp != 0L && this.lock.validate(stamp)) {
-                return result;
-            }
-        }
         long readStamp = this.lock.readLock();
         try {
             return this.delegate.get(key);
@@ -107,19 +90,6 @@ public final class LockedLong2ObjectMap<V> implements Long2ObjectMap<V> {
     @SuppressWarnings("deprecation") // boxed Map<Long,V> override; fastutil prefers get(long)
     @Override
     public V get(Object key) {
-        long stamp = this.lock.tryOptimisticRead();
-        if (stamp != 0L) {
-            V result;
-            try {
-                result = this.delegate.get(key);
-            } catch (Throwable t) {
-                stamp = 0L;
-                result = null;
-            }
-            if (stamp != 0L && this.lock.validate(stamp)) {
-                return result;
-            }
-        }
         long readStamp = this.lock.readLock();
         try {
             return this.delegate.get(key);
@@ -130,19 +100,6 @@ public final class LockedLong2ObjectMap<V> implements Long2ObjectMap<V> {
 
     @Override
     public boolean containsKey(long key) {
-        long stamp = this.lock.tryOptimisticRead();
-        if (stamp != 0L) {
-            boolean result;
-            try {
-                result = this.delegate.containsKey(key);
-            } catch (Throwable t) {
-                stamp = 0L;
-                result = false;
-            }
-            if (stamp != 0L && this.lock.validate(stamp)) {
-                return result;
-            }
-        }
         long readStamp = this.lock.readLock();
         try {
             return this.delegate.containsKey(key);

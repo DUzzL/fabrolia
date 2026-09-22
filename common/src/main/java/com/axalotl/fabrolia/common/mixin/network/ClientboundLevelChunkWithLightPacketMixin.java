@@ -5,6 +5,7 @@ import com.axalotl.fabrolia.common.regions.IslandRegistry;
 import com.axalotl.fabrolia.common.regions.OwnerBusyException;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
+import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
 import com.axalotl.fabrolia.common.utils.FabroliaPalettedContainerLock;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -54,48 +55,100 @@ public abstract class ClientboundLevelChunkWithLightPacketMixin {
         IslandRegistry.PIsland owner = null;
         boolean mainClaimed = false;
         boolean poolClaimed = false;
-        if (chunk.getLevel() instanceof ServerLevel sl) {
-            RegionizedServer rs = RegionScheduler.forLevel(sl);
-            if (rs != null && rs.asyncActive && !rs.mainHoldsAllClaims()) {
-                owner = rs.islandOwnerOfChunk(chunk.getPos().pack());
-                if (owner != null && RegionScheduler.isOwningCoordinator(owner)) {
-                    // The OWNING unit itself is building (ChunkPacketSnapshots
-                    // end-of-unit drain): already exclusive, no claim needed.
-                    owner = null;
-                }
-                if (owner != null) {
-                    MinecraftServer srv = sl.getServer();
-                    if (srv != null && srv.isSameThread()) {
-                        mainClaimed = IslandCommands.mainClaimScoped(owner);
-                    } else {
-                        long spinUntil = System.nanoTime() + 200_000L;
-                        while (!(poolClaimed = owner.unitClaim.compareAndSet(false, true))) {
-                            if (System.nanoTime() >= spinUntil) {
-                                throw OwnerBusyException.INSTANCE;
+        ClientboundLevelChunkPacketData[] result = null;
+        Throwable failure = null;
+        try {
+            if (chunk.getLevel() instanceof ServerLevel sl) {
+                RegionizedServer rs = RegionScheduler.forLevel(sl);
+                if (rs != null && rs.asyncActive
+                        && !rs.currentThreadHoldsAllClaims()) {
+                    owner = rs.islandOwnerOfChunk(chunk.getPos().pack());
+                    if (owner != null && RegionScheduler.isOwningCoordinator(owner)) {
+                        // The OWNING unit itself is building (ChunkPacketSnapshots
+                        // end-of-unit drain): already exclusive, no claim needed.
+                        owner = null;
+                    }
+                    if (owner != null) {
+                        MinecraftServer srv = sl.getServer();
+                        if (srv != null
+                                && RegionalPlayerEntityTicksV2
+                                        .isPhysicalServerThread(srv)) {
+                            mainClaimed = IslandCommands.mainClaimScoped(owner);
+                        } else {
+                            long spinUntil = System.nanoTime() + 200_000L;
+                            while (!(poolClaimed = owner.tryClaimAutonomousWork())) {
+                                if (System.nanoTime() >= spinUntil) {
+                                    throw OwnerBusyException.INSTANCE;
+                                }
+                                Thread.onSpinWait();
                             }
-                            Thread.onSpinWait();
+                            // poolClaimed is already true before this first
+                            // fallible post-CAS operation, so the outer failure
+                            // envelope owns and releases the exact accepted claim.
+                            owner.noteClaim("pktPool");
                         }
-                        owner.noteClaim("pktPool"); // pure field writes — cannot throw
                     }
                 }
             }
-        }
-        try {
+            // Allocation belongs to the accepted-claim envelope too: an OOME
+            // here must select W and release, never strand pktPool ownership.
+            ClientboundLevelChunkPacketData[] admittedResult =
+                    new ClientboundLevelChunkPacketData[1];
+            result = admittedResult;
             LevelChunkSection[] sections = chunk.getSections();
             int locked = fabrolia$readLockSections(sections);
             try {
-                return original.call(chunk);
-            } finally {
-                fabrolia$readUnlockSections(sections, locked);
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        () -> admittedResult[0] = original.call(chunk));
+            } catch (Throwable bodyFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);
             }
-        } finally {
-            if (mainClaimed) {
+            try {
+                fabrolia$readUnlockSections(sections, locked);
+            } catch (Throwable cleanupFailure) {
+                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+            }
+        } catch (OwnerBusyException refusal) {
+            // A bounded pool refusal owns no claim and is the documented
+            // caller-visible signal to retry construction on Main.
+            if (!mainClaimed && !poolClaimed) {
+                throw refusal;
+            }
+            failure = RegionScheduler.publishFatalAndSelectWinner(refusal);
+        } catch (Throwable setupFailure) {
+            failure = fabrolia$publishMergedFailure(failure, setupFailure);
+        }
+        if (mainClaimed) {
+            try {
                 IslandCommands.mainRelease(owner);
-            } else if (poolClaimed) {
+            } catch (Throwable cleanupFailure) {
+                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+            }
+        } else if (poolClaimed) {
+            try {
                 owner.clearClaim();
+            } catch (Throwable cleanupFailure) {
+                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+            }
+            try {
                 owner.unitClaim.set(false);
+            } catch (Throwable cleanupFailure) {
+                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
             }
         }
+        if (failure == null) {
+            try {
+                // A peer may select W during mandatory unlock/claim release;
+                // that generation has no legal packet-snapshot success return.
+                RegionScheduler.commitSuccessIfHealthy(() -> {});
+            } catch (Throwable peerFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
+            }
+        }
+        if (failure != null) {
+            ClientboundLevelChunkWithLightPacketMixin.<RuntimeException>fabrolia$rethrow(failure);
+        }
+        return result[0];
     }
 
     @Unique
@@ -107,15 +160,56 @@ public abstract class ClientboundLevelChunkWithLightPacketMixin {
             }
             return locked;
         } catch (Throwable t) {
-            fabrolia$readUnlockSections(sections, locked);
-            throw t;
+            t = RegionScheduler.publishFatalAndSelectWinner(t);
+            try {
+                fabrolia$readUnlockSections(sections, locked);
+            } catch (Throwable cleanupFailure) {
+                t = fabrolia$publishMergedFailure(t, cleanupFailure);
+            }
+            ClientboundLevelChunkWithLightPacketMixin.<RuntimeException>fabrolia$rethrow(t);
+            return locked;
         }
     }
 
     @Unique
     private static void fabrolia$readUnlockSections(LevelChunkSection[] sections, int locked) {
+        Throwable failure = null;
         for (int i = locked - 1; i >= 0; i--) {
-            ((FabroliaPalettedContainerLock) (Object) sections[i].getStates()).fabrolia$readUnlock();
+            try {
+                ((FabroliaPalettedContainerLock) (Object) sections[i].getStates())
+                        .fabrolia$readUnlock();
+            } catch (Throwable cleanupFailure) {
+                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+            }
         }
+        if (failure != null) {
+            ClientboundLevelChunkWithLightPacketMixin.<RuntimeException>fabrolia$rethrow(failure);
+        }
+    }
+
+    @Unique
+    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
+        if (primary == null) return cleanup;
+        if (cleanup != null && cleanup != primary) {
+            try {
+                primary.addSuppressed(cleanup);
+            } catch (Throwable ignored) {
+                // Cleanup diagnostics cannot replace the packet-construction primary.
+            }
+        }
+        return primary;
+    }
+
+    @Unique
+    private static Throwable fabrolia$publishMergedFailure(
+            Throwable primary, Throwable cleanup) {
+        return RegionScheduler.publishFatalAndSelectWinner(
+                fabrolia$mergeFailure(primary, cleanup));
+    }
+
+    @Unique
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 }

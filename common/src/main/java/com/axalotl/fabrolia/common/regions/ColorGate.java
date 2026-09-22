@@ -15,8 +15,11 @@ import com.axalotl.fabrolia.common.config.FabroliaConfig;
  * after the volatile done-write (a racy stale read on the checking side is
  * always followed by the blocker's own re-arm of the checker).
  *
- * <p>Completion = the region's entity phase ran this epoch AND its queues are
- * empty; regions with no work this tick are swept done at entity dispatch.
+ * <p>The accepted dispatch/entity decision is also the queue phase cutoff.
+ * A grouped participant may publish completion once its entity phase has
+ * committed; queue/help work admitted after that point remains queued for the
+ * next epoch. Regions outside the accepted dispatch plan are swept done at the
+ * plan cutoff and retain any later admission for that same next dispatch.
  */
 public final class ColorGate {
 
@@ -37,6 +40,24 @@ public final class ColorGate {
         if (rs == null) {
             return false;
         }
+        EpochDomain d = r.domain;
+        if (d == null) {
+            return false;
+        }
+        long epoch = d.epoch;
+        // Global-domain regions need this explicit self-completion check;
+        // island regions also get it from inUnitWindow. It is the post-CAS
+        // stale-precheck guard paired with Region's DONE_SEAL handshake.
+        if (r.doneEpoch >= epoch || r.hasSealedDone(epoch)) {
+            return false;
+        }
+        // Queue drain precedes the entity body.  Once that body has committed,
+        // this region's current-E phase is closed even if a ready duplicate or
+        // a late queue admission is visible before the DONE_SEAL tail.  Such
+        // work belongs to E+1 and must not reclaim the region after entities.
+        if (r.entityEpoch >= epoch) {
+            return false;
+        }
         // A2 ownership fix (2026-07-13): an island-owned region is claimable
         // ONLY inside its unit's entity-phase window — checked BEFORE the
         // color-0 shortcut, which would otherwise bypass it. See inUnitWindow.
@@ -46,8 +67,6 @@ public final class ColorGate {
         if (!FabroliaConfig.useRegionColorGate() || r.color == 0) {
             return true;
         }
-        EpochDomain d = r.domain;
-        long epoch = d.epoch;
         ThreadedRegionizer reg = rs.regionizer();
         int rx = (int) r.gridKey;
         int rz = (int) (r.gridKey >>> 32);
@@ -95,49 +114,52 @@ public final class ColorGate {
     }
 
     /**
-     * Completion attempt: entity phase ran this epoch and the queues are
-     * drained → publish done + re-arm dependents. Carries EVERY refusal
-     * guard, so any thread may call it blindly on any region (the heal
-     * sweep does exactly that). Safe to call repeatedly.
+     * Completion attempt: a grouped entity phase ran and its queues drained,
+     * or an ungrouped region crossed the accepted dispatch cutoff → publish
+     * done + re-arm dependents. Carries every refusal guard, so any thread may
+     * call it blindly on any region (the heal sweep does exactly that). Safe
+     * to call repeatedly.
      */
-    public static void tryMarkDone(Region r, RegionizedServer rs) {
-        tryMarkDone(r, rs, true);
+    public static boolean tryMarkDone(Region r, RegionizedServer rs) {
+        return tryMarkDone(r, rs, true);
     }
 
     /** {@code wakeOnPush=false} = the dispatch-sweep variant: hundreds of no-work regions
      *  complete back-to-back on main and each push would unpark a worker individually
      *  (680ms of Unsafe.unpark on the server thread, xMDQKeDhXO profile 2026-07-02);
      *  the sweep caller issues ONE flag-scan wake for everything pushed instead. */
-    public static void tryMarkDone(Region r, RegionizedServer rs, boolean wakeOnPush) {
+    public static boolean tryMarkDone(Region r, RegionizedServer rs, boolean wakeOnPush) {
+        if (RegionScheduler.isActive()) {
+            RegionScheduler.throwWorkerFailureIfAny();
+        }
         if (rs == null) {
-            return;
+            return false;
         }
         EpochDomain d = r.domain;
+        if (d == null) return false;
         long epoch = d.epoch;
-        if (r.doneEpoch >= epoch) {
-            return;
+        boolean published = publishDoneIfQuiescent(r, d, epoch, true,
+                rs.isQueueOnlyEntityEpoch(d, epoch));
+        if (published) {
+            rearmDependents(r, rs, wakeOnPush);
         }
-        // Pre-dispatch, "complete" is undecidable: a region whose spawn task
-        // drained early may still be grouped for an entity phase moments later.
-        // Publishing done here let dependents claim BEFORE that entity phase —
-        // the certified crossUNSAFE=1 (2026-06-12) was exactly this window.
-        // Until dispatch has stamped groupedEpochs, nobody completes.
-        if (d.dispatchedEpoch != epoch) {
-            return;
-        }
-        // Claimed = a drain is writing world state right now; the holder's
-        // release epilogue re-attempts. (Also closes the sweep-vs-drain race:
-        // a queue can read empty mid-task.)
-        if (r.currentWorker() != null) {
-            return;
-        }
-        if (!r.queue().isEmpty() || !r.helpQueue.isEmpty()) {
-            return;
-        }
-        if (r.groupedEpoch == epoch && r.entityEpoch < epoch) {
-            return;   // entity phase still owed this epoch
-        }
-        markDone(r, rs, wakeOnPush);
+        return r.hasSealedDone(epoch);
+    }
+
+    /**
+     * Dispatch-transaction sweep. Every active participant has already been
+     * offered behind the domain publication receipt, so this method publishes
+     * only the trivial done stamp and never enqueues a dependent. That keeps
+     * the post-offer commit section to non-allocating field/queue reads.
+     */
+    static boolean tryMarkDoneWithoutPush(Region r, RegionizedServer rs) {
+        if (rs == null) return false;
+        EpochDomain d = r.domain;
+        if (d == null) return false;
+        long epoch = d.epoch;
+        publishDoneIfQuiescent(r, d, epoch, true,
+                rs.isQueueOnlyEntityEpoch(d, epoch));
+        return r.hasSealedDone(epoch);
     }
 
     /** Wedge forensics: which lower-color neighbors hold {@code r} back. */
@@ -182,14 +204,125 @@ public final class ColorGate {
     }
 
     public static void markDone(Region r, RegionizedServer rs, boolean wakeOnPush) {
+        if (RegionScheduler.isActive()) {
+            RegionScheduler.throwWorkerFailureIfAny();
+        }
         if (rs == null) {
             return;
         }
-        long epoch = r.domain.epoch;
-        if (r.doneEpoch >= epoch) {
-            return;
+        EpochDomain d = r.domain;
+        if (d == null) return;
+        long epoch = d.epoch;
+        if (!publishDoneIfQuiescent(r, d, epoch, false,
+                rs.isQueueOnlyEntityEpoch(d, epoch))) return;
+        rearmDependents(r, rs, wakeOnPush);
+    }
+
+    /**
+     * Linearize queue/help admission, region claims and done publication.
+     * DONE_SEAL closes the CAS word before the second validation; queue offers
+     * use the same admission monitor. A winner therefore owns either this
+     * epoch's last admitted queue/claim body or the sealed done stamp, never
+     * both sides of an unchecked null/empty window.
+     */
+    static boolean publishDoneIfQuiescent(
+            Region r, EpochDomain expectedDomain, long epoch,
+            boolean requireDispatchedDecision,
+            boolean exactQueueOnlyEntityEpoch) {
+        boolean published = false;
+        Throwable failure = null;
+        synchronized (r.admissionLock) {
+            if (r.hasSealedDone(epoch)
+                    || !doneInputsValid(r, expectedDomain, epoch,
+                            requireDispatchedDecision,
+                            exactQueueOnlyEntityEpoch)
+                    || !r.tryBeginDoneSeal(epoch)) {
+                return false;
+            }
+            try {
+                // Required second read after CAS(null -> DONE_SEAL). The first
+                // validation is only a fast refusal; this one owns authority.
+                if (doneInputsValid(r, expectedDomain, epoch,
+                        requireDispatchedDecision,
+                        exactQueueOnlyEntityEpoch)) {
+                    if (RegionScheduler.isActive()) {
+                        RegionScheduler.commitSuccessIfHealthy(
+                                () -> r.commitDoneSeal(expectedDomain, epoch));
+                    } else {
+                        r.commitDoneSeal(expectedDomain, epoch);
+                    }
+                    published = true;
+                }
+            } catch (Throwable completionFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        completionFailure);
+            } finally {
+                try {
+                    r.releaseDoneSeal();
+                } catch (Throwable releaseFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            mergeFailure(failure, releaseFailure));
+                }
+            }
         }
-        r.doneEpoch = epoch;
+        if (failure != null) ColorGate.<RuntimeException>rethrow(failure);
+        return published;
+    }
+
+    private static boolean doneInputsValid(
+            Region r, EpochDomain expectedDomain, long epoch,
+            boolean requireDispatchedDecision,
+            boolean exactQueueOnlyEntityEpoch) {
+        if (r.domain != expectedDomain || expectedDomain.epoch != epoch) {
+            return false;
+        }
+        if (exactQueueOnlyEntityEpoch && expectedDomain.owner != null) {
+            return false;
+        }
+        // Pre-dispatch, completion is undecidable: grouping may still make
+        // this region owe the current entity phase.
+        boolean dispatched = expectedDomain.dispatchedEpoch == epoch;
+        if (requireDispatchedDecision && !dispatched) {
+            return false;
+        }
+        boolean grouped = r.groupedEpoch == epoch;
+        // A grouped participant's committed entity body is an exact current-E
+        // cutoff in every domain. Any queue/help admission retained on the far
+        // side belongs to E+1 and must not be consumed by a ready duplicate.
+        if (requireDispatchedDecision && dispatched
+                && grouped && r.entityEpoch >= epoch) {
+            return true;
+        }
+        // An island unit also owns an exact accepted-plan cutoff for a region
+        // it did not group. Main never waits for those futureless gate-1 arms:
+        // retained work is re-seeded by the next unit. The global lane is
+        // deliberately excluded because its queue may carry a future physical
+        // Main is awaiting in this tick; it must drain before current-E done.
+        if (requireDispatchedDecision && dispatched
+                && !grouped && expectedDomain.owner != null) {
+            return true;
+        }
+        // A grouped participant before its entity commit retains the strict
+        // transaction: all queue/help work must drain and the entity body must
+        // finish before DONE_SEAL.  The unconditional retirement path also
+        // never seals over an accepted queue admission.
+        if (!r.queue().isEmpty() || !r.helpQueue.isEmpty()) {
+            return false;
+        }
+        if (!requireDispatchedDecision) {
+            return true;
+        }
+        // Global ungrouped work is strict-empty above and owes no entity body.
+        // Exact-player queue-only groups likewise owe no entity body, but the
+        // explicit token may authorize completion only after the same strict
+        // physical-empty check. Ordinary grouped participants still require
+        // their successful entity publication.
+        return !grouped || r.entityEpoch >= epoch
+                || exactQueueOnlyEntityEpoch;
+    }
+
+    private static void rearmDependents(
+            Region r, RegionizedServer rs, boolean wakeOnPush) {
         // Re-arm below is domain-agnostic on purpose: every check on the
         // neighbor (owesEntityPhase, eligible, queue emptiness) evaluates in
         // the NEIGHBOR's own domain, so a global gap region completing may
@@ -203,6 +336,9 @@ public final class ColorGate {
         int rz = (int) (r.gridKey >>> 32);
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
+                if (RegionScheduler.isActive()) {
+                    RegionScheduler.throwWorkerFailureIfAny();
+                }
                 if (dx == 0 && dz == 0) {
                     continue;
                 }
@@ -214,10 +350,11 @@ public final class ColorGate {
                 if (n == null || n.state() != RegionState.ACTIVE) {
                     continue;
                 }
+                EpochDomain neighborDomain = n.domain;
                 if (!n.queue().isEmpty() || !n.helpQueue.isEmpty()) {
                     RegionScheduler.enqueueReady(n);
                     if (wakeOnPush) RegionScheduler.wakeWorkers(1);
-                } else if (FabroliaConfig.regionEventScheduler
+                } else if (neighborDomain.isEventEntityEpoch(neighborDomain.epoch)
                         && rs.owesEntityPhase(n) && eligible(n, rs)) {
                     // R5 event push: this completion may have been n's LAST lower-color
                     // blocker — deliver readiness NOW instead of letting a group
@@ -225,11 +362,32 @@ public final class ColorGate {
                     // volatile-write/read total order guarantees at least one of them
                     // sees the other's doneEpoch and passes eligible(); the CAS gate
                     // in tryEnqueueEntity dedupes if both do.
-                    if (rs.tryEnqueueEntity(n) && wakeOnPush) {
-                        RegionScheduler.wakeWorkers(1);
-                    }
+                    // Duplicate ready entries are benign; avoiding a separate
+                    // entityEnqueuedEpoch CAS keeps the successor publication
+                    // wholly behind enqueueReady's global receipt cut.
+                    RegionScheduler.enqueueReady(n);
+                    if (wakeOnPush) RegionScheduler.wakeWorkers(1);
                 }
             }
         }
+    }
+
+    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
+        if (primary == null) return secondary;
+        if (secondary != null && secondary != primary) {
+            try {
+                if (primary.getSuppressed().length < 8) {
+                    primary.addSuppressed(secondary);
+                }
+            } catch (Throwable ignored) {
+                // Diagnostic suppression must never replace the selected W.
+            }
+        }
+        return primary;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 }

@@ -1,16 +1,15 @@
 package com.axalotl.fabrolia.common.regions;
 
-import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import net.minecraft.world.level.ChunkPos;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Task #35 — detector + gated one-shot heal for the c2me FLAG_BROKEN latch
+ * Task #35 — detector for the c2me FLAG_BROKEN latch
  * (root cause of the 2026-07-28 06:56 production wedge, verified against
  * decompiled c2me 0.4.1-beta.1.0/0.4.2-alpha sources; see
  * docs/C2ME-FLAG_BROKEN-STRAND.md for the full analysis and the upstream
@@ -23,25 +22,19 @@ import java.util.concurrent.ConcurrentHashMap;
  * broken holders forever after. Upstream has no recovery: {@code clearFlag}
  * has zero call sites and {@code FLAG_HAVE_RETRIED} is dead code — the retry
  * it was evidently reserved for was never built. Every later vanilla
- * {@code getChunk(FULL)} attaches to the never-completing future and hangs
- * (bounded by Fabrolia's chunk bridge since task #34, fatal before it).
+ * {@code getChunk(FULL)} attaches to the never-completing future and hangs.
+ * Fabrolia may diagnose that state, but never starts a replacement upgrade.
  *
- * <p>This class is that missing retry, from the outside: when the bridge
- * times out on a chunk, probe the holder — if it is provably in the latch
- * state (FLAG_BROKEN set, status below target, holder open), log the
- * definitive diagnosis and, if enabled ({@code /fabrolia regions chunkheal}),
- * clear the flag and mark the holder dirty through flowsched's PUBLIC API so
- * the scheduler re-attempts the upgrade. Per-chunk attempt budget: a chunk
- * whose upgrade genuinely cannot succeed re-latches and stays latched after
- * {@link #MAX_HEALS_PER_POS} tries (the pre-heal behavior, minus the
- * mystery). Everything is reflective and fail-closed — without c2me (or on a
- * c2me that renamed things) the probe reports and does nothing.
+ * <p>The old implementation cleared the latch and marked the holder dirty,
+ * which retried a chunk-upgrade transaction after its original body had
+ * already thrown and may have partially mutated state. The probe is now
+ * forensic only until it recognizes the broken latch; that recognized state
+ * is a fatal invariant and escapes unchanged. Without c2me (or on a build
+ * that renamed the optional surface), the probe declines before entry.
  */
 public final class C2meStrandHeal {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("Fabrolia-C2meHeal");
-
-    static final int MAX_HEALS_PER_POS = 3;
 
     private C2meStrandHeal() {}
 
@@ -49,11 +42,7 @@ public final class C2meStrandHeal {
         /** Holder is not c2me's, or reflection bootstrap failed — no verdict. */
         NOT_APPLICABLE,
         /** c2me holder inspected; FLAG_BROKEN not set — the stall is NOT the latch. */
-        NOT_BROKEN,
-        /** Latch confirmed; heal disabled or budget exhausted — logged only. */
-        BROKEN_LATCHED,
-        /** Latch confirmed and a re-attempt was kicked off. */
-        BROKEN_HEALED
+        NOT_BROKEN
     }
 
     // ---- reflective surface (bootstrapped once, fail-closed) ----
@@ -61,32 +50,19 @@ public final class C2meStrandHeal {
     private static volatile boolean bootstrapOk;
     private static Field newHolderField;          // NewChunkHolderVanillaInterface.newHolder
     private static Method getFlags;               // ItemHolder.getFlags()
-    private static Method clearFlag;              // ItemHolder.clearFlag(int)
-    private static Method markDirty;              // ItemHolder.markDirty(StatusAdvancingScheduler)
     private static Method isOpen;                 // ItemHolder.isOpen()
     private static Method getStatus;              // ItemHolder.getStatus()
     private static Method getTargetStatus;        // ItemHolder.getTargetStatus()
-    private static Method getTheChunkSystem;      // ChunkMap.c2me$getTheChunkSystem()
     private static int flagBroken = 2;            // ItemHolder.FLAG_BROKEN (read reflectively)
 
     private static final String VANILLA_IFACE =
             "com.ishland.c2me.rewrites.chunksystem.common.NewChunkHolderVanillaInterface";
 
-    /** Per-chunk heal attempts (session-lifetime; strands are rare). */
-    private static final ConcurrentHashMap<Long, Integer> ATTEMPTS = new ConcurrentHashMap<>();
-
-    /** Budget gate, extracted for the unit test. */
-    static boolean tryConsumeAttempt(long pos) {
-        return ATTEMPTS.merge(pos, 1, Integer::sum) <= MAX_HEALS_PER_POS;
-    }
-
-    static void resetForTest() {
-        ATTEMPTS.clear();
-    }
-
     /**
      * Called from the chunk-bridge timeout paths with the CURRENT visible
-     * holder (may be null) and the level's ChunkMap. Never throws.
+     * holder (may be null) and the level's ChunkMap. Optional bootstrap
+     * incompatibility declines the probe before entry; a failure after a
+     * recognized c2me holder is entered propagates unchanged.
      */
     public static Probe inspectAndMaybeHeal(Object chunkHolder, Object chunkMap, long pos) {
         try {
@@ -112,30 +88,19 @@ public final class C2meStrandHeal {
                         ChunkPos.getX(pos), ChunkPos.getZ(pos), flags, status, target);
                 return Probe.NOT_BROKEN;
             }
-            // The latch, confirmed live. This chunk has been silently dead
-            // since the original upgrade exception (grep the log for
-            // 'Error upgrading chunk' at this pos).
-            if (!FabroliaConfig.chunkBridgeHealBroken || !tryConsumeAttempt(pos)) {
-                LOGGER.error("[fabrolia] c2me FLAG_BROKEN latch CONFIRMED at [{}, {}] "
-                                + "(status={} target={}) — chunk abandoned by the chunk system; "
-                                + "heal {} (/fabrolia regions chunkheal)",
-                        ChunkPos.getX(pos), ChunkPos.getZ(pos), status, target,
-                        FabroliaConfig.chunkBridgeHealBroken ? "budget exhausted" : "disabled");
-                return Probe.BROKEN_LATCHED;
-            }
-            Object scheduler = getTheChunkSystem.invoke(chunkMap);
-            clearFlag.invoke(itemHolder, flagBroken);
-            markDirty.invoke(itemHolder, scheduler);
-            LOGGER.error("[fabrolia] c2me FLAG_BROKEN latch CONFIRMED at [{}, {}] "
-                            + "(status={} target={}) — cleared the flag and re-marked dirty "
-                            + "(attempt {}/{}): the upgrade the chunk system abandoned is retried",
-                    ChunkPos.getX(pos), ChunkPos.getZ(pos), status, target,
-                    ATTEMPTS.get(pos), MAX_HEALS_PER_POS);
-            return Probe.BROKEN_HEALED;
-        } catch (Throwable t) {
-            LOGGER.warn("[fabrolia] c2me strand probe failed (disabling): {}", t.toString());
-            bootstrapOk = false;
-            bootstrapTried = true;
+            IllegalStateException failure = new IllegalStateException(
+                    "c2me FLAG_BROKEN after failed chunk upgrade at ["
+                            + ChunkPos.getX(pos) + ", " + ChunkPos.getZ(pos)
+                            + "] status=" + status + " target=" + target
+                            + " (no clearFlag/markDirty retry performed)");
+            publishFatalAndRethrow(failure);
+            return Probe.NOT_BROKEN;
+        } catch (InvocationTargetException targetFailure) {
+            Throwable cause = targetFailure.getCause();
+            publishFatalAndRethrow(cause == null ? targetFailure : cause);
+            return Probe.NOT_APPLICABLE;
+        } catch (ReflectiveOperationException reflectionFailure) {
+            publishFatalAndRethrow(reflectionFailure);
             return Probe.NOT_APPLICABLE;
         }
     }
@@ -150,25 +115,27 @@ public final class C2meStrandHeal {
             newHolderField.setAccessible(true);
             Class<?> itemHolder = Class.forName("com.ishland.flowsched.scheduler.ItemHolder",
                     false, vanillaIfaceClass.getClassLoader());
-            Class<?> scheduler = Class.forName("com.ishland.flowsched.scheduler.StatusAdvancingScheduler",
-                    false, vanillaIfaceClass.getClassLoader());
             getFlags = itemHolder.getMethod("getFlags");
-            clearFlag = itemHolder.getMethod("clearFlag", int.class);
-            markDirty = itemHolder.getMethod("markDirty", scheduler);
             isOpen = itemHolder.getMethod("isOpen");
             getStatus = itemHolder.getMethod("getStatus");
             getTargetStatus = itemHolder.getMethod("getTargetStatus");
             flagBroken = itemHolder.getField("FLAG_BROKEN").getInt(null);
-            // the duck interface c2me mixes into ChunkMap
-            Class<?> access = Class.forName(
-                    "com.ishland.c2me.rewrites.chunksystem.common.ducks.IChunkSystemAccess",
-                    false, vanillaIfaceClass.getClassLoader());
-            getTheChunkSystem = access.getMethod("c2me$getTheChunkSystem");
             bootstrapOk = true;
-        } catch (Throwable t) {
-            LOGGER.warn("[fabrolia] c2me strand probe unavailable on this c2me build: {}", t.toString());
+        } catch (ReflectiveOperationException | SecurityException | LinkageError unavailable) {
+            LOGGER.warn("[fabrolia] c2me strand probe unavailable on this c2me build: {}",
+                    unavailable.toString());
             bootstrapOk = false;
         }
         return bootstrapOk;
+    }
+
+    private static void publishFatalAndRethrow(Throwable failure) {
+        C2meStrandHeal.<RuntimeException>rethrow(
+                RegionScheduler.publishFatalAndSelectWinner(failure));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 }

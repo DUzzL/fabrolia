@@ -25,6 +25,18 @@ public class FabroliaConfig {
     public static boolean enableFabroliaChunkSend = true;
     public static boolean enableFabroliaAdvancements = true;
     public static boolean enableRegionThreading = true;
+    /**
+     * Persisted operator preference for the exact-ordinal player-tick actor.
+     *
+     * <p>This is deliberately separate from the runtime safety gate in
+     * {@code RegionalPlayerEntityTicksV2}: the preference survives scheduler stops and
+     * server restarts, while the runtime gate may still fail closed when region
+     * threading or another prerequisite is unavailable. With async islands enabled
+     * the same preference selects the autonomous per-island player owner; otherwise it
+     * selects the awaited exact-ordinal compatibility actor. Missing keys from older
+     * configs default to {@code false}.
+     */
+    public static volatile boolean enablePlayerTickActor = false;
     /** R4 phase 0: count/log block writes landing outside the writing worker's
      *  claimed region — the certification data for the collector unlock.
      *  Observation only; off = one volatile read per setBlock. */
@@ -92,15 +104,6 @@ public class FabroliaConfig {
     // spawncap); Fabrolia only exposes the seam. No provider → Java LocalMobCapCalculator (correct
     // via the Long2ObjectConcurrentHashMap computeIfAbsent overload fix). Global cap stays Java.
 
-    // Route ServerPlayer ticks through region workers when region threading is active.
-    // Gated at use-site on enableRegionThreading && RegionScheduler.isActive(), so this
-    // is inert unless regions are on. Default true: parallel player ticks are the single
-    // largest serial cost regions remove (~14% of server thread at 50 players).
-    public static boolean enableRegionPlayerTicks = true;
-    /** EXPERIMENTAL (task #30): real players' doTick simulation runs on their
-     *  island worker (fake-player shape) with packet routing + epoch handoffs.
-     *  Runtime toggle: /fabrolia regions playerticks on|off. Default OFF. */
-    public static volatile boolean regionalPlayerTicksExperimental = false;
     /** Task #35: when the chunk bridge times out on a c2me holder that is
      *  provably in the FLAG_BROKEN latch (chunk abandoned by the chunk system
      *  after one upgrade exception — upstream has no retry), clear the flag
@@ -113,34 +116,15 @@ public class FabroliaConfig {
     // spawned mid-entity-phase takes its first tick next tick — same guarantee vanilla
     // gives entities added during entityTickList iteration.
     public static boolean enableSpawnBarrierOverlap = true;
-    // Dense-region intra-region fan-out: a region whose entity count exceeds this
-    // threshold is split into sub-batches executed by OTHER region workers via the
-    // region's help-queue, under the region's own lock (currentRegion set by the help
-    // protocol) with a region-local countdown fan-in — sync goes to the region, not main.
-    // Region-serial would degenerate to one ~25ms chain for 2k villagers in one grid cell
-    // (measured 2026-06-10); the old flat pool handled 10k. Types listed in
-    // synchronizedEntities (TNT, items…) keep exact mutual order in a serial lane on the
-    // coordinator. 0 or negative disables fan-out (always region-serial).
-    // Tunable live: /fabrolia regions densefanout <n>. Lowered 256→128 so medium-density regions
-    // also spread their entity work across idle workers (the fan-out deadlock is fixed).
-    public static int regionDenseFanoutThreshold = 128;
     public static int regionWorkerCount = -1;
     // R5 event-driven entity scheduler: regions are the tasks; ColorGate.markDone pushes
     // each dependent region the moment its last lower-color blocker completes, and the
     // barrier is a counter — no group containers, no continuation polling (the legacy
     // group path burned ~a core in 20µs park slices at low load and added a poll-slice
     // of latency per DAG level; 2026-07-01 profile). Identical semantics: same color DAG,
-    // same per-region [spawn][random][entities] FIFO, same ordered lane. false = legacy
+    // same per-region [spawn][random][entities] FIFO and serial entity order. false = legacy
     // group dispatch (rollback lever). Tunable live: /fabrolia regions eventsched.
     public static boolean regionEventScheduler = true;
-    // R6 TNT lane: ordered lane with explosion-segmented parallelism — consecutive runs of
-    // vanilla PrimedTnt that will NOT detonate this tick (deterministic fuse) are mutually
-    // non-interacting (read level/blocks, write only themselves) and tick in parallel;
-    // items/orbs/exploding TNT/modded TNT stay exact-order serial barriers, so every
-    // explosion still sees earlier moves done and mutates later entities before they move —
-    // bit-identical to the serial lane. 18k TNT in one region = 15s serial wall without it.
-    // Tunable live: /fabrolia regions tntlane.
-    public static boolean fabroliaTntSegmentedLane = true;
     // A2 async islands: independent per-island deadline ticking. DEFAULT OFF and
     // the /fabrolia regions async toggle REFUSES to enable until the island tick
     // unit's phase rewire (IslandTickUnit increments 1-4, see
@@ -158,21 +142,24 @@ public class FabroliaConfig {
     public static volatile java.util.function.Consumer<Boolean> asyncIslandsPersister = null;
 
     public static void persistAsyncIslands(boolean v) {
+        boolean previous = asyncIslands;
         asyncIslands = v;
         java.util.function.Consumer<Boolean> pers = asyncIslandsPersister;
-        if (pers != null) {
-            try {
-                pers.accept(v);
-            } catch (Throwable t) {
-                org.slf4j.LoggerFactory.getLogger("fabrolia")
-                        .error("failed to persist asyncIslands={} — runtime state applied, "
-                                + "boot default unchanged", v, t);
-            }
-        } else {
-            org.slf4j.LoggerFactory.getLogger("fabrolia")
-                    .warn("no config persister registered — asyncIslands={} applies to this "
-                            + "session only", v);
+        if (pers == null) {
+            asyncIslands = previous;
+            throw new IllegalStateException("no async-islands config persister is registered");
         }
+        try {
+            pers.accept(v);
+        } catch (Throwable failure) {
+            asyncIslands = previous;
+            FabroliaConfig.<RuntimeException>rethrow(failure);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
     /** Task #43 — cross-dimension deadline-anchor cadence coupling: linked
      *  Overworld↔Nether islands (populated-cell projections intersect, per
@@ -222,20 +209,40 @@ public class FabroliaConfig {
         return new ArrayList<>(List.of("minecraft:overworld=minecraft:the_nether"));
     }
 
-    // Fail-closed: a detected cross-ownership write auto-disables asyncIslands
-    // (collapses to byte-identical sync mode) instead of risking world state.
+    // Legacy/debug-drill containment toggle. A REAL detected cross-domain write
+    // always fail-stops the current generation; it is never downgraded to a live
+    // async->sync recovery. Kept for the explicit debugTrip drill/config ABI.
     public static volatile boolean asyncFailClosed = true;
-    // Set when fail-closed trips (marker file persists it across the
-    // designed watchdog restart): the mode latch refuses async until an
-    // operator clears config/fabrolia-failclosed.marker.
+    // Session-only forensic latch. A real violation sets it before fail-stop;
+    // debugTrip uses it to exercise the old mode-collapse drill.
     public static volatile boolean asyncFailClosedTripped = false;
 
     public static Set<String> synchronizedEntities = getDefaultSynchronizedEntities();
 
-    // Caches
-    private static final Map<Identifier, Boolean> syncCache = new ConcurrentHashMap<>();
-    private static final Set<String> exactEntities = new HashSet<>();
-    private static final Set<String> namespaceWildcards = new HashSet<>();
+    // A publication is a complete policy generation. In-flight readers may
+    // finish against the old policy, but cannot repopulate the new one's cache.
+    private static volatile SynchronizationPolicy synchronizationPolicy =
+            new SynchronizationPolicy(Set.of(), Set.of());
+
+    private static final class SynchronizationPolicy {
+        final Set<String> exactEntities;
+        final Set<String> namespaceWildcards;
+        final Map<Identifier, Boolean> cache = new ConcurrentHashMap<>();
+
+        SynchronizationPolicy(Set<String> exactEntities, Set<String> namespaceWildcards) {
+            this.exactEntities = Set.copyOf(exactEntities);
+            this.namespaceWildcards = Set.copyOf(namespaceWildcards);
+        }
+
+        boolean matches(Identifier id) {
+            Boolean cached = cache.get(id);
+            if (cached != null) return cached;
+            boolean result = exactEntities.contains(id.toString())
+                    || namespaceWildcards.contains(id.getNamespace());
+            cache.put(id, result);
+            return result;
+        }
+    }
 
     public static Set<String> getDefaultSynchronizedEntities() {
         return new HashSet<>(Set.of(
@@ -324,9 +331,8 @@ public class FabroliaConfig {
     }
 
     private static void rebuildCaches() {
-        syncCache.clear();
-        exactEntities.clear();
-        namespaceWildcards.clear();
+        Set<String> exactEntities = new HashSet<>();
+        Set<String> namespaceWildcards = new HashSet<>();
 
         for (String entry : synchronizedEntities) {
             if (isNamespaceWildcard(entry)) {
@@ -336,26 +342,11 @@ public class FabroliaConfig {
                 exactEntities.add(entry);
             }
         }
-        com.axalotl.fabrolia.common.ParallelProcessor.clearCaches();
+        synchronizationPolicy = new SynchronizationPolicy(exactEntities, namespaceWildcards);
     }
 
     public static boolean isEntitySynchronized(Identifier entityId) {
-        Boolean cached = syncCache.get(entityId);
-        if (cached != null) return cached;
-
-        String idString = entityId.toString();
-        if (exactEntities.contains(idString)) {
-            syncCache.put(entityId, true);
-            return true;
-        }
-
-        if (namespaceWildcards.contains(entityId.getNamespace())) {
-            syncCache.put(entityId, true);
-            return true;
-        }
-
-        syncCache.put(entityId, false);
-        return false;
+        return synchronizationPolicy.matches(entityId);
     }
 
     public static void onConfigLoaded() {
@@ -365,6 +356,6 @@ public class FabroliaConfig {
     }
 
     public static void clearCaches() {
-        syncCache.clear();
+        synchronizationPolicy.cache.clear();
     }
 }

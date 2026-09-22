@@ -72,107 +72,836 @@ public final class TemporalControl {
 
     /** Scheduler-stop hook: drop queued pacer fires from the closing session
      *  (the fire-time forLevel identity check is the belt; this is the
-     *  suspenders — audit #5). The pacer thread itself is a daemon that
-     *  blocks on the queue and is reused across sessions. */
+     *  suspenders — audit #5). The pacer service is reusable across sessions;
+     *  normal teardown interrupts and retires the exact old daemon identity. */
     public static void drainPacer() {
         Pacer p = PACER;
-        if (p != null) p.queue.clear();
+        if (p != null) p.shutdownNormally();
     }
 
     /**
-     * Single dedicated pacing thread for above-20 rate overrides (2026-07-14
-     * freeze fix): precise per-island deadline submission without occupying
-     * region workers with pacing parks and without a standing unit queue that
-     * out-races main-side claim fences. One pacer serves every accelerated
-     * island; entries re-check fence interest and override state at fire time.
+     * Single dedicated pacing thread for every ordinary async-island rate.
+     * Main's level tick is a bootstrap/watchdog only: after the first seed, a
+     * completed unit publishes the next ticket and every refused attempt
+     * re-arms itself. No region worker is occupied by a pacing park and no
+     * standing unit queue can out-race a main-side claim fence.
      */
     public static final Pacer PACER = new Pacer();
 
     public static final class Pacer implements Runnable {
+        private static final long CLAIM_RETRY_NANOS = 2_000_000L;
+        private static final long READINESS_RETRY_NANOS = 50_000_000L;
+        private static final long CONTROL_RETRY_NANOS = 25_000_000L;
+        private static final long ATTEMPT_POLL_NANOS = 100_000L;
         private final java.util.concurrent.DelayQueue<Entry> queue = new java.util.concurrent.DelayQueue<>();
+        private final java.util.concurrent.ConcurrentHashMap<IslandRegistry.PIsland, TicketState> states =
+                new java.util.concurrent.ConcurrentHashMap<>();
         private volatile Thread thread;
+        /** Exact thread identity authorized to consume one normal-stop interrupt. */
+        private Thread normalStopOwner;
 
-        private static final class Entry implements java.util.concurrent.Delayed {
+        static long retryDelayNanos(IslandTickUnit.AttemptOutcome outcome) {
+            return outcome == IslandTickUnit.AttemptOutcome.HOLD
+                    ? READINESS_RETRY_NANOS : CLAIM_RETRY_NANOS;
+        }
+
+        /**
+         * Pure exactly-one authority for one island. A replacement ticket
+         * invalidates the previous queue entry before it can submit; an entry
+         * that has begun an attempt remains authoritative until either the unit
+         * boundary replaces it or the poll receipt reports refusal.
+         * Package-private for the focused concurrency-free state tests.
+         */
+        static final class TicketState {
+            record Ticket(long id, long pacingGen, long deadlineNanos, long fireAtNanos) {}
+
+            private long nextId;
+            private Ticket current;
+            private boolean queued;
+            private boolean inFlight;
+
+            synchronized Ticket arm(long pacingGen, long deadlineNanos,
+                                    long fireAtNanos, boolean replaceInFlight) {
+                Ticket fresh = prepareArm(pacingGen, deadlineNanos, fireAtNanos,
+                        replaceInFlight);
+                if (fresh != null) acceptArm(fresh);
+                return fresh;
+            }
+
+            /** Caller must hold this monitor until either acceptArm or discard. */
+            private Ticket prepareArm(long pacingGen, long deadlineNanos,
+                                      long fireAtNanos, boolean replaceInFlight) {
+                Ticket old = current;
+                if (inFlight && !replaceInFlight
+                        && old != null && old.pacingGen == pacingGen) {
+                    return null;
+                }
+                if (queued && old != null
+                        && old.pacingGen == pacingGen
+                        && old.deadlineNanos == deadlineNanos) {
+                    // The queued ticket already owns this exact pacing frontier.
+                    // Main's watchdog must not duplicate or pre-empt the one
+                    // queued authority merely because its logical deadline is
+                    // already due.
+                    return null;
+                }
+                return new Ticket(++nextId, pacingGen, deadlineNanos, fireAtNanos);
+            }
+
+            /** Publication receipt commit; caller still holds this monitor. */
+            private void acceptArm(Ticket fresh) {
+                current = fresh;
+                queued = true;
+                inFlight = false;
+            }
+
+            /** Failed publication cleanup after W was selected. */
+            private void cancelAcceptedArm(Ticket ticket) {
+                if (current != ticket) return;
+                nextId++;
+                current = null;
+                queued = false;
+                inFlight = false;
+            }
+
+            synchronized boolean begin(Ticket ticket) {
+                if (!queued || current != ticket) return false;
+                queued = false;
+                inFlight = true;
+                return true;
+            }
+
+            synchronized boolean finish(long ticketId) {
+                if (!inFlight || current == null || current.id != ticketId) return false;
+                inFlight = false;
+                return true;
+            }
+
+            synchronized void cancel() {
+                nextId++;
+                current = null;
+                queued = false;
+                inFlight = false;
+            }
+        }
+
+        static final class Entry implements java.util.concurrent.Delayed {
+            private static final int OFFERING = 0;
+            private static final int ACCEPTED = 1;
+            private static final int CANCELLED = 2;
+
             final RegionizedServer rs;
             final IslandRegistry.PIsland island;
-            final long atNanos;
-            /** Pacing generation at schedule time: an entry from an older
-             *  generation is INERT at fire time (a rate change re-paces with
-             *  a fresh entry from the next complete()). Exactly one live
-             *  pacing authority per island per generation. */
-            final long gen;
+            final TicketState state;
+            final TicketState.Ticket ticket;
+            final long islandGen;
+            /** One-shot result written only inside this entry's admitted fire body. */
+            IslandTickUnit.AttemptReceipt firedAttempt;
+            private final java.util.concurrent.atomic.AtomicInteger publication =
+                    new java.util.concurrent.atomic.AtomicInteger(OFFERING);
 
-            Entry(RegionizedServer rs, IslandRegistry.PIsland island, long atNanos) {
+            Entry(RegionizedServer rs, IslandRegistry.PIsland island,
+                  TicketState state, TicketState.Ticket ticket) {
                 this.rs = rs;
                 this.island = island;
-                this.atNanos = atNanos;
-                this.gen = island.pacingGen;
+                this.state = state;
+                this.ticket = ticket;
+                this.islandGen = island.gen;
+            }
+
+            void acceptPublication() {
+                if (!publication.compareAndSet(OFFERING, ACCEPTED)) {
+                    throw new IllegalStateException("pacer ticket publication was already decided");
+                }
+            }
+
+            void cancelPublication() {
+                publication.compareAndSet(OFFERING, CANCELLED);
+            }
+
+            boolean awaitAcceptedPublication() {
+                int state;
+                while ((state = publication.get()) == OFFERING) {
+                    Thread.onSpinWait();
+                }
+                return state == ACCEPTED;
             }
 
             @Override
             public long getDelay(java.util.concurrent.TimeUnit unit) {
-                return unit.convert(atNanos - System.nanoTime(), java.util.concurrent.TimeUnit.NANOSECONDS);
+                return unit.convert(ticket.fireAtNanos - System.nanoTime(),
+                        java.util.concurrent.TimeUnit.NANOSECONDS);
             }
 
             @Override
             public int compareTo(java.util.concurrent.Delayed o) {
-                return Long.compare(atNanos, ((Entry) o).atNanos);
+                return Long.compare(ticket.fireAtNanos, ((Entry) o).ticket.fireAtNanos);
             }
         }
 
-        public void schedule(RegionizedServer rs, IslandRegistry.PIsland island, long atNanos) {
-            ensureStarted();
-            queue.add(new Entry(rs, island, atNanos));
+        /** Pacer-thread-local ownership of an admitted publication attempt.
+         *  Workers only flip the poll-only receipt; they never enqueue or invoke
+         *  a continuation at the terminal edge. */
+        private record ActiveAttempt(Entry entry,
+                                     IslandTickUnit.AttemptReceipt receipt) {}
+
+        /**
+         * A pacer successor whose DelayQueue node is visible but cannot begin.
+         * Unit completion accepts this receipt in the same scheduler cut as L
+         * and its other success publications; a competing W cancels it instead.
+         */
+        static final class PreparedArm {
+            private static final PreparedArm NONE =
+                    new PreparedArm(null, null, null, null);
+
+            private final TicketState state;
+            private final TicketState.Ticket ticket;
+            private final Entry entry;
+            private final TicketState.Ticket expectedInFlight;
+
+            private PreparedArm(TicketState state, TicketState.Ticket ticket, Entry entry,
+                                TicketState.Ticket expectedInFlight) {
+                this.state = state;
+                this.ticket = ticket;
+                this.entry = entry;
+                this.expectedInFlight = expectedInFlight;
+            }
+
+            void commit() {
+                if (entry == null) return;
+                synchronized (state) {
+                    TicketState.Ticket current = state.current;
+                    if (expectedInFlight != null
+                            && (current != expectedInFlight || !state.inFlight)) {
+                        // Unit completion/control already replaced the attempt
+                        // between prepare and the global success cut.
+                        entry.cancelPublication();
+                        return;
+                    }
+                    // A newer independently prepared/committed control ticket
+                    // supersedes this one.  Never resurrect an older deadline.
+                    if (current != null && current.id() > ticket.id()) {
+                        entry.cancelPublication();
+                        return;
+                    }
+                    state.acceptArm(ticket);
+                    entry.acceptPublication();
+                }
+            }
+
+            Throwable cancel(Throwable primary) {
+                if (entry == null) return primary;
+                entry.cancelPublication();
+                synchronized (state) {
+                    // Also rolls back the exact state write if a supposedly
+                    // fixed commit primitive ever failed after acceptArm.
+                    state.cancelAcceptedArm(ticket);
+                }
+                return primary;
+            }
         }
 
-        private synchronized void ensureStarted() {
-            if (thread == null) {
-                Thread t = new Thread(this, "Fabrolia-Rate-Pacer");
-                t.setDaemon(true);
-                t.setPriority(Thread.NORM_PRIORITY + 1);
-                thread = t;
-                t.start();
+        private PreparedArm prepareArm(RegionizedServer rs, IslandRegistry.PIsland island,
+                                       long deadlineNanos, long fireAtNanos,
+                                       boolean replaceInFlight) {
+            return prepareArm(rs, island, deadlineNanos, fireAtNanos,
+                    replaceInFlight, null);
+        }
+
+        private PreparedArm prepareArm(RegionizedServer rs, IslandRegistry.PIsland island,
+                                       long deadlineNanos, long fireAtNanos,
+                                       boolean replaceInFlight,
+                                       TicketState.Ticket expectedInFlight) {
+            if (!eligible(rs, island)) {
+                cancel(island);
+                return PreparedArm.NONE;
             }
+            if (!ensureStarted() || !eligible(rs, island)) {
+                cancel(island);
+                return PreparedArm.NONE;
+            }
+            TicketState state = states.computeIfAbsent(island, ignored -> new TicketState());
+            TicketState.Ticket ticket;
+            synchronized (state) {
+                if (expectedInFlight != null
+                        && (state.current != expectedInFlight || !state.inFlight)) {
+                    return PreparedArm.NONE;
+                }
+                ticket = state.prepareArm(island.pacingGen,
+                        deadlineNanos, fireAtNanos, replaceInFlight);
+                if (ticket == null) return PreparedArm.NONE;
+            }
+            Entry entry = new Entry(rs, island, state, ticket);
+            try {
+                // The consumer may observe the node immediately, but its
+                // OFFERING receipt blocks begin() until the caller commits.
+                queue.add(entry);
+                return new PreparedArm(state, ticket, entry, expectedInFlight);
+            } catch (Throwable publicationFailure) {
+                Throwable failure = RegionScheduler.publishFatalAndSelectWinner(rs,
+                        publicationFailure);
+                entry.cancelPublication();
+                TemporalControl.<RuntimeException>rethrow(failure);
+                return PreparedArm.NONE;
+            }
+        }
+
+        private void arm(RegionizedServer rs, IslandRegistry.PIsland island,
+                         long deadlineNanos, long fireAtNanos, boolean replaceInFlight) {
+            PreparedArm prepared = null;
+            try {
+                prepared = prepareArm(rs, island, deadlineNanos, fireAtNanos,
+                        replaceInFlight);
+                PreparedArm commit = prepared;
+                if (!RegionScheduler.commitUnitSuccessIfCurrent(rs, commit::commit)) {
+                    commit.cancel(null);
+                    cancel(island);
+                }
+            } catch (Throwable armFailure) {
+                Throwable failure = RegionScheduler.publishFatalAndSelectWinner(
+                        rs, armFailure);
+                if (prepared != null) failure = prepared.cancel(failure);
+                TemporalControl.<RuntimeException>rethrow(failure);
+            }
+        }
+
+        /** Main-side bootstrap/watchdog. Idempotent while a matching ticket or
+         *  attempt already owns the island's current deadline. */
+        void ensure(RegionizedServer rs, IslandRegistry.PIsland island) {
+            if (!eligible(rs, island)) {
+                cancel(island);
+                return;
+            }
+            if (isCoherent(rs, island)) {
+                cancel(island); // wall-coherent mode remains main-driven
+                return;
+            }
+            long now = System.nanoTime();
+            long deadline = island.nextDeadlineNanos;
+            long fireAt = deadline == 0 ? now : Math.max(now, deadline);
+            arm(rs, island, deadline, fireAt, false);
+        }
+
+        /** Unit-boundary publication. This deliberately replaces the attempt
+         *  ticket before the claim is released; its later receipt observation therefore
+         *  cannot create a second follower. */
+        void afterUnit(RegionizedServer rs, IslandRegistry.PIsland island, long deadlineNanos) {
+            PreparedArm prepared = prepareAfterUnit(rs, island, deadlineNanos);
+            try {
+                if (!RegionScheduler.commitUnitSuccessIfCurrent(rs, prepared::commit)) {
+                    prepared.cancel(null);
+                    cancel(island);
+                }
+            } catch (Throwable armFailure) {
+                Throwable failure = RegionScheduler.publishFatalAndSelectWinner(
+                        rs, armFailure);
+                failure = prepared.cancel(failure);
+                TemporalControl.<RuntimeException>rethrow(failure);
+            }
+        }
+
+        PreparedArm prepareAfterUnit(RegionizedServer rs, IslandRegistry.PIsland island,
+                                     long deadlineNanos) {
+            if (!eligible(rs, island)) {
+                cancel(island);
+                return PreparedArm.NONE;
+            }
+            if (isCoherent(rs, island)) {
+                cancel(island);
+                return PreparedArm.NONE;
+            }
+            var server = RegionScheduler.getServer();
+            if (server != null && server.tickRateManager().isSprinting()) {
+                return prepareArm(rs, island, deadlineNanos,
+                        System.nanoTime() + CONTROL_RETRY_NANOS, true);
+            }
+            long fireAt = deadlineNanos == 0
+                    ? System.nanoTime() : Math.max(System.nanoTime(), deadlineNanos);
+            return prepareArm(rs, island, deadlineNanos, fireAt, true);
+        }
+
+        /** Explicit rate/sprint transition. An older pacing generation becomes
+         *  inert immediately, even when its previous unit is still finishing. */
+        void reseed(RegionizedServer rs, IslandRegistry.PIsland island) {
+            if (!eligible(rs, island)) {
+                cancel(island);
+                return;
+            }
+            if (isCoherent(rs, island)) {
+                cancel(island);
+                return;
+            }
+            long now = System.nanoTime();
+            long deadline = island.nextDeadlineNanos;
+            arm(rs, island, deadline, deadline == 0 ? now : Math.max(now, deadline), true);
+        }
+
+        /** Topology commit: retire dead identities, then seed every fresh or
+         *  surviving ordinary island after the quiesce claims were released. */
+        void reconcile(RegionizedServer rs) {
+            if (rs == null || !rs.asyncActive) {
+                cancelLevel(rs);
+                return;
+            }
+            java.util.Set<IslandRegistry.PIsland> live =
+                    java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            live.addAll(rs.islandRegistry.islands());
+            states.forEach((island, state) -> {
+                if (island.level == rs.level && !live.contains(island)) {
+                    state.cancel();
+                    states.remove(island, state);
+                }
+            });
+            queue.removeIf(entry -> entry.rs == rs && !live.contains(entry.island));
+            for (IslandRegistry.PIsland island : live) ensure(rs, island);
+        }
+
+        private void cancelLevel(RegionizedServer rs) {
+            if (rs == null) return;
+            states.forEach((island, state) -> {
+                if (island.level == rs.level) {
+                    state.cancel();
+                    states.remove(island, state);
+                }
+            });
+            queue.removeIf(entry -> entry.rs == rs);
+        }
+
+        private void cancel(IslandRegistry.PIsland island) {
+            TicketState state = states.remove(island);
+            if (state != null) state.cancel();
+        }
+
+        private void cancelAll() {
+            states.forEach((island, state) -> state.cancel());
+            states.clear();
+            queue.clear();
+        }
+
+        private static boolean eligible(RegionizedServer rs, IslandRegistry.PIsland island) {
+            return rs != null && island != null && rs.asyncActive && !island.retired
+                    && RegionScheduler.acceptsUnitFor(rs)
+                    && !com.axalotl.fabrolia.common.config.FabroliaConfig.asyncFailClosedTripped
+                    && island.level != null
+                    && RegionScheduler.forLevel(island.level) == rs;
+        }
+
+        boolean ensureStarted() {
+            boolean interrupted = false;
+            try {
+                synchronized (this) {
+                    // A new runtime must not mistake the terminating daemon for
+                    // a live owner. Wait for shutdownNormally to join and retire
+                    // that exact identity before publishing the replacement.
+                    while (normalStopOwner != null) {
+                        // This daemon cannot wait for the join of itself. Retire
+                        // its arm, leaving the stop interrupt for the run loop.
+                        if (normalStopOwner == Thread.currentThread()) {
+                            RegionScheduler.throwWorkerFailureIfAny();
+                            return false;
+                        }
+                        try {
+                            wait();
+                        } catch (InterruptedException waitInterrupt) {
+                            interrupted = true;
+                        }
+                    }
+                    RegionScheduler.throwWorkerFailureIfAny();
+                    if (thread == null) {
+                        Thread t = new Thread(this, "Fabrolia-Rate-Pacer");
+                        t.setDaemon(true);
+                        t.setPriority(Thread.NORM_PRIORITY + 1);
+                        thread = t;
+                        try {
+                            t.start();
+                        } catch (Throwable startFailure) {
+                            if (thread == t) thread = null;
+                            notifyAll();
+                            TemporalControl.<RuntimeException>rethrow(startFailure);
+                        }
+                    }
+                    return true;
+                }
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        }
+
+        /** Normal scheduler teardown.  The identity marker is installed before
+         *  interrupt, so the loop can distinguish this wakeup from an external
+         *  interrupt which would otherwise silently abandon every pacing ticket. */
+        void shutdownNormally() {
+            Thread owner;
+            synchronized (this) {
+                owner = thread;
+                normalStopOwner = owner;
+            }
+            Throwable failure = null;
+            try {
+                cancelAll();
+            } catch (Throwable cleanupFailure) {
+                failure = cleanupFailure;
+            }
+            if (owner != null) {
+                try {
+                    owner.interrupt();
+                } catch (Throwable interruptFailure) {
+                    failure = mergeFailure(failure, interruptFailure);
+                }
+            }
+            boolean interrupted = false;
+            if (owner == Thread.currentThread()) {
+                failure = mergeFailure(failure, new IllegalStateException(
+                        "rate pacer cannot join itself during normal shutdown"));
+            } else if (owner != null) {
+                while (owner.isAlive()) {
+                    try {
+                        owner.join();
+                    } catch (InterruptedException waitInterrupt) {
+                        // Shutdown ownership does not move on interruption. Keep
+                        // waiting for the exact daemon and restore Main's flag.
+                        interrupted = true;
+                    } catch (Throwable waitFailure) {
+                        failure = mergeFailure(failure, waitFailure);
+                        java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
+                    }
+                }
+            }
+            try {
+                synchronized (this) {
+                    if (thread == owner && (owner == null || !owner.isAlive())) {
+                        thread = null;
+                    }
+                    if (normalStopOwner == owner) normalStopOwner = null;
+                    notifyAll();
+                }
+            } catch (Throwable cleanupFailure) {
+                failure = mergeFailure(failure, cleanupFailure);
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+            if (failure != null) TemporalControl.<RuntimeException>rethrow(failure);
+        }
+
+        synchronized Thread ownerThreadForTest() {
+            return thread;
         }
 
         @Override
         public void run() {
-            while (true) {
+            Throwable failure = null;
+            try {
+                java.util.ArrayList<ActiveAttempt> activeAttempts =
+                        new java.util.ArrayList<>();
+                pacerLoop:
+                while (true) {
+                    RegionScheduler.throwWorkerFailureIfAny();
+                    for (int i = 0; i < activeAttempts.size();) {
+                        ActiveAttempt active = activeAttempts.get(i);
+                        IslandTickUnit.AttemptReceipt completed = active.receipt();
+                        if (!completed.isDone()) {
+                            i++;
+                            continue;
+                        }
+                        activeAttempts.remove(i);
+                        try {
+                            Entry entry = active.entry();
+                            if (!RegionScheduler.runPacerBodyIfCurrent(entry.rs,
+                                    () -> finishAttempt(entry, completed))) {
+                                cancel(entry.island);
+                            }
+                        } catch (InterruptedException interrupted) {
+                            throw interrupted;
+                        } catch (Throwable entryFailure) {
+                            failure = terminalizeEntryFailure(
+                                    active.entry(), entryFailure);
+                            break pacerLoop;
+                        }
+                    }
+
+                    // Polling is deliberately bounded and inside the fail-stop
+                    // envelope. Receipt completion publishes no callback/queue
+                    // node; at most 100us later this sole owner observes it.
+                    long pollNanos = activeAttempts.isEmpty()
+                            ? CONTROL_RETRY_NANOS : ATTEMPT_POLL_NANOS;
+                    Entry e = queue.poll(pollNanos,
+                            java.util.concurrent.TimeUnit.NANOSECONDS);
+                    if (e == null) continue;
+                    try {
+                        RegionScheduler.throwWorkerFailureIfAny();
+                        if (!e.awaitAcceptedPublication()) continue;
+                        if (!e.state.begin(e.ticket)) continue; // superseded queue entry
+                        if (!RegionScheduler.runPacerBodyIfCurrent(
+                                e.rs, () -> e.firedAttempt = fire(e))) {
+                            cancel(e.island);
+                            continue;
+                        }
+                        if (e.firedAttempt != null) {
+                            activeAttempts.add(new ActiveAttempt(e, e.firedAttempt));
+                        }
+                    } catch (InterruptedException interrupted) {
+                        throw interrupted;
+                    } catch (Throwable entryFailure) {
+                        failure = terminalizeEntryFailure(e, entryFailure);
+                        break pacerLoop;
+                    }
+                }
+            } catch (InterruptedException interrupted) {
+                boolean expectedStop;
+                synchronized (this) {
+                    expectedStop = normalStopOwner == Thread.currentThread();
+                }
+                Throwable selected = RegionScheduler.workerFailureOrNull();
+                if (selected != null) {
+                    // stopPacerAfterFatal uses interrupt only as a wakeup. W was
+                    // already selected and remains the exact primary.
+                    failure = selected;
+                } else if (!expectedStop) {
+                    // The interruption itself is the first escaped Throwable;
+                    // preserve that exact object as W.
+                    failure = RegionScheduler.publishFatalAndSelectWinner(interrupted);
+                }
+            } catch (Throwable escaped) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(escaped);
+            } finally {
+                if (failure != null) {
+                    try {
+                        cancelAll();
+                    } catch (Throwable cleanupFailure) {
+                        failure = RegionScheduler.publishFatalAndSelectWinner(
+                                mergeFailure(failure, cleanupFailure));
+                    }
+                }
                 try {
-                    Entry e = queue.take();
-                    // Fire-time validation: still overridden, not fence-wanted,
-                    // scheduler alive. A yielded island is simply left to the
-                    // deadline drive (its deadline stays due).
-                    if (!RegionScheduler.isActive()
-                            || com.axalotl.fabrolia.common.config.FabroliaConfig.asyncFailClosedTripped) {
-                        continue; // fail-closed containment / shutdown: no new async units
+                    synchronized (this) {
+                        if (thread == Thread.currentThread()) thread = null;
+                        // shutdownNormally owns this marker until its exact join
+                        // returns; an arriving ensureStarted cannot cross early.
+                        notifyAll();
                     }
-                    if (e.island.retired || e.gen != e.island.pacingGen) {
-                        continue; // stale identity or superseded pacing generation — inert
+                } catch (Throwable cleanupFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            mergeFailure(failure, cleanupFailure));
+                }
+            }
+            if (failure != null) TemporalControl.<RuntimeException>rethrow(failure);
+        }
+
+        private Throwable terminalizeEntryFailure(Entry entry, Throwable thrown) {
+            // begin() may have transferred the only ordinary-cadence authority
+            // into this iteration. Select W before retiring that ticket; never
+            // seed a fresh tick after the failure.
+            Throwable failure = RegionScheduler.publishFatalAndSelectWinner(
+                    entry.rs, thrown);
+            try {
+                entry.state.finish(entry.ticket.id);
+            } catch (Throwable cleanupFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(entry.rs,
+                        mergeFailure(failure, cleanupFailure));
+            }
+            return failure;
+        }
+
+        private IslandTickUnit.AttemptReceipt fire(Entry e) {
+            if (!eligible(e.rs, e.island) || e.island.gen != e.islandGen) {
+                cancel(e.island);
+                return null;
+            }
+            if (e.ticket.pacingGen != e.island.pacingGen) {
+                finishAndReseed(e, 0L);
+                return null;
+            }
+            if (isCoherent(e.rs, e.island)) {
+                finishTerminal(e); // coherent wall cadence is intentionally unchanged
+                return null;
+            }
+
+            var server = RegionScheduler.getServer();
+            if (server != null && (!server.tickRateManager().runsNormally()
+                    || server.tickRateManager().isSprinting())) {
+                finishAndReseed(e, CONTROL_RETRY_NANOS);
+                return null;
+            }
+            if (e.island.claimWanted
+                    || e.rs.mainClaimsFenceActive()
+                    || e.island.unitClaim.get()
+                    || e.island.submitQueued.get()) {
+                finishAndReseed(e, CLAIM_RETRY_NANOS);
+                return null;
+            }
+
+            // A local sprint keeps its existing exact-count self-chain. The
+            // pacer only supplies an idempotent bootstrap if the command-time
+            // kick or a fence refusal left no unit queued.
+            if (isSprinting(e.rs, e.island)) {
+                return IslandTickUnit.submitUnit(e.rs, e.island);
+            }
+            long now = System.nanoTime();
+            long deadline = e.island.nextDeadlineNanos;
+            if (deadline != 0 && deadline > now) {
+                finishAndReseed(e, deadline - now);
+                return null;
+            }
+            return IslandTickUnit.submitDeadlineUnit(e.rs, e.island, now, 0L);
+        }
+
+        private void finishAttempt(Entry e, IslandTickUnit.AttemptReceipt attempt) {
+                Throwable failure = attempt.failureOrNull();
+                if (failure != null) {
+                    // UnitPublication completed exceptionally only after its
+                    // entered body (or failed-generation cancellation) had
+                    // already selected this exact W in the owning pool.
+                    Throwable primary = failure;
+                    try {
+                        // Terminal cleanup only. A failed unit must never seed
+                        // another cadence attempt as if it merely refused.
+                        e.state.finish(e.ticket.id);
+                    } catch (Throwable cleanup) {
+                        primary = RegionScheduler.publishFatalAndSelectWinner(e.rs,
+                                mergeFailure(primary, cleanup));
                     }
-                    if (RegionScheduler.forLevel(e.island.level) != e.rs) {
-                        continue; // off->on cycle: entry belongs to a torn-down scheduler (audit #5)
+                    if (RegionScheduler.ownsRuntimeGeneration(e.rs)) {
+                        stopPacerAfterFatal(e.rs, primary);
+                        TemporalControl.<RuntimeException>rethrow(primary);
+                    } else {
+                        cancel(e.island);
                     }
-                    if (e.island.claimWanted || e.rs.mainHoldsAllClaims()) {
-                        // brief backoff, retry after the fence
-                        queue.add(new Entry(e.rs, e.island, System.nanoTime() + 2_000_000L));
-                        continue;
-                    }
-                    if (effectiveTargetNanos(e.rs, e.island) >= 50_000_000L) {
-                        continue; // override removed — the drive owns pacing again
-                    }
-                    e.island.chainedUnits++;
-                    IslandTickUnit.submitUnit(e.rs, e.island);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
                     return;
-                } catch (Throwable t) {
-                    // pacing must never die silently
-                    org.slf4j.LoggerFactory.getLogger("Fabrolia-Temporal")
-                            .error("pacer iteration failed", t);
+                }
+                if (!eligible(e.rs, e.island) || e.island.gen != e.islandGen) {
+                    // Either an accepted unit finished while its generation was
+                    // retiring, or submitStampedEntered retired an unaccepted receipt.
+                    // This is pacer bookkeeping only: destroy the old authority,
+                    // publish no successor and never touch the current generation.
+                    cancel(e.island);
+                    return;
+                }
+                // If complete() published a successor, finish() is stale and
+                // the conditional retry receipt is cancelled at commit.  A
+                // refusal still owns this exact in-flight ticket, so its
+                // replacement and the old-ticket terminal share one W cut.
+                if (attempt.outcome() == IslandTickUnit.AttemptOutcome.ADVANCED) {
+                    // The unit's sole L++ cut already replaced this in-flight
+                    // ticket with its next pacer authority. Retire only the old
+                    // ticket if no replacement was present.
+                    finishTerminal(e);
+                    return;
+                }
+                PreparedArm retry = null;
+                try {
+                    long retryDelay = retryDelayNanos(attempt.outcome());
+                    retry = prepareRetryAfterAttempt(e, retryDelay);
+                    PreparedArm retryCommit = retry;
+                    boolean committed = RegionScheduler.commitUnitSuccessIfCurrent(e.rs, () -> {
+                        retryCommit.commit();
+                        // False after either a unit-success successor or the
+                        // conditional replacement above; true only when the
+                        // attempt terminally returned authority without rearm.
+                        e.state.finish(e.ticket.id);
+                        e.island.chainedUnits++;
+                    });
+                    if (!committed) {
+                        retry.cancel(null);
+                        cancel(e.island);
+                    }
+                } catch (Throwable completionFailure) {
+                    Throwable primary = RegionScheduler.publishFatalAndSelectWinner(
+                            e.rs, completionFailure);
+                    if (retry != null) primary = retry.cancel(primary);
+                    if (RegionScheduler.ownsRuntimeGeneration(e.rs)) {
+                        stopPacerAfterFatal(e.rs, primary);
+                        TemporalControl.<RuntimeException>rethrow(primary);
+                    } else {
+                        cancel(e.island);
+                    }
+                }
+        }
+
+        /** Close every pacing authority after an observed current-generation W
+         *  and interrupt the poll so this daemon cannot consume another ticket. */
+        private void stopPacerAfterFatal(RegionizedServer expected, Throwable primary) {
+            Throwable failure = primary;
+            try {
+                cancelAll();
+            } catch (Throwable cleanupFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(expected,
+                        mergeFailure(failure, cleanupFailure));
+            }
+            Thread owner = thread;
+            if (owner != null) {
+                try {
+                    owner.interrupt();
+                } catch (Throwable cleanupFailure) {
+                    RegionScheduler.publishFatalAndSelectWinner(expected,
+                            mergeFailure(failure, cleanupFailure));
                 }
             }
         }
+
+        private void finishAndReseed(Entry e, long delayNanos) {
+            PreparedArm retry = null;
+            try {
+                retry = prepareRetryAfterAttempt(e, delayNanos);
+                PreparedArm retryCommit = retry;
+                boolean committed = RegionScheduler.commitUnitSuccessIfCurrent(e.rs, () -> {
+                    retryCommit.commit();
+                    e.state.finish(e.ticket.id);
+                });
+                if (!committed) {
+                    retry.cancel(null);
+                    cancel(e.island);
+                }
+            } catch (Throwable completionFailure) {
+                Throwable primary = RegionScheduler.publishFatalAndSelectWinner(
+                        e.rs, completionFailure);
+                if (retry != null) primary = retry.cancel(primary);
+                TemporalControl.<RuntimeException>rethrow(primary);
+            }
+        }
+
+        private PreparedArm prepareRetryAfterAttempt(Entry e, long delayNanos) {
+            if (!eligible(e.rs, e.island)) {
+                return PreparedArm.NONE;
+            }
+            if (isCoherent(e.rs, e.island)) {
+                return PreparedArm.NONE;
+            }
+            long deadline = e.island.nextDeadlineNanos;
+            long fireAt = delayNanos > 0
+                    ? System.nanoTime() + delayNanos
+                    : (deadline == 0 ? System.nanoTime()
+                            : Math.max(System.nanoTime(), deadline));
+            return prepareArm(e.rs, e.island, deadline, fireAt, true, e.ticket);
+        }
+
+        private void finishTerminal(Entry e) {
+            if (!RegionScheduler.commitUnitSuccessIfCurrent(
+                    e.rs, () -> e.state.finish(e.ticket.id))) {
+                cancel(e.island);
+            }
+        }
+    }
+
+    /** Main drive bootstrap/watchdog; never directly submits an ordinary unit. */
+    public static void ensurePaced(RegionizedServer rs, IslandRegistry.PIsland island) {
+        PACER.ensure(rs, island);
+    }
+
+    /** Unit completion is the normal authority for the next ordinary deadline. */
+    static void armAfterUnit(RegionizedServer rs, IslandRegistry.PIsland island,
+                             long deadlineNanos) {
+        PACER.afterUnit(rs, island, deadlineNanos);
+    }
+
+    /** Prepare, but do not yet accept, the unit's ordinary-cadence successor. */
+    static Pacer.PreparedArm prepareArmAfterUnit(RegionizedServer rs,
+                                                 IslandRegistry.PIsland island,
+                                                 long deadlineNanos) {
+        return PACER.prepareAfterUnit(rs, island, deadlineNanos);
+    }
+
+    /** Rebuild/toggle transaction completed and its claims have been released. */
+    static void onTopologyCommitted(RegionizedServer rs) {
+        PACER.reconcile(rs);
     }
 
     /** Per-level session registry lives on RegionizedServer.temporalSessions. */
@@ -206,6 +935,7 @@ public final class TemporalControl {
         s.cells.addAll(island.cells);
         rs.temporalSessions.add(s);
         island.pacingGen++;
+        PACER.reseed(rs, island);
         return s;
     }
 
@@ -230,6 +960,7 @@ public final class TemporalControl {
         s.cells.addAll(island.cells);
         rs.temporalSessions.add(s);
         island.pacingGen++;
+        PACER.reseed(rs, island);
         return s;
     }
 
@@ -245,6 +976,7 @@ public final class TemporalControl {
         s.cells.addAll(island.cells);
         rs.temporalSessions.add(s);
         island.pacingGen++;
+        PACER.reseed(rs, island);
         return s;
     }
 
@@ -309,6 +1041,7 @@ public final class TemporalControl {
             });
             for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
                 p.pacingGen++;
+                PACER.reseed(rs, p);
             }
         }
         LOGGER.info("[temporal] global island target rate set to {} tps", tps);
@@ -351,41 +1084,88 @@ public final class TemporalControl {
         return false;
     }
 
-    /** Unit completion: decrement every covering sprint obligation; @return
-     *  true if the island should immediately chain another unit. */
-    public static boolean onUnitComplete(RegionizedServer rs, IslandRegistry.PIsland island) {
+    /**
+     * Allocation/fallible-read half of a unit's temporal completion.  It is
+     * deliberately prepared before the unit publishes L/deadline/metrics, so
+     * session scans, wall-clock adapters and server lookups cannot leave a
+     * partially successful unit behind.
+     */
+    static UnitCompletionDecision prepareUnitCompletion(RegionizedServer rs,
+                                                        IslandRegistry.PIsland island,
+                                                        long completingLogicalTick) {
         List<Session> sessions = rs.temporalSessions;
         if (sessions.isEmpty()) {
-            return false;
+            return UnitCompletionDecision.NONE;
         }
+        java.util.ArrayList<Session> decrements = new java.util.ArrayList<>();
         boolean chain = false;
         for (Session s : sessions) {
             if (s.coherent && intersects(s.cells, island.cells)) {
                 // Catch-up chaining: a pinned island that fell behind the
                 // wall clock re-submits until L == W, then holds (the drive
                 // releases exactly one unit per wall tick thereafter).
-                if (island.logicalTick < IslandClock.wallTime(island.level)) {
+                if (completingLogicalTick < IslandClock.wallTime(island.level)) {
                     chain = true;
                 }
                 continue;
             }
             long rem = s.sprintRemaining.get();
             if (rem > 0 && intersects(s.cells, island.cells)) {
-                long left = s.sprintRemaining.decrementAndGet();
-                if (left > 0) {
-                    chain = true;
-                } else {
-                    LOGGER.info("[temporal] local sprint session#{} ({}) completed", s.id, s.label);
-                    rs.temporalSessions.remove(s);
-                }
+                decrements.add(s);
+                if (rem > 1) chain = true;
             }
         }
         // Global sprint lockstep owns tick production — never self-chain then.
         if (chain && RegionScheduler.getServer() != null
                 && RegionScheduler.getServer().tickRateManager().isSprinting()) {
-            return false;
+            chain = false;
         }
-        return chain;
+        Session[] decrementArray = decrements.isEmpty()
+                ? UnitCompletionDecision.NO_SESSIONS
+                : decrements.toArray(Session[]::new);
+        return new UnitCompletionDecision(decrementArray, chain);
+    }
+
+    /**
+     * Prepared sprint-counter commit.  Completed zero-valued sessions remain
+     * inert until the next main-side control/remap cleanup; CopyOnWrite removal
+     * and logging are intentionally not allowed to turn a completed vanilla
+     * unit into a later failure.
+     */
+    static final class UnitCompletionDecision {
+        private static final Session[] NO_SESSIONS = new Session[0];
+        private static final UnitCompletionDecision NONE =
+                new UnitCompletionDecision(NO_SESSIONS, false);
+
+        private final Session[] decrements;
+        private final boolean chain;
+
+        private UnitCompletionDecision(Session[] decrements, boolean chain) {
+            this.decrements = decrements;
+            this.chain = chain;
+        }
+
+        boolean chain() {
+            return chain;
+        }
+
+        void commit() {
+            for (Session session : decrements) {
+                long remaining;
+                do {
+                    remaining = session.sprintRemaining.get();
+                    if (remaining <= 0) break;
+                } while (!session.sprintRemaining.compareAndSet(remaining, remaining - 1));
+            }
+        }
+    }
+
+    /** Compatibility facade for non-transactional callers outside the unit. */
+    public static boolean onUnitComplete(RegionizedServer rs, IslandRegistry.PIsland island) {
+        UnitCompletionDecision decision = prepareUnitCompletion(
+                rs, island, island.logicalTick);
+        decision.commit();
+        return decision.chain();
     }
 
     /** Rebuild hook: re-resolve every session against fresh topology. A session
@@ -419,8 +1199,7 @@ public final class TemporalControl {
 
     public static String status(RegionizedServer rs) {
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format(java.util.Locale.ROOT, "main=%.1ftps/%.2fms ",
-                TpsHud.mainTpsValue(), TpsHud.mainMsptNanos() / 1_000_000.0));
+        sb.append(TpsHud.mainSummary()).append(' ');
         sb.append("globalTarget=").append(String.format(java.util.Locale.ROOT, "%.1f",
                 1_000_000_000.0 / globalIslandTargetNanos)).append("tps");
         var srv = RegionScheduler.getServer();
@@ -452,5 +1231,22 @@ public final class TemporalControl {
             }
         }
         return false;
+    }
+
+    private static Throwable mergeFailure(Throwable primary, Throwable cleanup) {
+        if (primary == null) return cleanup;
+        if (cleanup != null && cleanup != primary) {
+            try {
+                primary.addSuppressed(cleanup);
+            } catch (Throwable ignored) {
+                // Cleanup diagnostics cannot replace the exact pacing failure.
+            }
+        }
+        return primary;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 }

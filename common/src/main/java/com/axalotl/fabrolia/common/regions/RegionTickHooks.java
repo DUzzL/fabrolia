@@ -22,9 +22,8 @@ import org.slf4j.LoggerFactory;
  * </ul>
  *
  * <p>Zero overhead when unregistered: one volatile null check. Hook failures
- * are contained — logged once and the hook is dropped for the session; a
- * broken integration must never take down the region tick (the entity barrier
- * would wedge — see the [region] live-crash lesson, 2026-06-10).
+ * propagate through the same vanilla/server crash boundary as the entity phase;
+ * continuing after a partially-applied integration callback is not safe.
  */
 public final class RegionTickHooks {
 
@@ -57,22 +56,12 @@ public final class RegionTickHooks {
     static void firePre(Region region) {
         Hook h = hook;
         if (h == null) return;
-        try {
-            h.preEntityTick(region);
-        } catch (Throwable t) {
-            hook = null;
-            LOGGER.error("Region pre-tick hook threw — hook disabled for this session", t);
-        }
+        h.preEntityTick(region);
     }
 
     static void firePost(Region region) {
         Hook h = hook;
         if (h == null) return;
-        try {
-            h.postEntityTick(region);
-        } catch (Throwable t) {
-            hook = null;
-            LOGGER.error("Region post-tick hook threw — hook disabled for this session", t);
-        }
+        h.postEntityTick(region);
     }
 }

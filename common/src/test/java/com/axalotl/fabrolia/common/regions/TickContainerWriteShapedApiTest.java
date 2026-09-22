@@ -26,8 +26,6 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -211,84 +209,6 @@ class TickContainerWriteShapedApiTest {
                         + "position never reschedules");
     }
 
-    /**
-     * The containment: {@link TickDomains#pollGuarded} counts the violation,
-     * does not let it out of {@code poll()} (it would abort the whole level
-     * tick / region slice for one chunk's damage), and — the load-bearing part
-     * — un-wedges the container.
-     *
-     * <p>FAILS PRE-FIX two ways: with the naive body ({@code return raw.get();})
-     * the IllegalStateException propagates; with the {@code compact(c)} call
-     * removed from the recovery the last assertion fails, because Lithium
-     * leaves the emptied head bucket in the map and {@code queueTick} re-selects
-     * it by {@code firstLongKey()} forever after — {@code peek()} stays null
-     * while {@code schedule()} keeps filling {@code allTicks} (audit §4.4).
-     */
-    @Test
-    void pollGuardedContainsTheViolationAndLeavesTheContainerUsable() {
-        LithiumBucketChunkTicks<String> c = primedForBucketInvariantViolation();
-        long before = TickDomains.BUCKET_INVARIANT_VIOLATIONS.get();
-
-        assertNull(guardedPoll(c),
-                "nothing survived the destroyed bucket in this shape, so poll answers null — "
-                        + "a legal poll() result, unlike an exception");
-        assertEquals(before + 1, TickDomains.BUCKET_INVARIANT_VIOLATIONS.get(),
-                "contained, never silent");
-
-        // The wedge test: a fresh schedule at a HIGHER key than the stale-empty
-        // head bucket is exactly what re-selects the stale bucket on Lithium.
-        ScheduledTick<String> fresh = tick("fresh", 3, 300, 0);
-        c.schedule(fresh);
-        assertNotNull(c.peek(),
-                "container wedged: the stale-empty head bucket was left in the map, so every "
-                        + "later schedule() lands in a higher bucket that peek()/poll() can "
-                        + "never reach — the chunk's scheduled ticks are dead until it reloads");
-        assertEquals("fresh", c.peek().type());
-    }
-
-    /** Recovery must hand the caller a real tick when one survives: vanilla's
-     *  {@code LevelTicks.collectTicks} adds {@code poll()}'s result to a deque
-     *  and dereferences it later, so returning null where a tick exists just
-     *  moves the crash. */
-    @Test
-    void pollGuardedRetriesAfterRepairWhenTicksSurvive() {
-        // The survivor bucket is created FIRST: scheduling it afterwards would
-        // itself re-point nextTickQueue and un-prime the violation.
-        LithiumBucketChunkTicks<String> c =
-                primedForBucketInvariantViolation(tick("survivor", 4, 300, 0));
-
-        ScheduledTick<String> got = guardedPoll(c);
-        assertNotNull(got, "the surviving bucket must be reachable again after the repair");
-        assertEquals("survivor", got.type());
-    }
-
-    /** The message match is deliberately narrow: anything else out of poll() is
-     *  not ours to swallow. */
-    @Test
-    void pollGuardedRethrowsForeignIllegalStateExceptions() {
-        LevelChunkTicks<String> c = new LevelChunkTicks<>() {
-            @Override
-            public ScheduledTick<String> poll() {
-                throw new IllegalStateException("something else entirely");
-            }
-        };
-        IllegalStateException e = assertThrows(IllegalStateException.class, () -> guardedPoll(c));
-        assertEquals("something else entirely", e.getMessage());
-    }
-
-    /** Byte-for-byte the shape of {@code LevelChunkTicksMixin}'s {@code poll}
-     *  wrap. The wrap keeps the guard inline rather than delegating the whole
-     *  call, because {@code poll()} is a hot path and a supplier evaluated
-     *  before the throw would allocate on every scheduled tick; the source pin
-     *  below keeps the two in step. */
-    private static <T> ScheduledTick<T> guardedPoll(LevelChunkTicks<T> c) {
-        try {
-            return c.poll();
-        } catch (IllegalStateException e) {
-            return TickDomains.recoverFromBucketInvariantViolation(c, e, c::poll);
-        }
-    }
-
     /** {@code compact} must be a true no-op on a healthy container: not one
      *  tick added, removed or reordered, on either implementation. */
     @Test
@@ -358,23 +278,19 @@ class TickContainerWriteShapedApiTest {
      *  otherwise everything above is true of {@code TickDomains} and false of
      *  the running server. */
     @Test
-    void getAllAndPackAndPollAreWrappedAsWritesAndDelegateHere() throws Exception {
+    void getAllAndPackAreWrappedAsWritesWhilePollRemainsFailStop() throws Exception {
         String text = source("common/mixin/world/LevelChunkTicksMixin.java");
         assertTrue(text.contains("WrapMethod(method = \"getAll\")"),
                 "getAll() is write-shaped on Lithium AND mutates lazily, after the blanket-"
                         + "synchronized frame returns — it must be wrapped and snapshotted.");
         assertTrue(text.contains("WrapMethod(method = \"pack\")"),
                 "pack() reaches the same compaction path and runs off-thread under c2me.");
-        assertTrue(text.contains("WrapMethod(method = \"poll\")"),
-                "poll() is where Lithium's data-destroying bucket guard surfaces.");
+        assertFalse(text.contains("WrapMethod(method = \"poll\")"),
+                "poll() failures must leave the original body unchanged and propagate exactly");
         assertTrue(text.contains("TickDomains.snapshotAll"), "getAll wrap must delegate here");
         assertTrue(text.contains("TickDomains.packUnderMonitor"), "pack wrap must delegate here");
-        assertTrue(text.contains("TickDomains.recoverFromBucketInvariantViolation"),
-                "poll wrap must delegate its recovery here");
-        assertTrue(text.contains("try {") && text.contains("return original.call();"),
-                "poll() is a hot path: the try body must stay bare and the retry supplier must "
-                        + "be built inside catch, so the happy path costs no allocation and no "
-                        + "second monitor acquisition.");
+        assertFalse(text.contains("recoverFromBucketInvariantViolation"),
+                "a partially-mutated Lithium poll must never be repaired and retried");
         assertTrue(text.contains("TickDomains.COMPACT_ONLY"),
                 "the removeIf wrap must forward the compaction sentinel to the underlying "
                         + "implementation — on Lithium it is the only public operation that "

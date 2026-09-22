@@ -27,17 +27,29 @@ import org.spongepowered.asm.mixin.injection.At;
  * → {@code TickDomains.unpackBasis} — vanilla's wall-clock anchor was the
  * matching load-side hole, 2026-07-27 audit), so the delay lands correctly on
  * whichever timeline the chunk reloads into.
+ *
+ * <p>ATOMICITY (2026-08-06): under c2me this {@code copyOf} runs on IO
+ * threads while main concurrently rebases containers (assignDomain at
+ * rebuild, region on/off collapses). Resolving the basis in one instant and
+ * packing the triggers in another let a rebase land between them — the exact
+ * (W − L) mistranslation above, persisted to disk as a self-consistent
+ * record no load-side heal can see. The whole basis-resolution + pack
+ * therefore runs as one atomic step under the same exclusion every retag
+ * takes; see {@link TickDomains#packTicksConsistent} for the lock discipline.
+ * The basis itself is computed inside that wrap, so the vanilla
+ * {@code getGameTime()} value passed by {@code copyOf} now serves only as the
+ * WALL fallback.
  */
 @Mixin(SerializableChunkData.class)
 public abstract class SerializableChunkDataMixin {
 
     @WrapOperation(method = "copyOf",
             at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/level/ServerLevel;getGameTime()J",
-                    ordinal = 0))
-    private static long fabrolia$packOnOwnerClock(ServerLevel self, Operation<Long> original,
-                                                  ServerLevel level, ChunkAccess chunk) {
-        long wall = original.call(self);
-        return TickDomains.saveBasis(level, chunk, wall);
+                    target = "Lnet/minecraft/world/level/chunk/ChunkAccess;getTicksForSerialization(J)Lnet/minecraft/world/level/chunk/ChunkAccess$PackedTicks;"))
+    private static ChunkAccess.PackedTicks fabrolia$packTicksConsistent(ChunkAccess self, long wall,
+                                                                        Operation<ChunkAccess.PackedTicks> original,
+                                                                        ServerLevel level, ChunkAccess chunk) {
+        return TickDomains.packTicksConsistent(level, chunk, wall,
+                basis -> original.call(self, basis));
     }
 }

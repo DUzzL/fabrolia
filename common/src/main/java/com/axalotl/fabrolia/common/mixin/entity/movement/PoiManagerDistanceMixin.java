@@ -75,12 +75,26 @@ public abstract class PoiManagerDistanceMixin {
      * village distance sees its own update in the SAME tick. Vanilla runs
      * {@code runAllUpdates()} at query time; a main-only drain would silently
      * turn every village query one tick stale.
+     *
+     * <p>Freshness fix (2026-08-13 stacked-raid-farm incident): the tracker
+     * only knows sections that were loaded AND notified. After an async chunk
+     * load (c2me) the raid's {@code isVillage} — or any village query — can
+     * land one tick BEFORE anything forced that section's POI unpack, and
+     * vanilla's own {@code getOrLoad} unpacks synchronously on the query
+     * path. The one-tick-stale "no village" answer is lethal exactly once
+     * (raid with groupsSpawned>0 → LOSS) and breaks the workstation-move
+     * stacked-raid mechanic. Force the synchronous unpack for the queried
+     * section FIRST (vanilla's getOrLoad semantics; the fence makes the join
+     * safe on any thread), then drain, then runAllUpdates — the answer is the
+     * same one vanilla gives.
      */
     @WrapOperation(
             method = "sectionsToVillage",
             at = @At(value = "INVOKE",
                     target = "Lnet/minecraft/world/entity/ai/village/poi/PoiManager$DistanceTracker;runAllUpdates()V"))
-    private void fabrolia$drainOnQuery(@Coerce FabroliaPoiTracker tracker, Operation<Void> original) {
+    private void fabrolia$drainOnQuery(@Coerce FabroliaPoiTracker tracker, Operation<Void> original,
+                                       net.minecraft.core.SectionPos pos) {
+        ((SectionStorageGetOrLoadAccessor) this).fabrolia$invokeGetOrLoad(pos.asLong());
         tracker.fabrolia$drainTrackerUpdates();
         original.call(tracker);
     }

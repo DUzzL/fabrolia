@@ -6,13 +6,20 @@ import com.axalotl.fabrolia.common.ParallelProcessor;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntMaps;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LocalMobCapCalculator;
 import net.minecraft.world.level.NaturalSpawner;
 import net.minecraft.world.level.PotentialCalculator;
+import net.minecraft.world.level.biome.MobSpawnSettings;
+import net.minecraft.world.level.chunk.ChunkAccess;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Mutable;
+import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -45,8 +52,44 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
     // Replaced by atomic pack RESERVATION at chunk-pass approval —
     // NaturalSpawnerMixin.fabrolia$approveAndReservePack — which restores the
     // sequential visibility the recheck was faking without rejecting any
-    // candidate inside an already-approved pack. canSpawn is now pure vanilla
-    // (potential-energy check) plus the cadence diag below.
+    // candidate inside an already-approved pack. canSpawn retains vanilla's
+    // potential-energy check, with invocation-owned biome costs instead of a
+    // shared last-candidate memo.
+
+    /**
+     * @author Fabrolia
+     * @reason A SpawnState spans region workers; candidate costs must remain method-local.
+     */
+    @Overwrite
+    private boolean canSpawn(EntityType<?> type, BlockPos testPos, ChunkAccess chunk) {
+        MobSpawnSettings.MobSpawnCost cost =
+                NaturalSpawner.getRoughBiome(testPos, chunk).getMobSettings().getMobSpawnCost(type);
+        if (cost == null) {
+            return true;
+        }
+        double charge = cost.charge();
+        double energyChange = this.spawnPotential.getPotentialEnergyChange(testPos, charge);
+        return energyChange <= cost.energyBudget();
+    }
+
+    /**
+     * @author Fabrolia
+     * @reason Select the accepted mob's own biome charge, never another worker's last check.
+     */
+    @Overwrite
+    private void afterSpawn(Mob mob, ChunkAccess chunk) {
+        EntityType<?> type = mob.getType();
+        BlockPos pos = mob.blockPosition();
+        // Re-read at the accepted position: a prior check may belong to another
+        // region, type or biome (and its BlockPos may itself have been mutable).
+        MobSpawnSettings.MobSpawnCost cost =
+                NaturalSpawner.getRoughBiome(pos, chunk).getMobSettings().getMobSpawnCost(type);
+        double charge = cost == null ? 0.0 : cost.charge();
+        this.spawnPotential.addCharge(pos, charge);
+        MobCategory category = type.getCategory();
+        this.mobCategoryCounts.addTo(category, 1);
+        this.localMobCapCalculator.addMob(ChunkPos.containing(pos), category);
+    }
 
     /** Cadence instrumentation only (was fused with the removed recheck):
      *  every candidate CHECK, per category — /fabrolia regions debug spawnrate

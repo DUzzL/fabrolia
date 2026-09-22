@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.parallelised.utils;
 
+import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 
@@ -146,34 +147,35 @@ public final class SpawnIndex {
      *  index lost, bounding ANY membership hole to one sweep interval. Runs on
      *  main at the forced-inline census tick (every 256 gt — the same cadence
      *  as the purge hygiene it mirrors); cost is one section walk, amortized
-     *  ~0.02% of a tick. Concurrent section-list mutation is tolerated per
-     *  section (racy misses self-correct next sweep). */
+     *  ~0.02% of a tick. A failed section walk is a failed census obligation
+     *  and propagates unchanged; it must not be converted into a partial heal. */
     public static int reconcile(ServerLevel level,
             net.minecraft.world.level.entity.EntitySectionStorage<net.minecraft.world.level.entity.EntityAccess> storage) {
-        int healed = 0;
+        int[] healed = new int[1];
         var chunkKeys = storage.getAllChunksWithExistingSections();
         for (var itc = chunkKeys.iterator(); itc.hasNext(); ) {
             long chunkKey = itc.nextLong();
-            try {
+            // One occupied chunk is admitted preparation; every entity heal is
+            // additionally cut on its own so W between entries prevents the next
+            // derived-census mutation instead of letting the section drain run on.
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
                 for (var section : storage.getExistingSectionsInChunk(chunkKey).toList()) {
                     boolean accessible = section.getStatus().isAccessible();
-                    final int[] add = {0};
-                    section.getEntities().forEach(ea -> {
-                        if (!(ea instanceof Entity e) || e.isRemoved()) return;
-                        if (!accessible && !ea.isAlwaysTicking()) return;
-                        Set<Entity> set = VISIBLE_PER_LEVEL.get(level);
-                        if (set == null || !set.contains(e)) {
-                            ensurePresent(level, e);
-                            add[0]++;
-                        }
-                    });
-                    healed += add[0];
+                    section.getEntities().forEach(ea ->
+                            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                                if (!(ea instanceof Entity e) || e.isRemoved()) return;
+                                if (!accessible && !ea.isAlwaysTicking()) return;
+                                Set<Entity> set = VISIBLE_PER_LEVEL.get(level);
+                                if (set == null || !set.contains(e)) {
+                                    ensurePresent(level, e);
+                                    healed[0]++;
+                                }
+                            }));
                 }
-            } catch (Throwable ignored) {
-                // racy list scan — self-corrects next sweep
-            }
+            });
         }
-        return healed;
+        RegionScheduler.commitSuccessIfHealthy(() -> { });
+        return healed[0];
     }
 
     /**

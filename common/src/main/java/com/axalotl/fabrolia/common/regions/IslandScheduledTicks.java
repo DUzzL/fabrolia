@@ -1,13 +1,15 @@
 package com.axalotl.fabrolia.common.regions;
 
-import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import it.unimi.dsi.fastutil.longs.Long2LongMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ObjectOpenCustomHashSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Vec3i;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.ticks.LevelChunkTicks;
 import net.minecraft.world.ticks.LevelTicks;
 import net.minecraft.world.ticks.ScheduledTick;
@@ -20,40 +22,122 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.PriorityQueue;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
 import java.util.function.LongPredicate;
 
 /**
- * F1 — island-partitioned scheduled block/fluid ticks (the user's Folia-batch
- * strategy). The level's due chunks are split by {@link RegionizedServer.Island}
- * and each island's slice runs vanilla's exact collect/run algorithm over
- * slice-LOCAL queues; the shared maps are the concurrent ones LevelTicksMixin
- * installs. Islands are ≥2 unpopulated regions (≥16 unloaded chunks) apart, so
- * within one phase no effect can cross between slices — within an island the
- * (priority, subTickOrder) order is vanilla bit-for-bit, across islands the
- * interleaving is unobservable by construction.
+ * Owner-local scheduled block/fluid ticks with vanilla collect/run ordering
+ * and slice-local visibility receipts. Autonomous island units collect at their
+ * own logical time; physical Main collects only the exact global-domain
+ * complement, in one serial lane under a pre-body global gameplay envelope.
  *
- * <p>Scheduling: the HEAVIEST slice runs on main — the Oxidizium redstone
- * engine (NetworkCache/CascadeEngine) is main-confined, and the lag-machine
- * island is precisely where it pays; worker-run slices bail to vanilla wire
- * logic per the engine's own onMain() guard (its cache stays correct via the
- * off-main event buffer added 2026-06-13). Light islands fan out to region
- * workers; main helps once its own slice is done.
- *
- * <p>Vanilla semantics kept: 65536 budget is GLOBAL (shared atomic across
- * slices); a handler throwable crashes the server after the phase barrier
- * (first one wins) exactly like vanilla's propagation; chunks loaded mid-tick
- * (no island at the head rebuild) join their single adjacent island — two
- * adjacent islands are impossible under the separation invariant — or run
- * serially on main when truly isolated.
+ * <p>The vanilla budget is shared per block/fluid lane for each level tick.
+ * Collected work remains registered until completion or first-failure cleanup,
+ * including restoration of every detached but unentered scheduled tick.
  */
 public final class IslandScheduledTicks {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("Fabrolia-IslandTicks");
+    private static final long HOLD_LOG_INTERVAL_NANOS = 10_000_000_000L;
+    private static final AtomicLong HOLDS_REPORTED = new AtomicLong();
+    private static final AtomicLong HOLD_LAST_LOG_NANOS = new AtomicLong();
+    /** Logical LevelTicks phase of the handler currently running on this
+     * thread. willTickThisTick is phase-local in vanilla; consulting foreign
+     * islands would mix independent clocks and create a global barrier. */
+    private static final ThreadLocal<SliceExecution<?>> CURRENT_SLICE =
+            new ThreadLocal<>();
 
     private IslandScheduledTicks() {}
+
+    /** Read-only block-frontier decision retained until structural commit. No
+     *  queue/map mutation is allowed while these records are built. */
+    private static final class PreparedChunk<T> {
+        final long chunkPos;
+        final LevelChunkTicks<T> container;
+        final ScheduledTick<T> head;
+        final boolean admitted;
+
+        PreparedChunk(long chunkPos, LevelChunkTicks<T> container,
+                      ScheduledTick<T> head, boolean admitted) {
+            this.chunkPos = chunkPos;
+            this.container = container;
+            this.head = head;
+            this.admitted = admitted;
+        }
+    }
+
+    /** One island lane after domain-normalized due-key discovery and the
+     *  read-only eligibility pass, but before nextTick removal or polling. */
+    private static final class PreparedIslandLane<T> {
+        final LevelTicksIslandAccess<T> access;
+        final BiConsumer<BlockPos, T> ticker;
+        final AtomicInteger budget;
+        final boolean blockLane;
+        final LongArrayList dueChunks;
+        final ArrayList<PreparedChunk<T>> prepared;
+        /** A transient exact-readiness refusal or structural drift makes this
+         *  complete island unit non-admissible.  Preparation is read-only, so
+         *  HOLD leaves every scheduled container byte-for-byte untouched. */
+        boolean hold;
+        long holdChunk = Long.MIN_VALUE;
+        ScheduledTick<?> holdHead;
+        String holdReason;
+        long maxOverdue;
+        long overdueChunk;
+        long dormantRefused;
+        long dormantMaxAge;
+
+        PreparedIslandLane(LevelTicksIslandAccess<T> access,
+                           BiConsumer<BlockPos, T> ticker,
+                           AtomicInteger budget, boolean blockLane,
+                           LongArrayList dueChunks) {
+            this.access = access;
+            this.ticker = ticker;
+            this.budget = budget;
+            this.blockLane = blockLane;
+            this.dueChunks = dueChunks;
+            this.prepared = dueChunks == null
+                    ? new ArrayList<>(0) : new ArrayList<>(dueChunks.size());
+        }
+    }
+
+    private static void markHold(PreparedIslandLane<?> lane, long chunkPos,
+                                 ScheduledTick<?> head, String reason) {
+        lane.hold = true;
+        if (lane.holdChunk == Long.MIN_VALUE) {
+            lane.holdChunk = chunkPos;
+            lane.holdHead = head;
+            lane.holdReason = reason;
+        }
+    }
+
+    /** Always-on but flood-safe evidence that a whole unit stayed at the same L. */
+    private static void reportHold(ServerLevel level, long islandId, long unitTime,
+                                   PreparedIslandLane<?> lane) {
+        FlightRecorder.SCHEDULED_HOLDS.increment();
+        long now = System.nanoTime();
+        while (true) {
+            long last = HOLD_LAST_LOG_NANOS.get();
+            if (last != 0L && now - last < HOLD_LOG_INTERVAL_NANOS) return;
+            if (HOLD_LAST_LOG_NANOS.compareAndSet(last, now)) break;
+        }
+        long total = FlightRecorder.SCHEDULED_HOLDS.sum();
+        long sinceLast = Math.max(0L, total - HOLDS_REPORTED.getAndSet(total));
+        String head = describeHead(lane.holdHead);
+        String message = "SCHEDULED-HOLD total=" + total + " sinceLast=" + sinceLast
+                + " dim=" + level.dimension().identifier()
+                + " island#" + islandId
+                + " L=" + unitTime
+                + " lane=" + (lane.blockLane ? "block" : "fluid")
+                + " chunk=[" + ChunkPos.getX(lane.holdChunk)
+                + "," + ChunkPos.getZ(lane.holdChunk) + "]"
+                + " reason=" + lane.holdReason + " head=" + head;
+        FlightRecorder.record(message);
+        LOGGER.warn("[scheduled-ticks] {}", message);
+    }
 
     /**
      * Vanilla LevelTicks.CONTAINER_DRAIN_ORDER replica (compares container heads).
@@ -77,23 +161,231 @@ public final class IslandScheduledTicks {
         };
     }
 
-    /**
-     * Per-thread visibility of the slice's pending ticks for
-     * {@code willTickThisTick}. {@link #runSlice} bypasses vanilla
-     * {@code runCollectedTicks} and therefore never populates the vanilla
-     * {@code toRunThisTick}/{@code toRunThisTickSet} fields; without this
-     * mirror, {@code willTickThisTick} returns {@code false} for ticks that
-     * ARE pending. {@link net.minecraft.world.level.block.ComparatorBlock},
-     * {@link net.minecraft.world.level.block.DiodeBlock} and
-     * {@link net.minecraft.world.level.block.RedstoneTorchBlock} read that
-     * answer as "no pending tick, schedule one" and queue a duplicate every
-     * neighbour update.
-     *
-     * <p>Uses {@link ScheduledTick#UNIQUE_TICK_HASH} (matches vanilla's
-     * {@code toRunThisTickSet}) so {@code ScheduledTick.probe(type, pos)}
-     * lookups match.
-     */
-    public static final ThreadLocal<ObjectOpenCustomHashSet<ScheduledTick<?>>> SLICE_PENDING = new ThreadLocal<>();
+    /** Scheduler-owned visibility domain for every concurrent custom slice of
+     * one LevelTicks instance. Collection/poll/retirement take the read side;
+     * clear/copy take the write side. Mutable queues and willTick's lazy set
+     * stay per-slice, so unrelated islands never convoy on one monitor. */
+    public static final class SliceRegistry {
+        final ReentrantReadWriteLock visibility = new ReentrantReadWriteLock();
+        final Object membership = new Object();
+        final ArrayList<SliceExecution<?>> active = new ArrayList<>();
+    }
+
+    /** One published slice. The deque/list are accessed only under state. */
+    static final class SliceExecution<T> {
+        final LevelTicksIslandAccess<T> access;
+        final SliceRegistry registry;
+        final long clockIsland;
+        final long clockGen;
+        final Object state = new Object();
+        final ArrayDeque<ScheduledTick<T>> toRun = new ArrayDeque<>();
+        final ArrayList<ScheduledTick<T>> alreadyRun = new ArrayList<>();
+        final ObjectOpenCustomHashSet<ScheduledTick<?>> pending =
+                new ObjectOpenCustomHashSet<>(ScheduledTick.UNIQUE_TICK_HASH);
+
+        SliceExecution(LevelTicksIslandAccess<T> access, SliceRegistry registry,
+                       long clockIsland, long clockGen) {
+            this.access = access;
+            this.registry = registry;
+            this.clockIsland = clockIsland;
+            this.clockGen = clockGen;
+        }
+    }
+
+    private record ClockStamp(long island, long gen) {}
+
+    private static ClockStamp currentClockStamp() {
+        // Use the same authority as schedule, including routed Main and native-service suppression.
+        long island = IslandClock.contextId();
+        if (island == FabroliaTickDomain.WALL) {
+            return new ClockStamp(FabroliaTickDomain.WALL, -1L);
+        }
+        Thread thread = Thread.currentThread();
+        if (thread instanceof RegionWorkerThread worker) {
+            EpochDomain domain = worker.currentRegion != null
+                    ? worker.currentRegion.domain : worker.currentDomain;
+            if (domain != null && domain.owner != null && domain.owner.id == island) {
+                return new ClockStamp(island, domain.owner.gen);
+            }
+        }
+        return new ClockStamp(island, -1L);
+    }
+
+    private static <T> ScheduledTick<T> copyToCallerClock(
+            LevelTicksIslandAccess<T> source, LevelTicksIslandAccess<T> target,
+            ClockStamp caller, long island, ScheduledTick<T> tick) {
+        // Generations of one island id share a timeline.
+        if (source == target && caller.island == island) return tick;
+        long sourceNow = source.fabrolia$clockNow(island);
+        long callerNow = caller.island == FabroliaTickDomain.WALL
+                ? target.fabrolia$clockNow(FabroliaTickDomain.WALL)
+                : IslandClock.contextTime();
+        long delta = callerNow - sourceNow;
+        return delta == 0L ? tick : new ScheduledTick<>(tick.type(), tick.pos(),
+                tick.triggerTick() + delta, tick.priority(), tick.subTickOrder());
+    }
+
+    private static <T> SliceExecution<T> registerSlice(LevelTicksIslandAccess<T> access) {
+        SliceRegistry registry = access.fabrolia$sliceRegistry();
+        ClockStamp clock = currentClockStamp();
+        SliceExecution<T> execution = new SliceExecution<>(
+                access, registry, clock.island, clock.gen);
+        synchronized (registry.membership) {
+            registry.active.add(execution);
+        }
+        return execution;
+    }
+
+    private static void retireSlice(SliceExecution<?> execution) {
+        SliceRegistry registry = execution.registry;
+        synchronized (registry.membership) {
+            if (!registry.active.remove(execution)) {
+                throw new IllegalStateException("scheduled-tick slice retired twice");
+            }
+        }
+    }
+
+    /** Vanilla calculateTickSetIfNeeded for the caller's current logical phase.
+     * Null means this thread is outside a custom slice (or querying another
+     * scheduler), so the mixin falls through to LevelTicks' private state. */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public static <T> Boolean willTickCollected(
+            LevelTicks<T> scheduler, BlockPos pos, T type) {
+        LevelTicksIslandAccess<T> access = (LevelTicksIslandAccess<T>) scheduler;
+        SliceExecution<?> raw = CURRENT_SLICE.get();
+        if (raw == null || raw.access != access) return null;
+        SliceExecution<T> execution = (SliceExecution<T>) raw;
+        synchronized (execution.state) {
+            // Deliberately no initialized bit: vanilla rebuilds whenever its
+            // set is empty, including after the final materialized tick polls.
+            if (execution.pending.isEmpty()) {
+                execution.pending.addAll((ArrayDeque) execution.toRun);
+            }
+            return execution.pending.contains(ScheduledTick.probe(type, pos));
+        }
+    }
+
+    /** One write-side cut over detached state and vanilla durable/private state.
+     * Vanilla deliberately leaves an already-materialized toRunThisTickSet
+     * stale here, so this method does not remove entries from pending either. */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public static void clearCollectedArea(
+            LevelTicks<?> scheduler, BoundingBox box, Runnable vanillaClear) {
+        LevelTicksIslandAccess<?> access = (LevelTicksIslandAccess<?>) scheduler;
+        SliceRegistry registry = access.fabrolia$sliceRegistry();
+        Lock write = registry.visibility.writeLock();
+        write.lock();
+        try {
+            synchronized (access.fabrolia$tickLock()) {
+                for (SliceExecution<?> raw : registry.active) {
+                    SliceExecution lane = raw;
+                    synchronized (lane.state) {
+                        lane.alreadyRun.removeIf(
+                                t -> box.isInside(((ScheduledTick<?>) t).pos()));
+                        lane.toRun.removeIf(
+                                t -> box.isInside(((ScheduledTick<?>) t).pos()));
+                    }
+                }
+                vanillaClear.run();
+            }
+        } finally {
+            write.unlock();
+        }
+    }
+
+    /** Full vanilla copyAreaFrom replica plus every custom source slice. The
+     * source snapshot is complete before its locks are released; target
+     * scheduling happens afterwards to avoid reciprocal source/target lock
+     * cycles. Normalize each source trigger into the caller clock first;
+     * ordinary target.schedule then translates into its destination tag. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public static <T> void copyCollectedAreaFrom(
+            LevelTicks<T> target, LevelTicks<T> source,
+            BoundingBox box, Vec3i offset) {
+        LevelTicksIslandAccess<T> sourceAccess = (LevelTicksIslandAccess<T>) source;
+        LevelTicksIslandAccess<T> targetAccess = (LevelTicksIslandAccess<T>) target;
+        SliceRegistry registry = sourceAccess.fabrolia$sliceRegistry();
+        ArrayList<ScheduledTick<T>> selected = new ArrayList<>();
+        ClockStamp caller = currentClockStamp();
+        Lock write = registry.visibility.writeLock();
+        write.lock();
+        try {
+            synchronized (sourceAccess.fabrolia$tickLock()) {
+                // Vanilla category order: already-run, pending, durable. The
+                // custom queues are replicas of the first two categories.
+                for (ScheduledTick<T> tick
+                        : sourceAccess.fabrolia$vanillaAlreadyRunThisTick()) {
+                    if (!box.isInside(tick.pos())) continue;
+                    selected.add(copyToCallerClock(sourceAccess, targetAccess,
+                            caller, FabroliaTickDomain.WALL, tick));
+                }
+                for (SliceExecution<?> raw : registry.active) {
+                    SliceExecution<T> lane = (SliceExecution<T>) raw;
+                    synchronized (lane.state) {
+                        for (ScheduledTick<T> tick : lane.alreadyRun) {
+                            if (!box.isInside(tick.pos())) continue;
+                            selected.add(copyToCallerClock(sourceAccess, targetAccess,
+                                    caller, lane.clockIsland, tick));
+                        }
+                    }
+                }
+                for (ScheduledTick<T> tick
+                        : sourceAccess.fabrolia$vanillaToRunThisTick()) {
+                    if (!box.isInside(tick.pos())) continue;
+                    selected.add(copyToCallerClock(sourceAccess, targetAccess,
+                            caller, FabroliaTickDomain.WALL, tick));
+                }
+                for (SliceExecution<?> raw : registry.active) {
+                    SliceExecution<T> lane = (SliceExecution<T>) raw;
+                    synchronized (lane.state) {
+                        for (ScheduledTick<T> tick : lane.toRun) {
+                            if (!box.isInside(tick.pos())) continue;
+                            selected.add(copyToCallerClock(sourceAccess, targetAccess,
+                                    caller, lane.clockIsland, tick));
+                        }
+                    }
+                }
+
+                Long2ObjectMap<LevelChunkTicks<T>> containers =
+                        sourceAccess.fabrolia$allContainers();
+                int minChunkX = box.minX() >> 4;
+                int maxChunkX = box.maxX() >> 4;
+                int minChunkZ = box.minZ() >> 4;
+                int maxChunkZ = box.maxZ() >> 4;
+                for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+                    for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
+                        LevelChunkTicks<T> container =
+                                containers.get(ChunkPos.pack(chunkX, chunkZ));
+                        if (container == null) continue;
+                        synchronized (container) {
+                            long island = container instanceof FabroliaTickDomain domain
+                                    ? domain.fabrolia$domainIsland() : FabroliaTickDomain.WALL;
+                            for (ScheduledTick<T> tick : container.getAll()
+                                    .filter(t -> box.isInside(t.pos())).toList()) {
+                                selected.add(copyToCallerClock(sourceAccess, targetAccess,
+                                        caller, island, tick));
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            write.unlock();
+        }
+
+        if (selected.isEmpty()) return;
+        long minSubTick = Long.MAX_VALUE;
+        long maxSubTick = Long.MIN_VALUE;
+        for (ScheduledTick<T> tick : selected) {
+            minSubTick = Math.min(minSubTick, tick.subTickOrder());
+            maxSubTick = Math.max(maxSubTick, tick.subTickOrder());
+        }
+        for (ScheduledTick<T> tick : selected) {
+            target.schedule(new ScheduledTick<>(tick.type(), tick.pos().offset(offset),
+                    tick.triggerTick(), tick.priority(),
+                    tick.subTickOrder() - minSubTick + maxSubTick + 1L));
+        }
+    }
 
     /**
      * A2 increment 4 — the async-islands slot handler. Global-domain due
@@ -126,39 +418,166 @@ public final class IslandScheduledTicks {
         }
         Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
         if (nextTick.isEmpty()) return true;
-        LongArrayList globals = null;
-        ThreadedRegionizer reg = rs.regionizer();
-        for (Long2LongMap.Entry e : nextTick.long2LongEntrySet()) {
-            long chunkPos = e.getLongKey();
-            Region r = reg.peekByGridKey(reg.grid.keyFor(chunkPos));
-            if (r != null && r.domain != null && r.domain.owner != null) {
-                continue;   // island-owned: its unit collects at its own L
-            }
-            long next = e.getLongValue();
-            if (next > gameTime) {
-                // possibly island-tagged leftovers in now-global territory
-                next = com.axalotl.fabrolia.common.regions.TickDomains.enforceConsumerDomain(
-                        level, access, chunkPos, -1, -1, gameTime);
-                if (next > gameTime) continue;
-            } else {
-                next = com.axalotl.fabrolia.common.regions.TickDomains.enforceConsumerDomain(
-                        level, access, chunkPos, -1, -1, gameTime);
-                if (next > gameTime) continue;
-            }
-            if (globals == null) globals = new LongArrayList(8);
-            globals.add(chunkPos);
-        }
+        LongArrayList globals = discoverGlobalDueChunks(
+                rs, gameTime, access, nextTick);
         if (globals != null) {
-            runSlice(access, globals, gameTime, budget, ticker);
+            // The ownerless/global lane stays vanilla-local to physical Main.
+            // A whole-island same-L HOLD has no meaning here, and a synthetic
+            // cell frontier would let later vanilla phases overtake only part
+            // of the scheduled lane.  Use the ordinary exact tickCheck skip.
+            RegionScheduler.runGlobalMainBody(level.getServer(), () -> {
+                // Fence acquisition can service native Main progress. Resolve
+                // the complement again before touching any collected body;
+                // a candidate adopted in that interval belongs to its unit.
+                LongArrayList residual = discoverGlobalDueChunks(
+                        rs, gameTime, access, nextTick);
+                if (residual != null) {
+                    runSlice(access, residual, gameTime, budget, ticker);
+                }
+            });
         }
+        RegionScheduler.commitSuccessIfHealthy(() -> {});
         return true;
+    }
+
+    private record CausalPreflightHold(long chunkPos, ScheduledTick<?> head,
+                                       String reason) {}
+
+    /**
+     * Causal-only admission probe before command shards, island tasks and
+     * cross-dimension arrivals can mutate this candidate logical tick.
+     *
+     * <p>The terrain hot path does one nextTick lookup and one monotonic hint
+     * read per due container. It never calls the expensive holder predicate for
+     * leaves/falling blocks. Only a container which has ever contained a
+     * pulse-sensitive block tick is normalized to the owner clock and scanned.
+     * No tick is detached, polled or executed here; the normal post-head prepare
+     * remains authoritative and also discovers delay-zero work produced by the
+     * admitted unit head.
+     *
+     * @return false when the unit must retry the same L before entering its
+     *         producer phases.
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    static boolean preflightIslandScheduled(RegionizedServer rs, EpochDomain d,
+                                            long unitTime) {
+        Object accessObj = rs.blockTicksAccess;
+        if (accessObj == null || d.owner == null) return true;
+        LevelTicksIslandAccess access = (LevelTicksIslandAccess) accessObj;
+        Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
+        if (nextTick.isEmpty()) return true;
+
+        IslandRegistry.PIsland owner = d.owner;
+        CausalPreflightHold hold = null;
+        var cells = owner.cells.iterator();
+        while (cells.hasNext() && hold == null) {
+            long cellKey = cells.nextLong();
+            Region core = rs.regionizer().peekByGridKey(cellKey);
+            if (core == null || core.domain != d) {
+                throw scheduledDiscoveryInvariant("causal preflight owner core",
+                        cellKey, core, d);
+            }
+            hold = probeCausalPreflightCell(rs, d, access, nextTick,
+                    cellKey, unitTime);
+        }
+
+        var haloCells = owner.haloCells.iterator();
+        while (haloCells.hasNext() && hold == null) {
+            long cellKey = haloCells.nextLong();
+            Region halo = rs.regionizer().peekByGridKey(cellKey);
+            int populatedChunks = halo == null ? 0 : halo.fullChunkCount.get();
+            if (populatedChunks == 0) continue;
+            if (populatedChunks < 0 || halo.domain != d) {
+                throw scheduledDiscoveryInvariant("causal preflight populated owner halo",
+                        cellKey, halo, d);
+            }
+            hold = probeCausalPreflightCell(rs, d, access, nextTick,
+                    cellKey, unitTime);
+        }
+        if (hold == null) return true;
+
+        PreparedIslandLane diagnostic = new PreparedIslandLane(
+                access, null, new AtomicInteger(0), true, null);
+        markHold(diagnostic, hold.chunkPos(), hold.head(), hold.reason());
+        long islandId = owner.id;
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> reportHold(rs.level, islandId, unitTime, diagnostic));
+        return false;
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static CausalPreflightHold probeCausalPreflightCell(
+            RegionizedServer rs, EpochDomain d, LevelTicksIslandAccess access,
+            Long2LongMap nextTick, long cellKey, long unitTime) {
+        Long2ObjectMap<LevelChunkTicks<Object>> containers =
+                access.fabrolia$allContainers();
+        int shift = rs.regionizer().grid.shift;
+        int side = 1 << shift;
+        int baseChunkX = ((int) cellKey) << shift;
+        int baseChunkZ = ((int) (cellKey >> 32)) << shift;
+        boolean frontierClosed = hasClosedScheduledFrontier(rs, d, cellKey);
+        for (int dx = 0; dx < side; dx++) {
+            for (int dz = 0; dz < side; dz++) {
+                long chunkPos = ChunkPos.pack(baseChunkX + dx, baseChunkZ + dz);
+                if (nextTick.get(chunkPos) == Long.MAX_VALUE) continue;
+                LevelChunkTicks<Object> container = containers.get(chunkPos);
+                if (container == null) continue;
+                ScheduledTick<Object> head = container.peek();
+                if (head == null) continue;
+                CausalScheduledTickIndex hint =
+                        (CausalScheduledTickIndex) (Object) container;
+                if (!ScheduledTickIslandAdmission.requiresPulseCoherence(head.type())
+                        && !hint.fabrolia$mayContainPulseSensitiveTick()) {
+                    continue;
+                }
+
+                // Normalize only the cold causal candidate. This is the same
+                // idempotent owner-clock heal used by normal discovery; it may
+                // refresh the compressed nextTick key but consumes no work.
+                long next = TickDomains.enforceConsumerDomain(
+                        rs.level, access, chunkPos,
+                        d.owner.id, d.owner.gen, unitTime);
+                if (next > unitTime) continue;
+                container = containers.get(chunkPos);
+                head = container != null ? container.peek() : null;
+                if (container == null || head == null || head.triggerTick() > unitTime
+                        || !hasDuePulseSensitiveTick(container, head, unitTime)) {
+                    continue;
+                }
+                if (!frontierClosed) {
+                    return new CausalPreflightHold(chunkPos, head,
+                            "pulse-sensitive-head-preflight/open-write-frontier");
+                }
+
+
+                boolean blockDmBefore = rs.level.shouldTickBlocksAt(chunkPos);
+                boolean exact = access.fabrolia$tickCheck().test(chunkPos);
+                if (exact) continue;
+                boolean blockDmAfter = rs.level.shouldTickBlocksAt(chunkPos);
+                if (blockDmBefore || blockDmAfter) {
+                    return new CausalPreflightHold(chunkPos, head,
+                            "pulse-sensitive-head-preflight/exact-refusal/dm-true");
+                }
+            }
+        }
+        return null;
     }
 
     /** Unit coordinator, FIRST unit segment (before block events): the
      *  island's due scheduled ticks at its unit time — block lane then fluid
      *  lane, vanilla slot order. No-op until the slot has registered the
-     *  schedulers (first tick after async enable). */
-    static void runIslandScheduled(RegionizedServer rs, EpochDomain d, long unitTime) {
+     *  schedulers (first tick after async enable).
+     *
+     * <p>A transient exact-readiness refusal containing a due pulse-sensitive
+     * tick admits no part of the unit. Every scheduled container and every
+     * later vanilla phase stays behind the same logical frontier, and the pacer
+     * retries this candidate L after one normal tick period. Ordinary terrain
+     * ticks use vanilla's per-container refusal and never hold the island.</p>
+     *
+     * @return true when the scheduled frontier was admitted; false when the
+     *         complete island unit must remain at the same logical tick.
+     */
+    static boolean runIslandScheduled(RegionizedServer rs, EpochDomain d, long unitTime) {
         // BUDGET SEMANTICS FIX (2026-07-13 production overdue-burst trace):
         // the island lanes used the SHARED per-level budget, which main's slot
         // resets once per MAIN tick — while islands consume at THEIR cadence.
@@ -170,168 +589,635 @@ public final class IslandScheduledTicks {
         // island IS the level from its own clock's perspective (same mapping
         // as random ticks and spawn cycles). Bounded per unit, never coupled
         // to main's load, no cross-island starvation.
-        runIslandLane(rs, d, unitTime, rs.blockTicksAccess, rs.blockTicker,
-                new AtomicInteger(65536), true);
-        runIslandLane(rs, d, unitTime, rs.fluidTicksAccess, rs.fluidTicker,
+        // FAIL-CLOSED ADMISSION (BYUC prod seam), deliberately BLOCK-LANE ONLY.
+        // Observer -> Dropper -> Crafter is block scheduled work, but its next
+        // producer may live in block-event/entity/BE phases. Therefore a
+        // refused pulse target cannot be made coherent by withholding only that
+        // container: the complete unit must stay at the same L. Leaves/sand/
+        // gravel retain vanilla's local refusal and do not enter this path.
+        PreparedIslandLane<?> block = prepareIslandLane(rs, d, unitTime,
+                rs.blockTicksAccess, rs.blockTicker, new AtomicInteger(65536), true);
+        if (block.hold) {
+            long islandId = d.owner != null ? d.owner.id : -1;
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> reportHold(rs.level, islandId, unitTime, block));
+            return false;
+        }
+
+        // PRECOMMIT IDENTITY BELT: the slow exact holder/future gate was read
+        // outside this monitor (avoids holder<->tickLock inversion). Under the
+        // structural lock revalidate every observed canonical container/head,
+        // detach the admitted keys, and fully collect immutable ScheduledTick
+        // records. No block handler runs until that frontier is self-consistent.
+        // Scope is intentionally the due-key snapshot vanilla collection saw:
+        // a brand-new key scheduled after that snapshot waits for the next L,
+        // as it would when scheduled after vanilla's collect phase. We do not
+        // rescan the slow exact holder gate under tickLock; the proven target
+        // is the already-pending Observer whose retained head caused dedup.
+        SliceExecution<?> blockExecution = commitPreparedBlockLane(block, unitTime);
+        if (block.hold) {
+            long islandId = d.owner != null ? d.owner.id : -1;
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> reportHold(rs.level, islandId, unitTime, block));
+            return false;
+        }
+
+        runCollectedIslandLane(block, blockExecution);
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> applyLaneDiagnosticsSafely(rs, d, unitTime, block));
+
+        // Vanilla lane timing: collect fluid only AFTER every block handler.
+        // It uses the ordinary exact predicate/refusal skip and can therefore
+        // see delay-0 fluid ticks scheduled by the block lane. Fluid never
+        // defers an already-partially-executed island unit.
+        runVanillaIslandLane(rs, d, unitTime, rs.fluidTicksAccess, rs.fluidTicker,
                 new AtomicInteger(65536), false);
+        return true;
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void runIslandLane(RegionizedServer rs, EpochDomain d, long unitTime,
-                                      Object accessObj, java.util.function.BiConsumer tickerRaw,
-                                      AtomicInteger budget, boolean blockLane) {
+    private static PreparedIslandLane<?> prepareIslandLane(
+            RegionizedServer rs, EpochDomain d, long unitTime,
+            Object accessObj, java.util.function.BiConsumer tickerRaw,
+            AtomicInteger budget, boolean blockLane) {
+        if (accessObj == null || tickerRaw == null) {
+            return new PreparedIslandLane<>(null, null, budget, blockLane, null);
+        }
+        LevelTicksIslandAccess access = (LevelTicksIslandAccess) accessObj;
+        Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
+        if (nextTick.isEmpty()) {
+            return new PreparedIslandLane<>(access, tickerRaw, budget, blockLane, null);
+        }
+        LongArrayList due = discoverIslandDueChunks(rs, d, unitTime, access, nextTick, false);
+        PreparedIslandLane lane = new PreparedIslandLane(
+                access, tickerRaw, budget, blockLane, due);
+        if (due != null) {
+            prepareBlockSlice(rs, d, lane, unitTime);
+        }
+        return lane;
+    }
+
+    /** Ordinary post-block lane: discover and collect at this exact slot, then
+     *  use vanilla's exact refusal skip. There is intentionally no fail-closed
+     *  preflight here; block handlers may schedule delay-0 fluid work that must
+     *  be visible to this collection. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void runVanillaIslandLane(
+            RegionizedServer rs, EpochDomain d, long unitTime,
+            Object accessObj, java.util.function.BiConsumer tickerRaw,
+            AtomicInteger budget, boolean blockLane) {
         if (accessObj == null || tickerRaw == null) return;
         LevelTicksIslandAccess access = (LevelTicksIslandAccess) accessObj;
         Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
         if (nextTick.isEmpty()) return;
+        LongArrayList due = discoverIslandDueChunks(rs, d, unitTime, access, nextTick, true);
+        if (due == null) return;
+        PreparedIslandLane lane = new PreparedIslandLane(
+                access, tickerRaw, budget, blockLane, due);
+        runSlice(access, due, unitTime, budget, tickerRaw, lane);
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> applyLaneDiagnosticsSafely(rs, d, unitTime, lane));
+    }
+
+    @SuppressWarnings({"rawtypes"})
+    private static LongArrayList discoverIslandDueChunks(
+            RegionizedServer rs, EpochDomain d, long unitTime,
+            LevelTicksIslandAccess access, Long2LongMap nextTick, boolean closedFrontierOnly) {
         LongArrayList due = null;
-        long maxOverdue = 0;
-        long overdueChunk = 0;
-        ThreadedRegionizer reg = rs.regionizer();
-        long laneIslandId = d.owner != null ? d.owner.id : -1;
-        long laneGen = d.owner != null ? d.owner.gen : -1;
-        for (Long2LongMap.Entry e : nextTick.long2LongEntrySet()) {
-            long chunkPos = e.getLongKey();
-            long next = e.getLongValue();
-            if (next > unitTime) {
-                // Possibly a FROZEN mismatch (container tagged to a different
-                // clock than this consuming lane — e.g. WALL-tagged inside
-                // island territory with L behind wall). Rare branch: one
-                // region peek + one tag read; healthy future entries fall
-                // straight through. Healing here is what un-stalls a machine
-                // whose triggers were parked on the wrong clock.
-                Region rf = reg.peekByGridKey(reg.grid.keyFor(chunkPos));
-                if (rf == null || rf.domain != d) continue;
-                next = com.axalotl.fabrolia.common.regions.TickDomains.enforceConsumerDomain(
-                        rs.level, access, chunkPos, laneIslandId, laneGen, unitTime);
-                if (next > unitTime) continue;
-                if (due == null) due = new LongArrayList(16);
-                due.add(chunkPos);
+        IslandRegistry.PIsland owner = d.owner;
+        if (owner == null) return null;
+
+        // OWNER-LOCAL DISCOVERY (2026-08-29): the old implementation copied and
+        // scanned the complete level-wide nextTickForContainer table once for
+        // every autonomous island and for both lanes. With 100 separated players
+        // that was O(I * (Nblock + Nfluid)); worse, copyPrimitiveEntries scans
+        // segment capacity, so terrain generation left a permanent high-water
+        // cost even after most scheduled keys disappeared.
+        //
+        // A static cell owns exactly (2^shift)^2 chunk positions. The unit claim
+        // keeps the frontier stable. A newly FULL halo may supply scheduled work
+        // only when its own one-cell write halo is also owned. Otherwise fluid
+        // spread or block updates can escape the current domain before Main's
+        // next topology promotion. Keep unsafe block candidates for pulse HOLD
+        // arbitration; fluid candidates remain indexed and unconsumed here.
+        long laneIslandId = owner.id;
+        long laneGen = owner.gen;
+        var cells = owner.cells.iterator();
+        while (cells.hasNext()) {
+            long cellKey = cells.nextLong();
+            Region core = rs.regionizer().peekByGridKey(cellKey);
+            // A core can depopulate on Main after this wall tick's rebuild while
+            // its current unit is already running. It remains in this stable
+            // owner frontier until the next rebuild, so scan it but require the
+            // domain identity to stay exact.
+            if (core == null || core.domain != d) {
+                throw scheduledDiscoveryInvariant("owner core", cellKey, core, d);
+            }
+            due = probeCellDueChunks(rs, access, nextTick, cellKey,
+                    laneIslandId, laneGen, unitTime, due);
+        }
+
+        var haloCells = owner.haloCells.iterator();
+        while (haloCells.hasNext()) {
+            long cellKey = haloCells.nextLong();
+            Region halo = rs.regionizer().peekByGridKey(cellKey);
+            int populatedChunks = halo == null ? 0 : halo.fullChunkCount.get();
+            if (populatedChunks == 0) continue;
+            if (populatedChunks < 0 || halo.domain != d) {
+                throw scheduledDiscoveryInvariant("populated owner halo", cellKey, halo, d);
+            }
+            if (closedFrontierOnly && !hasClosedScheduledFrontier(rs, d, cellKey)) continue;
+            due = probeCellDueChunks(rs, access, nextTick, cellKey,
+                    laneIslandId, laneGen, unitTime, due);
+        }
+        return due;
+    }
+    /** Core closure is a topology invariant. A newly populated halo has no such
+     *  guarantee: require its complete write margin before admitting handlers.
+     *  Existing Regions retain authority over the cold-creation snapshot. */
+    private static boolean hasClosedScheduledFrontier(
+            RegionizedServer rs, EpochDomain d, long cellKey) {
+        if (d.owner.cells.contains(cellKey)) return true;
+        int cellX = (int) cellKey;
+        int cellZ = (int) (cellKey >> 32);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                long neighborKey = ((cellX + dx) & 0xFFFFFFFFL)
+                        | (((cellZ + dz) & 0xFFFFFFFFL) << 32);
+                Region neighbor = rs.regionizer().peekByGridKey(neighborKey);
+                EpochDomain target = neighbor == null
+                        ? rs.domainForCreation(neighborKey) : neighbor.domain;
+                if (target != d) return false;
+            }
+        }
+        return true;
+    }
+
+
+    /**
+     * Discover physical-Main scheduled work without scanning the level-wide
+     * nextTick map. The FULL transition seam maintains the exact set of cells
+     * whose stored keys can currently pass vanilla tickCheck. Adopted cells are
+     * removed only after their owner core/halo registry is verified.
+     */
+    private static <T> LongArrayList discoverGlobalDueChunks(
+            RegionizedServer rs, long gameTime, LevelTicksIslandAccess<T> access,
+            Long2LongMap nextTick) {
+        LongArrayList due = null;
+        ThreadedRegionizer regionizer = rs.regionizer();
+        var cells = rs.scheduledTickDiscoveryCellsMainThread("global discovery").iterator();
+        while (cells.hasNext()) {
+            long cellKey = cells.nextLong();
+            Region region = regionizer.peekByGridKey(cellKey);
+            if (region == null || region.fullChunkCount.get() <= 0 || region.domain == null) {
+                throw scheduledDiscoveryInvariant(
+                        "physical-Main candidate", cellKey, region, rs.globalDomain);
+            }
+
+            EpochDomain domain = region.domain;
+            IslandRegistry.PIsland owner = domain.owner;
+            if (owner != null) {
+                if (owner.retired
+                        || (!owner.cells.contains(cellKey) && !owner.haloCells.contains(cellKey))) {
+                    throw scheduledDiscoveryInvariant(
+                            "adopted candidate outside owner frontier", cellKey, region, domain);
+                }
+                cells.remove();
                 continue;
             }
-            Region r = reg.peekByGridKey(reg.grid.keyFor(chunkPos));
-            if (r == null || r.domain != d) continue;   // not ours (disjoint keys per unit)
-            // Due-looking entry may be a COMPRESSED mismatch (wall triggers
-            // read as overdue vs L ahead of wall): enforce first, re-evaluate.
-            next = com.axalotl.fabrolia.common.regions.TickDomains.enforceConsumerDomain(
-                    rs.level, access, chunkPos, laneIslandId, laneGen, unitTime);
-            if (next > unitTime) continue;
-            if (due == null) due = new LongArrayList(16);
-            due.add(chunkPos);
-            long over = unitTime - next;
-            // PRODUCTION-BOUNDED detector (2026-07-14 flood incident: 8000+
-            // per-entry records + minutely 4096-line ERROR dumps for KNOWN
-            // dormant fringe fluids/leaves). Expected dormant aging is now a
-            // pair of cheap aggregate counters — no strings, no ring writes,
-            // no logging. Only candidates >32 behind even do the verify reads.
-            if (over > 32 && over > maxOverdue) {
-                Object cObj = access.fabrolia$allContainers().get(chunkPos);
-                net.minecraft.world.ticks.ScheduledTick<?> head =
-                        cObj instanceof net.minecraft.world.ticks.LevelChunkTicks<?> c
-                                ? c.peek() : null;
-                long realOver = head == null ? 0 : unitTime - head.triggerTick();
-                if (!access.fabrolia$tickCheck().test(chunkPos)) {
-                    // Fringe chunk outside block-ticking range: vanilla leaves
-                    // its pending ticks aging indefinitely BY DESIGN. Counter
-                    // only; identities available via /fabrolia regions
-                    // flightrec dump when explicitly requested.
-                    if (realOver > 32) {
-                        FlightRecorder.DORMANT_REFUSED.increment();
-                        FlightRecorder.noteDormantAge(realOver);
-                    }
-                    continue;
-                }
-                if (realOver > maxOverdue) {
-                    maxOverdue = realOver;
-                    overdueChunk = chunkPos;
-                }
+            if (domain != rs.globalDomain) {
+                throw scheduledDiscoveryInvariant(
+                        "ownerless non-global candidate", cellKey, region, rs.globalDomain);
+            }
+            due = probeCellDueChunks(rs, access, nextTick, cellKey,
+                    -1L, -1L, gameTime, due);
+        }
+        return due;
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static LongArrayList probeCellDueChunks(
+            RegionizedServer rs, LevelTicksIslandAccess access, Long2LongMap nextTick,
+            long cellKey, long laneIslandId, long laneGen, long laneTime,
+            LongArrayList due) {
+        int shift = rs.regionizer().grid.shift;
+        int side = 1 << shift;
+        int baseChunkX = ((int) cellKey) << shift;
+        int baseChunkZ = ((int) (cellKey >> 32)) << shift;
+        for (int dx = 0; dx < side; dx++) {
+            for (int dz = 0; dz < side; dz++) {
+                long chunkPos = ChunkPos.pack(baseChunkX + dx, baseChunkZ + dz);
+                long next = nextTick.get(chunkPos);
+                if (next == Long.MAX_VALUE) continue;
+
+                // The container tag, not the map's compressed wall/logical
+                // value, is authoritative across topology/domain transitions.
+                next = com.axalotl.fabrolia.common.regions.TickDomains
+                        .enforceConsumerDomain(
+                                rs.level, access, chunkPos,
+                                laneIslandId, laneGen, laneTime);
+                if (next > laneTime) continue;
+                if (due == null) due = new LongArrayList(16);
+                due.add(chunkPos);
             }
         }
-        // MACHINE INVARIANT (2026-07-13 flight recorder): a healthy island's
-        // pending triggers are at most a few ticks behind its own L (vanilla
-        // budget carry-over under load). A REAL head trigger 32+ ticks overdue
-        // means pending triggers crossed a clock jump or a migration lost
-        // translation — the compressed-pulse signature that breaks loaded
-        // machines. Record + dump the ring for the field trace.
-        if (maxOverdue > 32) {
-            String dim = rs.level.dimension().identifier().toString();
-            // Strong-signal gate: a tickable container that stays overdue
-            // across >=3 CONSECUTIVE units of the same lane is genuinely stuck
-            // (budget starvation or a scheduler bug) — that dumps. A single
-            // sighting is an aged fringe chunk ENTERING ticking range
-            // delivering its backlog (vanilla-legal, drains this unit) — that
-            // only records to the in-memory ring.
-            boolean stuck;
-            if (blockLane) {
-                stuck = d.overdueStreakChunkB == overdueChunk && ++d.overdueStreakB >= 3;
-                if (d.overdueStreakChunkB != overdueChunk) { d.overdueStreakChunkB = overdueChunk; d.overdueStreakB = 1; }
+        return due;
+    }
+
+    private static IllegalStateException scheduledDiscoveryInvariant(
+            String scope, long cellKey, Region region, EpochDomain expected) {
+        String actual = region == null ? "<missing-region>"
+                : region.domain == null ? "<null-domain>"
+                : region.domain == expected ? "expected"
+                : region.domain.owner == null ? "global/ownerless"
+                : "island#" + region.domain.owner.id + "/gen" + region.domain.owner.gen;
+        return new IllegalStateException("scheduled-tick discovery invariant failed: scope="
+                + scope + " cell=" + (int) cellKey + "," + (int) (cellKey >> 32)
+                + " full=" + (region == null ? -1 : region.fullChunkCount.get())
+                + " actualDomain=" + actual);
+    }
+
+    /**
+     * Exact cold-path check behind the monotonic per-container hint. The head
+     * shortcut covers the normal machine case; a snapshot scan is needed when
+     * one of several due Observer/Dropper ticks is not the container head.
+     * Pure worldgen containers never set the hint and therefore never scan.
+     */
+    private static <T> boolean hasDuePulseSensitiveTick(LevelChunkTicks<T> container,
+                                                        ScheduledTick<T> head,
+                                                        long gameTime) {
+        if (head != null && head.triggerTick() <= gameTime
+                && ScheduledTickIslandAdmission.requiresPulseCoherence(head.type())) {
+            return true;
+        }
+        CausalScheduledTickIndex index = (CausalScheduledTickIndex) (Object) container;
+        if (!index.fabrolia$mayContainPulseSensitiveTick()) return false;
+        synchronized (container) {
+            return container.getAll().anyMatch(tick -> tick.triggerTick() <= gameTime
+                    && ScheduledTickIslandAdmission.requiresPulseCoherence(tick.type()));
+        }
+    }
+
+    /** Exact vanilla collection decision without shared queue/map mutation.
+     *  Both autonomous and wall-clock block lanes use this same read-only
+     *  pass; only the static cell frontier differs from vanilla collection. */
+    private static <T> void prepareBlockSlice(RegionizedServer rs, EpochDomain d,
+                                               PreparedIslandLane<T> lane,
+                                               long gameTime) {
+        ServerLevel level = rs.level;
+        LevelTicksIslandAccess<T> access = lane.access;
+        Long2ObjectMap<LevelChunkTicks<T>> containers = access.fabrolia$allContainers();
+        LongPredicate tickCheck = access.fabrolia$tickCheck();
+        long checkedCell = 0;
+        boolean checkedFrontier = false;
+        boolean frontierClosed = false;
+        for (int i = 0, n = lane.dueChunks.size(); i < n; i++) {
+            long chunkPos = lane.dueChunks.getLong(i);
+            LevelChunkTicks<T> container = containers.get(chunkPos);
+            if (container == null) {
+                lane.prepared.add(new PreparedChunk<>(chunkPos, null, null, false));
+                continue;
+            }
+            ScheduledTick<T> peek = container.peek();
+            if (peek == null || peek.triggerTick() > gameTime) {
+                lane.prepared.add(new PreparedChunk<>(chunkPos, container, peek, false));
+                continue;
+            }
+            long cellKey = rs.regionizer().grid.keyFor(chunkPos);
+            if (!checkedFrontier || checkedCell != cellKey) {
+                frontierClosed = hasClosedScheduledFrontier(rs, d, cellKey);
+                checkedCell = cellKey;
+                checkedFrontier = true;
+            }
+            if (!frontierClosed) {
+                lane.prepared.add(new PreparedChunk<>(chunkPos, container, peek, false));
+                if (hasDuePulseSensitiveTick(container, peek, gameTime)) {
+                    markHold(lane, chunkPos, peek, "pulse-sensitive-open-write-frontier");
+                }
+                continue;
+            }
+
+
+            // Within the closed write frontier, exact tickCheck remains the
+            // readiness authority. The completed DM snapshot is sampled before it and,
+            // on refusal, once after it solely to distinguish stable dormant
+            // fringe from a transient readiness/publication hole.
+            boolean blockDmBefore = level.shouldTickBlocksAt(chunkPos);
+            boolean exact = tickCheck.test(chunkPos);
+            if (exact) {
+                lane.prepared.add(new PreparedChunk<>(chunkPos, container, peek, true));
+                long overdue = gameTime - peek.triggerTick();
+                if (overdue > 32 && overdue > lane.maxOverdue) {
+                    lane.maxOverdue = overdue;
+                    lane.overdueChunk = chunkPos;
+                }
+                continue;
+            }
+            lane.prepared.add(new PreparedChunk<>(chunkPos, container, peek, false));
+            boolean blockDmAfter = level.shouldTickBlocksAt(chunkPos);
+            boolean blockDmReady = blockDmBefore || blockDmAfter;
+            boolean pulseCoherenceRequired = blockDmReady
+                    && hasDuePulseSensitiveTick(container, peek, gameTime);
+            ScheduledTickIslandAdmission.Decision decision =
+                    ScheduledTickIslandAdmission.classify(
+                            false, blockDmReady, pulseCoherenceRequired);
+            if (decision == ScheduledTickIslandAdmission.Decision.HOLD) {
+                markHold(lane, chunkPos, peek,
+                        "pulse-sensitive-exact-refusal/dm-true");
             } else {
-                stuck = d.overdueStreakChunkF == overdueChunk && ++d.overdueStreakF >= 3;
-                if (d.overdueStreakChunkF != overdueChunk) { d.overdueStreakChunkF = overdueChunk; d.overdueStreakF = 1; }
-            }
-            if (FlightRecorder.DEBUG) {
-                FlightRecorder.record("OVERDUE-BURST " + dim + " island#"
-                        + (d.owner != null ? d.owner.id : -1) + " L=" + unitTime
-                        + " maxOverdue=" + maxOverdue + " dueContainers=" + (due == null ? 0 : due.size())
-                        + " lane=" + (blockLane ? "block" : "fluid"));
-            }
-            // Top overdue containers, full identity (user directive: prove the
-            // exact dimension/chunk/type — never classify blind again).
-            if (FlightRecorder.DEBUG && stuck && due != null) {
-                int logged = 0;
-                for (int i = 0; i < due.size() && logged < 5; i++) {
-                    long cp = due.getLong(i);
-                    Object cObj = access.fabrolia$allContainers().get(cp);
-                    if (!(cObj instanceof net.minecraft.world.ticks.LevelChunkTicks<?> c)) continue;
-                    net.minecraft.world.ticks.ScheduledTick<?> h = c.peek();
-                    if (h == null || unitTime - h.triggerTick() <= 32) continue;
-                    logged++;
-                    Region reg2 = reg.peekByGridKey(reg.grid.keyFor(cp));
-                    FlightRecorder.record("OVERDUE-CONTAINER " + dim
-                            + " chunk=[" + net.minecraft.world.level.ChunkPos.getX(cp)
-                            + "," + net.minecraft.world.level.ChunkPos.getZ(cp) + "]"
-                            + " region=" + (reg2 == null ? "?" : Long.toHexString(reg2.gridKey))
-                            + " island#" + (d.owner != null ? d.owner.id : -1)
-                            + " blockTicking=" + access.fabrolia$tickCheck().test(cp)
-                            + " entityTicking=" + rs.level.getChunkSource().chunkMap
-                                    .getDistanceManager().inEntityTickingRange(cp)
-                            + " count=" + c.count()
-                            + " L=" + unitTime
-                            + " head=" + describeHead(h)
-                            + " overdue=" + (unitTime - h.triggerTick())
-                            + " lane=" + (blockLane ? "block" : "fluid"));
+                long overdue = gameTime - peek.triggerTick();
+                if (overdue > 32) {
+                    lane.dormantRefused++;
+                    lane.dormantMaxAge = Math.max(lane.dormantMaxAge, overdue);
                 }
             }
-            if (stuck) {
-                FlightRecorder.dump("TICKABLE container stuck overdue " + maxOverdue
-                        + " ticks across 3+ consecutive units on island#"
-                        + (d.owner != null ? d.owner.id : -1)
-                        + " (" + dim + ") — OVERDUE-CONTAINER lines above carry"
-                        + " chunk/type/trigger identity; TOPO/REBASE lines nearby ="
-                        + " migration bug; BUDGET-EXHAUSTED lines = throughput starvation");
+            // DORMANT retains only this refused container as vanilla does.
+            // HOLD is reserved for a due pulse-sensitive tick: the caller runs
+            // no handler from this lane and no later island phase at this L.
+        }
+    }
+
+    /** Revalidate every canonical block container/head before any mutation.
+     *  Pulse-sensitive drift holds the complete unit. Ordinary world work is
+     *  converted to the same per-container refusal vanilla would make instead
+     *  of freezing the island behind a leaf/gravel publication race. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static boolean validatePreparedIslandLane(PreparedIslandLane<?> rawLane,
+                                                       long unitTime) {
+        PreparedIslandLane lane = rawLane;
+        if (lane.access == null || lane.dueChunks == null) return true;
+        Long2ObjectMap<LevelChunkTicks<Object>> containers =
+                lane.access.fabrolia$allContainers();
+        for (int i = 0, n = lane.prepared.size(); i < n; i++) {
+            PreparedChunk<Object> prepared = (PreparedChunk<Object>) lane.prepared.get(i);
+            LevelChunkTicks<Object> current = containers.get(prepared.chunkPos);
+            ScheduledTick<Object> currentHead = current != null ? current.peek() : null;
+            boolean stable = ScheduledTickIslandAdmission.preparedShapeStable(
+                    prepared.container, current, prepared.head, currentHead);
+            if (stable && prepared.admitted) {
+                stable = prepared.head != null && prepared.head.triggerTick() <= unitTime;
+            }
+            if (!stable) {
+                boolean preparedPulse = prepared.head != null
+                        && prepared.head.triggerTick() <= unitTime
+                        && ScheduledTickIslandAdmission.requiresPulseCoherence(
+                                prepared.head.type());
+                boolean currentPulse = current != null
+                        && hasDuePulseSensitiveTick(current, currentHead, unitTime);
+                if (preparedPulse || currentPulse) {
+                    markHold(lane, prepared.chunkPos,
+                            currentPulse ? currentHead : prepared.head,
+                            current == prepared.container
+                                    ? "pulse-sensitive-head-drift"
+                                    : "pulse-sensitive-container-drift");
+                    return false;
+                }
+                lane.prepared.set(i, new PreparedChunk<>(
+                        prepared.chunkPos, current, currentHead, false));
+            }
+        }
+        return true;
+    }
+
+    /** Validate and detach one coherent block frontier. Exact readiness is
+     *  never re-read after preparation. Under the scheduler lock a racing
+     *  pulse-sensitive change converts the read-only plan to HOLD before a
+     *  nextTick key or scheduled container is touched; ordinary drift is kept
+     *  durable for the next vanilla-style collection. */
+    private static SliceExecution<?> commitPreparedBlockLane(
+            PreparedIslandLane<?> lane, long gameTime) {
+        if (lane.access == null || lane.dueChunks == null) return null;
+        SliceRegistry registry = lane.access.fabrolia$sliceRegistry();
+        Lock read = registry.visibility.readLock();
+        read.lock();
+        try {
+        // Global order is visibility -> scheduler structural lock -> slice
+        // state -> container. clear/copy use the same prefix with the write
+        // side, so a queued writer cannot form read<->tickLock AB-BA here.
+        synchronized (lane.access.fabrolia$tickLock()) {
+            try {
+                if (!validatePreparedIslandLane(lane, gameTime)) {
+                    return null;
+                }
+                PriorityQueue<?> ready =
+                        commitPreparedIslandSliceUnchecked(lane, gameTime);
+                return collectCommittedIslandLane(gameTime, lane, ready);
+            } catch (Throwable thrown) {
+                // commitPreparedIslandSlice removes due-key indexes before
+                // collectSlice allocates its deque and enters its own cleanup
+                // envelope. A peer W or allocation failure in that gap must not
+                // leave durable containers invisible. Rebuild every index while
+                // this exact structural lock is still held, then propagate W.
+                Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+                failure = reindexPreparedLaneAfterFailure(lane, failure);
+                IslandScheduledTicks.<RuntimeException>rethrow(failure);
+                return null;
+            }
+        }
+        } finally {
+            read.unlock();
+        }
+    }
+
+    /** Mandatory failure cleanup for the prepare -> detach -> collect
+     *  transaction. The caller still owns fabrolia$tickLock. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static Throwable reindexPreparedLaneAfterFailure(
+            PreparedIslandLane<?> rawLane, Throwable primary) {
+        Throwable failure = primary;
+        try {
+            PreparedIslandLane lane = rawLane;
+            if (lane.access == null || lane.dueChunks == null) return failure;
+            Long2ObjectMap<LevelChunkTicks<Object>> containers =
+                    lane.access.fabrolia$allContainers();
+            Long2LongMap nextTick = lane.access.fabrolia$nextTickForContainer();
+            // prepareBlockSlice de-duplicates due keys before appending records,
+            // so this pass needs no allocation-backed seen set (important on an
+            // OOME cleanup path).
+            for (int i = 0, n = lane.prepared.size(); i < n; i++) {
+                PreparedChunk<Object> prepared =
+                        (PreparedChunk<Object>) lane.prepared.get(i);
+                LevelChunkTicks<Object> current = containers.get(prepared.chunkPos);
+                ScheduledTick<Object> head = current != null ? current.peek() : null;
+                if (head == null) nextTick.remove(prepared.chunkPos);
+                else nextTick.put(prepared.chunkPos, head.triggerTick());
+            }
+        } catch (Throwable cleanup) {
+            failure = mergeFailure(failure, cleanup);
+        }
+        return failure;
+    }
+
+    /** Apply overdue/dormant diagnostic state only after the lane's scheduler
+     *  state is safe. Same-L rejected attempts must not look completed. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void applyPreparedDiagnostics(RegionizedServer rs, EpochDomain d,
+                                                 long unitTime,
+                                                 PreparedIslandLane<?> rawLane) {
+        PreparedIslandLane lane = rawLane;
+        if (lane.access == null || lane.dueChunks == null) return;
+        if (lane.dormantRefused > 0) {
+            FlightRecorder.DORMANT_REFUSED.add(lane.dormantRefused);
+            FlightRecorder.noteDormantAge(lane.dormantMaxAge);
+        }
+        if (lane.maxOverdue <= 32) {
+            if (lane.blockLane) { d.overdueStreakB = 0; d.overdueStreakChunkB = 0; }
+            else { d.overdueStreakF = 0; d.overdueStreakChunkF = 0; }
+            return;
+        }
+
+        boolean stuck;
+        if (lane.blockLane) {
+            stuck = d.overdueStreakChunkB == lane.overdueChunk && ++d.overdueStreakB >= 3;
+            if (d.overdueStreakChunkB != lane.overdueChunk) {
+                d.overdueStreakChunkB = lane.overdueChunk;
+                d.overdueStreakB = 1;
             }
         } else {
-            if (blockLane) { d.overdueStreakB = 0; d.overdueStreakChunkB = 0; }
-            else { d.overdueStreakF = 0; d.overdueStreakChunkF = 0; }
-        }
-        if (due != null) {
-            runSlice(access, due, unitTime, budget, tickerRaw);
-            if (budget.get() <= 0) {
-                FlightRecorder.record("BUDGET-EXHAUSTED " + rs.level.dimension().identifier()
-                        + " island#" + (d.owner != null ? d.owner.id : -1)
-                        + " L=" + unitTime + " lane=" + (blockLane ? "block" : "fluid")
-                        + " dueContainers=" + due.size());
-                if (++d.budgetExhaustStreak >= 5) {
-                    d.budgetExhaustStreak = 0;
-                    FlightRecorder.dump("budget exhausted 5+ consecutive units on island#"
-                            + (d.owner != null ? d.owner.id : -1)
-                            + " (" + rs.level.dimension().identifier()
-                            + ") — fresh machine ticks are being starved behind a backlog");
-                }
-            } else {
-                d.budgetExhaustStreak = 0;
+            stuck = d.overdueStreakChunkF == lane.overdueChunk && ++d.overdueStreakF >= 3;
+            if (d.overdueStreakChunkF != lane.overdueChunk) {
+                d.overdueStreakChunkF = lane.overdueChunk;
+                d.overdueStreakF = 1;
             }
         }
+        String dim = rs.level.dimension().identifier().toString();
+        if (FlightRecorder.DEBUG) {
+            FlightRecorder.record("OVERDUE-BURST " + dim + " island#"
+                    + (d.owner != null ? d.owner.id : -1) + " L=" + unitTime
+                    + " maxOverdue=" + lane.maxOverdue
+                    + " dueContainers=" + (lane.dueChunks == null ? 0 : lane.dueChunks.size())
+                    + " lane=" + (lane.blockLane ? "block" : "fluid"));
+            Object cObj = lane.access.fabrolia$allContainers().get(lane.overdueChunk);
+            if (stuck && cObj instanceof LevelChunkTicks<?> c) {
+                ScheduledTick<?> h = c.peek();
+                FlightRecorder.record("OVERDUE-CONTAINER " + dim
+                        + " chunk=[" + ChunkPos.getX(lane.overdueChunk)
+                        + "," + ChunkPos.getZ(lane.overdueChunk) + "]"
+                        + " island#" + (d.owner != null ? d.owner.id : -1)
+                        + " count=" + c.count() + " L=" + unitTime
+                        + " head=" + describeHead(h)
+                        + " overdue=" + lane.maxOverdue
+                        + " lane=" + (lane.blockLane ? "block" : "fluid"));
+            }
+        }
+        if (stuck) {
+            FlightRecorder.dump("TICKABLE container stuck overdue " + lane.maxOverdue
+                    + " ticks across 3+ consecutive completed units on island#"
+                    + (d.owner != null ? d.owner.id : -1) + " (" + dim + ")");
+        }
+    }
+
+    /** Drain the committed block frontier into a local handler queue. This
+     *  also restores every leftover nextTick index. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static SliceExecution<?> collectCommittedIslandLane(
+            long unitTime, PreparedIslandLane<?> rawLane, PriorityQueue<?> rawReady) {
+        PreparedIslandLane lane = rawLane;
+        if (lane.access == null || lane.dueChunks == null) return null;
+        return collectSlice(lane.access, (PriorityQueue) rawReady, unitTime, lane.budget);
+    }
+
+    /** Execute one already-collected lane without scheduler map/PQ work. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void runCollectedIslandLane(PreparedIslandLane<?> rawLane,
+                                               SliceExecution<?> rawExecution) {
+        PreparedIslandLane lane = rawLane;
+        if (lane.access == null || lane.dueChunks == null) return;
+        runCollectedSlice((SliceExecution) rawExecution, lane.ticker);
+    }
+
+    /** Budget diagnostics run only after this lane's scheduler state is safe. */
+    @SuppressWarnings({"rawtypes"})
+    private static void applyBudgetDiagnostics(RegionizedServer rs, EpochDomain d,
+                                               long unitTime,
+                                               PreparedIslandLane<?> lane) {
+        if (lane.access == null || lane.dueChunks == null) return;
+        if (lane.budget.get() <= 0) {
+            FlightRecorder.record("BUDGET-EXHAUSTED " + rs.level.dimension().identifier()
+                    + " island#" + (d.owner != null ? d.owner.id : -1)
+                    + " L=" + unitTime + " lane=" + (lane.blockLane ? "block" : "fluid")
+                    + " dueContainers=" + lane.dueChunks.size());
+            if (++d.budgetExhaustStreak >= 5) {
+                d.budgetExhaustStreak = 0;
+                FlightRecorder.dump("budget exhausted 5+ consecutive units on island#"
+                        + (d.owner != null ? d.owner.id : -1)
+                        + " (" + rs.level.dimension().identifier()
+                        + ") — fresh machine ticks are being starved behind a backlog");
+            }
+        } else {
+            d.budgetExhaustStreak = 0;
+        }
+    }
+
+    /** Diagnostics are observational: they cannot strand a collected queue or
+     *  mask a scheduled handler failure. */
+    private static void applyLaneDiagnosticsSafely(
+            RegionizedServer rs, EpochDomain d, long unitTime,
+            PreparedIslandLane<?> lane) {
+        try {
+            applyPreparedDiagnostics(rs, d, unitTime, lane);
+            applyBudgetDiagnostics(rs, d, unitTime, lane);
+        } catch (Throwable diagnostic) {
+            try {
+                LOGGER.error("[scheduled-ticks] post-lane diagnostic failed (contained)",
+                        diagnostic);
+            } catch (Throwable ignored) {
+                // Simulation state is already safe; diagnostics stay optional.
+            }
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static PriorityQueue<?> commitPreparedIslandSliceUnchecked(
+            PreparedIslandLane<?> lane, long gameTime) {
+        if (lane.access == null || lane.dueChunks == null) {
+            return new PriorityQueue<>();
+        }
+        return commitPreparedIslandSlice((PreparedIslandLane) lane, gameTime);
+    }
+
+    /** Apply the block plan revalidated under its structural lane lock. Exact
+     *  eligibility is deliberately not re-read under the lock. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static PriorityQueue<LevelChunkTicks<Object>> commitPreparedIslandSlice(
+            PreparedIslandLane lane, long gameTime) {
+        LevelTicksIslandAccess<Object> access = lane.access;
+        Long2ObjectMap<LevelChunkTicks<Object>> containers = access.fabrolia$allContainers();
+        Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
+        PriorityQueue<LevelChunkTicks<Object>> containersToTick =
+                new PriorityQueue<>((Comparator) containerOrder());
+        for (int i = 0, n = lane.prepared.size(); i < n; i++) {
+            PreparedChunk<Object> prepared = (PreparedChunk<Object>) lane.prepared.get(i);
+            LevelChunkTicks<Object> current = containers.get(prepared.chunkPos);
+            if (prepared.container == null) {
+                if (current == null) nextTick.remove(prepared.chunkPos);
+                continue;
+            }
+            if (prepared.admitted) {
+                // The block frontier already passed identity+head validation
+                // while its structural lock is held. Use the prepared canonical
+                // container directly: never drop only the target and let its
+                // source run.
+                nextTick.remove(prepared.chunkPos);
+                containersToTick.add(prepared.container);
+                continue;
+            }
+            if (current != prepared.container) {
+                continue; // cleanup observation raced a reinstall; new key owns its entry
+            }
+            ScheduledTick<Object> peek = current.peek();
+            if (peek == null) {
+                nextTick.remove(prepared.chunkPos);
+            } else {
+                // A future/empty-at-prepare container that became due was not
+                // exact-gated in this collection; leave it for the next
+                // collection instead of silently admitting it after the
+                // barrier decision.
+                nextTick.put(prepared.chunkPos, peek.triggerTick());
+            }
+        }
+        return containersToTick;
     }
 
     /** Bounded head description: pos, type, trigger, subTickOrder. */
@@ -341,160 +1227,169 @@ public final class IslandScheduledTicks {
                 + " trigger=" + h.triggerTick() + " sub=" + h.subTickOrder();
     }
 
-    /**
-     * @return true — phase handled (partitioned or nothing due); false — caller
-     *         must run the vanilla serial path.
-     */
-    public static <T> boolean tickPartitioned(LevelTicks<T> scheduler, ServerLevel level,
-                                              long gameTime, int maxTicks,
-                                              BiConsumer<BlockPos, T> ticker) {
-        if (!FabroliaConfig.fabroliaIslandScheduledTicks || !RegionScheduler.isActive()) {
-            return false;
-        }
-        RegionizedServer rs = RegionScheduler.forLevel(level);
-        if (rs == null || rs.islands().size() < 2) {
-            return false;   // one island = vanilla serial is already optimal
-        }
-        @SuppressWarnings("unchecked")
-        LevelTicksIslandAccess<T> access = (LevelTicksIslandAccess<T>) scheduler;
-        Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
-        if (nextTick.isEmpty()) {
-            return true;
-        }
-
-        // ---- partition due chunks per island (main, pre-fan-out) ----
-        int islandCount = rs.islands().size();
-        LongArrayList[] perIsland = new LongArrayList[islandCount];
-        LongArrayList isolated = null;
-        for (Long2LongMap.Entry e : nextTick.long2LongEntrySet()) {
-            if (e.getLongValue() > gameTime) {
-                continue;
-            }
-            long chunkPos = e.getLongKey();
-            // Plain-table lookup (rebuilt with the islands at tick HEAD) — same result
-            // as islandOfChunk's live concurrent-map probe, ~10x cheaper on this hot path.
-            int island = rs.islandForChunk(chunkPos);
-            if (island < 0 || island >= islandCount) {
-                if (isolated == null) isolated = new LongArrayList(4);
-                isolated.add(chunkPos);
-            } else {
-                LongArrayList list = perIsland[island];
-                if (list == null) perIsland[island] = list = new LongArrayList(16);
-                list.add(chunkPos);
-            }
-        }
-
-        ArrayList<LongArrayList> slices = new ArrayList<>(islandCount);
-        for (LongArrayList list : perIsland) {
-            if (list != null) slices.add(list);
-        }
-        if (slices.isEmpty()) {
-            if (isolated != null) {
-                runSlice(access, isolated, gameTime, new AtomicInteger(maxTicks), ticker);
-            }
-            return true;
-        }
-        // Heaviest first — main takes slice 0 (redstone engine is main-confined).
-        slices.sort((a, b) -> Integer.compare(b.size(), a.size()));
-
-        // Leftover rerouted region tasks must not run on main mid-phase (their
-        // writes would race the very islands now ticking on workers).
-        RegionScheduler.drainMainSafeNow();
-
-        AtomicInteger budget = new AtomicInteger(maxTicks);
-        AtomicInteger nextSlice = new AtomicInteger(1);   // 0 is main's
-        AtomicInteger remaining = new AtomicInteger(slices.size());
-        AtomicReference<Throwable> failure = new AtomicReference<>();
-
-        Runnable runner = () -> {
-            int idx;
-            while ((idx = nextSlice.getAndIncrement()) < slices.size()) {
-                try {
-                    runSlice(access, slices.get(idx), gameTime, budget, ticker);
-                } catch (Throwable t) {
-                    failure.compareAndSet(null, t);
-                } finally {
-                    remaining.decrementAndGet();
-                }
-            }
-        };
-        int workerRunners = Math.min(slices.size() - 1, Math.max(1, RegionScheduler.workerCount()));
-        for (int i = 0; i < workerRunners; i++) {
-            RegionScheduler.enqueueGlobal(runner);
-        }
-        if (workerRunners > 0) {
-            RegionScheduler.wakeWorkers();
-        }
-
-        // Main: its own heavy slice + the isolated lane, then help, then barrier.
-        try {
-            runSlice(access, slices.get(0), gameTime, budget, ticker);
-        } catch (Throwable t) {
-            failure.compareAndSet(null, t);
-        } finally {
-            remaining.decrementAndGet();
-        }
-        if (isolated != null) {
-            try {
-                runSlice(access, isolated, gameTime, budget, ticker);
-            } catch (Throwable t) {
-                failure.compareAndSet(null, t);
-            }
-        }
-        runner.run();
-        // Straggler barrier: park-only pump — region steals here could write
-        // into islands mid-slice; chunk-system callbacks stay drained so a
-        // worker blocked on a chunk wait can't wedge against a parked main.
-        while (remaining.get() > 0) {
-            boolean drained = level.getChunkSource().mainThreadProcessor.pollTask();
-            if (!drained) {
-                LockSupport.parkNanos(20_000L);
-            }
-        }
-        Throwable t = failure.get();
-        if (t != null) {
-            // Vanilla propagates handler exceptions out of the tick — match it.
-            if (t instanceof RuntimeException re) throw re;
-            if (t instanceof Error err) throw err;
-            throw new RuntimeException("island scheduled-tick slice failed", t);
-        }
-        return true;
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 
     /** Vanilla collect (collectTicks) + run + cleanup over slice-local state,
-     *  scoped to {@code dueChunks}. Mirrors LevelTicks line-for-line; the only
-     *  structural change is locals instead of instance fields. */
+     * scoped to {@code dueChunks}. Eligibility is prepared read-only, then its
+     * exact container/head identity is committed before the vanilla drain. */
     private static <T> void runSlice(LevelTicksIslandAccess<T> access, LongArrayList dueChunks,
                                      long gameTime, AtomicInteger budget,
                                      BiConsumer<BlockPos, T> ticker) {
-        Long2ObjectMap<LevelChunkTicks<T>> containers = access.fabrolia$allContainers();
-        Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
-        LongPredicate tickCheck = access.fabrolia$tickCheck();
+        runSlice(access, dueChunks, gameTime, budget, ticker, null);
+    }
 
-        // collectContainersToTick, scoped to this slice's due keys
-        PriorityQueue<LevelChunkTicks<T>> containersToTick = new PriorityQueue<>(containerOrder());
+    /** Ordinary slice with optional post-safe-state island diagnostics. */
+    private static <T> void runSlice(LevelTicksIslandAccess<T> access, LongArrayList dueChunks,
+                                     long gameTime, AtomicInteger budget,
+                                     BiConsumer<BlockPos, T> ticker,
+                                     PreparedIslandLane<T> diagnostics) {
+        RegionScheduler.throwWorkerFailureIfAny();
+        SliceRegistry registry = access.fabrolia$sliceRegistry();
+        Long2ObjectMap<LevelChunkTicks<T>> containers = access.fabrolia$allContainers();
+        LongPredicate tickCheck = access.fabrolia$tickCheck();
+        ArrayList<PreparedChunk<T>> prepared = new ArrayList<>(dueChunks.size());
+
+        // Phase 1 is read-only and deliberately outside tickLock. tickCheck may
+        // enter chunk-holder readiness paths whose publication side later
+        // takes tickLock; putting the predicate under that lock recreates the
+        // documented holder<->tickLock inversion.
         for (int i = 0, n = dueChunks.size(); i < n; i++) {
             long chunkPos = dueChunks.getLong(i);
             LevelChunkTicks<T> container = containers.get(chunkPos);
             if (container == null) {
-                nextTick.remove(chunkPos);
+                prepared.add(new PreparedChunk<>(chunkPos, null, null, false));
                 continue;
             }
             ScheduledTick<T> peek = container.peek();
-            if (peek == null) {
-                nextTick.remove(chunkPos);
-            } else if (peek.triggerTick() > gameTime) {
-                nextTick.put(chunkPos, peek.triggerTick());
-            } else if (tickCheck.test(chunkPos)) {
-                nextTick.remove(chunkPos);
-                containersToTick.add(container);
+            if (peek == null || peek.triggerTick() > gameTime) {
+                prepared.add(new PreparedChunk<>(chunkPos, container, peek, false));
+            } else {
+                boolean exact = tickCheck.test(chunkPos);
+                if (exact) {
+                    prepared.add(new PreparedChunk<>(chunkPos, container, peek, true));
+                    if (diagnostics != null) {
+                        long overdue = gameTime - peek.triggerTick();
+                        if (overdue > 32 && overdue > diagnostics.maxOverdue) {
+                            diagnostics.maxOverdue = overdue;
+                            diagnostics.overdueChunk = chunkPos;
+                        }
+                    }
+                } else {
+                    prepared.add(new PreparedChunk<>(chunkPos, container, peek, false));
+                    if (diagnostics != null) {
+                        long overdue = gameTime - peek.triggerTick();
+                        if (overdue > 32) {
+                            diagnostics.dormantRefused++;
+                            diagnostics.dormantMaxAge = Math.max(
+                                    diagnostics.dormantMaxAge, overdue);
+                        }
+                    }
+                }
             }
         }
 
+        // Phase 2 revalidates the exact container/head identities under the
+        // canonical lock prefix. A clear/repair between phases may expose a
+        // future head; identity drift is re-indexed for a later logical tick,
+        // never admitted from the stale phase-1 decision.
+        SliceExecution<T> execution;
+        Lock read = registry.visibility.readLock();
+        read.lock();
+        try {
+        synchronized (access.fabrolia$tickLock()) {
+        Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
+        PriorityQueue<LevelChunkTicks<T>> containersToTick =
+                new PriorityQueue<>(containerOrder());
+        try {
+        for (PreparedChunk<T> candidate : prepared) {
+            LevelChunkTicks<T> current = containers.get(candidate.chunkPos);
+            ScheduledTick<T> currentHead = current != null ? current.peek() : null;
+            boolean stable = ScheduledTickIslandAdmission.preparedShapeStable(
+                    candidate.container, current, candidate.head, currentHead);
+            if (stable && candidate.admitted && currentHead != null
+                    && currentHead.triggerTick() <= gameTime) {
+                nextTick.remove(candidate.chunkPos);
+                containersToTick.add(current);
+            } else if (currentHead == null) {
+                nextTick.remove(candidate.chunkPos);
+            } else {
+                nextTick.put(candidate.chunkPos, currentHead.triggerTick());
+            }
+        }
+
+        // collectSlice re-enters visibility READ safely; tickLock is reentrant.
+        // Both remain held until every selected stable head is published in the
+        // SliceExecution or failure cleanup has restored/re-indexed it.
+        execution = collectSlice(access, containersToTick, gameTime, budget);
+        } catch (Throwable thrown) {
+            // collectSlice performs its own cleanup after entering its try, but
+            // its initial peer-W check precedes that envelope. Commit may also
+            // fail after removing only a prefix of due indexes. Rebuild every
+            // prepared key under this still-held structural lock, select the
+            // exact fatal winner, and propagate it without retrying handlers.
+            Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+            failure = reindexOrdinaryPreparedAfterFailure(
+                    access, prepared, failure);
+            IslandScheduledTicks.<RuntimeException>rethrow(failure);
+            return;
+        }
+        }
+        } finally {
+            read.unlock();
+        }
+
+        // No visibility/tickLock is held across user/vanilla handler bodies.
+        runCollectedSlice(execution, ticker);
+        RegionScheduler.throwWorkerFailureIfAny();
+    }
+
+    /** Mandatory index repair for every failure between ordinary commit and
+     * published collection. Caller holds fabrolia$tickLock. */
+    private static <T> Throwable reindexOrdinaryPreparedAfterFailure(
+            LevelTicksIslandAccess<T> access,
+            List<PreparedChunk<T>> prepared,
+            Throwable primary) {
+        Throwable failure = primary;
+        try {
+            Long2ObjectMap<LevelChunkTicks<T>> containers =
+                    access.fabrolia$allContainers();
+            Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
+            for (PreparedChunk<T> candidate : prepared) {
+                LevelChunkTicks<T> current = containers.get(candidate.chunkPos);
+                ScheduledTick<T> head = current != null ? current.peek() : null;
+                if (head == null) nextTick.remove(candidate.chunkPos);
+                else nextTick.put(candidate.chunkPos, head.triggerTick());
+            }
+        } catch (Throwable cleanup) {
+            failure = mergeFailure(failure, cleanup);
+        }
+        return failure;
+    }
+
+    /** Vanilla collectTicksToRun + leftover re-indexing, with no handlers. */
+    private static <T> SliceExecution<T> collectSlice(
+            LevelTicksIslandAccess<T> access,
+            PriorityQueue<LevelChunkTicks<T>> containersToTick,
+            long gameTime, AtomicInteger budget) {
+        RegionScheduler.throwWorkerFailureIfAny();
+        Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
+        SliceRegistry registry = access.fabrolia$sliceRegistry();
+        Lock read = registry.visibility.readLock();
+        read.lock();
+
         // collectTicksToRun (incl. the drain-while-cheaper-than-next-container
         // inner loop) — vanilla structure, shared global budget
-        ArrayDeque<ScheduledTick<T>> toRun = new ArrayDeque<>();
-        LevelChunkTicks<T> top;
+        SliceExecution<T> execution = null;
+        LevelChunkTicks<T> top = null;
+        Throwable failure = null;
+        try {
+        // Registration precedes the first durable poll under the same read-side
+        // visibility cut. A clear/copy writer therefore sees either the old
+        // container state or this published replica, never neither.
+        execution = registerSlice(access);
         while (budget.get() > 0 && (top = containersToTick.poll()) != null) {
             // The comparison bar is read BEFORE taking top's monitor on purpose:
             // nextBest.peek() enters a DIFFERENT container's monitor, and two
@@ -509,6 +1404,7 @@ public final class IslandScheduledTicks {
             // pairs must be ATOMIC. Collection (above) peeked in an earlier
             // phase, and containers are reachable off-slice — TickDomains
             // drains (clearArea/fill), shiftAll, and c2me's off-thread pack().
+            synchronized (execution.state) {
             synchronized (top) {
                 // peek-before-poll, same contract as TickDomains.drainRemoveIf:
                 // Lithium's poll() NPEs when nextTickQueue is null (empty or
@@ -529,7 +1425,8 @@ public final class IslandScheduledTicks {
                     // at collection time; nothing left owed for this container.
                     continue;
                 }
-                toRun.add(first);
+                execution.toRun.add(first);
+                if (!execution.pending.isEmpty()) execution.pending.add(first);
                 budget.decrementAndGet();
 
                 while (budget.get() > 0) {
@@ -539,11 +1436,13 @@ public final class IslandScheduledTicks {
                         break;
                     }
                     top.poll();
-                    toRun.add(cand);
+                    execution.toRun.add(cand);
+                    if (!execution.pending.isEmpty()) execution.pending.add(cand);
                     budget.decrementAndGet();
                 }
 
                 next = top.peek();
+            }
             }
             if (next != null) {
                 if (next.triggerTick() <= gameTime && budget.get() > 0) {
@@ -552,6 +1451,7 @@ public final class IslandScheduledTicks {
                     nextTick.put(ChunkPos.pack(next.pos()), next.triggerTick());
                 }
             }
+            top = null;
         }
         // rescheduleLeftoverContainers (budget exhausted)
         for (LevelChunkTicks<T> leftover : containersToTick) {
@@ -561,39 +1461,244 @@ public final class IslandScheduledTicks {
             }
         }
 
-        // runCollectedTicks — publish slice's pending set to this thread so that
-        // willTickThisTick (consulted by Comparator/Diode/RedstoneTorch
-        // neighbour handlers via LevelTicksMixin) sees the same answer vanilla
-        // does. We mirror vanilla's runCollectedTicks remove-then-execute order:
-        // the tick about to run is no longer "pending" while its handler runs.
-        ObjectOpenCustomHashSet<ScheduledTick<?>> pending =
-                new ObjectOpenCustomHashSet<>(ScheduledTick.UNIQUE_TICK_HASH);
-        for (ScheduledTick<T> t : toRun) {
-            pending.add(t);
+        RegionScheduler.throwWorkerFailureIfAny();
+        synchronized (execution.state) {
+            // Same allocation placement as vanilla's constructor-owned list:
+            // no growth may fail between removing the current tick and entering
+            // its handler.
+            execution.alreadyRun.ensureCapacity(execution.toRun.size());
         }
-        ThreadLocal<ObjectOpenCustomHashSet<ScheduledTick<?>>> tl = SLICE_PENDING;
-        ObjectOpenCustomHashSet<ScheduledTick<?>> prev = tl.get();
-        tl.set(pending);
+        return execution;
+        } catch (Throwable thrown) {
+            // Collection is pre-handler state.  Select W first, then restore
+            // every detached but unentered ScheduledTick before the exact W
+            // escapes; otherwise a shutdown save could persist the skipped
+            // queue even though no vanilla ticker body entered.
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+            if (execution != null) {
+                synchronized (access.fabrolia$tickLock()) {
+                    synchronized (execution.state) {
+                        failure = restoreUnenteredCollected(access, execution, failure);
+                    }
+                }
+            }
+            failure = reindexUnfinishedContainers(
+                    access, top, containersToTick, failure);
+            if (execution != null) {
+                try {
+                    retireSlice(execution);
+                } catch (Throwable cleanup) {
+                    failure = mergeFailure(failure, cleanup);
+                }
+            }
+            IslandScheduledTicks.<RuntimeException>rethrow(failure);
+            return execution;
+        } finally {
+            read.unlock();
+        }
+    }
+
+    private static final class RunOneState {
+        boolean ran;
+    }
+
+    /** Vanilla runCollectedTicks over one already-published local queue. */
+    private static <T> void runCollectedSlice(
+            SliceExecution<T> execution, BiConsumer<BlockPos, T> ticker) {
+        LevelTicksIslandAccess<T> access = execution.access;
+        SliceRegistry registry = execution.registry;
+        Throwable failure = null;
+        SliceExecution<?> previous = CURRENT_SLICE.get();
+        boolean currentInstalled = false;
         try {
-            ScheduledTick<T> tick;
-            while ((tick = toRun.poll()) != null) {
-                pending.remove(tick);
-                // Deliberately NO shouldTickBlocksAt re-check here. Ticking eligibility
-                // is decided ONCE per chunk at collection (tickCheck above) — exactly
-                // vanilla, which never re-evaluates after collecting. The old dispatch-
-                // time re-read + rescheduleFromSlice could split ONE chunk's due ticks
-                // across two game ticks whenever the answer flipped mid-phase (main's
-                // straggler pump runs ticket-mutating chunk tasks), desyncing the two
-                // halves of a contraption straddling that chunk's border — the bomber
-                // fleet breaking at one chunk's entry/exit, 2026-07-06. A chunk whose
-                // level drops mid-phase is still loaded; running its already-collected
-                // ticks is what vanilla does when the same change lands between ticks.
-                ticker.accept(tick.pos(), tick.type());
+            CURRENT_SLICE.set(execution);
+            currentInstalled = true;
+            // Allocate the reusable result carrier before the first handler.
+            RunOneState state = new RunOneState();
+            while (runOneCollectedTick(execution, ticker, state)) {
+            }
+        } catch (Throwable thrown) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+        } finally {
+            if (currentInstalled) {
+                if (previous == null) CURRENT_SLICE.remove();
+                else CURRENT_SLICE.set(previous);
+            }
+        }
+
+        // Retirement and failure restoration share one read-side cut. A
+        // clear/copy writer can observe the published suffix or its durable
+        // restoration, never an unregister->restore gap.
+        Lock read = registry.visibility.readLock();
+        read.lock();
+        try {
+            if (failure != null) {
+                synchronized (access.fabrolia$tickLock()) {
+                    synchronized (execution.state) {
+                        failure = restoreUnenteredCollected(access, execution, failure);
+                    }
+                }
+            }
+            try {
+                retireSlice(execution);
+            } catch (Throwable cleanup) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        mergeFailure(failure, cleanup));
             }
         } finally {
-            if (prev == null) tl.remove();
-            else tl.set(prev);
+            read.unlock();
         }
+
+        if (failure == null) {
+            try {
+                RegionScheduler.commitSuccessIfHealthy(() -> {});
+            } catch (Throwable terminalFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(terminalFailure);
+            }
+        }
+        rethrowIfPresent(failure);
+    }
+
+    /**
+     * Detach and execute exactly one vanilla scheduled-tick obligation under a
+     * single generation admission. Queue removal, pending-set removal and the
+     * ticker call share one admitted body: after a peer W, state cannot advance
+     * for an obligation whose vanilla body never entered.
+     */
+    private static <T> boolean runOneCollectedTick(
+            SliceExecution<T> execution,
+            BiConsumer<BlockPos, T> ticker,
+            RunOneState state) {
+        state.ran = false;
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            ScheduledTick<T> tick = pollCollectedTick(execution);
+            if (tick == null) return;
+            state.ran = true;
+            // Deliberately NO shouldTickBlocksAt re-check here. Ticking eligibility
+            // is decided ONCE per chunk at collection (tickCheck above) — exactly
+            // vanilla, which never re-evaluates after collecting. The old dispatch-
+            // time re-read + rescheduleFromSlice could split one chunk's due ticks
+            // across two game ticks whenever the answer flipped mid-phase.
+            ticker.accept(tick.pos(), tick.type());
+        });
+        return state.ran;
+    }
+
+    /** Linearized queue -> alreadyRun transition for exactly one slice. The
+     * read barrier is intentionally short and ends before handler execution,
+     * so a handler may call clearArea/copyAreaFrom without a read-to-write
+     * upgrade deadlock. Pending state is per-slice, so different islands share
+     * neither this monitor nor their lazy willTick set. */
+    static <T> ScheduledTick<T> pollCollectedTick(SliceExecution<T> execution) {
+        SliceRegistry registry = execution.registry;
+        Lock read = registry.visibility.readLock();
+        read.lock();
+        try {
+            synchronized (execution.state) {
+                ScheduledTick<T> tick = execution.toRun.poll();
+                if (tick == null) return null;
+                if (!execution.pending.isEmpty()) execution.pending.remove(tick);
+                execution.alreadyRun.add(tick);
+                return tick;
+            }
+        } finally {
+            read.unlock();
+        }
+    }
+
+    /** Failure cleanup only: restore the exact never-entered suffix. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static <T> Throwable restoreUnenteredCollected(
+            LevelTicksIslandAccess<T> access,
+            SliceExecution<T> execution,
+            Throwable primary) {
+        Throwable failure = primary;
+        try {
+            LongOpenHashSet affected = new LongOpenHashSet();
+            ScheduledTick<T> tick;
+            while ((tick = execution.toRun.poll()) != null) {
+                if (!execution.pending.isEmpty()) execution.pending.remove(tick);
+                long chunkKey = ChunkPos.pack(tick.pos());
+                Object raw = access.fabrolia$allContainers().get(chunkKey);
+                if (!(raw instanceof LevelChunkTicks<?>)) {
+                    failure = mergeFailure(failure, new IllegalStateException(
+                            "scheduled-tick failure cleanup lost container "
+                                    + ChunkPos.getX(chunkKey) + ","
+                                    + ChunkPos.getZ(chunkKey)));
+                    continue;
+                }
+                LevelChunkTicks<T> container = (LevelChunkTicks<T>) raw;
+                synchronized (container) {
+                    TickDomains.restoreAccepted(container, tick);
+                }
+                affected.add(chunkKey);
+            }
+            Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
+            var it = affected.iterator();
+            while (it.hasNext()) {
+                long chunkKey = it.nextLong();
+                LevelChunkTicks<T> container =
+                        (LevelChunkTicks<T>) access.fabrolia$allContainers().get(chunkKey);
+                if (container == null) continue;
+                ScheduledTick<T> head;
+                synchronized (container) {
+                    head = container.peek();
+                }
+                if (head == null) nextTick.remove(chunkKey);
+                else nextTick.put(chunkKey, head.triggerTick());
+            }
+        } catch (Throwable cleanup) {
+            failure = mergeFailure(failure, cleanup);
+        }
+        return failure;
+    }
+
+    /** Rebuild due-key visibility if collection itself failed mid-container. */
+    private static <T> Throwable reindexUnfinishedContainers(
+            LevelTicksIslandAccess<T> access,
+            LevelChunkTicks<T> active,
+            PriorityQueue<LevelChunkTicks<T>> remaining,
+            Throwable primary) {
+        Throwable failure = primary;
+        try {
+            java.util.IdentityHashMap<LevelChunkTicks<T>, Boolean> seen =
+                    new java.util.IdentityHashMap<>();
+            synchronized (access.fabrolia$tickLock()) {
+                if (active != null) seen.put(active, Boolean.TRUE);
+                for (LevelChunkTicks<T> container : remaining) {
+                    seen.put(container, Boolean.TRUE);
+                }
+                Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
+                for (LevelChunkTicks<T> container : seen.keySet()) {
+                    ScheduledTick<T> head;
+                    synchronized (container) {
+                        head = container.peek();
+                    }
+                    if (head != null) {
+                        nextTick.put(ChunkPos.pack(head.pos()), head.triggerTick());
+                    }
+                }
+            }
+        } catch (Throwable cleanup) {
+            failure = mergeFailure(failure, cleanup);
+        }
+        return failure;
+    }
+
+    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
+        if (primary == null) return secondary;
+        if (secondary != null && secondary != primary) {
+            try {
+                primary.addSuppressed(secondary);
+            } catch (Throwable ignored) {
+                // Suppression metadata cannot replace the authoritative failure.
+            }
+        }
+        return primary;
+    }
+
+    private static void rethrowIfPresent(Throwable failure) {
+        if (failure != null) IslandScheduledTicks.<RuntimeException>rethrow(failure);
     }
 
     /** Island of a chunk via the LIVE region map; freshly-populated (post-rebuild)

@@ -67,8 +67,7 @@ public final class TickInspector {
                         ? BuiltInRegistries.BLOCK.getKey((Block) t.type()).toString()
                         : BuiltInRegistries.FLUID.getKey((Fluid) t.type()).toString();
                 out.add(new Entry(block, type, t.pos(), t.triggerTick(), t.priority(),
-                        t.subTickOrder(), now,
-                        now == Long.MIN_VALUE ? 0 : t.triggerTick() - now, dom));
+                        t.subTickOrder(), now, t.triggerTick() - now, dom));
             });
         }
         return out;
@@ -254,7 +253,6 @@ public final class TickInspector {
             LevelChunkTicks<?> c = container(level, block, chunkKey);
             if (c == null) continue;
             long now = TickDomains.resolveNow(level, c, chunkKey, block ? "block" : "fluid");
-            if (now == Long.MIN_VALUE) now = TickDomains.wallNow(level);
             final long fnow = now;
             List<ScheduledTick<?>> stale = new java.util.ArrayList<>();
             c.getAll().forEach(t -> {
@@ -301,9 +299,11 @@ public final class TickInspector {
                   .append(" trigger=").append(t.triggerTick())
                   .append(" (+").append(t.triggerTick() - fnow).append(')');
                 if (!dryRun) {
-                    TickDomains.drainRemoveIfErased(c, x -> x.pos().equals(t.pos())
+                    int removed = TickDomains.drainRemoveIfErased(c, x -> x.pos().equals(t.pos())
                             && x.triggerTick() == t.triggerTick()
                             && x.subTickOrder() == t.subTickOrder() && x.type() == t.type());
+                    if (removed == 0) continue;
+                    TickRepair.markDirty(level, chunkKey);
                     org.slf4j.LoggerFactory.getLogger("Fabrolia-TickDomains").warn(
                             "[ticks clear-stale chunkhere] removed {} {} at {} trigger={} (+{}) chunk=[{},{}] {}",
                             block ? "block" : "fluid", type, t.pos().toShortString(),
@@ -355,9 +355,10 @@ public final class TickInspector {
             if (confirm) {
                 LevelChunkTicks<?> c = container(level, e.block(), chunkKey);
                 if (c != null) {
-                    TickDomains.drainRemoveIfErased(c, t -> t.pos().equals(pos)
+                    int removed = TickDomains.drainRemoveIfErased(c, t -> t.pos().equals(pos)
                             && t.triggerTick() == e.trigger()
                             && t.subTickOrder() == e.subTick());
+                    if (removed > 0) TickRepair.markDirty(level, chunkKey);
                 }
                 org.slf4j.LoggerFactory.getLogger("Fabrolia-TickDomains").warn(
                         "[ticks clear-stale] operator removed {} {} at {} trigger={} (+{} vs {})",
@@ -376,13 +377,22 @@ public final class TickInspector {
         var state = level.getBlockState(pos);
         var fluid = level.getFluidState(pos);
         StringBuilder sb = new StringBuilder(96);
+        long chunkKey = ChunkPos.pack(pos.getX() >> 4, pos.getZ() >> 4);
         if (!state.isAir()) {
+            boolean pending = level.getBlockTicks().hasScheduledTick(pos, state.getBlock());
             level.scheduleTick(pos, state.getBlock(), delay);
+            if (!pending && level.getBlockTicks().hasScheduledTick(pos, state.getBlock())) {
+                TickRepair.markDirty(level, chunkKey);
+            }
             sb.append("scheduled block ").append(BuiltInRegistries.BLOCK.getKey(state.getBlock()))
               .append(" +").append(delay);
         }
         if (!fluid.isEmpty()) {
+            boolean pending = level.getFluidTicks().hasScheduledTick(pos, fluid.getType());
             level.scheduleTick(pos, fluid.getType(), delay);
+            if (!pending && level.getFluidTicks().hasScheduledTick(pos, fluid.getType())) {
+                TickRepair.markDirty(level, chunkKey);
+            }
             sb.append(sb.isEmpty() ? "" : "; ").append("scheduled fluid ")
               .append(BuiltInRegistries.FLUID.getKey(fluid.getType())).append(" +").append(delay);
         }

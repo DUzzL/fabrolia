@@ -15,18 +15,12 @@ import it.unimi.dsi.fastutil.longs.LongSet;
  * through the portal transform, touch island B's footprint?", and that is a set
  * intersection over {@code long} keys.
  *
- * <h2>Project DOWN, never UP</h2>
- * Up-projection (Nether→Overworld, ×8) is the exact preimage of down-projection
- * (Overworld→Nether, ÷8), so both directions of the question are the SAME test
- * once both sides are expressed in the finer dimension's cell space:
- * <pre>{@code
- *   downProj(overworldIsland.cells) ∩ netherIsland.cells != ∅
- * }</pre>
- * That matters for cost: one Nether cell's preimage is an aligned 8×8 block of
- * 64 Overworld cells, and materialising the up-projection would inflate every
- * Nether island by ×64 for nothing. Down-projection instead COLLAPSES (up to 64
- * Overworld cells share one key), so the projected set is never larger than the
- * source and is usually far smaller.
+ * <h2>Intersect populated cells, never expand empty space</h2>
+ * At vanilla scales, projecting Overworld cells into Nether space collapses
+ * the footprint. Datapacks may reverse or greatly enlarge that scale ratio.
+ * {@link #projectOnto} intersects each projected rectangle with populated
+ * destination cells, bounding work by the actual footprints rather than by
+ * the area of otherwise empty space between them.
  *
  * <h2>Exactness at cell granularity</h2>
  * With {@link RegionGrid#DEFAULT_SHIFT} = 3 a cell is 8×8 chunks = 128×128
@@ -41,8 +35,8 @@ import it.unimi.dsi.fastutil.longs.LongSet;
  * <p>The scale is NOT hardcoded. Vanilla's {@code DimensionType.coordinateScale}
  * is a datapack field and {@code getTeleportationScale(from, to)} is a property
  * of the PAIR, so callers pass the live value; this class only assumes it is
- * positive. Powers of two take a shift fast path, anything else takes the
- * generic rectangle path, and both floor identically to vanilla.
+ * positive. Bounds are calculated in destination block space before flooring
+ * to cell coordinates, including at negative coordinates.
  *
  * <h2>Dilation</h2>
  * The scaled point is only the SEARCH ORIGIN: vanilla then looks for an exit
@@ -103,6 +97,8 @@ public final class CrossDimProjection {
     /**
      * Project {@code srcCells} into destination cell space, dilated by
      * {@code dilationDestBlocks}, appending into {@code out}.
+     * For populated-footprint queries use {@link #projectOnto}; this explicit
+     * materialization API necessarily costs the full projected area.
      *
      * <p>Allocation discipline: primitive {@code long} end to end, no boxing, no
      * intermediate collections. {@code out} is expected to be a reused set that
@@ -114,6 +110,24 @@ public final class CrossDimProjection {
      */
     public static void project(LongSet srcCells, int gridShift, double scaleSrcToDest,
                                int dilationDestBlocks, LongSet out) {
+        project(srcCells, null, gridShift, scaleSrcToDest, dilationDestBlocks, out);
+    }
+
+    /**
+     * Append only projected cells present in {@code destCells}. Work per source
+     * cell is bounded by the smaller of its projected area and the populated
+     * destination footprint, regardless of the coordinate scale ratio.
+     */
+    public static void projectOnto(LongSet srcCells, LongSet destCells, int gridShift,
+                                   double scaleSrcToDest, int dilationDestBlocks, LongSet out) {
+        if (destCells.isEmpty()) {
+            return;
+        }
+        project(srcCells, destCells, gridShift, scaleSrcToDest, dilationDestBlocks, out);
+    }
+
+    private static void project(LongSet srcCells, LongSet destCells, int gridShift,
+                                double scaleSrcToDest, int dilationDestBlocks, LongSet out) {
         if (srcCells.isEmpty()) {
             return;
         }
@@ -121,13 +135,6 @@ public final class CrossDimProjection {
             throw new IllegalArgumentException("non-positive teleportation scale: " + scaleSrcToDest);
         }
         final int cellBlocks = cellSizeBlocks(gridShift);
-        final int destCellShift = gridShift + 4;
-
-        // Fast path: the scale is a power of two AND the dilation cannot pull in
-        // more than the adjacent cell. Everything is integer shifts, exactly
-        // matching Mth.floor including negatives.
-        int log2 = exactLog2(scaleSrcToDest);
-        boolean fastPath = log2 != Integer.MIN_VALUE;
 
         LongIterator it = srcCells.iterator();
         while (it.hasNext()) {
@@ -137,63 +144,53 @@ public final class CrossDimProjection {
 
             // Source cell footprint in source blocks: [c * cellBlocks, +cellBlocks).
             long sxMin = (long) cx * cellBlocks;
-            long sxMax = sxMin + cellBlocks - 1;
+            long sxEnd = sxMin + cellBlocks;
             long szMin = (long) cz * cellBlocks;
-            long szMax = szMin + cellBlocks - 1;
+            long szEnd = szMin + cellBlocks;
 
-            long dxMin;
-            long dxMax;
-            long dzMin;
-            long dzMax;
-            if (fastPath) {
-                dxMin = shiftScale(sxMin, log2);
-                dxMax = shiftScale(sxMax, log2);
-                dzMin = shiftScale(szMin, log2);
-                dzMax = shiftScale(szMax, log2);
-            } else {
-                // Vanilla multiplies a double and Mth.floors it. Coordinates stay
-                // far inside 2^53, so double math is exact here.
-                dxMin = (long) Math.floor(sxMin * scaleSrcToDest);
-                dxMax = (long) Math.floor(sxMax * scaleSrcToDest);
-                dzMin = (long) Math.floor(szMin * scaleSrcToDest);
-                dzMax = (long) Math.floor(szMax * scaleSrcToDest);
+            // Keep scaled bounds wide until clipping to representable cell keys.
+            // An int narrowing cast or an overflowing left shift can wrap a
+            // valid extreme projection back onto unrelated populated cells.
+            // Portal transforms scale continuous entity coordinates, not just
+            // integer block origins. The source upper endpoint is exclusive;
+            // ceil(scaled endpoint) - 1 is the final reachable destination block.
+            long cellXMin = Math.max(Integer.MIN_VALUE, (long) Math.floor(
+                    (Math.floor(sxMin * scaleSrcToDest) - dilationDestBlocks) / cellBlocks));
+            long cellXMax = Math.min(Integer.MAX_VALUE, (long) Math.floor(
+                    (Math.ceil(sxEnd * scaleSrcToDest) - 1 + dilationDestBlocks) / cellBlocks));
+            long cellZMin = Math.max(Integer.MIN_VALUE, (long) Math.floor(
+                    (Math.floor(szMin * scaleSrcToDest) - dilationDestBlocks) / cellBlocks));
+            long cellZMax = Math.min(Integer.MAX_VALUE, (long) Math.floor(
+                    (Math.ceil(szEnd * scaleSrcToDest) - 1 + dilationDestBlocks) / cellBlocks));
+            if (cellXMin > cellXMax || cellZMin > cellZMax) {
+                continue;
             }
 
-            dxMin -= dilationDestBlocks;
-            dxMax += dilationDestBlocks;
-            dzMin -= dilationDestBlocks;
-            dzMax += dilationDestBlocks;
-
-            int cellXMin = (int) (dxMin >> destCellShift);
-            int cellXMax = (int) (dxMax >> destCellShift);
-            int cellZMin = (int) (dzMin >> destCellShift);
-            int cellZMax = (int) (dzMax >> destCellShift);
-
-            for (int dx = cellXMin; dx <= cellXMax; dx++) {
-                for (int dz = cellZMin; dz <= cellZMax; dz++) {
-                    out.add(cellKey(dx, dz));
+            long width = cellXMax - cellXMin + 1;
+            long height = cellZMax - cellZMin + 1;
+            if (destCells != null && width > destCells.size() / height) {
+                LongIterator candidates = destCells.iterator();
+                while (candidates.hasNext()) {
+                    long candidate = candidates.nextLong();
+                    int x = cellX(candidate);
+                    int z = cellZ(candidate);
+                    if (x >= cellXMin && x <= cellXMax && z >= cellZMin && z <= cellZMax) {
+                        out.add(candidate);
+                    }
+                }
+            } else {
+                for (long dx = cellXMin; dx <= cellXMax; dx++) {
+                    for (long dz = cellZMin; dz <= cellZMax; dz++) {
+                        long candidate = cellKey((int) dx, (int) dz);
+                        if (destCells == null || destCells.contains(candidate)) {
+                            out.add(candidate);
+                        }
+                    }
                 }
             }
         }
     }
 
-    /** Arithmetic-shift scaling that floors toward negative infinity. */
-    private static long shiftScale(long v, int log2) {
-        return log2 >= 0 ? v << log2 : v >> (-log2);
-    }
-
-    /**
-     * {@code log2(scale)} when the scale is an exact power of two (including
-     * reciprocals like 0.125), else {@link Integer#MIN_VALUE}.
-     */
-    static int exactLog2(double scale) {
-        for (int k = -30; k <= 30; k++) {
-            if (scale == Math.scalb(1.0, k)) {
-                return k;
-            }
-        }
-        return Integer.MIN_VALUE;
-    }
 
     /**
      * Do the two cell sets share a key? Iterates the SMALLER set, the pattern
@@ -220,8 +217,9 @@ public final class CrossDimProjection {
      */
     public static boolean linked(LongSet srcCells, LongSet destCells, int gridShift,
                                  double scaleSrcToDest, int dilationDestBlocks) {
-        LongOpenHashSet projected = new LongOpenHashSet(Math.max(8, srcCells.size()));
-        project(srcCells, gridShift, scaleSrcToDest, dilationDestBlocks, projected);
-        return intersects(projected, destCells);
+        LongOpenHashSet projected = new LongOpenHashSet(
+                Math.max(8, Math.min(srcCells.size(), destCells.size())));
+        projectOnto(srcCells, destCells, gridShift, scaleSrcToDest, dilationDestBlocks, projected);
+        return !projected.isEmpty();
     }
 }

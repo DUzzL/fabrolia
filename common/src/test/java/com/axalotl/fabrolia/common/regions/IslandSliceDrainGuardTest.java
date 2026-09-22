@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -135,6 +136,26 @@ class IslandSliceDrainGuardTest {
         assertEquals(full, q.poll(), "the live container must come out first");
     }
 
+    /**
+     * A mutable tick container must enter the priority queue once. If the same
+     * reference appears twice, polling one entry changes the comparator key of
+     * the other without giving {@link PriorityQueue} a chance to re-heapify.
+     * The smallest exact oracle is A=[1,3], B=[2]: a duplicate drains 1,3,2,
+     * while one reference per key preserves vanilla's 1,2,3 merge.
+     */
+    @Test
+    void duplicateMutableContainerReferenceInvertsCrossContainerOrder() {
+        MutableHead aBroken = new MutableHead(1L, 3L);
+        MutableHead bBroken = new MutableHead(2L);
+        assertEquals(List.of(1L, 3L, 2L), drainMutableHeads(List.of(aBroken, aBroken, bBroken)),
+                "oracle: a duplicate mutable PQ member must demonstrate the 1,3,2 inversion");
+
+        MutableHead aUnique = new MutableHead(1L, 3L);
+        MutableHead bUnique = new MutableHead(2L);
+        assertEquals(List.of(1L, 2L, 3L), drainMutableHeads(List.of(aUnique, bUnique)),
+                "one container identity per due key preserves the vanilla cross-container merge");
+    }
+
     /** Mirror of the production comparator; kept here so the contract is executable. */
     private static Comparator<LevelChunkTicks<?>> nullTolerantOrder() {
         return (a, b) -> {
@@ -144,6 +165,55 @@ class IslandSliceDrainGuardTest {
             if (hb == null) return -1;
             return ScheduledTick.INTRA_TICK_DRAIN_ORDER.compare(ha, hb);
         };
+    }
+
+    /** Mutable-head stand-in for LevelChunkTicks; values are intra-tick order. */
+    private static final class MutableHead {
+        private final ArrayDeque<Long> ticks = new ArrayDeque<>();
+
+        private MutableHead(long... order) {
+            for (long value : order) ticks.add(value);
+        }
+
+        private Long peek() {
+            return ticks.peek();
+        }
+
+        private Long poll() {
+            return ticks.poll();
+        }
+    }
+
+    /**
+     * Pure mirror of runSlice's mutable-head PQ/bar loop. Every supplied tick is
+     * due; the long value stands in for (priority, subTickOrder).
+     */
+    private static List<Long> drainMutableHeads(List<MutableHead> due) {
+        Comparator<MutableHead> order = (a, b) -> {
+            Long ha = a.peek();
+            Long hb = b.peek();
+            if (ha == null) return hb == null ? 0 : 1;
+            if (hb == null) return -1;
+            return Long.compare(ha, hb);
+        };
+        PriorityQueue<MutableHead> queue = new PriorityQueue<>(order);
+        queue.addAll(due);
+        ArrayList<Long> drained = new ArrayList<>();
+        MutableHead top;
+        while ((top = queue.poll()) != null) {
+            MutableHead nextBest = queue.peek();
+            Long bar = nextBest != null ? nextBest.peek() : null;
+            Long first = top.peek() != null ? top.poll() : null;
+            if (first == null) continue;
+            drained.add(first);
+            while (true) {
+                Long candidate = top.peek();
+                if (candidate == null || (bar != null && candidate > bar)) break;
+                drained.add(top.poll());
+            }
+            if (top.peek() != null) queue.add(top);
+        }
+        return drained;
     }
 
     /**

@@ -3,6 +3,13 @@ plugins {
     id 'net.fabricmc.fabric-loom'
 }
 
+// Common is consumed as a project dependency by both loader modules. Pin its
+// published JVM variant as well as its compiler so launching Gradle on JDK 26
+// cannot silently emit/advertise class major 70 to a Java 25 server build.
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(project.java_version)
+}
+
 tasks.withType(JavaCompile).configureEach {
     options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
 }
@@ -35,6 +42,8 @@ dependencies {
     // interfaces into Level/ChunkAccess — the classes cannot link without them.
     testImplementation "net.fabricmc:fabric-loader:$fabric_loader_version"
     testImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_version}"
+    // Differential coverage executes the exact pinned VMP AreaMap implementation.
+    testImplementation("maven.modrinth:vmp-fabric:${vmp_version}") { transitive = false }
 }
 
 tasks.named('test') {
@@ -42,6 +51,48 @@ tasks.named('test') {
     testLogging {
         events "passed", "failed", "skipped"
         exceptionFormat = "full"
+    }
+}
+
+// A normal unit-test run skips the external full-modpack export check. Invoke this
+// task with an explicit, freshly generated Mixin export root instead:
+//
+//   ./gradlew :common:verifyFullModpackMixinExport \
+//       -PfabroliaMixinExportRoot=/path/to/server/.mixin.out
+//
+// By default the verifier discovers the single deployed Fabrolia Fabric jar in the
+// sibling server/mods directory and uses its mtime as the freshness floor. A copied
+// export can supply -PfabroliaMixinExportArtifact=/path/to/fabrolia.jar explicitly.
+def fullModpackMixinExportRoot = providers.gradleProperty('fabroliaMixinExportRoot')
+def fullModpackMixinExportArtifact = providers.gradleProperty('fabroliaMixinExportArtifact')
+
+tasks.register('verifyFullModpackMixinExport', Test) {
+    group = 'verification'
+    description = 'ASM-verifies critical seams in an explicit fresh full-modpack .mixin.out.'
+    // External class files can be overwritten in place between boots; Gradle's
+    // normal Test up-to-date snapshot would otherwise skip the verification.
+    outputs.upToDateWhen { false }
+    dependsOn tasks.named('testClasses')
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching(
+                'com.axalotl.fabrolia.common.regions.FullModpackMixinExportVerifierTest')
+    }
+    testLogging {
+        events "passed", "failed", "skipped"
+        exceptionFormat = "full"
+    }
+    doFirst {
+        if (!fullModpackMixinExportRoot.isPresent()) {
+            throw new GradleException('Missing required -PfabroliaMixinExportRoot=/path/to/.mixin.out')
+        }
+        systemProperty 'fabrolia.mixinExportRoot', fullModpackMixinExportRoot.get()
+        if (fullModpackMixinExportArtifact.isPresent()) {
+            systemProperty 'fabrolia.mixinExportArtifact',
+                    fullModpackMixinExportArtifact.get()
+        }
     }
 }
 

@@ -92,15 +92,10 @@ class EndPlatformHandoffTest {
         final ArrayList<Op> queue = new ArrayList<>();
         final ArrayList<Fbe> airborne = new ArrayList<>();
         final EndPlatformHandoff.Tracker tracker;
-        long nanoNow;
 
         Sim() {
-            this(EndPlatformHandoff.DEFAULT_TTL_NANOS);
-        }
-
-        Sim(long ttlNanos) {
             tracker = new EndPlatformHandoff.Tracker(
-                    h -> ((Fbe) h).settled, () -> nanoNow, ttlNanos);
+                    h -> ((Fbe) h).settled);
         }
 
         EndPlatformHandoff.Ops view() {
@@ -376,21 +371,21 @@ class EndPlatformHandoffTest {
     }
 
     // ------------------------------------------------------------------
-    // Liveness containment
+    // No fail-open containment
     // ------------------------------------------------------------------
 
     @Test
-    void aMemberThatCanNeverSettleCannotHoldTheGateForever() {
-        // Pathological: a tracked member whose publish op failed before
-        // insertion — it will never be removed. The TTL belt fails OPEN.
-        Sim sim = new Sim(1_000L); // 1µs TTL for the test
+    void wallTimeCannotReleaseAnUnsettledPredecessor() {
+        Sim sim = new Sim();
         sim.queue.addAll(machineCohort(7L, 100, 1, Integer.MAX_VALUE)); // never lands
         sim.head();
         sim.queue.addAll(machineCohort(7L, 200, 1, 7));
         assertTrue(sim.head().isEmpty(), "held while the tracker entry is live");
-        sim.nanoNow += 2_000L; // past TTL
+        assertTrue(sim.head().isEmpty(),
+                "repeated heads may not manufacture a landing or fail open");
+        sim.airborne.getFirst().settled = true;
         assertFalse(sim.head().isEmpty(),
-                "after the containment TTL the gate must fail open — no unbounded holding");
+                "the successor releases only after the predecessor actually settles");
     }
 
     @Test

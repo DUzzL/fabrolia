@@ -60,7 +60,11 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
         volatile State state;
         volatile int size;
         int tombstones;
-        Segment(int capPow2) { state = new State(capPow2); }
+        final int minimumCapacity;
+        Segment(int capPow2) {
+            minimumCapacity = capPow2;
+            state = new State(capPow2);
+        }
     }
 
     private final Segment[] segments;
@@ -230,6 +234,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
                 if (idx >= 0) {
                     KEYS_VH.setRelease(s.keys, idx, TOMBSTONE);
                     seg.size--; seg.tombstones++;
+                    shrinkAfterRemoveLocked(seg);
                 }
                 return defaultReturnValue();
             }
@@ -270,6 +275,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
             if (nv == null) {
                 KEYS_VH.setRelease(s.keys, idx, TOMBSTONE);
                 seg.size--; seg.tombstones++;
+                shrinkAfterRemoveLocked(seg);
                 return defaultReturnValue();
             }
             VALS_VH.setRelease(s.vals, idx, nv);
@@ -289,6 +295,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
                 if (res == null) {
                     KEYS_VH.setRelease(s.keys, idx, TOMBSTONE);
                     seg.size--; seg.tombstones++;
+                    shrinkAfterRemoveLocked(seg);
                     return defaultReturnValue();
                 }
                 nv = res;
@@ -310,7 +317,19 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
     @Override public void clear() {
         for (Segment seg : segments) {
             synchronized (seg) {
-                Arrays.fill(seg.state.keys, EMPTY);
+                // A terrain-generation burst can grow the scheduled-tick index by
+                // orders of magnitude. Keeping those empty arrays forever makes
+                // every later primitive snapshot pay the historical high-water
+                // capacity rather than the live entry count.
+                State old = seg.state;
+                State empty = new State(seg.minimumCapacity);
+                // Readers are lock-free and may already hold the old State.  Blank
+                // its keys before publishing the replacement so a get which began
+                // before clear cannot return an old value after clear completes.
+                for (int i = 0; i <= old.mask; i++) {
+                    KEYS_VH.setRelease(old.keys, i, EMPTY);
+                }
+                seg.state = empty;
                 seg.size = 0;
                 seg.tombstones = 0;
             }
@@ -384,6 +403,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
                 if (checkValue && prev != expVal) return defaultReturnValue();
                 KEYS_VH.setRelease(k, idx, TOMBSTONE);
                 seg.size--; seg.tombstones++;
+                shrinkAfterRemoveLocked(seg);
                 return prev;
             }
             idx = (idx + 1) & mask;
@@ -399,6 +419,32 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
         int newCap;
         if (seg.tombstones > seg.size) newCap = old.mask + 1;
         else                            newCap = (old.mask + 1) << 1;
+        return rehashLocked(seg, newCap);
+    }
+
+    /**
+     * Recover from a transient high-water population without resize thrash.
+     * Growth happens at 50% occupancy; shrink waits until occupancy reaches
+     * 12.5% and rebuilds to roughly 25%, leaving a full 2x insertion margin.
+     * The caller already owns the segment monitor used by every writer.
+     */
+    private static void shrinkAfterRemoveLocked(Segment seg) {
+        State old = seg.state;
+        int oldCap = old.mask + 1;
+        if (oldCap <= seg.minimumCapacity || seg.size > (oldCap >>> 3)) return;
+
+        long wanted = Math.max((long) seg.minimumCapacity,
+                Math.max(16L, (long) Math.max(1, seg.size) << 2));
+        int newCap = seg.minimumCapacity;
+        while ((long) newCap < wanted && newCap < (1 << 30)) {
+            newCap <<= 1;
+        }
+        if (newCap >= oldCap) return;
+        rehashLocked(seg, newCap);
+    }
+
+    private static State rehashLocked(Segment seg, int newCap) {
+        State old = seg.state;
         State ns = new State(newCap);
         long[] ok = old.keys; long[] ov = old.vals;
         long[] nk = ns.keys;  long[] nv = ns.vals;
@@ -440,6 +486,47 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
         return list;
     }
 
+    /**
+     * Copies a segment-consistent entry snapshot into reusable primitive
+     * buffers. Both outputs are cleared first and have matching indexes on
+     * return. The table scan is complete before this method returns, so callers
+     * may safely mutate this map while consuming the copied pairs.
+     *
+     * <p>This is the allocation-free counterpart to {@link #long2LongEntrySet()}
+     * for hot paths which already own scratch buffers. Each segment is held
+     * stable while its pairs are copied. Writes to other segments may still be
+     * observed or missed, so the result is not a globally atomic snapshot, but
+     * every key appears at most once and every key/value pair comes from one
+     * stable segment state.</p>
+     *
+     * @param keysOut destination for primitive keys
+     * @param valuesOut destination for the corresponding primitive values
+     * @throws IllegalArgumentException if both arguments are the same list
+     */
+    public void copyPrimitiveEntries(LongArrayList keysOut, LongArrayList valuesOut) {
+        if (keysOut == valuesOut) {
+            throw new IllegalArgumentException("key and value outputs must be distinct");
+        }
+        keysOut.clear();
+        valuesOut.clear();
+        int expected = size();
+        keysOut.ensureCapacity(expected);
+        valuesOut.ensureCapacity(expected);
+        for (Segment seg : segments) {
+            synchronized (seg) {
+                State s = seg.state;
+                long[] keys = s.keys;
+                long[] values = s.vals;
+                for (int i = 0; i <= s.mask; i++) {
+                    long key = keys[i];
+                    if (key == EMPTY || key == TOMBSTONE) continue;
+                    keysOut.add(key);
+                    valuesOut.add(values[i]);
+                }
+            }
+        }
+    }
+
     @Override public ObjectSet<Long2LongMap.Entry> long2LongEntrySet() {
         List<Long2LongMap.Entry> snap = new ArrayList<>(size());
         for (Segment seg : segments) {
@@ -456,8 +543,14 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
             @Override public boolean isEmpty() { return snap.isEmpty(); }
             @Override public boolean contains(Object o) {
                 if (!(o instanceof Long2LongMap.Entry en)) return false;
-                long v = get(en.getLongKey());
-                return v != defaultReturnValue() && v == en.getLongValue();
+                long key = en.getLongKey();
+                if (key == EMPTY || key == TOMBSTONE) return false;
+                Segment seg = segmentFor(key);
+                synchronized (seg) {
+                    State s = seg.state;
+                    int idx = findKey(s, key);
+                    return idx >= 0 && s.vals[idx] == en.getLongValue();
+                }
             }
             @Override public ObjectIterator<Long2LongMap.Entry> iterator() {
                 Iterator<Long2LongMap.Entry> it = snap.iterator();

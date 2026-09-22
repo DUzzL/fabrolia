@@ -5,7 +5,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 
 /**
@@ -75,23 +74,13 @@ import java.util.function.Predicate;
  *
  * <h2>Liveness</h2>
  *
- * A held cohort is released when the tracked members settle. A falling block
- * always settles: it lands (places/breaks), drops as an item after its
- * lifetime cap, or is removed by unload/kill — all reach
- * {@code Entity.isRemoved()}. As containment for the pathological case where a
- * tracked member is never inserted at all (its publish op failed), tracker
- * entries additionally expire after {@link #DEFAULT_TTL_NANOS}: the gate then
- * fails OPEN to pre-gate behaviour rather than holding anything forever. The
- * TTL is a failure belt, not the mechanism — the normal path never waits on
- * wall time.
+ * A held cohort is released only when the tracked members settle. A falling
+ * block settles by landing (placing/breaking), dropping after its lifetime cap,
+ * or removal on unload/kill — all reach {@code Entity.isRemoved()}. Publication
+ * failure is fail-stop elsewhere; wall time may never manufacture a successful
+ * landing or release a successor cohort over an unfinished predecessor.
  */
 public final class EndPlatformHandoff {
-
-    /** Containment-only expiry for tracked members that can never settle
-     *  (publish-op failure before insertion). 60 s wall — far beyond any
-     *  normal landing (a 1-block fall is 7 entity ticks) yet bounded, so the
-     *  gate can never hold a cohort indefinitely. Fail-open. */
-    public static final long DEFAULT_TTL_NANOS = 60_000_000_000L;
 
     private EndPlatformHandoff() {}
 
@@ -123,27 +112,23 @@ public final class EndPlatformHandoff {
      * per End platform with in-flight machine traffic — almost always 0 or 1).
      */
     public static final class Tracker {
-        private record Entry(Object handle, long trackedAtNanos) {}
+        private record Entry(Object handle) {}
 
         private final Predicate<Object> settled;
-        private final LongSupplier nanoClock;
-        private final long ttlNanos;
         private final HashMap<Long, ArrayList<Entry>> airborneByChunk = new HashMap<>(4);
 
-        public Tracker(Predicate<Object> settled, LongSupplier nanoClock, long ttlNanos) {
+        public Tracker(Predicate<Object> settled) {
             this.settled = settled;
-            this.nanoClock = nanoClock;
-            this.ttlNanos = ttlNanos;
         }
 
         /** Register a published falling-block member as airborne at {@code chunkKey}. */
         public synchronized void track(long chunkKey, Object handle) {
             airborneByChunk.computeIfAbsent(chunkKey, k -> new ArrayList<>(12))
-                    .add(new Entry(handle, nanoClock.getAsLong()));
+                    .add(new Entry(handle));
         }
 
         /** True iff any tracked member at {@code chunkKey} has not yet settled.
-         *  Purges settled/expired entries as a side effect. */
+         *  Purges settled entries as a side effect. */
         public synchronized boolean airborne(long chunkKey) {
             ArrayList<Entry> list = airborneByChunk.get(chunkKey);
             if (list == null) {
@@ -157,7 +142,7 @@ public final class EndPlatformHandoff {
             return true;
         }
 
-        /** Drop settled/expired entries everywhere (main-tick housekeeping so a
+        /** Drop settled entries everywhere (main-tick housekeeping so a
          *  machine that stops forever doesn't strongly retain its last cohort). */
         public synchronized void sweep() {
             Iterator<java.util.Map.Entry<Long, ArrayList<Entry>>> it =
@@ -181,9 +166,7 @@ public final class EndPlatformHandoff {
         }
 
         private void purge(ArrayList<Entry> list) {
-            long now = nanoClock.getAsLong();
-            list.removeIf(e -> settled.test(e.handle())
-                    || now - e.trackedAtNanos() >= ttlNanos);
+            list.removeIf(e -> settled.test(e.handle()));
         }
     }
 

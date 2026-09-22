@@ -117,7 +117,7 @@ class LockedLong2ObjectMapTest {
                     long probes = 0;
                     while (!writersDone.get()) {
                         long key = (rr % 4) * 1_000_000L + (probes % 4096);
-                        // Hot path: optimistic get racing rehashes.
+                        // Hot path: read-locked get racing rehashes.
                         Optional<String> v = map.get(key);
                         if (v != null && v.isEmpty()) {
                             throw new IllegalStateException("phantom empty section");

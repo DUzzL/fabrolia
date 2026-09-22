@@ -127,10 +127,12 @@ import org.spongepowered.asm.mixin.Mixin;
         // defers every notification INTO the village graph, which deletes all
         // four cycles of the DistanceTracker/SectionStorage/PoiSection triangle.
         // Writes stay serialised by PoiSectionMixin's targeted add/remove/release/
-        // refresh monitors; reads are unlocked again, as they were designed to be
-        // (and were for months before 7d58bbb). The blanket bit never made reads
-        // safe anyway — getRecords returns a LAZY Stream and Lithium's
-        // getInChunkColumn a lazy Iterable, both consumed after the monitor exits.
+        // refresh monitors. Structural writes publish one immutable read view
+        // before their exact vanilla dirty notification; vanilla getRecords/pack/
+        // scalar reads and every Lithium reader consume that volatile view without
+        // a monitor. The blanket bit never made reads safe anyway — getRecords
+        // returns a LAZY Stream and Lithium exposes an escaping iterator, both
+        // consumed after the method monitor exits.
         EuclideanGameEventListenerRegistry.class,
         // SimpleCriterionTrigger removed 2026-07-17: the blanket per-instance
         // monitor was held by MAIN across trigger -> award -> rewards ->

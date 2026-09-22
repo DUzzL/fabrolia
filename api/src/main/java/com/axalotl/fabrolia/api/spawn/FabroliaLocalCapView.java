@@ -1,23 +1,32 @@
 package com.axalotl.fabrolia.api.spawn;
 
 /**
- * Mixed into {@code LocalMobCapCalculator} by {@code LocalMobCapCalculatorMixin}. Carries the
- * Oxidizium Rust mob-cap arena handle for this tick's calculator; when non-zero, the
- * calculator's {@code canSpawn} / {@code addMob} route to the off-heap arena instead of the
- * Java {@code playerMobCounts} / {@code playersNearChunk} maps — bypassing the concurrent-map
- * path entirely (no race possible by construction). 0 → Java path (the standalone-correct
- * fallback). Only the LOCAL cap moves; the global cap stays in vanilla Java so ServerCore's
- * mob-cap multiplier and phantom-spawning's wrap keep applying.
+ * Mixed into {@code LocalMobCapCalculator}. An attached arena binds its allocation to
+ * its creating provider. Every native operation holds an acquired arena lease; closing
+ * refuses new leases, and native reclamation waits for existing leases. A missing or
+ * closed arena selects the seeded Java shadow. Only the local cap moves off heap;
+ * global cap integration remains in vanilla Java.
  */
 public interface FabroliaLocalCapView {
-    void fabrolia$setCapHandle(long handle);
+    /** Publish an arena, or detach it after its owner has closed acquisition. */
+    void fabrolia$setCapArena(NativeArena arena);
 
-    long fabrolia$capHandle();
+    /** Native operations require a successful acquisition, paired with release in finally. */
+    interface NativeArena {
+        boolean tryAcquire();
 
-    /** Number of threads currently inside a native canSpawn/addMob on this
-     *  calculator's handle — free-side quiescence check. */
-    default int fabrolia$capInFlight() {
-        return 0;
+        /** Release the lease, retaining an entered operation failure over cleanup failure. */
+        void release(Throwable primary);
+
+        long handle();
+
+        int canSpawn(int categoryOrdinal, int chunkX, int chunkZ);
+
+        void addMob(int categoryOrdinal, int chunkX, int chunkZ);
+
+        int tryReservePack(int categoryOrdinal, int chunkX, int chunkZ, int count);
+
+        void releasePack(int categoryOrdinal, int chunkX, int chunkZ, int count);
     }
 
     /** Seed the JAVA maps with the census initial mobs even though the arena

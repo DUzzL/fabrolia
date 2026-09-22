@@ -43,20 +43,37 @@ public class ConfigCommand {
     private static LiteralArgumentBuilder<CommandSourceStack> buildReloadCommand() {
         return literal("reload")
                 .executes(ctx -> {
-                    try {
-                        PlatformUtils.reloadConfig();
-
+                    if (!com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                            .isPhysicalServerThread(ctx.getSource().getServer())) {
                         MutableComponent msg = prefix.copy()
-                                .append(Component.literal("Configuration reloaded successfully.")
-                                        .withStyle(style -> style.withColor(ChatFormatting.GREEN)));
-                        ctx.getSource().sendSuccess(() -> msg, true);
-
-                    } catch (Exception e) {
-                        MutableComponent msg = prefix.copy()
-                                .append(Component.literal("Failed to reload config: " + e.getMessage())
+                                .append(Component.literal(
+                                        "Configuration may only be reloaded on the server thread.")
                                         .withStyle(style -> style.withColor(ChatFormatting.RED)));
                         ctx.getSource().sendFailure(msg);
+                        return 0;
                     }
+                    PlatformUtils.reloadConfig();
+
+                    boolean playerPreferenceApplied = com.axalotl.fabrolia.common.regions
+                            .RegionalPlayerEntityTicksV2.applyConfiguredPreference(
+                                    ctx.getSource().getServer());
+                    if (FabroliaConfig.enablePlayerTickActor && !playerPreferenceApplied) {
+                        String reason = com.axalotl.fabrolia.common.regions
+                                .RegionalPlayerEntityTicksV2.refusalReason(
+                                        ctx.getSource().getServer());
+                        MutableComponent msg = prefix.copy()
+                                .append(Component.literal(
+                                        "Configuration reloaded, but saved player ticks remain "
+                                                + "fail-closed: " + String.valueOf(reason))
+                                        .withStyle(style -> style.withColor(ChatFormatting.YELLOW)));
+                        ctx.getSource().sendFailure(msg);
+                        return 0;
+                    }
+
+                    MutableComponent msg = prefix.copy()
+                            .append(Component.literal("Configuration reloaded successfully.")
+                                    .withStyle(style -> style.withColor(ChatFormatting.GREEN)));
+                    ctx.getSource().sendSuccess(() -> msg, true);
                     return 1;
                 });
     }

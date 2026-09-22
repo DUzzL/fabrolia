@@ -19,13 +19,15 @@ public final class DistanceSortBridge {
 
     private static MethodHandle resolve() {
         try {
-            Class<?> c = Class.forName("com.github.tatercertified.nalim.sort.DistanceSort");
+            Class<?> c = Class.forName("com.github.tatercertified.nalim.sort.DistanceSort",
+                    false, DistanceSortBridge.class.getClassLoader());
             return MethodHandles.publicLookup().findStatic(c, "sort",
                     MethodType.methodType(boolean.class,
                             ByteBuffer.class, ByteBuffer.class, ByteBuffer.class,
                             double.class, double.class, double.class,
                             int.class, ByteBuffer.class));
-        } catch (Throwable t) {
+        } catch (ClassNotFoundException | NoSuchMethodException
+                 | IllegalAccessException | SecurityException | LinkageError unavailable) {
             return null;
         }
     }
@@ -43,8 +45,14 @@ public final class DistanceSortBridge {
         }
         try {
             return (boolean) h.invokeExact(xs, ys, zs, tx, ty, tz, n, perm);
-        } catch (Throwable t) {
+        } catch (Throwable failure) {
+            DistanceSortBridge.<RuntimeException>rethrow(failure);
             return false;
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 }

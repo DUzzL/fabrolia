@@ -28,6 +28,11 @@ public final class FlightRecorder {
      *  per-entry; see /fabrolia regions flightrec status). */
     public static final java.util.concurrent.atomic.LongAdder DORMANT_REFUSED =
             new java.util.concurrent.atomic.LongAdder();
+    /** Exact-gate refusals/drift that held an island at the same candidate L.
+     *  Always-on aggregate; individual records are rate-bounded by
+     *  {@link IslandScheduledTicks}. */
+    public static final java.util.concurrent.atomic.LongAdder SCHEDULED_HOLDS =
+            new java.util.concurrent.atomic.LongAdder();
     private static final java.util.concurrent.atomic.LongAccumulator DORMANT_MAX_AGE =
             new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
 
@@ -41,6 +46,7 @@ public final class FlightRecorder {
             return "flightrec ring=" + RING.size() + "/" + CAPACITY
                     + " dormantRefused=" + DORMANT_REFUSED.sum()
                     + " dormantMaxAge=" + DORMANT_MAX_AGE.get()
+                    + " scheduledHolds=" + SCHEDULED_HOLDS.sum()
                     + " | " + "delivery: see chunksender status";
         }
     }
@@ -65,6 +71,7 @@ public final class FlightRecorder {
             RING.clear();
         }
         DORMANT_REFUSED.reset();
+        SCHEDULED_HOLDS.reset();
         return "cleared " + n + " ring events";
     }
 

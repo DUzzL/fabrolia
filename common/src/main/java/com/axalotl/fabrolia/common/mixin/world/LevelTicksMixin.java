@@ -7,9 +7,11 @@ import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import it.unimi.dsi.fastutil.longs.Long2LongMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
-import it.unimi.dsi.fastutil.objects.ObjectOpenCustomHashSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Vec3i;
 import net.minecraft.util.Util;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.ticks.LevelChunkTicks;
 import net.minecraft.world.ticks.LevelTickAccess;
 import net.minecraft.world.ticks.LevelTicks;
@@ -33,8 +35,20 @@ public abstract class LevelTicksMixin<T> implements LevelTickAccess<T>,
     @Final
     private java.util.function.LongPredicate tickCheck;
 
+    @Shadow
+    @Final
+    private java.util.Queue<ScheduledTick<T>> toRunThisTick;
+
+    @Shadow
+    @Final
+    private java.util.List<ScheduledTick<T>> alreadyRunThisTick;
+
     @Unique
     private final Object fabrolia$lock = new Object();
+
+    @Unique
+    private final IslandScheduledTicks.SliceRegistry fabrolia$sliceRegistry =
+            new IslandScheduledTicks.SliceRegistry();
 
     @Override
     public Long2ObjectMap<LevelChunkTicks<T>> fabrolia$allContainers() {
@@ -54,6 +68,21 @@ public abstract class LevelTicksMixin<T> implements LevelTickAccess<T>,
     @Override
     public Object fabrolia$tickLock() {
         return fabrolia$lock;
+    }
+
+    @Override
+    public IslandScheduledTicks.SliceRegistry fabrolia$sliceRegistry() {
+        return fabrolia$sliceRegistry;
+    }
+
+    @Override
+    public java.util.Queue<ScheduledTick<T>> fabrolia$vanillaToRunThisTick() {
+        return toRunThisTick;
+    }
+
+    @Override
+    public java.util.List<ScheduledTick<T>> fabrolia$vanillaAlreadyRunThisTick() {
+        return alreadyRunThisTick;
     }
 
     @WrapMethod(method = "addContainer")
@@ -117,6 +146,18 @@ public abstract class LevelTicksMixin<T> implements LevelTickAccess<T>,
         synchronized (fabrolia$lock) {
             tick = com.axalotl.fabrolia.common.regions.IslandCommands
                     .rebaseScheduledTick((net.minecraft.world.ticks.LevelTicks<T>) (Object) this, tick);
+            if (com.axalotl.fabrolia.common.regions.ScheduledTickIslandAdmission
+                    .requiresPulseCoherence(tick.type())) {
+                LevelChunkTicks<T> container = allContainers.get(ChunkPos.pack(tick.pos()));
+                if (container != null) {
+                    // Publish before the canonical insertion. A failed/deduped
+                    // insert leaves only a harmless cold-path false positive;
+                    // publishing afterwards could leave an admitted false
+                    // negative racing the scheduled collector.
+                    ((com.axalotl.fabrolia.common.regions.CausalScheduledTickIndex)
+                            (Object) container).fabrolia$markPulseSensitiveTick();
+                }
+            }
             original.call(tick);
         }
     }
@@ -134,10 +175,28 @@ public abstract class LevelTicksMixin<T> implements LevelTickAccess<T>,
     @Inject(method = "willTickThisTick", at = @At("HEAD"), cancellable = true)
     private void fabrolia$willTickThisTickSliceAware(BlockPos pos, T type,
                                                    CallbackInfoReturnable<Boolean> cir) {
-        ObjectOpenCustomHashSet<ScheduledTick<?>> pending = IslandScheduledTicks.SLICE_PENDING.get();
-        if (pending != null && !pending.isEmpty()
-                && pending.contains(ScheduledTick.probe(type, pos))) {
-            cir.setReturnValue(true);
+        Boolean collected = IslandScheduledTicks.willTickCollected(
+                (LevelTicks<T>) (Object) this, pos, type);
+        if (collected != null) {
+            cir.setReturnValue(collected);
         }
+    }
+
+    /** Clear every scheduler-wide custom replica and vanilla durable/private
+     *  state in one write-side visibility cut. */
+    @WrapMethod(method = "clearArea")
+    private void fabrolia$clearSliceArea(BoundingBox box, Operation<Void> original) {
+        IslandScheduledTicks.clearCollectedArea(
+                (LevelTicks<?>) (Object) this, box, () -> original.call(box));
+    }
+
+    /** Active custom slices are absent from vanilla's private queues. Snapshot
+     *  all of them with durable state; otherwise run vanilla unchanged. */
+    @SuppressWarnings("unchecked")
+    @WrapMethod(method = "copyAreaFrom")
+    private void fabrolia$copySliceAreaFrom(LevelTicks<T> source, BoundingBox box,
+                                            Vec3i offset, Operation<Void> original) {
+        IslandScheduledTicks.copyCollectedAreaFrom(
+                (LevelTicks<T>) (Object) this, source, box, offset);
     }
 }

@@ -87,3 +87,20 @@ loom {
         }
     }
 }
+
+def fabricJar = tasks.named('jar', Jar)
+def commonTest = project(':common').tasks.named('test')
+
+tasks.register('verifyPlayerTickArchitecture',
+        com.axalotl.fabrolia.gradle.VerifyPlayerTickArchitectureTask) {
+    group = 'verification'
+    description = 'Binds the tested player-tick bytecode to the exact Fabric jar archive.'
+    dependsOn fabricJar, commonTest
+    archiveFile.set(fabricJar.flatMap { it.archiveFile })
+    ownedOutputs.from(project(':common').sourceSets.main.output, sourceSets.main.output)
+    expectedVersion.set(provider { project.version.toString() })
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('verifyPlayerTickArchitecture')
+}

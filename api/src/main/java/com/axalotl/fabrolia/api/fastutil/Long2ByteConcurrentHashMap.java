@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.api.fastutil;
 
+import it.unimi.dsi.fastutil.SafeMath;
 import it.unimi.dsi.fastutil.bytes.ByteCollection;
 import it.unimi.dsi.fastutil.longs.AbstractLong2ByteMap;
 import it.unimi.dsi.fastutil.longs.Long2ByteMap;
@@ -9,6 +10,7 @@ import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import it.unimi.dsi.fastutil.objects.ObjectSet;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.BiFunction;
 
 public final class Long2ByteConcurrentHashMap extends AbstractLong2ByteMap {
@@ -36,8 +38,9 @@ public final class Long2ByteConcurrentHashMap extends AbstractLong2ByteMap {
     @Override public byte replace(long key, byte value) { return (byte) delegate.replace(key, (int) value); }
 
     @Override public byte compute(long key, BiFunction<? super Long, ? super Byte, ? extends Byte> remappingFunction) {
+        Objects.requireNonNull(remappingFunction);
         int res = delegate.compute(key, (k, vInt) -> {
-            Byte old = (vInt == delegate.defaultReturnValue()) ? null : (byte) (int) vInt;
+            Byte old = vInt == null ? null : Byte.valueOf(vInt.byteValue());
             Byte nv = remappingFunction.apply(k, old);
             return nv == null ? null : (int) (byte) nv;
         });
@@ -45,40 +48,25 @@ public final class Long2ByteConcurrentHashMap extends AbstractLong2ByteMap {
     }
 
     @Override public byte computeIfAbsent(long key, java.util.function.LongToIntFunction mappingFunction) {
-        int v = delegate.get(key);
-        if (v != delegate.defaultReturnValue()) return (byte) v;
-        int nv = mappingFunction.applyAsInt(key);
-        int prev = delegate.putIfAbsent(key, nv);
-        return (byte) ((prev == delegate.defaultReturnValue()) ? nv : prev);
+        Objects.requireNonNull(mappingFunction);
+        return (byte) delegate.computeIfAbsent(key, (java.util.function.LongFunction<Integer>)
+                k -> (int) SafeMath.safeIntToByte(mappingFunction.applyAsInt(k)));
     }
 
     @Override public byte computeIfPresent(long key, BiFunction<? super Long, ? super Byte, ? extends Byte> remappingFunction) {
-        for (;;) {
-            int oldVal = delegate.get(key);
-            if (oldVal == delegate.defaultReturnValue()) return defaultReturnValue();
-            Byte nvObj = remappingFunction.apply(key, (byte) oldVal);
-            if (nvObj == null) {
-                if (delegate.remove(key) != delegate.defaultReturnValue()) return defaultReturnValue();
-            } else {
-                if (delegate.replace(key, oldVal, (int) (byte) nvObj)) return nvObj;
-            }
-        }
+        Objects.requireNonNull(remappingFunction);
+        return (byte) delegate.computeIfPresent(key, (k, old) -> {
+            Byte value = remappingFunction.apply(k, old.byteValue());
+            return value == null ? null : Integer.valueOf(value.intValue());
+        });
     }
 
     @Override public byte merge(long key, byte value, java.util.function.BiFunction<? super Byte, ? super Byte, ? extends Byte> remappingFunction) {
-        for (;;) {
-            int oldVal = delegate.get(key);
-            if (oldVal == delegate.defaultReturnValue()) {
-                if (delegate.putIfAbsent(key, (int) value) == delegate.defaultReturnValue()) return value;
-            } else {
-                Byte nvObj = remappingFunction.apply((byte) oldVal, value);
-                if (nvObj == null) {
-                    if (delegate.remove(key) != delegate.defaultReturnValue()) return defaultReturnValue();
-                } else {
-                    if (delegate.replace(key, oldVal, (int) (byte) nvObj)) return nvObj;
-                }
-            }
-        }
+        Objects.requireNonNull(remappingFunction);
+        return (byte) delegate.merge(key, (int) value, (old, incoming) -> {
+            Byte merged = remappingFunction.apply(old.byteValue(), incoming.byteValue());
+            return merged == null ? null : Integer.valueOf(merged.intValue());
+        });
     }
 
     @Override public void putAll(Map<? extends Long, ? extends Byte> m) {

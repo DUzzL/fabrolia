@@ -1,8 +1,8 @@
 package com.axalotl.fabrolia.common.mixin.entity;
 
+import com.axalotl.fabrolia.common.utils.EffectMap;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
-import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.server.level.ServerLevel;
@@ -26,16 +26,22 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Mixin(value = LivingEntity.class)
 public abstract class LivingEntityMixin extends Entity {
 
+    // Owned iteration expires the current registration even when its callback
+    // inserts another effect, then stops before visiting the new registration.
+    // Removed/replaced registrations must never receive stale expiration callbacks.
+    // Keep remote reads nonblocking: a callback can query an entity whose own
+    // tick holds its mutation monitor on another region worker.
     @Shadow
-    final private Map<Holder<MobEffect>, MobEffectInstance> activeEffects = new ConcurrentHashMap<>();
+    final private Map<Holder<MobEffect>, MobEffectInstance> activeEffects =
+            new EffectMap<>();
 
+    // Share the map mutex so raw Map.remove/clear cannot bypass an entered tick.
     @Unique
-    private final Object fabrolia$lock = new Object();
+    private final Object fabrolia$lock = this.activeEffects;
 
     /** isAlive() = !removed && getHealth()>0, and getHealth() is a SynchedEntityData
      *  map/array read — 5.2 core-ms/tick on the 2026-07-11 worker profiles, mostly
@@ -66,6 +72,7 @@ public abstract class LivingEntityMixin extends Entity {
         return !this.isRemoved() && fabrolia$healthPositive;
     }
 
+
     public LivingEntityMixin(EntityType<?> type, Level world) {
         super(type, world);
     }
@@ -94,27 +101,6 @@ public abstract class LivingEntityMixin extends Entity {
         }
     }
 
-    @WrapOperation(
-            method = "tickEffects",
-            at = @At(
-                    value = "INVOKE",
-                    target = "Lnet/minecraft/world/effect/MobEffectInstance;tickServer(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/entity/LivingEntity;Ljava/lang/Runnable;)Z"
-            )
-    )
-    private boolean wrapTickEffect(MobEffectInstance instance, ServerLevel serverLevel, LivingEntity target, Runnable onEffectUpdate, Operation<Boolean> original) {
-        return instance != null ? original.call(instance, serverLevel, target, onEffectUpdate) : false;
-    }
-
-    @WrapOperation(
-            method = "tickEffects",
-            at = @At(
-                    value = "INVOKE",
-                    target = "Ljava/util/List;of(Ljava/lang/Object;)Ljava/util/List;"
-            )
-    )
-    private List<?> wrapListOf(Object e1, Operation<List<?>> original) {
-        return e1 != null ? original.call(e1) : Collections.emptyList();
-    }
 
     @WrapMethod(method = "addEffect(Lnet/minecraft/world/effect/MobEffectInstance;Lnet/minecraft/world/entity/Entity;)Z")
     private boolean addEffect(MobEffectInstance newEffect, Entity source, Operation<Boolean> original) {

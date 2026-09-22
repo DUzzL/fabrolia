@@ -51,7 +51,9 @@ public abstract class LocalMobCapCalculatorMobCountsMixin
     private void fabrolia$initAtomic(CallbackInfo ci) {
         // Fresh MobCounts starts with all categories at 0 — matches vanilla
         // (Object2IntMap.getOrDefault returns 0 for absent keys before any add).
-        this.fabrolia$atomic = new AtomicIntegerArray(MobCategory.values().length);
+        this.fabrolia$atomic = new AtomicIntegerArray(
+                com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge
+                        .CATS.length);
         this.counts = new AtomicMobCategoryCounts(this.fabrolia$atomic);
     }
 

@@ -3,6 +3,8 @@ package com.axalotl.fabrolia.api.fastutil;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntCollection;
 import it.unimi.dsi.fastutil.objects.AbstractObject2IntMap;
+import it.unimi.dsi.fastutil.objects.Object2IntFunction;
+import it.unimi.dsi.fastutil.objects.ObjectIntBiConsumer;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
@@ -10,10 +12,15 @@ import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ObjectSet;
 import net.minecraft.world.entity.MobCategory;
 
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.function.IntBinaryOperator;
+import java.util.function.ToIntFunction;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.function.BiFunction;
 
 public final class AtomicMobCategoryCounts extends Object2IntOpenHashMap<MobCategory> {
+    // Fixed-domain view: every category is present; removal resets its count to zero.
     private static final MobCategory[] CATEGORIES = MobCategory.values();
 
     private final AtomicIntegerArray counts;
@@ -68,15 +75,109 @@ public final class AtomicMobCategoryCounts extends Object2IntOpenHashMap<MobCate
 
     @Override
     public int computeInt(MobCategory key, BiFunction<? super MobCategory, ? super Integer, ? extends Integer> remappingFunction) {
-        int oldValue = this.getInt(key);
-        Integer newValue = remappingFunction.apply(key, oldValue);
-        if (newValue == null) {
-            this.removeInt(key);
-            return this.defaultReturnValue();
+        Objects.requireNonNull(remappingFunction);
+        int index = key.ordinal();
+        int previous;
+        Integer updated;
+        do {
+            previous = counts.get(index);
+            updated = remappingFunction.apply(key, previous);
+        } while (!counts.compareAndSet(index, previous, updated == null ? 0 : updated));
+        return updated == null ? defaultReturnValue() : updated;
+    }
+
+    @Override
+    public int putIfAbsent(MobCategory key, int value) {
+        return counts.get(key.ordinal());
+    }
+
+    @Override
+    public boolean remove(Object key, int value) {
+        return key instanceof MobCategory category && counts.compareAndSet(category.ordinal(), value, 0);
+    }
+
+    @Override
+    public boolean replace(MobCategory key, int previous, int value) {
+        return counts.compareAndSet(key.ordinal(), previous, value);
+    }
+
+    @Override
+    public int replace(MobCategory key, int value) {
+        return put(key, value);
+    }
+
+    @Override
+    public int computeIfAbsent(MobCategory key, ToIntFunction<? super MobCategory> mappingFunction) {
+        Objects.requireNonNull(mappingFunction);
+        return counts.get(key.ordinal());
+    }
+
+    @Override
+    public int computeIfAbsent(MobCategory key, Object2IntFunction<? super MobCategory> mappingFunction) {
+        Objects.requireNonNull(mappingFunction);
+        return counts.get(key.ordinal());
+    }
+
+    @Override
+    public int computeIntIfPresent(MobCategory key,
+            BiFunction<? super MobCategory, ? super Integer, ? extends Integer> remappingFunction) {
+        return computeInt(key, remappingFunction);
+    }
+
+    @Override
+    public int mergeInt(MobCategory key, int value, IntBinaryOperator remappingFunction) {
+        Objects.requireNonNull(remappingFunction);
+        return counts.accumulateAndGet(key.ordinal(), value, remappingFunction);
+    }
+
+    @Override
+    public int merge(MobCategory key, int value,
+            BiFunction<? super Integer, ? super Integer, ? extends Integer> remappingFunction) {
+        Objects.requireNonNull(remappingFunction);
+        int index = key.ordinal();
+        int previous;
+        Integer updated;
+        do {
+            previous = counts.get(index);
+            updated = remappingFunction.apply(previous, value);
+        } while (!counts.compareAndSet(index, previous, updated == null ? 0 : updated));
+        return updated == null ? defaultReturnValue() : updated;
+    }
+
+    @Override
+    public void replaceAll(BiFunction<? super MobCategory, ? super Integer, ? extends Integer> function) {
+        Objects.requireNonNull(function);
+        for (MobCategory category : CATEGORIES) {
+            int index = category.ordinal();
+            int previous;
+            int updated;
+            do {
+                previous = counts.get(index);
+                updated = Objects.requireNonNull(function.apply(category, previous));
+            } while (!counts.compareAndSet(index, previous, updated));
         }
-        int newInt = newValue;
-        this.put(key, newInt);
-        return newInt;
+    }
+
+    @Override
+    public void forEach(ObjectIntBiConsumer<? super MobCategory> action) {
+        Objects.requireNonNull(action);
+        for (MobCategory category : CATEGORIES) action.accept(category, counts.get(category.ordinal()));
+    }
+
+    @Override
+    public int hashCode() {
+        int result = 0;
+        for (MobCategory category : CATEGORIES) result += category.hashCode() ^ counts.get(category.ordinal());
+        return result;
+    }
+
+    @Override
+    public AtomicMobCategoryCounts clone() {
+        AtomicIntegerArray copy = new AtomicIntegerArray(CATEGORIES.length);
+        for (int i = 0; i < CATEGORIES.length; i++) copy.set(i, counts.get(i));
+        AtomicMobCategoryCounts result = new AtomicMobCategoryCounts(copy);
+        result.defaultReturnValue(defaultReturnValue());
+        return result;
     }
 
     @Override
@@ -108,6 +209,7 @@ public final class AtomicMobCategoryCounts extends Object2IntOpenHashMap<MobCate
                 @Override public boolean hasNext() { return idx < CATEGORIES.length; }
 
                 @Override public Object2IntMap.Entry<MobCategory> next() {
+                    if (!hasNext()) throw new NoSuchElementException();
                     MobCategory cat = CATEGORIES[idx];
                     int value = counts.get(idx);
                     idx++;

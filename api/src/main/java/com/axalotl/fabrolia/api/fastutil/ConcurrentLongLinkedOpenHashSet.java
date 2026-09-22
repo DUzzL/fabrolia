@@ -4,6 +4,7 @@ import it.unimi.dsi.fastutil.HashCommon;
 import it.unimi.dsi.fastutil.longs.*;
 
 import java.util.Collection;
+import java.util.Objects;
 import java.util.NoSuchElementException;
 import java.util.concurrent.locks.StampedLock;
 
@@ -13,11 +14,11 @@ import java.util.concurrent.locks.StampedLock;
  * with fields typed as LongLinkedOpenHashSet (e.g. Mixin @Shadow fields).
  * <p>
  * All mutating and reading operations are guarded by a StampedLock
- * with optimistic reads for single-key lookups.
+ * with optimistic reads only for scalar size/empty checks.
  * <p>
- * Internal note: StampedLock is NOT reentrant, so public methods must
- * never call other public (locked) methods. All delegation goes through
- * {@code super.*} which bypasses our overrides.
+ * Internal note: StampedLock is NOT reentrant. Bulk operations take snapshots
+ * and evaluate external collection callbacks before locking their mutations.
+ * Superclass bulk methods must not run under the lock: they re-enter overrides.
  */
 public final class ConcurrentLongLinkedOpenHashSet extends LongLinkedOpenHashSet {
 
@@ -71,14 +72,9 @@ public final class ConcurrentLongLinkedOpenHashSet extends LongLinkedOpenHashSet
     }
 
     @Override public boolean contains(long k) {
-        long stamp = lock.tryOptimisticRead();
-        boolean c = super.contains(k);
-        if (!lock.validate(stamp)) {
-            stamp = lock.readLock();
-            try { c = super.contains(k); }
-            finally { lock.unlockRead(stamp); }
-        }
-        return c;
+        long stamp = lock.readLock();
+        try { return super.contains(k); }
+        finally { lock.unlockRead(stamp); }
     }
 
     @Override public boolean add(long k) {
@@ -88,14 +84,24 @@ public final class ConcurrentLongLinkedOpenHashSet extends LongLinkedOpenHashSet
     }
 
     @Override public boolean addAll(LongCollection c) {
+        long[] values = c.toLongArray();
         long stamp = lock.writeLock();
-        try { return super.addAll(c); }
+        try {
+            boolean changed = false;
+            for (long value : values) changed |= super.add(value);
+            return changed;
+        }
         finally { lock.unlockWrite(stamp); }
     }
 
     @Override public boolean addAll(Collection<? extends Long> c) {
+        Object[] values = c.toArray();
         long stamp = lock.writeLock();
-        try { return super.addAll(c); }
+        try {
+            boolean changed = false;
+            for (Object value : values) changed |= super.add(((Long) value).longValue());
+            return changed;
+        }
         finally { lock.unlockWrite(stamp); }
     }
 
@@ -106,26 +112,58 @@ public final class ConcurrentLongLinkedOpenHashSet extends LongLinkedOpenHashSet
     }
 
     @Override public boolean removeAll(LongCollection c) {
+        long[] values = c.toLongArray();
         long stamp = lock.writeLock();
-        try { return super.removeAll(c); }
+        try {
+            boolean changed = false;
+            for (long value : values) changed |= super.remove(value);
+            return changed;
+        }
         finally { lock.unlockWrite(stamp); }
     }
 
     @Override public boolean removeAll(Collection<?> c) {
+        Object[] values = c.toArray();
         long stamp = lock.writeLock();
-        try { return super.removeAll(c); }
+        try {
+            boolean changed = false;
+            for (Object value : values) {
+                if (value instanceof Long key) changed |= super.remove(key.longValue());
+            }
+            return changed;
+        }
         finally { lock.unlockWrite(stamp); }
     }
 
     @Override public boolean retainAll(LongCollection c) {
+        Objects.requireNonNull(c);
+        long[] values = toLongArray();
+        int count = 0;
+        for (long value : values) {
+            if (!c.contains(value)) values[count++] = value;
+        }
         long stamp = lock.writeLock();
-        try { return super.retainAll(c); }
+        try {
+            boolean changed = false;
+            for (int i = 0; i < count; i++) changed |= super.remove(values[i]);
+            return changed;
+        }
         finally { lock.unlockWrite(stamp); }
     }
 
     @Override public boolean retainAll(Collection<?> c) {
+        Objects.requireNonNull(c);
+        long[] values = toLongArray();
+        int count = 0;
+        for (long value : values) {
+            if (!c.contains(value)) values[count++] = value;
+        }
         long stamp = lock.writeLock();
-        try { return super.retainAll(c); }
+        try {
+            boolean changed = false;
+            for (int i = 0; i < count; i++) changed |= super.remove(values[i]);
+            return changed;
+        }
         finally { lock.unlockWrite(stamp); }
     }
 
@@ -177,9 +215,8 @@ public final class ConcurrentLongLinkedOpenHashSet extends LongLinkedOpenHashSet
         long stamp = lock.readLock();
         try {
             long[] snap = snapshotUnlocked();
-            if (a.length < snap.length) return snap;
+            if (a == null || a.length < snap.length) return snap;
             System.arraycopy(snap, 0, a, 0, snap.length);
-            if (a.length > snap.length) a[snap.length] = 0L;
             return a;
         } finally { lock.unlockRead(stamp); }
     }

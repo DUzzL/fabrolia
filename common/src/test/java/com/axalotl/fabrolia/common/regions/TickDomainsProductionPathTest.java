@@ -32,11 +32,15 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * PRODUCTION-PATH pins for the 2026-07-27 scheduled-tick clock-domain fixes.
@@ -107,6 +111,8 @@ class TickDomainsProductionPathTest {
         final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap next =
                 new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
         final Object lock = new Object();
+        final IslandScheduledTicks.SliceRegistry sliceRegistry =
+                new IslandScheduledTicks.SliceRegistry();
 
         TestLevelTicks() { super(k -> true); }
 
@@ -114,6 +120,9 @@ class TickDomainsProductionPathTest {
         @Override public it.unimi.dsi.fastutil.longs.Long2LongMap fabrolia$nextTickForContainer() { return next; }
         @Override public java.util.function.LongPredicate fabrolia$tickCheck() { return k -> true; }
         @Override public Object fabrolia$tickLock() { return lock; }
+        @Override public IslandScheduledTicks.SliceRegistry fabrolia$sliceRegistry() { return sliceRegistry; }
+        @Override public java.util.Queue<ScheduledTick<T>> fabrolia$vanillaToRunThisTick() { return new java.util.ArrayDeque<>(); }
+        @Override public java.util.List<ScheduledTick<T>> fabrolia$vanillaAlreadyRunThisTick() { return new java.util.ArrayList<>(); }
     }
 
     /** LevelData carrying the mod's raw-wall-counter duck (PrimaryLevelData
@@ -223,7 +232,7 @@ class TickDomainsProductionPathTest {
     /** Seed the retained final-clock snapshot ({@code TickDomains.FINAL_CLOCKS})
      *  for {@code level} — the production authority of last resort resolveNow
      *  consults when the scheduler is dark. */
-    private static void seedFinalClock(ServerLevel level, long islandId, long l) throws ReflectiveOperationException {
+    static void seedFinalClock(ServerLevel level, long islandId, long l) throws ReflectiveOperationException {
         Map<ServerLevel, it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap> finals =
                 getStatic(TickDomains.class, "FINAL_CLOCKS");
         finals.computeIfAbsent(level, k -> new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap())
@@ -322,14 +331,15 @@ class TickDomainsProductionPathTest {
     }
 
     @Test
-    void productionUnpackBasisFallsBackToCallerClockOnUnresolvableTag() throws Exception {
+    void productionUnpackBasisFailsBeforeUsingCallerClockOnUnresolvableTag() throws Exception {
         TestLevel level = TestLevel.alloc();
         level.fabricatedGameTime = 1_000;
         TaggedChunkTicks<String> c = new TaggedChunkTicks<>();
         c.fabrolia$setDomain(999, 1);                    // never recorded anywhere
-        // designed-unreachable path: identical to vanilla (caller's value).
-        assertEquals(77_777L, TickDomains.unpackBasis(level, c, 77_777L),
-                "unresolvable tag must fall back to the caller's anchor (vanilla)");
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> TickDomains.unpackBasis(level, c, 77_777L));
+        assertTrue(failure.getMessage().contains("action=FAIL-STOP"),
+                "unresolvable tag must stop before caller-clock fallback");
     }
 
     // ------------------------------------------------------------------
@@ -446,5 +456,24 @@ class TickDomainsProductionPathTest {
         ScheduledTick<String> out = IslandCommands.rebaseScheduledTick(scheduler, tick);
         assertEquals(50_009L, out.triggerTick(),
                 "main-thread trigger must be re-expressed on the container's island clock");
+    }
+
+    @Test
+    void consumerHealPublishesBothRefreshedIndexesInsideThePairLock() throws Exception {
+        String source = Files.readString(Path.of("src/main/java/com/axalotl/fabrolia/"
+                + "common/regions/TickDomains.java"));
+        int method = source.indexOf("public static long enforceConsumerDomain");
+        int end = source.indexOf("public static void collapseAllToWall()", method);
+        String body = source.substring(method, end);
+        int pairLock = body.indexOf("synchronized (blockLane.fabrolia$tickLock())");
+        int siblingRemove = body.indexOf(
+                "sibling.fabrolia$nextTickForContainer().remove(chunkKey)", pairLock);
+        int scannedPeek = body.indexOf("ScheduledTick<?> head = c.peek();", siblingRemove);
+        int scannedPut = body.indexOf(
+                "access.fabrolia$nextTickForContainer().put(chunkKey, newNext)", scannedPeek);
+        int pairLockEnd = body.indexOf("\n            }\n        }\n        if (moved > 0)", scannedPut);
+        assertTrue(pairLock >= 0 && siblingRemove > pairLock && scannedPeek > siblingRemove
+                        && scannedPut > scannedPeek && pairLockEnd > scannedPut,
+                "head/index publication must stay inside the block->fluid lock pair");
     }
 }

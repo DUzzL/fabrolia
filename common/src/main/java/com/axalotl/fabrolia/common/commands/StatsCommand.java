@@ -4,6 +4,7 @@ import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.platform.PlatformPermission;
 import com.axalotl.fabrolia.common.platform.PlatformUtils;
+import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.utils.TickStats;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
@@ -55,19 +56,30 @@ public class StatsCommand {
     }
 
     private static void startRecordingAndShow(CommandSourceStack source, int topCount, int ticks) {
-        TickStats.startRecording(ticks);
-        source.sendSuccess(() -> prefix.copy().append(Component.literal("Recording entity ticks for " + ticks + " ticks...").withStyle(ChatFormatting.YELLOW)), false);
+        RegionScheduler.runSuccessBodyIfHealthy(() -> TickStats.startRecording(ticks));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> source.sendSuccess(
+                () -> prefix.copy().append(Component.literal(
+                        "Recording entity ticks for " + ticks + " ticks...")
+                        .withStyle(ChatFormatting.YELLOW)), false));
         pollUntilDone(source, topCount, ticks);
     }
 
     private static void pollUntilDone(CommandSourceStack source, int topCount, int ticks) {
-        source.getServer().execute(() -> {
-            if (TickStats.isRecording()) {
-                pollUntilDone(source, topCount, ticks);
-            } else {
-                showEntityStats(source, topCount, true, ticks);
-            }
-        });
+        MinecraftServer server = source.getServer();
+        RegionScheduler.runSuccessBodyIfHealthy(() -> server.execute(
+                () -> fabrolia$pollUntilDoneEntered(source, topCount, ticks)));
+    }
+
+    /** One raw MinecraftServer callback entry.  Its recursive publication is
+     * separately admitted by pollUntilDone/showEntityStats, so a peer W cannot
+     * create another callback after this stage returns normally. */
+    private static void fabrolia$pollUntilDoneEntered(
+            CommandSourceStack source, int topCount, int ticks) {
+        if (RegionScheduler.callSuccessBooleanIfHealthy(TickStats::isRecording)) {
+            pollUntilDone(source, topCount, ticks);
+        } else {
+            showEntityStats(source, topCount, true, ticks);
+        }
     }
 
     private static void showGeneralStats(CommandSourceStack source) {
@@ -137,7 +149,17 @@ public class StatsCommand {
 
     private static void showEntityStats(CommandSourceStack source, int topCount, boolean showTickStats, int ticks) {
         MinecraftServer server = source.getServer();
-        server.execute(() -> {
+        RegionScheduler.runSuccessBodyIfHealthy(() -> server.execute(
+                () -> fabrolia$runEntityStatsTask(
+                        server, source, topCount, showTickStats, ticks)));
+    }
+
+    /** Atomic entry for the queued scan.  The reset and command reply are
+     * successor stages, not part of an already-entered scan body. */
+    private static void fabrolia$runEntityStatsTask(
+            MinecraftServer server, CommandSourceStack source, int topCount,
+            boolean showTickStats, int ticks) {
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
             Map<EntityType<?>, Integer> entityTypeCounts = new HashMap<>();
             Map<EntityType<?>, Boolean> entityTypeFabrolia = new HashMap<>();
             AtomicInteger totalEntities = new AtomicInteger(0);
@@ -191,8 +213,8 @@ public class StatsCommand {
 
                 int pool = getPoolSize();
                 double speedup = wallMspt <= 0 ? 0.0
-                        : (TickStats.TOTAL_SYNC_TIME_NS.sum() + TickStats.TOTAL_FABROLIA_TIME_NS.sum())
-                          / (double) TickStats.TOTAL_BATCH_WALL_NS.sum();
+                        : (TickStats.TOTAL_SYNC_TIME_NS.get() + TickStats.TOTAL_FABROLIA_TIME_NS.get())
+                          / (double) TickStats.TOTAL_BATCH_WALL_NS.get();
 
                 message.append(Component.literal("\n\nTick Window: ").withStyle(ChatFormatting.GOLD))
                         .append(Component.literal(ticks + " ticks").withStyle(ChatFormatting.YELLOW));
@@ -247,8 +269,9 @@ public class StatsCommand {
                             rank[0]++;
                         });
             }
-            resetEntityTickStats();
-            source.sendSuccess(() -> message, false);
+            RegionScheduler.runSuccessBodyIfHealthy(() -> resetEntityTickStats());
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> source.sendSuccess(() -> message, false));
         });
     }
 }

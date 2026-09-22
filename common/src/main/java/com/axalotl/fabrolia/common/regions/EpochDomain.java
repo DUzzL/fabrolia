@@ -25,12 +25,12 @@ import java.util.concurrent.atomic.AtomicLong;
  * from the gate (see ColorGate) because no same-tick causal chain crosses
  * the gap.
  *
- * <p>Stamp discipline: a region's doneEpoch/entityEpoch/groupedEpoch and the
- * CAS gates (entityEnqueuedEpoch/entityBarrierEpoch) are meaningful only in
- * the timeline of the domain that stamped them. Whoever reassigns
- * {@link Region#domain} MUST reset all five to the new domain's current
- * epoch (RegionizedServer.assignDomain), and may only do so at a safe point
- * (no unit/dispatch in flight for either domain).
+ * <p>Stamp discipline: a region's sealedDoneEpoch/doneEpoch/entityEpoch/
+ * groupedEpoch and the CAS gates (entityEnqueuedEpoch/entityBarrierEpoch) are
+ * meaningful only in the timeline of the domain that stamped them. Whoever
+ * reassigns {@link Region#domain} MUST reset all six through
+ * RegionizedServer.rebaseDomainEpochAtSafePoint, and may only do so at a safe
+ * point (no unit/dispatch in flight for either domain).
  */
 final class EpochDomain {
 
@@ -52,18 +52,128 @@ final class EpochDomain {
      *  the early-done window was the certified crossUNSAFE leak (2026-06-12). */
     volatile long dispatchedEpoch;
 
+    /**
+     * Epoch whose region-map membership was closed for entity dispatch.
+     * Region creation takes the matching topology READ lock; dispatch records
+     * its finite member snapshot and this cut while holding WRITE. A creator
+     * admitted before the cut is captured and starts at E-1. One admitted
+     * after it was not counted in the barrier and starts at E.
+     */
+    volatile long entityDispatchCutEpoch = Long.MIN_VALUE;
+
     /** Completed by the LAST owing region's barrier contribution (R5 event path). */
     volatile CompletableFuture<Void> entityBarrier;
 
     /** Owing regions still to contribute this epoch. */
     final AtomicInteger entityPending = new AtomicInteger();
 
-    /** Epoch the current barrier was armed for — contributions for any other
-     *  epoch (e.g. after a mid-session scheduler toggle flip) are refused. */
+    /** Epoch whose dispatch selected the event protocol. The desired config may
+     *  change mid-dispatch, but execution and completion keep this decision. */
     volatile long entityBarrierArmedEpoch = -1L;
 
     /** Watchdog anchor for stall forensics. */
     volatile long entityBarrierArmedNanos;
+
+    /**
+     * Publication receipt for the current entity-dispatch generation. Ready
+     * entries may be visible before every group/region has been offered, but a
+     * consumer cannot claim one until the dispatcher accepts the whole plan.
+     */
+    volatile EntityDispatchPublication entityDispatchPublication =
+            EntityDispatchPublication.ACCEPTED_PUBLICATION;
+
+    /**
+     * Mode witness under the one-dispatch-per-domain/epoch contract, not an
+     * acceptance or pending-work test. A completed event epoch stays an event
+     * epoch; a later legacy/queue-only epoch cannot borrow its barrier.
+     */
+    boolean isEventEntityEpoch(long expectedEpoch) {
+        return epoch == expectedEpoch && entityBarrierArmedEpoch == expectedEpoch;
+    }
+
+    static final class EntityDispatchPublication {
+        private static final int OFFERING = 0;
+        private static final int ACCEPTED = 1;
+        private static final int CANCELLED = 2;
+        private static final EntityDispatchPublication ACCEPTED_PUBLICATION =
+                new EntityDispatchPublication(ACCEPTED);
+
+        private final java.util.concurrent.atomic.AtomicInteger state;
+        /**
+         * Exact ready-lane receipts belonging to this publication object, not
+         * merely to its domain. Benign duplicate ready entries may outlive the
+         * barrier they helped complete; keeping the counter generation-local
+         * lets those old entries close harmlessly after the next dispatch has
+         * installed a different publication.
+         */
+        private final java.util.concurrent.atomic.AtomicInteger readyReceipts =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        EntityDispatchPublication() {
+            this(OFFERING);
+        }
+
+        private EntityDispatchPublication(int initial) {
+            state = new java.util.concurrent.atomic.AtomicInteger(initial);
+        }
+
+        void accept() {
+            if (!state.compareAndSet(OFFERING, ACCEPTED)) {
+                throw new IllegalStateException("entity dispatch publication was already decided");
+            }
+        }
+
+        void cancel() {
+            state.compareAndSet(OFFERING, CANCELLED);
+        }
+        boolean isAccepted() {
+            return state.get() == ACCEPTED;
+        }
+
+
+        boolean awaitAccepted() {
+            int observed;
+            int spins = 64;
+            while ((observed = state.get()) == OFFERING) {
+                if (spins-- > 0) {
+                    Thread.onSpinWait();
+                } else {
+                    // This receipt can only become ACCEPTED/CANCELLED; parking is
+                    // not a timeout or refusal.  It merely stops dozens of ready
+                    // consumers from burning whole cores while the one publisher
+                    // which decides the exact receipt is waiting to run.
+                    java.util.concurrent.locks.LockSupport.parkNanos(this, 1_000L);
+                }
+            }
+            return observed == ACCEPTED;
+        }
+
+        /** Open before linking the tagged ready node into its CLQ. */
+        void openReadyReceipt() {
+            int outstanding = readyReceipts.incrementAndGet();
+            if (outstanding <= 0) {
+                throw new IllegalStateException(
+                        "entity-ready receipt counter overflow");
+            }
+        }
+
+        /** Close once, after publication cancellation or the full consumer tail. */
+        void closeReadyReceipt() {
+            int outstanding = readyReceipts.decrementAndGet();
+            if (outstanding < 0) {
+                throw new IllegalStateException(
+                        "entity-ready receipt counter underflow");
+            }
+        }
+
+        boolean hasReadyReceipts() {
+            return readyReceipts.get() > 0;
+        }
+
+        int readyReceiptCount() {
+            return readyReceipts.get();
+        }
+    }
 
     /** Cross-region effects deferred INTO this timeline (CrossRegionGuard,
      *  routed by target position). Global domain: replayed by main after the
@@ -113,8 +223,7 @@ final class EpochDomain {
      *  registrations into the island's same-tick pending list).
      *  audit13: volatile — written once at island construction, but READ from
      *  arbitrary threads with no other happens-before edge (vibration emitters
-     *  via VibrationDomains, packet-routing threads via
-     *  RegionalPlayerTicks.islandFor, cross-dim route()'s owner resolution). A
+     *  via VibrationDomains and cross-dim route()'s owner resolution). A
      *  reader reaching the domain through a non-volatile path could observe
      *  null and mis-resolve ownership (wall-clock stamp / global-lane detour)
      *  for that read; every sibling field consumed cross-thread here is

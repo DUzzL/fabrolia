@@ -1,6 +1,9 @@
 package com.axalotl.fabrolia.common.parallelised.utils;
 
+import com.axalotl.fabrolia.common.regions.RegionScheduler;
+import com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
@@ -10,10 +13,11 @@ import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.NaturalSpawner;
 
-import java.util.Map;
+import java.util.Arrays;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.function.BiFunction;
 
 /**
  * Incremental regional spawn census (task #21, 2026-07-22): authoritative
@@ -21,9 +25,9 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
  * SAME lifecycle seams the {@link SpawnIndex} membership mirror already rides
  * (tracking start/end, section moves) plus the two in-place eligibility flips
  * (persistence, death). {@code NaturalSpawner.createState} then reduces
- * O(occupied chunks × categories) instead of traversing every loaded entity —
- * and the reduction runs entirely on main with no pool submission, no join,
- * and no barrier.
+ * O(occupied chunks × categories) instead of traversing every loaded entity.
+ * Only occupied keys are snapshotted; live chunk queries and vector reads remain
+ * serial on the caller's gameplay owner, in sorted-key order.
  *
  * <p><b>Ledger invariant (drift-proof by construction):</b> every entity
  * carries its last-applied contribution (chunk, bucket, category, mob-flag) in
@@ -47,7 +51,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
  *
  * <p><b>Self-heal:</b> the c2me chunk system can drop entities without firing
  * the mirrored seams (task #32). The 256-gt audit reuses the established
- * two-strike purge + ground-truth reconcile, running OFF-MAIN, and corrects
+ * two-strike purge + ground-truth reconcile on the producer owner, and corrects
  * exclusively through per-entity {@link #update} calls — never by vector
  * surgery — so the ledger invariant survives every correction. Drift direction
  * until the audit lands is counts-too-high (spawn suppression), never runaway.
@@ -58,6 +62,8 @@ public final class SpawnCensus {
 
     private static final MobCategory[] CATEGORIES = MobCategory.values();
     private static final int C = CATEGORIES.length;
+    private static final VectorUpdate[] VECTOR_UPDATES = fabrolia$vectorUpdates();
+
 
     // ---- ledger (mixed into Entity) ------------------------------------
 
@@ -78,6 +84,8 @@ public final class SpawnCensus {
 
     static final class LevelCensus {
         /** chunkKey → int[2C]: [cat] entity count, [C+cat] Mob-only count. */
+        // Updates (including both category/cap slots) and zero eviction share
+        // the map's per-key compute lock. Readers remain weakly consistent.
         final ConcurrentHashMap<Long, AtomicIntegerArray> live = new ConcurrentHashMap<>();
         final ConcurrentHashMap<Long, AtomicIntegerArray> corpse = new ConcurrentHashMap<>();
         /** Entities whose TYPE has a MobSpawnCost in at least one of the
@@ -146,11 +154,40 @@ public final class SpawnCensus {
     private static void fabrolia$apply(LevelCensus c, long chunkKey, int state, int sign) {
         (sign > 0 ? SpawnCensusDiag.EV_ADD : SpawnCensusDiag.EV_REMOVE).incrementAndGet();
         var map = (state & 3) == 2 ? c.corpse : c.live;
-        AtomicIntegerArray vec = map.computeIfAbsent(chunkKey, k -> new AtomicIntegerArray(2 * C));
-        int cat = state >>> 3;
-        vec.addAndGet(cat, sign);
-        if ((state & 4) != 0) {
-            vec.addAndGet(C + cat, sign);
+        map.compute(chunkKey, VECTOR_UPDATES[((state >>> 2) << 1) | (sign > 0 ? 1 : 0)]);
+    }
+
+    /** Cache the finite update operations instead of capturing state on every event. */
+    private static VectorUpdate[] fabrolia$vectorUpdates() {
+        VectorUpdate[] updates = new VectorUpdate[4 * C];
+        for (int category = 0; category < C; category++) {
+            for (int mob = 0; mob < 2; mob++) {
+                int index = (category << 2) | (mob << 1);
+                updates[index] = new VectorUpdate(category, mob != 0, -1);
+                updates[index + 1] = new VectorUpdate(category, mob != 0, 1);
+            }
+        }
+        return updates;
+    }
+
+    private static final class VectorUpdate
+            implements BiFunction<Long, AtomicIntegerArray, AtomicIntegerArray> {
+        private final int category;
+        private final boolean mob;
+        private final int sign;
+
+        private VectorUpdate(int category, boolean mob, int sign) {
+            this.category = category;
+            this.mob = mob;
+            this.sign = sign;
+        }
+
+        @Override
+        public AtomicIntegerArray apply(Long key, AtomicIntegerArray vector) {
+            if (vector == null) vector = new AtomicIntegerArray(2 * C);
+            vector.addAndGet(category, sign);
+            if (mob) vector.addAndGet(C + category, sign);
+            return vector;
         }
     }
 
@@ -177,67 +214,125 @@ public final class SpawnCensus {
             return t;
         }
         Set<net.minecraft.world.entity.EntityType<?>> built = ConcurrentHashMap.newKeySet();
-        try {
-            for (var biome : level.registryAccess()
-                    .lookupOrThrow(net.minecraft.core.registries.Registries.BIOME)) {
-                built.addAll(((com.axalotl.fabrolia.common.mixin.entity.spawn.MobSpawnSettingsAccessor)
-                        (Object) biome.getMobSettings()).fabrolia$mobSpawnCosts().keySet());
-            }
-        } catch (Throwable ignored) {
-            // registry unavailable mid-boot: empty set, retried next window
+        for (var biome : level.registryAccess()
+                .lookupOrThrow(net.minecraft.core.registries.Registries.BIOME)) {
+            built.addAll(((com.axalotl.fabrolia.common.mixin.entity.spawn.MobSpawnSettingsAccessor)
+                    (Object) biome.getMobSettings()).fabrolia$mobSpawnCosts().keySet());
         }
         c.costTypes = built;
         c.costTypesBuiltAt = now;
         return built;
     }
 
-    // ---- the census reduce (main thread, createState point) ------------
+    // ---- the census reduce (createState point) -------------------------
 
     public record Reduced(Object2IntOpenHashMap<MobCategory> counts,
                           Long2ObjectOpenHashMap<int[]> mobSeed,
                           int totalMobs) {}
 
-    /** O(occupied chunks × categories). Chunk spawnability ({@code chunkGetter}
-     *  parity) and the corpse entity-ticking rule are evaluated against LIVE
-     *  state here — identical timing semantics to the full scan. */
+    /** Serial result accumulator; each entry is added after its live query accepts it. */
+    static final class CensusCounts {
+        final int[] counts = new int[C];
+        final Long2ObjectOpenHashMap<int[]> mobSeed = new Long2ObjectOpenHashMap<>(16);
+        int totalMobs;
+    }
+
+    /**
+     * O(occupied chunks × categories). Only occupied-key membership is
+     * snapshotted. Chunk spawnability ({@code chunkGetter.query}), live/corpse
+     * vectors, and the corpse entity-ticking predicate are still read together
+     * at the exact per-key census body, never cached ahead of that query.
+     */
     public static Reduced reduce(ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter) {
         LevelCensus c = census(level);
-        var ticking = ((TickingChunksAccess)
+        Long2IntConcurrentHashMap ticking = ((TickingChunksAccess)
                 ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor) level)
                         .fabrolia$entityManager()).fabrolia$tickingChunks();
-        Object2IntOpenHashMap<MobCategory> counts = new Object2IntOpenHashMap<>(C);
-        Long2ObjectOpenHashMap<int[]> mobSeed = new Long2ObjectOpenHashMap<>(Math.max(16, c.live.size()));
-        int totalMobs = 0;
-        java.util.HashSet<Long> keys = new java.util.HashSet<>(c.live.keySet());
-        keys.addAll(c.corpse.keySet());
-        boolean[] ok = new boolean[1];
-        for (long key : keys) {
-            ok[0] = false;
-            chunkGetter.query(key, ch -> ok[0] = true);
-            if (!ok[0]) {
-                continue;
-            }
-            AtomicIntegerArray live = c.live.get(key);
-            AtomicIntegerArray corpse = ticking.get(key) != 0 ? c.corpse.get(key) : null;
-            int[] mobs = null;
-            for (int cat = 0; cat < C; cat++) {
-                int n = (live != null ? live.get(cat) : 0) + (corpse != null ? corpse.get(cat) : 0);
-                if (n > 0) {
-                    counts.addTo(CATEGORIES[cat], n);
-                }
-                int m = (live != null ? live.get(C + cat) : 0) + (corpse != null ? corpse.get(C + cat) : 0);
-                if (m > 0) {
-                    if (mobs == null) {
-                        mobs = new int[C];
-                        mobSeed.put(key, mobs);
-                    }
-                    mobs[cat] = m;
-                    totalMobs += m;
-                }
-            }
+        long[] keys = fabrolia$snapshotKeys(c);
+        if (keys.length == 0) {
+            Reduced[] empty = new Reduced[1];
+            RegionScheduler.runSuccessBodyIfHealthy(() -> empty[0] = new Reduced(
+                    new Object2IntOpenHashMap<>(C),
+                    new Long2ObjectOpenHashMap<>(16), 0));
+            return empty[0];
         }
-        return new Reduced(counts, mobSeed, totalMobs);
+
+        CensusCounts counts = new CensusCounts();
+        fabrolia$reduceRange(c, ticking, chunkGetter, keys, counts);
+        return fabrolia$finishReduction(counts);
     }
+
+    private static long[] fabrolia$snapshotKeys(LevelCensus census) {
+        long[][] snapshot = new long[1][];
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> {
+                    LongOpenHashSet union = new LongOpenHashSet();
+                    union.addAll(census.live.keySet());
+                    union.addAll(census.corpse.keySet());
+                    long[] keys = union.toLongArray();
+                    // CHM iteration order is deliberately unspecified. Sorting
+                    // gives stable ranges and a stable serial merge order.
+                    Arrays.sort(keys);
+                    snapshot[0] = keys;
+                });
+        return snapshot[0];
+    }
+
+    static void fabrolia$reduceRange(
+            LevelCensus census,
+            Long2IntConcurrentHashMap ticking,
+            NaturalSpawner.ChunkGetter chunkGetter,
+            long[] keys,
+            CensusCounts out) {
+        boolean[] queryAccepted = new boolean[1];
+        java.util.function.Consumer<net.minecraft.world.level.chunk.LevelChunk> accepted =
+                chunk -> queryAccepted[0] = true;
+        for (int i = 0; i < keys.length; i++) {
+            long key = keys[i];
+            // One key is one admitted live query + ledger read. If W wins,
+            // no later key enters; an already-entered body fails normally.
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                queryAccepted[0] = false;
+                chunkGetter.query(key, accepted);
+                if (!queryAccepted[0]) return;
+
+                AtomicIntegerArray live = census.live.get(key);
+                AtomicIntegerArray corpse = ticking.get(key) != 0
+                        ? census.corpse.get(key) : null;
+                int[] mobs = null;
+                for (int cat = 0; cat < C; cat++) {
+                    int n = (live != null ? live.get(cat) : 0)
+                            + (corpse != null ? corpse.get(cat) : 0);
+                    if (n > 0) out.counts[cat] += n;
+
+                    int m = (live != null ? live.get(C + cat) : 0)
+                            + (corpse != null ? corpse.get(C + cat) : 0);
+                    if (m > 0) {
+                        if (mobs == null) {
+                            mobs = new int[C];
+                            out.mobSeed.put(key, mobs);
+                        }
+                        mobs[cat] = m;
+                        out.totalMobs += m;
+                    }
+                }
+            });
+        }
+    }
+
+    static Reduced fabrolia$finishReduction(CensusCounts result) {
+        Reduced[] reduced = new Reduced[1];
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            Object2IntOpenHashMap<MobCategory> counts = new Object2IntOpenHashMap<>(C);
+            for (int cat = 0; cat < C; cat++) {
+                int count = result.counts[cat];
+                if (count != 0) counts.put(CATEGORIES[cat], count);
+            }
+            reduced[0] = new Reduced(counts, result.mobSeed, result.totalMobs);
+        });
+        return reduced[0];
+    }
+
 
     /** Raw incremental totals for the drift report: [cat] = live + corpse-in-
      *  entity-ticking-chunk (no chunkGetter filter — comparable to the diag's
@@ -307,7 +402,7 @@ public final class SpawnCensus {
         return sb.toString();
     }
 
-    // ---- audit (off-main, 256-gt cadence) ------------------------------
+    // ---- audit (producer owner, 256-gt cadence) ------------------------
 
     /** Ground-truth pass reusing the established two-strike purge + reconcile:
      *  corrections land exclusively through {@link #update}, preserving the
@@ -315,15 +410,14 @@ public final class SpawnCensus {
      *  drift to {@link SpawnCensusDiag} (diagnostic; the entity-level heals
      *  are what converge the counts). */
     public static void audit(ServerLevel level) {
-        try {
-            var em = ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor) level)
-                    .fabrolia$entityManager();
-            var storage = ((TickingChunksAccess) em).fabrolia$sectionStorage();
-            for (Entity e : SpawnIndex.getEntities(level)) {
-                if (e == null) {
-                    continue;
-                }
-                boolean gone = e.isRemoved() || !ParallelSpawnHelper.fabrolia$inSectionsTolerant(level, e);
+        var em = ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor) level)
+                .fabrolia$entityManager();
+        var storage = ((TickingChunksAccess) em).fabrolia$sectionStorage();
+        for (Entity e : SpawnIndex.getEntities(level)) {
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                if (e == null) return;
+                boolean gone = e.isRemoved()
+                        || !ParallelSpawnHelper.fabrolia$inSectionsTolerant(level, e);
                 if (!gone) {
                     SpawnIndex.clearStrike(level, e);
                     update(level, e, true);
@@ -333,31 +427,33 @@ public final class SpawnCensus {
                     update(level, e, false);
                     SpawnCensusDiag.onPurgeSections(e);
                 }
-            }
-            int healed = SpawnIndex.reconcile(level, storage);
-            if (healed > 0) {
-                SpawnCensusDiag.RECONCILE_HEALED.addAndGet(healed);
-            }
-            LevelCensus c = census(level);
-            fabrolia$sweepZeroVectors(c.live);
-            fabrolia$sweepZeroVectors(c.corpse);
-        } catch (Throwable t) {
-            SpawnCensusDiag.AUDIT_ERRORS.incrementAndGet();
+            });
         }
+        int[] healedSlot = new int[1];
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> healedSlot[0] = SpawnIndex.reconcile(level, storage));
+        int healed = healedSlot[0];
+        if (healed > 0) {
+            RegionScheduler.commitSuccessIfHealthy(
+                    () -> SpawnCensusDiag.RECONCILE_HEALED.addAndGet(healed));
+        }
+        LevelCensus c = census(level);
+        fabrolia$sweepZeroVectors(c.live);
+        fabrolia$sweepZeroVectors(c.corpse);
     }
 
     private static void fabrolia$sweepZeroVectors(ConcurrentHashMap<Long, AtomicIntegerArray> map) {
-        for (Map.Entry<Long, AtomicIntegerArray> e : map.entrySet()) {
-            AtomicIntegerArray v = e.getValue();
-            boolean zero = true;
-            for (int i = 0; i < 2 * C && zero; i++) {
-                zero = v.get(i) == 0;
-            }
-            if (zero) {
-                // remove-if-same: a concurrent increment replaces via computeIfAbsent
-                // only when absent, so remove(key, value) is exact.
-                map.remove(e.getKey(), v);
-            }
+        for (Long key : map.keySet()) {
+            RegionScheduler.runSuccessBodyIfHealthy(() ->
+                    map.computeIfPresent(key, SpawnCensus::fabrolia$retainNonZeroVector));
         }
+    }
+
+    private static AtomicIntegerArray fabrolia$retainNonZeroVector(
+            Long key, AtomicIntegerArray vector) {
+        for (int i = 0; i < 2 * C; i++) {
+            if (vector.get(i) != 0) return vector;
+        }
+        return null;
     }
 }

@@ -1,10 +1,10 @@
 package com.axalotl.fabrolia.common.mixin.entity;
 
+import com.axalotl.fabrolia.common.utils.PathDoorAccess;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.ai.Brain;
 import net.minecraft.world.entity.ai.behavior.InteractWithDoor;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
-import net.minecraft.world.level.pathfinder.Node;
 import net.minecraft.world.level.pathfinder.Path;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -21,18 +21,7 @@ public class InteractWithDoorMixin {
     )
     private static void injectIsMobComingThroughDoor(Brain<?> otherBrain, BlockPos doorPos, CallbackInfoReturnable<Boolean> cir) {
         Path path = otherBrain.getMemory(MemoryModuleType.PATH).orElse(null);
-        if (path == null || path.isDone()) {
-            cir.setReturnValue(false);
-            return;
-        }
-
-        Node prevNode = path.getPreviousNode();
-        if (prevNode == null) {
-            cir.setReturnValue(false);
-            return;
-        }
-
-        Node nextNode = path.getNextNode();
-        cir.setReturnValue(doorPos.equals(prevNode.asBlockPos()) || doorPos.equals(nextNode.asBlockPos()));
+        cir.setReturnValue(path != null
+                && ((PathDoorAccess) (Object) path).fabrolia$isComingThroughDoor(doorPos));
     }
 }

@@ -30,16 +30,16 @@ import org.spongepowered.asm.mixin.Mixin;
  * checks but one's {@code setItemSlot(BODY, ...)} overwrites the other's — stack lost.
  *
  * <p>Same shape as Fox/Piglin/Allay pickup races [[feedback_async_items_blacklisted]] —
- * we use the same {@link SyncItemPickup#wrap} primitive (global lock + isRemoved guard).
+ * we use the same {@link SyncItemPickup#wrap} primitive (identity guard + availability check).
  * Once one thread completes the transaction, the second observes {@code itemEntity.isRemoved()}
  * and skips its action entirely.
  *
  * <p>This sync wrap is REQUIRED, not optional, regardless of regional sync — the
  * SulfurCubeSearchForItemsGoal radius of 8 blocks crosses region boundaries trivially, and
- * region-thread sync would still let two different regions race. Island-thread sync would
- * close the race within one island but [[project_async15_islands]] infrastructure is not
- * yet routing pickup through it. Global pickup lock is the simple correct fix and matches
- * every other mob's pickUpItem wrap in this codebase.
+ * region-thread sync would still let two different regions race. Exact item
+ * ownership also protects Main fallback callers and survives cell crossings.
+ * Portal capture cannot wait on that guard while retaining its own island claim.
+ * The same admission primitive covers every other mob's pickUpItem wrapper.
  *
  * <p>Fuse-explosion path is NOT handled here — {@code tickFuse}→{@code level.explode(...)}
  * already serialises through {@code ServerLevelMixin.createExplosion}'s {@code @WrapMethod}

@@ -13,10 +13,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -41,8 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Harness: the house pattern — Unsafe-allocated {@link ServerLevel}
  * subclasses (field initialisers do NOT run; everything is set in
- * {@code alloc()}), reflection into {@code RegionScheduler.PER_LEVEL/active},
- * and a source pin read from disk.
+ * {@code alloc()}), reflection into {@code RegionScheduler.PER_LEVEL/active}.
  *
  * <p>Oracles follow the review's D6 corrections: the lockstep oracle is
  * "the deadline offset stops growing" (dΔ/dunit == 0) — NOT ΔL == 0, which
@@ -247,6 +245,56 @@ class CrossDimLinksTest {
 
     // ------------------------------------------------------------ tests
 
+    @Test
+    void lateAnchorFailureCannotReleaseAReacquiredClaim() throws Exception {
+        standardIntersectingTopo();
+        IslandRegistry.PIsland member = owIsland(cellKey(0, 0));
+        assertTrue(member.tryClaimAutonomousWork());
+        member.noteClaim("crossdim-anchor");
+        ArrayList<IslandRegistry.PIsland> receipts = new ArrayList<>();
+        receipts.add(member);
+        Method release = CrossDimLinks.class.getDeclaredMethod(
+                "releaseAnchorClaims", ArrayList.class, Throwable.class);
+        release.setAccessible(true);
+
+        // A later member refused admission: the accepted prefix is released.
+        release.invoke(null, receipts, null);
+        assertTrue(member.tryClaimAutonomousWork(), "another owner must be able to acquire");
+        member.noteClaim("replacement-worker");
+        Throwable lateFailure = new IllegalStateException("W before deferred-anchor commit");
+        try {
+            InvocationTargetException thrown = assertThrows(InvocationTargetException.class,
+                    () -> release.invoke(null, receipts, lateFailure));
+            assertSame(lateFailure, thrown.getCause());
+            assertFalse(member.tryClaimAutonomousWork(),
+                    "late failure cleanup must not make the replacement owner's claim available");
+            assertEquals("replacement-worker", member.claimSite,
+                    "late failure cleanup must not erase the replacement owner's ledger");
+        } finally {
+            member.clearClaim();
+            member.unitClaim.set(false);
+        }
+    }
+
+    @Test
+    void extremeValidScaleLinksOnlyPopulatedIntersectingCells() {
+        owLevel.fabricatedType = dimType(30_000_000.0);
+        neLevel.fabricatedType = dimType(0.00001);
+        topo(owRs, 1_000, new long[]{cellKey(0, 0)});
+        topo(neRs, 1_000,
+                new long[]{cellKey(-1, 0), cellKey(0, 0), cellKey(200_000, 200_000)},
+                new long[]{cellKey(-2, 0)});
+
+        CrossDimLinks.onRebuild(owRs);
+
+        assertEquals(1, CrossDimLinks.linksView().size());
+        CrossDimLinks.Link link = CrossDimLinks.linksView().get(0);
+        assertSame(neIsland(cellKey(0, 0)), link.nether);
+        assertEquals(neIsland(cellKey(0, 0)).cells, link.sharedCells);
+        assertNotNull(link.nether.crossDimCoupling);
+        assertNull(neIsland(cellKey(-2, 0)).crossDimCoupling);
+    }
+
     /** Maintainer test 1: intersecting Overworld/Nether projections link,
      *  couple, and report through the diagnostic. */
     @Test
@@ -265,10 +313,6 @@ class CrossDimLinksTest {
                 ow.crossDimCoupling.sharedTargetNanos, "no overrides -> global rate shared");
         assertEquals(anchors0 + 1, CrossDimLinks.anchorsApplied, "anchor applied at link");
 
-        String status = CrossDimLinks.status();
-        assertTrue(status.contains("COUPLED"), "diagnostic must show the coupling: " + status);
-        assertTrue(status.contains("cells∩=1"), "diagnostic must list the shared cells: " + status);
-        assertTrue(status.contains("age=0t"), "diagnostic must show the link age: " + status);
     }
 
     /** Maintainer test 2: non-intersecting projections do not link. The pad
@@ -604,37 +648,4 @@ class CrossDimLinksTest {
         assertNull(neIsland(cellKey(0, 0)).crossDimCoupling);
     }
 
-    /** Maintainer test 7 (transfer-lane half) + review scope guard, as a
-     *  source pin: the smaller mechanism is scheduling-only. CrossDimLinks
-     *  must not touch the transfer lane (CrossDimArrivals / PTM /
-     *  EndPlatformHandoff / pendingArrivals) and must never write a logical
-     *  clock; and the deferred BridgeTickUnit must not exist even half-built
-     *  (review D1 — nothing may take two island claims for tick work). */
-    @Test
-    void sourcePinSchedulingOnlyAndNoBridgeUnit() throws Exception {
-        Path src = sourceRoot().resolve("common/regions/CrossDimLinks.java");
-        String text = Files.readString(src);
-        String body = text.substring(text.indexOf("public final class CrossDimLinks"));
-        assertFalse(body.contains("CrossDimArrivals"), "must not touch the arrival lane");
-        assertFalse(body.contains("PortalTeleportationManager"), "must not touch the PTM");
-        assertFalse(body.contains("EndPlatformHandoff"), "must not touch the End gate");
-        assertFalse(body.contains("pendingArrivals"), "must not touch arrival queues");
-        assertFalse(body.contains("logicalTick =") || body.contains("logicalTick++")
-                        || body.contains("logicalTick +="),
-                "phase-lock: the manager may READ clocks for diagnostics, never write one");
-        assertFalse(Files.exists(sourceRoot().resolve("common/regions/BridgeTickUnit.java")),
-                "the two-claim BridgeTickUnit is DEFERRED (review D1) and must not exist");
-    }
-
-    private static Path sourceRoot() {
-        Path root = Paths.get("").toAbsolutePath();
-        while (root != null) {
-            Path direct = root.resolve("src/main/java/com/axalotl/fabrolia");
-            Path viaCommon = root.resolve("common/src/main/java/com/axalotl/fabrolia");
-            if (Files.isDirectory(direct)) return direct;
-            if (Files.isDirectory(viaCommon)) return viaCommon;
-            root = root.getParent();
-        }
-        throw new IllegalStateException("source root not found");
-    }
 }

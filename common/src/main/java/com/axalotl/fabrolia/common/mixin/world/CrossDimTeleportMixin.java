@@ -4,9 +4,12 @@ import com.axalotl.fabrolia.common.regions.CrossDimArrivals;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
+import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
+import com.axalotl.fabrolia.common.utils.DragonEntityIds;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -28,9 +31,28 @@ public abstract class CrossDimTeleportMixin {
     private static final java.util.concurrent.atomic.AtomicLong fabrolia$deadArrivalLogNanos =
             new java.util.concurrent.atomic.AtomicLong();
 
+    /** Vanilla's void teleport entry discards the admission result. A rejected
+     * staged member is a failed publication, not an airborne entity to await. */
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+            method = "addDuringTeleport",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerLevel;addEntity(Lnet/minecraft/world/entity/Entity;)Z"))
+    private boolean fabrolia$observeArrivalAdmission(ServerLevel level, Entity entity,
+            com.llamalad7.mixinextras.injector.wrapoperation.Operation<Boolean> original) {
+        boolean accepted = original.call(level, entity);
+        if (!accepted && CrossDimArrivals.PUBLISHING.get()) {
+            throw new IllegalStateException("Destination rejected staged teleport arrival "
+                    + entity.getUUID());
+        }
+        return accepted;
+    }
+
     @Inject(method = "addDuringTeleport", at = @At("HEAD"), cancellable = true)
     private void fabrolia$stageArrival(Entity entity, CallbackInfo ci) {
         ServerLevel self = (ServerLevel) (Object) this;
+        if (com.axalotl.fabrolia.common.regions.NetherPortalTransfers.admitArrival(self, entity)) {
+            return; // The complete Nether body owns both endpoints through every continuation.
+        }
         long chunkKey = entity.chunkPosition().pack();
         if (CrossDimArrivals.PUBLISHING.get()) {
             return; // publish-time execution: run the real vanilla path
@@ -46,9 +68,6 @@ public abstract class CrossDimTeleportMixin {
             return;
         }
         if (!(Thread.currentThread() instanceof RegionWorkerThread)) {
-            if (!destRs.asyncActive) {
-                return; // main → sequential levels: vanilla ordering holds
-            }
             if (!CrossDimArrivals.islandOwnedDestination(destRs, chunkKey)) {
                 return; // main → global-owned destination: main is the executor
             }
@@ -80,10 +99,11 @@ public abstract class CrossDimTeleportMixin {
                     new net.minecraft.world.level.ChunkPos(
                             net.minecraft.world.level.ChunkPos.getX(chunkKey),
                             net.minecraft.world.level.ChunkPos.getZ(chunkKey)), 3);
-            if (self.getServer() != null && self.getServer().isSameThread()) {
+            if (RegionalPlayerEntityTicksV2
+                    .isPhysicalServerThread(self.getServer())) {
                 sustain.run();
             } else {
-                RegionScheduler.enqueueGlobalMainSafe(sustain);
+                RegionScheduler.enqueueGlobalMainOnly(sustain);
             }
             // The arrival copy can be KILLED between staging and publication.
             // Vanilla inserts the copy (Entity.teleportCrossDimension:3090) and only
@@ -112,7 +132,11 @@ public abstract class CrossDimTeleportMixin {
                 }
                 return;
             }
-            entity.setId(self.getNextEntityId());
+            if (entity instanceof EnderDragon dragon) {
+                DragonEntityIds.assignUnpublished(self, dragon);
+            } else {
+                entity.setId(self.getNextEntityId());
+            }
             self.addDuringTeleport(entity);
         }, "entity", entity);
         ci.cancel();

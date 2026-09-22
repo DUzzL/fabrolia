@@ -54,7 +54,7 @@ class EndPlatformHandoffFlushTrackingTest {
 
     private static EndPlatformHandoff.Tracker tracker() {
         return new EndPlatformHandoff.Tracker(
-                h -> ((Fbe) h).settled, () -> 0L, EndPlatformHandoff.DEFAULT_TTL_NANOS);
+                h -> ((Fbe) h).settled);
     }
 
     private static List<Op> machineCohort(long tick, int members, List<Fbe> handlesOut) {

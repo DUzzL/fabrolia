@@ -1,8 +1,10 @@
 package com.axalotl.fabrolia.common;
 
 import com.axalotl.fabrolia.api.utils.FabroliaCompatible;
+import com.axalotl.fabrolia.api.utils.SyncItemPickup;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
-import com.axalotl.fabrolia.common.parallelised.utils.PortalTeleportationManager;
+import com.axalotl.fabrolia.common.regions.NetherPortalTransfers;
+import com.axalotl.fabrolia.common.regions.EntityTickLease;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -10,7 +12,11 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.item.FallingBlockEntity;
+import net.minecraft.world.entity.monster.EnderMan;
 import net.minecraft.world.entity.monster.Shulker;
+import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
+import net.minecraft.world.entity.boss.wither.WitherBoss;
+import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.entity.vehicle.boat.AbstractBoat;
 import net.minecraft.world.entity.vehicle.boat.Boat;
@@ -22,13 +28,14 @@ import java.lang.ref.WeakReference;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinWorkerThread;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.Map;
 
@@ -41,12 +48,15 @@ public final class ParallelProcessor {
 
     private ParallelProcessor() {}
 
-    public interface TickGuard {
+    public interface TickGuard extends SyncItemPickup.PortalReservation {
         /** task #19: entity has a portal teleport queued on main — it must
          *  stop participating in simulation until main resolves it (vanilla:
          *  the entity would already be gone the tick portal-time fired). */
+        @Override
         default boolean fabrolia$isPortalPending() { return false; }
         default void fabrolia$setPortalPending(boolean pending) {}
+        @Override
+        default boolean fabrolia$isPortalResolutionOwner() { return false; }
 
         /** task #26 stuck-in-portal probe: {@code System.nanoTime()} of this
          *  entity's most recent tick (setOldPosAndRot head), so `regions debug
@@ -61,8 +71,10 @@ public final class ParallelProcessor {
          *  entry/expiry, the "portal-entry state" discriminator. */
         default String fabrolia$portalStateInfo() { return "?"; }
 
-        boolean fabrolia$tryBeginTick();
-        void fabrolia$endTick();
+        EntityTickLease fabrolia$tickLease();
+        default boolean fabrolia$tryBeginTick() { return fabrolia$tickLease().tryBegin(); }
+        default void fabrolia$endTick() { fabrolia$tickLease().end(); }
+        /** Immutable class/type safety only; configured synchronization is read per dispatch. */
         byte fabrolia$getSyncCache();
         void fabrolia$setSyncCache(byte v);
     }
@@ -84,6 +96,8 @@ public final class ParallelProcessor {
             AbstractBoat.class,
             FallingBlockEntity.class,
             Shulker.class,
+            // Preserve synchronous EnderMan ticks in regions-off flat-pool mode.
+            EnderMan.class,
             Boat.class,
             Projectile.class,
             ServerPlayer.class,
@@ -104,57 +118,36 @@ public final class ParallelProcessor {
         return BLOCKED_CACHE.get(cls);
     }
 
-    /**
-     * Region dense-fan-out ordered-lane gate: the flat-pool class blacklist applied to
-     * INTRA-region parallelism. {@link #requiresMainThread} deliberately skips the class
-     * blacklist in region mode because "a region task is already serial for its area" —
-     * but the dense fan-out ({@code RegionizedServer.parallelTickOwned}) breaks exactly
-     * that assumption by ticking one region's entities on concurrent helper batches.
-     * These classes write OTHER entities' state when they tick (minecart/boat mutual
-     * momentum exchange in {@code AbstractMinecart.pushOtherMinecart} writes BOTH carts'
-     * deltaMovement, projectile hits mutate their target, shulkers/falling blocks write
-     * world state), so two batches racing a touching pair garble vanilla motion
-     * arithmetic — same failure class as the 2026-06-14 item-sorter race, observed
-     * 2026-07-10 as minecarts bunching up and piling at a rail-splitter corner once
-     * several carts circulate through a dense region. Players are excluded: region
-     * player ticks have their own contract (see {@link #shouldTickSynchronously}).
-     */
-    public static boolean requiresOrderedLane(Entity entity) {
-        return !(entity instanceof ServerPlayer) && isBlocked(entity.getClass());
-    }
 
-    private static final java.util.Map<Class<?>, Boolean> FABROLIA_API_SYNC_CACHE = new ConcurrentHashMap<>();
+    private static final ClassValue<Boolean> FABROLIA_API_COMPATIBLE = new ClassValue<>() {
+        @Override
+        protected Boolean computeValue(Class<?> cls) {
+            return cls.isAnnotationPresent(FabroliaCompatible.class);
+        }
+    };
 
     public static boolean entitySupportsFabroliaApi(Entity entity) {
-        Class<?> cls = entity.getClass();
-        Boolean cached = FABROLIA_API_SYNC_CACHE.get(cls);
-        if (cached != null) return cached;
-        boolean result = !"minecraft".equals(EntityType.getKey(entity.getType()).getNamespace()) && !cls.isAnnotationPresent(FabroliaCompatible.class);
-        FABROLIA_API_SYNC_CACHE.put(cls, result);
-        return result;
-    }
-
-    private static final java.util.Map<Class<?>, Boolean> SYNC_CLASS_CACHE = new ConcurrentHashMap<>();
-
-    public static void clearCaches() {
-        SYNC_CLASS_CACHE.clear();
-        FABROLIA_API_SYNC_CACHE.clear();
+        return !"minecraft".equals(EntityType.getKey(entity.getType()).getNamespace())
+                && !FABROLIA_API_COMPATIBLE.get(entity.getClass());
     }
 
     private static final Map<String, Set<WeakReference<Thread>>> MC_THREAD_TRACKER = new ConcurrentHashMap<>();
 
     public static void setServer(MinecraftServer server) {
         ParallelProcessor.server = server;
-        PortalTeleportationManager.init(server);
+        NetherPortalTransfers.init(server);
     }
 
     public static void setupThreadPool(int parallelism) {
-        executor = createPool(parallelism);
+        ExecutorService created = createPool(parallelism);
+        executor = created;
+        isShuttingDown = false;
     }
 
 
     private static ForkJoinPool createPool(int parallelism) {
-        return new ForkJoinPool(parallelism, fabroliaWorkerFactory(), (t, e) -> LOGGER.error("Uncaught exception in thread {}", t.getName(), e),
+        return new ForkJoinPool(parallelism, fabroliaWorkerFactory(),
+                ParallelProcessor::fabrolia$failStopUncaught,
                 /* asyncMode       */ true,
                 /* corePoolSize    */ parallelism,
                 /* maximumPoolSize */ parallelism,
@@ -171,10 +164,20 @@ public final class ParallelProcessor {
             FabroliaForkJoinWorkerThread t = new FabroliaForkJoinWorkerThread(pool);
             t.setDaemon(true);
             t.setPriority(priority);
-            t.setUncaughtExceptionHandler((thr, ex) -> LOGGER.error("Uncaught exception in thread {}", thr.getName(), ex));
+            t.setUncaughtExceptionHandler(ParallelProcessor::fabrolia$failStopUncaught);
             registerThread("Fabrolia-Tick", t);
             return t;
         };
+    }
+
+    /** A pool envelope escape is a generation failure, never a log-and-continue event. */
+    private static void fabrolia$failStopUncaught(Thread thread, Throwable thrown) {
+        Throwable winner = RegionScheduler.publishFatalAndSelectWinner(thrown);
+        try {
+            LOGGER.error("Uncaught exception in thread {}", thread.getName(), thrown);
+        } catch (Throwable diagnosticFailure) {
+            fabrolia$mergeFailure(winner, diagnosticFailure);
+        }
     }
 
     private static final class FabroliaForkJoinWorkerThread extends ForkJoinWorkerThread {
@@ -199,7 +202,9 @@ public final class ParallelProcessor {
         // same semantic as Fabrolia-Tick-Pool workers — both count as "on a server
         // execution thread" for code that branches on this check.
         return t instanceof FabroliaForkJoinWorkerThread
-                || RegionScheduler.isRegionWorker(t);
+                || RegionScheduler.isRegionWorker(t)
+                || com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                .inExactPlayerActor();
     }
 
     public static int getPoolSize() {
@@ -207,38 +212,45 @@ public final class ParallelProcessor {
     }
 
     public static void onEntityTickBatchEnd(long batchStartNanos) {
-        if (RECORDING_TICKS_LEFT.get() > 0) {
-            TOTAL_BATCH_WALL_NS.add(System.nanoTime() - batchStartNanos);
-            RECORDING_TICKS_LEFT.decrementAndGet();
-        }
-        // Grants queued by region-worker player drains apply here, on main, before the
-        // portal drain — reward functions/commands keep their main-thread assumptions
-        // (MFC dispatch entry, loot tables, /tellraw), and a reward that moves a player
-        // still sees its portal handoff processed in the same batch epilogue.
-        AdvancementBuffer.applyDeferred();
-        AdvancementBuffer.drainPendingFlushes();
-        PortalTeleportationManager.drainPending();
+        // Each fallible stage is admitted atomically against the generation fatal
+        // cut.  Once admitted it may exhaust its own finally chain, but a W which
+        // wins before the next stage prevents that successor from entering.
+        // Grants queued by generic off-main advancement paths apply here, on main,
+        // before the portal drain. The exact player actor bypasses this buffer and
+        // preserves its synchronous vanilla trigger -> reward -> flush order.
+        RegionScheduler.runSuccessBodyIfHealthy(AdvancementBuffer::applyDeferred);
+        RegionScheduler.runSuccessBodyIfHealthy(AdvancementBuffer::drainPendingFlushes);
         // Seal main's cross-dimension stage for the level just ticked (one
         // cohort per source entity batch, same contract as island units).
         var srcLevel = com.axalotl.fabrolia.common.regions.RegionScheduler.mainCurrentLevel;
         if (srcLevel != null) {
             if ((srcLevel.getGameTime() & 255) == 17
                     && srcLevel instanceof com.axalotl.fabrolia.common.parallelised.utils.FabroliaNavAudit audit) {
-                audit.fabrolia$sweepNavLeaks();
+                RegionScheduler.runSuccessBodyIfHealthy(audit::fabrolia$sweepNavLeaks);
             }
             var srcRs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(srcLevel);
             if (srcRs != null) {
-                srcRs.sealGlobalStage();
+                RegionScheduler.runSuccessBodyIfHealthy(srcRs::sealGlobalStage);
             }
         }
         // Rerouted region tasks (claims that found their region already DONE
         // this epoch) must land same-tick — a leftover here would slide a
         // phase or race next tick's island slices on main.
-        RegionScheduler.drainMainSafeNow();
+        RegionScheduler.runSuccessBodyIfHealthy(RegionScheduler::drainMainSafeNow);
         // Region-boundary debug particles (/fabrolia regions show). One isEmpty check when off.
         if (!RegionViz.isEmpty()) {
-            RegionViz.tick();
+            RegionScheduler.runSuccessBodyIfHealthy(RegionViz::tick);
         }
+        // Success-only publication: an advancement/portal/arrival/main-safe
+        // tail failure is part of this batch and may not consume a recording
+        // slot or report the partial turn as completed.
+        long elapsed = System.nanoTime() - batchStartNanos;
+        RegionScheduler.commitSuccessIfHealthy(() -> {
+            if (RECORDING_TICKS_LEFT.get() > 0) {
+                TOTAL_BATCH_WALL_NS.addAndGet(elapsed);
+                RECORDING_TICKS_LEFT.decrementAndGet();
+            }
+        });
     }
 
     public static void pumpUntilDone(CompletableFuture<?> future) {
@@ -256,11 +268,27 @@ public final class ParallelProcessor {
      * deliberately never polls (Carpet reentry, see below), and the next
      * drive-head batch point can't come while main is parked HERE. Cycle:
      * main ⇄ coordinator (the 2026-07-28 sprint-lockstep dump). Only legal
-     * where main holds no claims and no global-lane phase is in flight —
-     * i.e. the sprint unit-barrier loop, which is exactly the drive-head
-     * serialization point re-entered mid-tick.
+     * where main holds no claims and no global-lane body is executing. The
+     * ordinary entity-dispatch barrier also needs this progress when parked
+     * coordinators occupy every worker. Its selected global step returns only
+     * after terminal cleanup, before the outer routed drain runs.
      */
     public static void pumpUntilDone(CompletableFuture<?> future, boolean serviceRoutedCommands) {
+        pumpUntilDone0(future, null, serviceRoutedCommands);
+    }
+
+    /** Poll-only island-unit receipt: unlike CompletableFuture, it cannot run
+     *  synchronous user callbacks in the W-to-notification interval. */
+    public static void pumpUntilDone(
+            com.axalotl.fabrolia.common.regions.IslandTickUnit.AttemptReceipt receipt,
+            boolean serviceRoutedCommands) {
+        pumpUntilDone0(null, receipt, serviceRoutedCommands);
+    }
+
+    private static void pumpUntilDone0(
+            CompletableFuture<?> future,
+            com.axalotl.fabrolia.common.regions.IslandTickUnit.AttemptReceipt receipt,
+            boolean serviceRoutedCommands) {
         MinecraftServer s = server;
         if (s != null && s.isSameThread()) {
             // DO NOT call s.pollTask() (MinecraftServer task queue) here — reentrancy-
@@ -302,7 +330,9 @@ public final class ParallelProcessor {
                 // still stand: they drive the mainSync/steal/mainThreadProcessor lanes,
                 // which have no completion event to hook.
                 final Thread pumpWaiter = Thread.currentThread();
-                future.whenComplete((v, t) -> LockSupport.unpark(pumpWaiter));
+                if (future != null) {
+                    future.whenComplete((v, t) -> LockSupport.unpark(pumpWaiter));
+                }
                 // Spin-then-park: most barriers through here are SHORT — an advancement
                 // drain's eval batch or a nearly-complete entity batch, done in tens of µs.
                 // The previous unconditional park(100µs) overshot by up to a full slice per
@@ -312,22 +342,29 @@ public final class ParallelProcessor {
                 // poll rate; long barriers pay the spin once (~0.3% of a 13ms batch) and
                 // then park in 100µs slices exactly as before.
                 long spinUntil = System.nanoTime() + 40_000L;
-                while (!future.isDone()) {
+                while (!(future != null ? future.isDone() : receipt.isDone())) {
+                    // A parallel vanilla body may have failed since the previous
+                    // iteration. Stop before polling any Main/region/chunk successor.
+                    RegionScheduler.throwWorkerFailureIfAny();
                     // Region mode: tick entities the region tasks routed to main (modded
                     // API-contract, UUID blacklist) WHILE the regions run — same overlap
                     // the old syncDeferred loop had, just demand-driven. No-op (one CLQ
                     // poll) when the queue is empty or regions are off.
                     boolean drained = RegionScheduler.drainMainSyncTicks();
-                    // Main-steal: instead of parking through the barrier, chew one unit
-                    // of region work per iteration (main-safe global jobs, ready-queue
-                    // drains via try-claim-once — never a claim-spin, see RegionWorkerPool
-                    // .stealOne). Main was parked 17.6% of the thread at this barrier on
-                    // the 50-bot load — that's a 17th worker going to waste.
+                    // Main pump: service one explicit Main-only/main-safe job instead of
+                    // parking through it. Autonomous ready/help entries stay worker-owned;
+                    // letting physical Main detach those long poles made its own tick time
+                    // scale with the slowest remote island under 100-player load.
                     if (RegionScheduler.stealOneRegionTask()) {
                         drained = true;
                     }
                     for (ServerLevel level : s.getAllLevels()) {
-                        if (level.getChunkSource().mainThreadProcessor.pollTask()) {
+                        // Each queue body has its own execution-time cut.  A
+                        // check before the loop is insufficient: W can win
+                        // between two levels or between check and poll.
+                        if (RegionScheduler.callSuccessBooleanIfHealthy(
+                                () -> level.getChunkSource()
+                                        .mainThreadProcessor.pollTask())) {
                             drained = true;
                         }
                     }
@@ -365,14 +402,15 @@ public final class ParallelProcessor {
             // every region-ticked player drains through this branch each tick.
             long spinUntil = System.nanoTime() + 30_000L;
             long shutdownAbandonAt = 0;
-            while (!future.isDone()) {
+            while (!(future != null ? future.isDone() : receipt.isDone())) {
+                RegionScheduler.throwWorkerFailureIfAny();
                 if (System.nanoTime() < spinUntil) {
                     Thread.onSpinWait();
                 } else {
                     LockSupport.parkNanos("Fabrolia pumpUntilDone off-main", 25_000L);
                 }
                 // Shutdown liveness (audit #11): once the region scheduler is
-                // torn down, this future's completer may be dead — an
+                // torn down, the awaited completion owner may be dead — an
                 // unbounded park here is what wedged the pool join and hung
                 // /stop. Give in-flight completions a 5s grace, then abandon
                 // LOUDLY; the join hardening reports any worker still stuck.
@@ -381,86 +419,137 @@ public final class ParallelProcessor {
                     if (shutdownAbandonAt == 0) {
                         shutdownAbandonAt = now + 5_000_000_000L;
                     } else if (now > shutdownAbandonAt) {
-                        LOGGER.error("pumpUntilDone: abandoning incomplete future on {} — "
-                                + "scheduler stopped and the completer never finished",
-                                Thread.currentThread().getName());
-                        return;
+                        throw new IllegalStateException(
+                                "pumpUntilDone lost its completer after scheduler stop on "
+                                        + Thread.currentThread().getName());
                     }
                 }
             }
         }
-        if (future.isCompletedExceptionally()) {
-            try { future.join(); }
-            catch (Exception e) { LOGGER.error("Fabrolia batch failed", e); }
+        RegionScheduler.throwWorkerFailureIfAny();
+        if (receipt != null) {
+            receipt.throwIfFailed();
+            return;
+        }
+        try {
+            future.join();
+        } catch (CompletionException wrapped) {
+            Throwable original = wrapped.getCause();
+            ParallelProcessor.<RuntimeException>fabrolia$throwUnchecked(
+                    original == null ? wrapped : original);
         }
     }
 
     /**
      * Region-mode gate: which entities still MUST tick on the server thread even though
-     * their region task reached them. Only the API contract (modded entities without
-     * {@code @FabroliaCompatible} may assume main-thread ticks) and the manual UUID blacklist.
+     * their region task reached them. This includes the complete root/passenger tree
+     * whenever it can invoke a ServerPlayer tick, the API contract (modded entities
+     * without {@code @FabroliaCompatible} may assume main-thread ticks), and the manual
+     * UUID blacklist.
      * The class blacklist / vanilla-namespace synchronizedEntities entries are deliberately
      * NOT honored here: that machinery exists to SERIALIZE classes that race on the shared
      * pool, and a region task is already serial for its area — the protection is structural
      * in region mode (items/minecarts/projectiles tick in vanilla order within their
-     * region; the cross-thread consumption paths are covered by the item-region-keyed
-     * SyncItemPickup monitor (FabroliaLocks.itemLockOr) in ItemEntityMixin /
-     * HopperBlockEntityMixin and the global lock in ExperienceOrbMixin).
+     * region; cross-thread item/XP consumption shares each entity's stable
+     * SyncItemPickup guard with its tick and merge paths. Portal capture
+     * declines busy guards instead of waiting while retaining an island claim).
      */
     public static boolean requiresMainThread(Entity entity) {
-        if (!BLACKLISTED_ENTITIES.isEmpty() && BLACKLISTED_ENTITIES.contains(entity.getUUID())) return true;
-        return entitySupportsFabroliaApi(entity);
+        // Item-frame interaction/tracking mutates shared map state. Wither
+        // tracking membership and visibility teardown mutate its boss event;
+        // keep the whole root/passenger tree on Main so those callbacks cannot
+        // overlap the wither's AI tick.
+        if (containsMainOwnedTrackingEntity(entity)) return true;
+        if (containsForcedMainEntity(entity)) return true;
+        if (containsServerPlayerTick(entity)) return true;
+        return containsUnsupportedEntity(entity);
+    }
+
+    /**
+     * True when ticking {@code entity} can recursively invoke a {@link ServerPlayer} tick.
+     * Vanilla ticks passengers from their root vehicle, so checking only the root's class
+     * would still let mounted players inherit a worker venue. This must remain an uncached
+     * per-dispatch check because the passenger tree is mutable.
+     */
+    public static boolean containsServerPlayerTick(Entity entity) {
+        if (entity instanceof ServerPlayer) return true;
+        // getPassengers() is final in exact 26.2. Avoid overridable convenience
+        // predicates whose modded false result could hide a real passenger subtree.
+        for (Entity passenger : entity.getPassengers()) {
+            if (containsServerPlayerTick(passenger)) return true;
+        }
+        return false;
     }
 
     public static boolean shouldTickSynchronously(Entity entity) {
         if (isShuttingDown || FabroliaConfig.disabled) return true;
-        if (!BLACKLISTED_ENTITIES.isEmpty() && BLACKLISTED_ENTITIES.contains(entity.getUUID())) return true;
+        if (containsMainOwnedTrackingEntity(entity)) return true;
+        if (containsForcedMainEntity(entity)) return true;
 
-        // Players: decided per-call, never via the per-entity byte cache — the answer
-        // flips with the region scheduler's runtime on/off toggle and there are at most
-        // a few hundred players, so the instanceof costs nothing while a stale cached
-        // route would strand players on the wrong path until relog. Ticking a player on
-        // a region worker is safe because: region workers count as server execution
-        // threads (vanilla same-thread checks pass), dimension changes defer through
-        // PortalTeleportationManager to batch end, AdvancementBuffer frames are
-        // per-thread with grants applied on main, and item/orb pickup paths take the
-        // item-region-keyed SyncItemPickup monitor (ItemEntityMixin) / the global orb
-        // lock (ExperienceOrbMixin). Outside region mode players stay on main —
-        // BLOCKED_BASE_CLASSES below would say the same.
-        if (entity instanceof ServerPlayer) {
-            // A5 production hardening (2026-07-12): with async islands live,
-            // players are MAIN-OWNED — packet application and the player's
-            // entity tick execute on the same thread, eliminating the torn
-            // player-state class (movement apply vs worker travel physics)
-            // wholesale. The player's ISLAND still simulates at its own TPS;
-            // the player character itself rides the W lane.
-            if (com.axalotl.fabrolia.common.regions.RegionScheduler.anyAsyncActive()) {
-                // EXPERIMENTAL regional player ticking (task #30): eligible real
-                // players simulate on their island worker (doTick from the tick()
-                // wrap tail) with simulation packets routed into the same island
-                // lane — restoring the pre-A5 region path WITH the torn-state fix
-                // A5 existed for. Ineligible (or feature off) = A5 main-owned.
-                if (com.axalotl.fabrolia.common.regions.RegionalPlayerTicks
-                        .regionEligible((ServerPlayer) entity)) {
-                    return false;
-                }
-                return true;
-            }
-            return !(FabroliaConfig.enableRegionPlayerTicks
-                    && FabroliaConfig.enableRegionThreading
-                    && RegionScheduler.isActive());
+        // The rejected player-tick experiment was removed after the exact-26.2 audit. Include
+        // root vehicles because vanilla recursively invokes passenger ticks there.
+        if (containsServerPlayerTick(entity)) {
+            return true;
         }
 
+        return containsPoolSynchronizedEntity(entity);
+    }
+
+    private static boolean containsPoolSynchronizedEntity(Entity entity) {
         TickGuard guard = (TickGuard) entity;
         byte cached = guard.fabrolia$getSyncCache();
-        if (cached >= 0) return cached == 1;
+        if (cached < 0) {
+            boolean sync = isBlocked(entity.getClass()) || entitySupportsFabroliaApi(entity);
+            cached = sync ? (byte) 1 : (byte) 0;
+            guard.fabrolia$setSyncCache(cached);
+        }
+        // Policy changes must affect already-live entities; never fold mutable
+        // configuration (or passenger membership) into the lifetime cache.
+        if (cached == 1 || FabroliaConfig.isEntitySynchronized(EntityType.getKey(entity.getType()))) {
+            return true;
+        }
+        for (Entity passenger : entity.getPassengers()) {
+            if (containsPoolSynchronizedEntity(passenger)) return true;
+        }
+        return false;
+    }
 
-        Class<?> cls = entity.getClass();
-        boolean sync = isBlocked(cls)
-                || entitySupportsFabroliaApi(entity)
-                || FabroliaConfig.isEntitySynchronized(EntityType.getKey(entity.getType()));
-        guard.fabrolia$setSyncCache(sync ? (byte)1 : (byte)0);
-        return sync;
+    private static boolean containsUnsupportedEntity(Entity entity) {
+        if (entitySupportsFabroliaApi(entity)) return true;
+        for (Entity passenger : entity.getPassengers()) {
+            if (containsUnsupportedEntity(passenger)) return true;
+        }
+        return false;
+    }
+
+    /** Hard-Main simulation state may also be reached through passenger recursion. */
+    private static boolean containsMainOwnedTrackingEntity(Entity entity) {
+        if (entity instanceof ItemFrame || entity instanceof WitherBoss
+                || entity instanceof EnderDragon) return true;
+        for (Entity passenger : entity.getPassengers()) {
+            if (containsMainOwnedTrackingEntity(passenger)) return true;
+        }
+        return false;
+    }
+
+    private static boolean containsForcedMainEntity(Entity entity) {
+        if (!BLACKLISTED_ENTITIES.isEmpty()
+                && BLACKLISTED_ENTITIES.contains(entity.getUUID())) return true;
+        for (Entity passenger : entity.getPassengers()) {
+            if (containsForcedMainEntity(passenger)) return true;
+        }
+        return false;
+    }
+
+    /** Permanent safety fallback for a live entity whose island publication failed. */
+    public static void forceMainThread(Entity entity) {
+        if (entity != null) BLACKLISTED_ENTITIES.add(entity.getUUID());
+    }
+
+    /** Exact direct-entity predicate used by the A5 player admission gate. */
+    public static boolean isForcedMainThread(Entity entity) {
+        return entity != null && !BLACKLISTED_ENTITIES.isEmpty()
+                && BLACKLISTED_ENTITIES.contains(entity.getUUID());
     }
 
     /** True on the current thread only while inside a REAL entity tick — lets the
@@ -470,72 +559,245 @@ public final class ParallelProcessor {
     public static final ThreadLocal<Boolean> IN_ENTITY_TICK = ThreadLocal.withInitial(() -> false);
 
     public static void tickEntity(ServerLevel world, Entity entity, boolean fabrolia) {
+        tickEntityVanillaGuarded(world, entity, fabrolia);
+    }
+
+    /**
+     * Exact vanilla crash boundary for every regional entity/root tick.
+     * {@link net.minecraft.world.level.Level#guardEntityTick}
+     * catches every Throwable, creates the vanilla "Ticking entity" report and throws it.
+     * Mandatory tick-frame restoration remains in a finally block. Portal publication
+     * and success metrics occur only if the complete guarded body succeeded.
+     */
+    public static void tickEntityVanillaGuarded(ServerLevel world, Entity entity, boolean fabrolia) {
+        if (((TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return;
         long start = System.nanoTime();
         boolean prevInTick = IN_ENTITY_TICK.get();
         IN_ENTITY_TICK.set(Boolean.TRUE);
+        Throwable failure = null;
         try {
-            world.tickNonPassenger(entity);
-        } catch (Exception e) {
-            com.axalotl.fabrolia.common.regions.ThrottledLog.error(LOGGER, "tickEntity", e,
-                    "Error during {} tick. Entity: {}, UUID: {}",
-                    fabrolia ? "fabrolia" : "sync", entity.getType(), entity.getUUID());
-            if (fabrolia) {
-                SYNC_CLASS_CACHE.put(entity.getClass(), Boolean.TRUE);
-            }
+            RegionScheduler.throwWorkerFailureIfAny();
+            world.guardEntityTick(world::tickNonPassenger, entity);
+            // The guarded body can return normally after a peer has already
+            // selected the generation-wide W.  Metrics and portal publication
+            // are success-only tails, so observe W before either becomes visible.
+            RegionScheduler.throwWorkerFailureIfAny();
+        } catch (Throwable thrown) {
+            // The guarded vanilla body has entered. Close every Fabrolia start
+            // gate now, before frame restoration or portal cleanup can expose a
+            // window in which another simulation root starts after this failure.
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         } finally {
-            // Restore the frame and release staged transfers FIRST. These used to
-            // sit after the metrics block, so any throw there (e.g. OOM inside
-            // computeIfAbsent) left IN_ENTITY_TICK true on a pooled thread and
-            // stranded the entity's portal transfer forever. Audit 2026-07-26.
-            IN_ENTITY_TICK.set(prevInTick);
-            // audit11: inside a region-claim frame, per-entity publication is
-            // exactly what let main's fixed-rate drain bisect one portal
-            // activation into two batches — the frame publishes the whole
-            // claim's transfers at once, in the region task's finally, at
-            // claim release. Outside a frame (main, flat pool, help batches)
-            // the per-entity cadence is unchanged.
-            if (!prevInTick && !PortalTeleportationManager.inRegionClaimFrame()) {
-                PortalTeleportationManager.publishTickLocalTransfers();
+            try {
+                IN_ENTITY_TICK.set(prevInTick);
+            } catch (Throwable cleanup) {
+                failure = fabrolia$publishMergedFailure(failure, cleanup);
             }
-            if (RECORDING_TICKS_LEFT.get() > 0) {
-                EntityType<?> type = entity.getType();
-                long elapsed = System.nanoTime() - start;
-                if (fabrolia) {
-                    FABROLIA_TICK_TIME_NS.computeIfAbsent(type, _ -> new LongAdder()).add(elapsed);
-                    FABROLIA_TICK_COUNT.computeIfAbsent(type, _ -> new LongAdder()).increment();
-                    TOTAL_FABROLIA_TIME_NS.add(elapsed);
-                    TOTAL_FABROLIA_COUNT.increment();
-                } else {
-                    TICK_TIME_NS.computeIfAbsent(type, _ -> new LongAdder()).add(elapsed);
-                    TICK_COUNT.computeIfAbsent(type, _ -> new LongAdder()).increment();
-                    TOTAL_SYNC_TIME_NS.add(elapsed);
-                    TOTAL_SYNC_COUNT.increment();
+            if (failure == null) {
+                try {
+                    AtomicLong elapsedMetric = null;
+                    AtomicLong countMetric = null;
+                    AtomicLong totalElapsedMetric = null;
+                    AtomicLong totalCountMetric = null;
+                    long elapsed = 0L;
+                    if (RECORDING_TICKS_LEFT.get() > 0) {
+                        EntityType<?> type = entity.getType();
+                        elapsed = System.nanoTime() - start;
+                        if (fabrolia) {
+                            elapsedMetric = FABROLIA_TICK_TIME_NS.computeIfAbsent(
+                                    type, _ -> new AtomicLong());
+                            countMetric = FABROLIA_TICK_COUNT.computeIfAbsent(
+                                    type, _ -> new AtomicLong());
+                            totalElapsedMetric = TOTAL_FABROLIA_TIME_NS;
+                            totalCountMetric = TOTAL_FABROLIA_COUNT;
+                        } else {
+                            elapsedMetric = TICK_TIME_NS.computeIfAbsent(
+                                    type, _ -> new AtomicLong());
+                            countMetric = TICK_COUNT.computeIfAbsent(
+                                    type, _ -> new AtomicLong());
+                            totalElapsedMetric = TOTAL_SYNC_TIME_NS;
+                            totalCountMetric = TOTAL_SYNC_COUNT;
+                        }
+                    }
+                    final AtomicLong elapsedCommit = elapsedMetric;
+                    final AtomicLong countCommit = countMetric;
+                    final AtomicLong totalElapsedCommit = totalElapsedMetric;
+                    final AtomicLong totalCountCommit = totalCountMetric;
+                    final long elapsedNanos = elapsed;
+                    RegionScheduler.commitSuccessIfHealthy(() -> {
+                        if (elapsedCommit != null) {
+                            elapsedCommit.addAndGet(elapsedNanos);
+                            countCommit.incrementAndGet();
+                            totalElapsedCommit.addAndGet(elapsedNanos);
+                            totalCountCommit.incrementAndGet();
+                        }
+                    });
+                    if (!prevInTick) {
+                        // Players finish their own tick visibility here; non-player
+                        // departures remain visible through the enclosing claim.
+                        NetherPortalTransfers.completeTickLocalDeparture(entity);
+                    }
+                } catch (Throwable cleanup) {
+                    failure = fabrolia$publishMergedFailure(failure, cleanup);
                 }
             }
+            if (!prevInTick) {
+                if (failure != null) {
+                    try {
+                        NetherPortalTransfers.abortTickLocalTransfers();
+                    } catch (Throwable cleanup) {
+                        failure = fabrolia$publishMergedFailure(failure, cleanup);
+                    }
+                }
+            }
+        }
+        if (failure != null) ParallelProcessor.<RuntimeException>fabrolia$throwUnchecked(failure);
+    }
+
+    /** Publish the first failure immediately; later cleanup is suppressed context only. */
+    private static Throwable fabrolia$publishMergedFailure(Throwable primary,
+                                                            Throwable secondary) {
+        return RegionScheduler.publishFatalAndSelectWinner(
+                fabrolia$mergeFailure(primary, secondary));
+    }
+
+    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
+        if (primary == null) return cleanup;
+        if (cleanup != null && primary != cleanup) {
+            try {
+                primary.addSuppressed(cleanup);
+            } catch (Throwable ignored) {
+                // Cleanup diagnostics cannot replace the exact vanilla primary.
+            }
+        }
+        return primary;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void fabrolia$throwUnchecked(Throwable thrown) throws T {
+        throw (T) thrown;
+    }
+
+    /**
+     * Loader lifecycle boundary.  Both runtimes own accepted vanilla work, so a
+     * failure while stopping the region runtime may not skip the flat/player
+     * runtime cleanup.  The first failure remains the exact object rethrown to
+     * the loader; later cleanup failures are diagnostics on that object only.
+     */
+    public static void stopServerRuntime() {
+        Throwable failure = null;
+        // SERVER_STOPPING runs before vanilla disconnect/save.  Close any flat
+        // advancement tail even when region threading was never enabled; a live
+        // RegionScheduler performs further fixed-point passes while it drains.
+        try {
+            AdvancementBuffer.drainShutdownPassIfPending();
+        } catch (Throwable primary) {
+            failure = primary;
+        }
+        try {
+            RegionScheduler.stop();
+        } catch (Throwable primary) {
+            failure = fabrolia$mergeFailure(failure, primary);
+        }
+        try {
+            stop();
+        } catch (Throwable cleanup) {
+            failure = fabrolia$mergeFailure(failure, cleanup);
+        }
+        if (failure != null) {
+            ParallelProcessor.<RuntimeException>fabrolia$throwUnchecked(failure);
         }
     }
 
     public static void stop() {
         isShuttingDown = true;
+        Throwable failure = null;
 
-        if (executor != null) {
+        // The exact-ordinal player actor is a serial extension of the server turn.
+        // Never tear down shared pools underneath an accepted player body.
+        try {
+            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2.shutdownActor();
+        } catch (Throwable cleanup) {
+            failure = fabrolia$mergeFailure(failure, cleanup);
+        }
+
+        ExecutorService stoppingExecutor = executor;
+        if (stoppingExecutor != null) {
             LOGGER.info("Waiting for Fabrolia pool to shutdown...");
-            executor.shutdown();
+            boolean shutdownStarted = false;
             try {
-                if (!executor.awaitTermination(60L, TimeUnit.SECONDS)) {
-                    LOGGER.warn("Fabrolia pool did not terminate within 60 seconds, forcing shutdown");
-                    executor.shutdownNow();
+                stoppingExecutor.shutdown();
+                shutdownStarted = true;
+            } catch (Throwable cleanup) {
+                failure = fabrolia$mergeFailure(failure, cleanup);
+            }
+            boolean interrupted = Thread.interrupted();
+            long nextDiagnostic = System.nanoTime() + 15_000_000_000L;
+            if (shutdownStarted || stoppingExecutor.isShutdown()) {
+                while (!stoppingExecutor.isTerminated()) {
+                    try {
+                        stoppingExecutor.awaitTermination(1L, TimeUnit.SECONDS);
+                    } catch (InterruptedException cleanup) {
+                        interrupted = true;
+                        failure = fabrolia$mergeFailure(failure, cleanup);
+                    }
+                    long now = System.nanoTime();
+                    if (!stoppingExecutor.isTerminated() && now >= nextDiagnostic) {
+                        LOGGER.error("Fabrolia pool is still draining accepted work during shutdown; "
+                                + "no task will be cancelled");
+                        nextDiagnostic = now + 15_000_000_000L;
+                    }
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                LOGGER.warn("Interrupted while waiting for thread pool shutdown", e);
-                executor.shutdownNow();
+            } else {
+                failure = fabrolia$mergeFailure(failure, new IllegalStateException(
+                        "Fabrolia pool rejected shutdown and still accepts work"));
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+
+        // The flat executor join is the final producer edge in regions-off mode.
+        // Apply its retained advancement results on physical Main, then prove that
+        // no ServerPlayer/ServerLevel carrier survives into an in-JVM restart.
+        if (failure == null) {
+            try {
+                RegionScheduler.throwWorkerFailureIfAny();
+                NetherPortalTransfers.flushQuiescent();
+                AdvancementBuffer.drainShutdownPassIfPending();
+                AdvancementBuffer.verifyAndResetAfterShutdown();
+            } catch (Throwable cleanup) {
+                failure = fabrolia$mergeFailure(failure, cleanup);
+            }
+        }
+        if (failure != null && (stoppingExecutor == null || stoppingExecutor.isTerminated())) {
+            try {
+                failure = NetherPortalTransfers.cancelFailedGeneration(failure);
+            } catch (Throwable cleanup) {
+                failure = fabrolia$mergeFailure(failure, cleanup);
             }
         }
 
-        FabroliaConfig.clearCaches();
-        BLACKLISTED_ENTITIES.clear();
-        PortalTeleportationManager.shutdown();
-        resetEntityTickStats();
+        try {
+            FabroliaConfig.clearCaches();
+        } catch (Throwable cleanup) {
+            failure = fabrolia$mergeFailure(failure, cleanup);
+        }
+        try {
+            BLACKLISTED_ENTITIES.clear();
+        } catch (Throwable cleanup) {
+            failure = fabrolia$mergeFailure(failure, cleanup);
+        }
+        try {
+            NetherPortalTransfers.shutdown();
+        } catch (Throwable cleanup) {
+            failure = fabrolia$mergeFailure(failure, cleanup);
+        }
+        try {
+            resetEntityTickStats();
+        } catch (Throwable cleanup) {
+            failure = fabrolia$mergeFailure(failure, cleanup);
+        }
+        if (failure != null) {
+            ParallelProcessor.<RuntimeException>fabrolia$throwUnchecked(failure);
+        }
     }
 }

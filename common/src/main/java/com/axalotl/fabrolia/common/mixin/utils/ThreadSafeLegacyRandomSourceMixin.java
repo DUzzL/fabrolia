@@ -12,29 +12,16 @@ import org.spongepowered.asm.mixin.Unique;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Thread-safe LegacyRandomSource with PER-INSTANCE streams.
+ * Thread-safe per-instance vanilla LCG streams. Ordinary sources preserve
+ * explicit-seed replay and sequential Main/worker handoffs; a worker label
+ * alone must not change a menu, entity, or seeded calculation's random stream.
  *
- * <p>Vanilla's seed is already an AtomicLong — its only concurrency problem
- * is the ThreadingDetector throw on a lost CAS. The fix is the obvious one:
- * loop the CAS. Lock-free, correct LCG semantics per source, zero allocation,
- * inlines to a handful of instructions (measured in the nalim campaign:
- * an FFI-per-call Rust RNG LOSES to this — C2 inlining beats the call
- * overhead; Rust randoms win only in bulk draws inside kernels).
- *
- * <p>This replaces the previous FabroliaRandomState scheme, which funneled EVERY
- * random source on a worker through one static per-thread stream (cross-source
- * pollution, master seed ignored after first use, a ThreadLocal lookup per
- * call) and left {@code nextGaussian}'s MarsagliaPolarGaussian pair-cache
- * fields racing entirely.
- *
- * <p>Contention profile: entity randoms are per-entity (one worker at a time
- * — uncontended). The shared {@code level.random} sees occasional cross-worker
- * CAS retries (~cache-line ping), which is the honest price of one shared
- * vanilla stream. Gaussian draws serialize on the pair-cache monitor —
- * uncontended in practice, correct under contention.
+ * <p>Only the owning level may opt its shared world RNG into contention-free
+ * worker stripes before publication. An explicit reseed revokes that opt-in:
+ * reproducible calculations take precedence over shared-stream throughput.
  */
 @Mixin(LegacyRandomSource.class)
-public abstract class ThreadSafeLegacyRandomSourceMixin {
+public abstract class ThreadSafeLegacyRandomSourceMixin implements FabroliaRandomStriping.SharedWorldSource {
 
     @Shadow
     @Final
@@ -44,24 +31,13 @@ public abstract class ThreadSafeLegacyRandomSourceMixin {
     @Final
     private MarsagliaPolarGaussian gaussianSource;
 
-    /**
-     * Reseed epoch for THIS source's worker stripes: a stripe cut before a
-     * setSeed must not be drawn from after it. Per-instance ON PURPOSE
-     * (identical-spawner-batches report, 2026-07-05): the previous GLOBAL
-     * version was bumped from here — and LegacyRandomSource's constructor
-     * calls setSeed, so every entity constructed anywhere invalidated every
-     * stripe on the server; combined with the then-replayable reseed base,
-     * each mob constructed by a spawner reset level.random's stripe and every
-     * finalizeSpawn in the batch rolled the identical stream (all-gold-armor
-     * batches). See FabroliaRandomStriping for the seeding half of the fix.
-     *
-     * <p>Plain non-atomic increment: concurrent setSeed on one instance has no
-     * defined stream contract anyway (vanilla ThreadingDetector-throws there),
-     * and a lost bump can only delay a stripe refresh — never cause a replay,
-     * since stripe seeding is nonce-unique.
-     */
     @Unique
-    private volatile long fabrolia$stripeEpoch;
+    private volatile boolean fabrolia$sharedWorldRandom;
+
+    @Override
+    public void fabrolia$markSharedWorldRandom() {
+        this.fabrolia$sharedWorldRandom = true;
+    }
 
     /**
      * @author Fabrolia
@@ -69,24 +45,21 @@ public abstract class ThreadSafeLegacyRandomSourceMixin {
      */
     @Overwrite
     public void setSeed(long seed) {
+        this.fabrolia$sharedWorldRandom = false;
         this.seed.set((seed ^ 25214903917L) & 281474976710655L);
         this.gaussianSource.reset();
-        this.fabrolia$stripeEpoch++;
     }
 
     /**
      * @author Fabrolia
-     * @reason Thread-safe without contention. Workers draw from a private
-     *         stripe per (thread, instance) — a 30-worker CAS loop on the
-     *         shared level.random cache line was 52% of the server (prof19).
-     *         Non-worker threads (main, worldgen) keep vanilla's CAS on the
-     *         instance seed minus the ThreadingDetector throw — generation
-     *         stays deterministic.
+     * @reason Ordinary sources retain their canonical LCG on every venue.
+     *         Only explicitly shared world entropy is striped on workers;
+     *         its previous 30-worker CAS contention cost 52% in prof19.
      */
     @Overwrite
     public int next(int bits) {
-        if (FabroliaRandomStriping.onWorker()) {
-            return FabroliaRandomStriping.next(this, this.seed, this.fabrolia$stripeEpoch, bits);
+        if (this.fabrolia$sharedWorldRandom && FabroliaRandomStriping.onWorker()) {
+            return FabroliaRandomStriping.next(this, this.seed, bits);
         }
         long current;
         long next;

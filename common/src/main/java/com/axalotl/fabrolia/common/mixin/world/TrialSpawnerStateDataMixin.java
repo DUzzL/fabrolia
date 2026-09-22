@@ -4,7 +4,6 @@ import com.axalotl.fabrolia.common.parallelised.utils.TrialSpawnerLineOfSightCac
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.level.block.entity.trialspawner.PlayerDetector;
 import net.minecraft.world.level.block.entity.trialspawner.TrialSpawner;
 import net.minecraft.world.level.block.entity.trialspawner.TrialSpawnerStateData;
 import net.minecraft.world.phys.Vec3;
@@ -17,23 +16,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Parallel LOS prefetch: just before vanilla calls {@code PlayerDetector.detect}, we
- * batch-raytrace every candidate player on the FJP pool and seed
- * {@link TrialSpawnerLineOfSightCache}. Vanilla's serial detect() loop then sees every
- * {@code inLineOfSight} as a cache hit (the
- * {@code PlayerDetectorLineOfSightMixin} short-circuits via the same cache).
- *
- * <p>The full path becomes: 1 burst of parallel raytraces on cache-miss + 0-cost serial
- * filter inside vanilla detect(), instead of N serial raytraces blocking main thread.
- *
- * <p>Hybrid logic, not just cache, not just multithread:
- * <ul>
- *   <li>2nd-Nth detection within TTL window → 100% cache hits → 0 work</li>
- *   <li>1st detection / blocks changed / player moved through grid → cache misses, but
- *       miss raytraces run on N FJP workers concurrently instead of serially on main</li>
- *   <li>Fewer than {@code PARALLEL_MIN_MISSES} misses → serial fill (FJP dispatch
- *       overhead exceeds work)</li>
- * </ul>
+ * Seeds line-of-sight cache misses on the source owner before native detection.
+ * Vanilla retains its detector-specific filters and consumes the real ray results.
  */
 @Mixin(TrialSpawnerStateData.class)
 public abstract class TrialSpawnerStateDataMixin {
@@ -45,8 +29,8 @@ public abstract class TrialSpawnerStateDataMixin {
     )
     private void fabrolia$prefetchLineOfSight(ServerLevel level, BlockPos pos, TrialSpawner spawner, CallbackInfo ci) {
         // The vanilla detect() about to fire from here is the (level, selector, pos,
-        // requiredPlayerRange, useLOS=true) variant. We pre-fill the LOS cache with
-        // parallel raytraces so detect()'s subsequent serial filter is all cache hits.
+        // requiredPlayerRange, useLOS=true) variant. Seed on this same owner;
+        // no live world reads or native callbacks are dispatched to helpers.
         //
         // We deliberately use the same player-selection criterion as the vanilla detectors
         // (closerThan + !creative + !spectator) — close enough that 99% of candidates we
@@ -58,16 +42,12 @@ public abstract class TrialSpawnerStateDataMixin {
                 p.blockPosition().closerThan(pos, range)
                         && !p.isCreative()
                         && !p.isSpectator());
-        if (nearby.size() < TrialSpawnerLineOfSightCache.PARALLEL_MIN_MISSES) {
-            // Too few players for parallel to be worth the dispatch overhead. The
-            // single-LOS HEAD cache hit/miss path in PlayerDetectorLineOfSightMixin
-            // covers this scale just fine.
-            return;
-        }
+        // Small candidate sets use the native per-ray cache path without a batch.
+        if (nearby.size() < 4) return;
 
         Vec3 from = Vec3.atCenterOf(pos);
         List<Vec3> targets = new ArrayList<>(nearby.size());
         for (ServerPlayer p : nearby) targets.add(p.getEyePosition());
-        TrialSpawnerLineOfSightCache.parallelPrefetch(level, from, targets);
+        TrialSpawnerLineOfSightCache.prefetch(level, from, targets);
     }
 }

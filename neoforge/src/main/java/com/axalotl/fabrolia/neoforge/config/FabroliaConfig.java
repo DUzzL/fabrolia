@@ -37,9 +37,8 @@ public class FabroliaConfig {
 
     // ── Region threading ────────────────────────────────────────────────
     private static final ModConfigSpec.BooleanValue enableRegionThreading;
+    private static final ModConfigSpec.BooleanValue enablePlayerTickActor;
     private static final ModConfigSpec.IntValue regionWorkerCount;
-    private static final ModConfigSpec.IntValue regionDenseFanoutThreshold;
-    private static final ModConfigSpec.BooleanValue enableRegionPlayerTicks;
     private static final ModConfigSpec.BooleanValue enableSpawnBarrierOverlap;
 
     // ── Island parallelism ──────────────────────────────────────────────
@@ -100,12 +99,10 @@ public class FabroliaConfig {
 
         enableRegionThreading = BUILDER.comment("Master switch for region threading. ON = chunks partition into a fixed grid; entity ticks group by owning region and run on a dedicated worker pool (cross-region parallel). Runtime: /fabrolia regions on|off.")
                 .define("enableRegionThreading", com.axalotl.fabrolia.common.config.FabroliaConfig.enableRegionThreading);
+        enablePlayerTickActor = BUILDER.comment("Player-tick ownership mode. With async islands, supported real players and audited Carpet fakes tick on their autonomous island; otherwise the awaited exact-ordinal compatibility actor is used. The saved preference is restored after scheduler startup. Runtime: /fabrolia regions playerticks on|off.")
+                .define("enablePlayerTickActor", com.axalotl.fabrolia.common.config.FabroliaConfig.enablePlayerTickActor);
         regionWorkerCount = BUILDER.comment("Region worker thread count. -1 = auto (cores-2). No effect unless enableRegionThreading=true.")
                 .defineInRange("regionWorkerCount", com.axalotl.fabrolia.common.config.FabroliaConfig.regionWorkerCount, -1, Integer.MAX_VALUE);
-        regionDenseFanoutThreshold = BUILDER.comment("Dense-region intra-region fan-out: a region exceeding this entity count splits its tick into sub-batches run by other workers under the region's own lock (sync to the region, not main). synchronizedEntities types keep exact mutual order on the coordinator. 0 or negative = always region-serial.")
-                .defineInRange("regionDenseFanoutThreshold", com.axalotl.fabrolia.common.config.FabroliaConfig.regionDenseFanoutThreshold, -1, Integer.MAX_VALUE);
-        enableRegionPlayerTicks = BUILDER.comment("Tick ServerPlayer on region workers when region threading is active. Inert unless enableRegionThreading=true. Default ON: parallel player ticks are the single largest serial cost regions remove (~14% of server thread at 50 players).")
-                .define("enableRegionPlayerTicks", com.axalotl.fabrolia.common.config.FabroliaConfig.enableRegionPlayerTicks);
         enableSpawnBarrierOverlap = BUILDER.comment("Let the parallel-spawn future ride to the entity-phase barrier instead of awaiting it at the end of tickChunks. Main parks once for max(spawn, entities). Random/fluid ticks are still awaited before chunk phase ends (vanilla order preserved).")
                 .define("enableSpawnBarrierOverlap", com.axalotl.fabrolia.common.config.FabroliaConfig.enableSpawnBarrierOverlap);
 
@@ -120,7 +117,7 @@ public class FabroliaConfig {
                 .define("fabroliaIslandScheduledTicks", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandScheduledTicks);
         fabroliaIslandBlockEntityTicks = BUILDER.comment("F2 (Stage C): island-partitioned block-entity ticks. Each island's loaded chunks dispatch their LevelChunk.tickersInLevel entries to one worker; islands are spatially separated by ≥16 unloaded chunks so cross-island side effects are impossible by construction. Heaviest island stays on main. <2 islands → vanilla. Runtime: /fabrolia regions islandbeticks on|off.")
                 .define("fabroliaIslandBlockEntityTicks", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandBlockEntityTicks);
-        asyncFailClosed = BUILDER.comment("Fail-closed safety: a detected cross-island ownership write auto-disables asyncIslands (byte-identical sync mode) instead of risking world state. Leave ON in production.")
+        asyncFailClosed = BUILDER.comment("Legacy debug-drill containment toggle. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.")
                 .define("asyncFailClosed", com.axalotl.fabrolia.common.config.FabroliaConfig.asyncFailClosed);
         asyncIslands = BUILDER.comment("A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. DEFAULT OFF while the phase rewire completes. Runtime: /fabrolia regions async.")
                 .define("asyncIslands", com.axalotl.fabrolia.common.config.FabroliaConfig.asyncIslands);
@@ -166,9 +163,8 @@ public class FabroliaConfig {
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaVmpTracking = enableFabroliaVmpTracking.get();
 
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableRegionThreading = enableRegionThreading.get();
+        com.axalotl.fabrolia.common.config.FabroliaConfig.enablePlayerTickActor = enablePlayerTickActor.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.regionWorkerCount = regionWorkerCount.get();
-        com.axalotl.fabrolia.common.config.FabroliaConfig.regionDenseFanoutThreshold = regionDenseFanoutThreshold.get();
-        com.axalotl.fabrolia.common.config.FabroliaConfig.enableRegionPlayerTicks = enableRegionPlayerTicks.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableSpawnBarrierOverlap = enableSpawnBarrierOverlap.get();
 
         com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionColorGate = fabroliaRegionColorGate.get();
@@ -189,7 +185,7 @@ public class FabroliaConfig {
         com.axalotl.fabrolia.common.config.FabroliaConfig.synchronizedEntities = entities.isEmpty()
                 ? getDefaultSynchronizedEntities()
                 : entities;
-        com.axalotl.fabrolia.common.config.FabroliaConfig.enforceSafetyInvariants();
+        com.axalotl.fabrolia.common.config.FabroliaConfig.onConfigLoaded();
     }
 
     public static void saveConfig() {
@@ -207,9 +203,8 @@ public class FabroliaConfig {
         enableFabroliaVmpTracking.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaVmpTracking);
 
         enableRegionThreading.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableRegionThreading);
+        enablePlayerTickActor.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enablePlayerTickActor);
         regionWorkerCount.set(com.axalotl.fabrolia.common.config.FabroliaConfig.regionWorkerCount);
-        regionDenseFanoutThreshold.set(com.axalotl.fabrolia.common.config.FabroliaConfig.regionDenseFanoutThreshold);
-        enableRegionPlayerTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableRegionPlayerTicks);
         enableSpawnBarrierOverlap.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableSpawnBarrierOverlap);
 
         fabroliaRegionColorGate.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionColorGate);

@@ -36,9 +36,4 @@ public interface SpawnFutureTaker {
      */
     default void fabrolia$armDeferredChunkWork() {}
 
-    /** @return the level's in-flight VMP-tracker tick future, clearing it — or null.
-     *  The tracker (vanilla: before entities) runs on the pool overlapping the rest
-     *  of the chunk phase; the entity barrier awaits it BEFORE dispatching entity
-     *  ticks so positions stay vanilla-stable for tracking. */
-    CompletableFuture<Void> fabrolia$takeTrackerFuture();
 }

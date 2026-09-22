@@ -44,10 +44,7 @@ import java.util.function.Predicate;
 @Mixin(SimpleCriterionTrigger.class)
 public abstract class SimpleCriterionTriggerMixin {
 
-    /**
-     * Resolved at class-load. Null when Vanish is absent (no skip-check needed) or its API
-     * isn't shaped as expected (defensive — we fall through to vanilla in that case).
-     */
+    /** Resolved at class-load. Null only when Vanish is absent. */
     @Unique
     private static final MethodHandle fabrolia$VANISH_IS_VANISHED;
 
@@ -61,28 +58,38 @@ public abstract class SimpleCriterionTriggerMixin {
 
     static {
         MethodHandle isVan = null, advFlag = null, specFlag = null;
+        Class<?> api = null;
         try {
-            Class<?> api = Class.forName("me.drex.vanish.api.VanishAPI");
-            isVan = MethodHandles.lookup().findStatic(
-                    api, "isVanished",
-                    MethodType.methodType(boolean.class, net.minecraft.world.entity.Entity.class));
-            // Config is fetched via static ConfigManager.vanish() → VanishConfig instance.
-            // We inline as two MH chains so each call is a single MH.invokeExact returning bool.
-            Class<?> mgr = Class.forName("me.drex.vanish.config.ConfigManager");
-            Class<?> cfg = Class.forName("me.drex.vanish.config.VanishConfig");
-            Class<?> inter = Class.forName("me.drex.vanish.config.VanishConfig$Interaction");
-            MethodHandle vanishCall = MethodHandles.lookup().findStatic(
-                    mgr, "vanish", MethodType.methodType(cfg));
-            MethodHandle interactionGetter = MethodHandles.lookup().findGetter(cfg, "interaction", inter);
-            MethodHandle advGetter = MethodHandles.lookup().findGetter(inter, "advancementProgress", boolean.class);
-            MethodHandle specGetter = MethodHandles.lookup().findGetter(inter, "spectatorAdvancementProgress", boolean.class);
-            // Compose: () -> bool  via filterReturnValue chains.
-            advFlag = MethodHandles.filterReturnValue(
-                    MethodHandles.filterReturnValue(vanishCall, interactionGetter), advGetter);
-            specFlag = MethodHandles.filterReturnValue(
-                    MethodHandles.filterReturnValue(vanishCall, interactionGetter), specGetter);
-        } catch (Throwable ignored) {
-            // Vanish absent or API mismatch — leave the MHs null and the wrap proceeds straight to buffer.
+            api = Class.forName("me.drex.vanish.api.VanishAPI");
+        } catch (ClassNotFoundException absent) {
+            // Optional dependency is not installed.  This is the only supported fallback.
+        }
+        if (api != null) {
+            try {
+                isVan = MethodHandles.lookup().findStatic(
+                        api, "isVanished",
+                        MethodType.methodType(boolean.class, net.minecraft.world.entity.Entity.class));
+                // Config is fetched via static ConfigManager.vanish() → VanishConfig instance.
+                // We inline as two MH chains so each call is a single MH.invokeExact returning bool.
+                Class<?> mgr = Class.forName("me.drex.vanish.config.ConfigManager");
+                Class<?> cfg = Class.forName("me.drex.vanish.config.VanishConfig");
+                Class<?> inter = Class.forName("me.drex.vanish.config.VanishConfig$Interaction");
+                MethodHandle vanishCall = MethodHandles.lookup().findStatic(
+                        mgr, "vanish", MethodType.methodType(cfg));
+                MethodHandle interactionGetter = MethodHandles.lookup().findGetter(cfg, "interaction", inter);
+                MethodHandle advGetter = MethodHandles.lookup().findGetter(inter, "advancementProgress", boolean.class);
+                MethodHandle specGetter = MethodHandles.lookup().findGetter(inter, "spectatorAdvancementProgress", boolean.class);
+                // Compose: () -> bool  via filterReturnValue chains.
+                advFlag = MethodHandles.filterReturnValue(
+                        MethodHandles.filterReturnValue(vanishCall, interactionGetter), advGetter);
+                specFlag = MethodHandles.filterReturnValue(
+                        MethodHandles.filterReturnValue(vanishCall, interactionGetter), specGetter);
+            } catch (Throwable linkageFailure) {
+                // Vanish's own trigger mixin is cancelled when this bridge is selected.
+                // An installed-but-incompatible API therefore has no semantics-preserving
+                // fallback: fail class initialisation with the exact linkage Throwable.
+                SimpleCriterionTriggerMixin.<RuntimeException>fabrolia$rethrow(linkageFailure);
+            }
         }
         fabrolia$VANISH_IS_VANISHED = isVan;
         fabrolia$VANISH_CONFIG_ADV_FLAG = advFlag;
@@ -91,6 +98,10 @@ public abstract class SimpleCriterionTriggerMixin {
 
     @WrapMethod(method = "trigger(Lnet/minecraft/server/level/ServerPlayer;Ljava/util/function/Predicate;)V")
     private void fabrolia$bufferOrTrigger(ServerPlayer player, Predicate<?> predicate, Operation<Void> original) {
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        CriterionTrigger<?> selfTrigger = (CriterionTrigger) (Object) this;
+        com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership
+                .requireTriggerEvaluationOwnership(player, selfTrigger);
         // Vanish skip-check (inlined from me.drex.vanish.mixin.interaction.SimpleCriterionTriggerMixin —
         // their mixin is disabled via MixinCanceller when we ship). Same semantics: skip when player
         // is vanished AND the config flag is on, or spectator AND the spectator flag is on.
@@ -103,13 +114,13 @@ public abstract class SimpleCriterionTriggerMixin {
                 if ((boolean) fabrolia$VANISH_CONFIG_SPEC_FLAG.invokeExact() && player.isSpectator()) {
                     return;
                 }
-            } catch (Throwable ignored) {
-                // VanishAPI threw something unexpected — fall through to vanilla path.
+            } catch (Throwable failure) {
+                // MethodHandle invocation requires a checked Throwable boundary.  It is
+                // propagation-only: never turn a failed Vanish decision into an award.
+                SimpleCriterionTriggerMixin.<RuntimeException>fabrolia$rethrow(failure);
             }
         }
 
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        CriterionTrigger<?> selfTrigger = (CriterionTrigger) (Object) this;
         // Trigger-map fetch happens INSIDE the buffer's pa monitor (2026-07-17
         // torn-read fix): the outer activeTriggers map resizes under main's
         // registerListeners; a lock-free get from a worker raced it.
@@ -120,5 +131,11 @@ public abstract class SimpleCriterionTriggerMixin {
         // fully inactive — single-threaded, no monitor needed (the SyncAll
         // blanket monitor on this class is gone, 2026-07-17 deadlock).
         original.call(player, predicate);
+    }
+
+    @Unique
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 }

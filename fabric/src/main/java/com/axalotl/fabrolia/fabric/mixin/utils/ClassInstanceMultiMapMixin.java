@@ -57,9 +57,27 @@ public abstract class ClassInstanceMultiMapMixin<T> extends AbstractCollection<T
         if (hit != null) {
             return (java.util.Collection<S>) hit;
         }
-        return original.call(index);
+        synchronized (this) {
+            // Keep the canonical snapshot and typed-index publication atomic
+            // with complete mutations, including Lithium RETURN callbacks.
+            return original.call(index);
+        }
     }
 
+
+    @com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod(method = "add")
+    private boolean fabrolia$serializeAdd(T entity, Operation<Boolean> original) {
+        synchronized (this) {
+            return original.call(entity);
+        }
+    }
+
+    @com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod(method = "remove")
+    private boolean fabrolia$serializeRemove(Object entity, Operation<Boolean> original) {
+        synchronized (this) {
+            return original.call(entity);
+        }
+    }
 
     @ModifyArg(method = "lambda$find$0", at = @At(value = "INVOKE", target = "Ljava/util/stream/Stream;collect(Ljava/util/stream/Collector;)Ljava/lang/Object;"))
     private Collector<T, ?, List<T>> overwriteCollectToList(Collector<T, ?, List<T>> collector) {

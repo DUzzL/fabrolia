@@ -103,9 +103,11 @@ import java.util.stream.Collectors;
  * {@code confirm} mutates. Before ANY mutation the full classification is
  * written to a report file (mutation aborts if the report cannot be written),
  * and the affected region files are copied into a sibling backup directory.
- * Each chunk is applied as its own transaction (pre-mutation snapshot,
- * rollback + exactness verification on any throw, run continues) and its
- * applied record is appended to the report immediately, per chunk.
+ * Each chunk is applied as its own transaction (pre-mutation snapshot and
+ * rollback + exactness verification on any throw). A failed entered repair
+ * fail-stops the scheduler with that exact failure; it is never converted into
+ * a skipped chunk and no later chunk is entered. Each successful applied record
+ * is appended to the report immediately, per chunk.
  * Everything runs on main under the two lane locks (block first, fluid second
  * — the same fixed order as {@code TickDomains.enforceConsumerDomain}).
  */
@@ -310,6 +312,17 @@ public final class TickRepair {
      */
     public static Result runLoadedPass(List<ServerLevel> levels, Mode mode, Path reportDir,
                                        ObjLongConsumer<ServerLevel> preMutationHook) {
+        try {
+            return runLoadedPassEntered(levels, mode, reportDir, preMutationHook);
+        } catch (Throwable failure) {
+            publishAndRethrow(failure);
+            return null;
+        }
+    }
+
+    private static Result runLoadedPassEntered(List<ServerLevel> levels, Mode mode, Path reportDir,
+                                               ObjLongConsumer<ServerLevel> preMutationHook)
+            throws IOException {
         Result r = new Result();
         r.totals.dimensions = levels.size();
         List<long[]> actionable = new ArrayList<>();   // {levelIndex, chunkKey}
@@ -325,15 +338,7 @@ public final class TickRepair {
         }
         // Report file BEFORE any mutation. Mutating modes abort if it cannot
         // be written — an unrecorded repair is worse than no repair.
-        try {
-            r.reportFile = writeReport(reportDir, mode, r);
-        } catch (IOException e) {
-            r.notes.add("report file could not be written (" + e + ")"
-                    + (mode.mutating ? " — MUTATION ABORTED, nothing was changed" : ""));
-            if (mode.mutating) {
-                return r;
-            }
-        }
+        r.reportFile = writeReport(reportDir, mode, r);
         if (!mode.mutating) {
             return r;
         }
@@ -343,43 +348,16 @@ public final class TickRepair {
         // BEFORE the first mutation and every chunk's applied lines are
         // appended immediately after that chunk commits — a crash mid-run can
         // never lose the record of what was already committed.
-        try {
-            appendLines(r.reportFile, List.of(
-                    "== applied (appended incrementally, per chunk — crash-safe record) =="));
-        } catch (IOException e) {
-            r.notes.add("could not append applied-section header to report: " + e);
-        }
+        appendLines(r.reportFile, List.of(
+                "== applied (appended incrementally, per chunk — crash-safe record) =="));
         for (long[] a : actionable) {
             ServerLevel level = levels.get((int) a[0]);
             if (preMutationHook != null) {
-                try {
-                    preMutationHook.accept(level, a[1]);
-                } catch (Throwable t) {
-                    r.notes.add("backup hook failed for " + level.dimension().identifier()
-                            + " chunk [" + ChunkPos.getX(a[1]) + "," + ChunkPos.getZ(a[1]) + "]: "
-                            + t + " (chunk still repaired; "
-                            + "the report file is the authoritative record)");
-                }
+                preMutationHook.accept(level, a[1]);
             }
             int fromApplied = r.applied.size();
             int fromNotes = r.notes.size();
-            try {
-                // applySingleChunk is itself a transaction: on an internal
-                // throw it rolls the chunk back to its pre-mutation snapshot,
-                // records FAILED-ROLLED-BACK in the notes and returns — the
-                // run then CONTINUES with the next chunk.
-                applySingleChunk(level, a[1], mode, appliedTotals, r.applied, r.notes);
-            } catch (Throwable t) {
-                // belt-and-braces: nothing past the transaction should throw,
-                // but one chunk's escape must not abort the remaining chunks
-                // or lose the incremental record.
-                String msg = dim(level) + " chunk[" + ChunkPos.getX(a[1]) + ","
-                        + ChunkPos.getZ(a[1]) + "] apply failed OUTSIDE the per-chunk "
-                        + "transaction: " + t + " — earlier chunks' applied records above "
-                        + "are committed; continuing with the next chunk";
-                r.notes.add(msg);
-                LOGGER.error("[tick-repair] {}", msg, t);
-            }
+            applySingleChunk(level, a[1], mode, appliedTotals, r.applied, r.notes);
             List<String> chunkRecord = new ArrayList<>();
             for (int i = fromApplied; i < r.applied.size(); i++) {
                 chunkRecord.add(r.applied.get(i).line());
@@ -388,11 +366,7 @@ public final class TickRepair {
                 chunkRecord.add("note: " + r.notes.get(i));
             }
             if (!chunkRecord.isEmpty()) {
-                try {
-                    appendLines(r.reportFile, chunkRecord);
-                } catch (IOException e) {
-                    LOGGER.warn("[tick-repair] could not append per-chunk applied record", e);
-                }
+                appendLines(r.reportFile, chunkRecord);
             }
         }
         // Scan counters (containers/entries/healthy/ambiguous/skipped) stay
@@ -403,11 +377,7 @@ public final class TickRepair {
         r.totals.removedMismatch = appliedTotals.removedMismatch;
         r.totals.rescheduled = appliedTotals.rescheduled;
         r.totals.clearedAmbiguous = appliedTotals.clearedAmbiguous;
-        try {
-            appendApplied(r.reportFile, r);
-        } catch (IOException e) {
-            r.notes.add("could not append applied section to report: " + e);
-        }
+        appendApplied(r.reportFile, r);
         return r;
     }
 
@@ -465,7 +435,7 @@ public final class TickRepair {
 
     // ------------------------------------------------------------------
     // Per-chunk transaction (audit15): snapshot -> mutate -> commit; any
-    // throw restores the snapshot exactly and the run continues. Snapshot
+    // throw restores the snapshot exhaustively and then fail-stops exactly. Snapshot
     // and restore use ONLY the public container API (getAll / removeIf /
     // schedule), which vanilla and Lithium both implement consistently.
     // ------------------------------------------------------------------
@@ -540,18 +510,29 @@ public final class TickRepair {
     /** Re-classify and repair one chunk atomically as a TRANSACTION, then run
      *  the recovery reschedules and mark the chunk dirty. Entry point for both
      *  the loaded pass and the unloaded batcher. On any throw from the
-     *  classification/mutation step both lanes are restored to their
-     *  pre-mutation snapshots (verified exact), a FAILED-ROLLED-BACK note is
-     *  recorded, and the method returns false so the run continues with the
-     *  next chunk — nothing from this chunk is committed. */
+     *  classification/mutation step both lanes are restored exhaustively. The
+     *  exact entered-work failure remains primary, is published to the shared
+     *  fatal gate, and propagates; later chunks are never entered. */
     static boolean applySingleChunk(ServerLevel level, long chunkKey, Mode mode,
                                     Totals totals, List<Finding> applied, List<String> notes) {
+        try {
+            return applySingleChunkEntered(level, chunkKey, mode, totals, applied, notes);
+        } catch (Throwable failure) {
+            publishAndRethrow(failure);
+            return false;
+        }
+    }
+
+    private static boolean applySingleChunkEntered(ServerLevel level, long chunkKey, Mode mode,
+                                                   Totals totals, List<Finding> applied,
+                                                   List<String> notes) {
         List<BlockPos> rescheduleFluid = new ArrayList<>();
         List<BlockPos> rescheduleFull = new ArrayList<>();
         int cx = ChunkPos.getX(chunkKey), cz = ChunkPos.getZ(chunkKey);
         LevelTicksIslandAccess<?> blockA = (LevelTicksIslandAccess<?>) level.getBlockTicks();
         LevelTicksIslandAccess<?> fluidA = (LevelTicksIslandAccess<?>) level.getFluidTicks();
-        boolean mutated;
+        boolean mutated = false;
+        Throwable failure = null;
         Totals tx = new Totals();
         List<Finding> txApplied = new ArrayList<>();
         // GLOBAL LOCK ORDER: block lane first, fluid second (processChunk
@@ -564,30 +545,37 @@ public final class TickRepair {
                 try {
                     mutated = processChunk(level, chunkKey, mode, true, tx, txApplied,
                             rescheduleFluid, rescheduleFull);
-                } catch (Throwable t) {
-                    String blockDiff = null, fluidDiff = null, restoreThrow = null;
+                } catch (Throwable primary) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(primary);
                     try {
-                        blockDiff = restoreLane(blockA, chunkKey, blockSnap);
-                        fluidDiff = restoreLane(fluidA, chunkKey, fluidSnap);
-                    } catch (Throwable rt) {
-                        restoreThrow = rt.toString();
+                        String diff = restoreLane(blockA, chunkKey, blockSnap);
+                        if (diff != null) {
+                            failure = RegionScheduler.publishFatalAndSelectWinner(
+                                    mergeFailure(failure, new IllegalStateException(
+                                            "block tick-lane rollback mismatch for " + dim(level)
+                                                    + " chunk[" + cx + "," + cz + "]: " + diff)));
+                        }
+                    } catch (Throwable cleanup) {
+                        failure = RegionScheduler.publishFatalAndSelectWinner(
+                                mergeFailure(failure, cleanup));
                     }
-                    boolean exact = blockDiff == null && fluidDiff == null && restoreThrow == null;
-                    String msg = dim(level) + " chunk[" + cx + "," + cz + "] FAILED-ROLLED-BACK: "
-                            + t + " — no mutation from this chunk was committed; "
-                            + (exact
-                               ? "pre-mutation snapshot restored and verified exact"
-                               : "SNAPSHOT RESTORE NOT VERIFIED EXACT ("
-                                 + (restoreThrow != null ? "restore threw: " + restoreThrow : "")
-                                 + (blockDiff != null ? " block: " + blockDiff : "")
-                                 + (fluidDiff != null ? " fluid: " + fluidDiff : "")
-                                 + ") — use the region-file backup for this chunk")
-                            + "; continuing with the next chunk";
-                    notes.add(msg);
-                    LOGGER.error("[tick-repair] {}", msg, t);
-                    return false;
+                    try {
+                        String diff = restoreLane(fluidA, chunkKey, fluidSnap);
+                        if (diff != null) {
+                            failure = RegionScheduler.publishFatalAndSelectWinner(
+                                    mergeFailure(failure, new IllegalStateException(
+                                            "fluid tick-lane rollback mismatch for " + dim(level)
+                                                    + " chunk[" + cx + "," + cz + "]: " + diff)));
+                        }
+                    } catch (Throwable cleanup) {
+                        failure = RegionScheduler.publishFatalAndSelectWinner(
+                                mergeFailure(failure, cleanup));
+                    }
                 }
             }
+        }
+        if (failure != null) {
+            TickRepair.<RuntimeException>rethrow(failure);
         }
         // COMMIT: merge the transaction's counters and record only now.
         totals.add(tx);
@@ -598,33 +586,25 @@ public final class TickRepair {
         // tick) — give the CURRENT fluid a fresh 1-tick schedule if it has
         // none. Never a generic immediate tick; the fluid decides.
         for (BlockPos pos : dedupe(rescheduleFluid)) {
-            try {
-                var fluid = level.getFluidState(pos);
-                if (!fluid.isEmpty() && !level.getFluidTicks().hasScheduledTick(pos, fluid.getType())) {
-                    level.scheduleTick(pos, fluid.getType(), 1);
-                    totals.rescheduled++;
-                    applied.add(new Finding(dim(level), cx, cz, "fluid",
-                            BuiltInRegistries.FLUID.getKey(fluid.getType()).toString(), pos,
-                            0, 0, 1, net.minecraft.world.ticks.TickPriority.NORMAL, 0,
-                            ACTION_RESCHEDULE, "current fluid re-scheduled after stale-entry removal"));
-                }
-            } catch (Throwable t) {
-                LOGGER.warn("[tick-repair] fluid reschedule failed at {}: {}", pos.toShortString(), t.toString());
+            var fluid = level.getFluidState(pos);
+            if (!fluid.isEmpty() && !level.getFluidTicks().hasScheduledTick(pos, fluid.getType())) {
+                level.scheduleTick(pos, fluid.getType(), 1);
+                totals.rescheduled++;
+                applied.add(new Finding(dim(level), cx, cz, "fluid",
+                        BuiltInRegistries.FLUID.getKey(fluid.getType()).toString(), pos,
+                        0, 0, 1, net.minecraft.world.ticks.TickPriority.NORMAL, 0,
+                        ACTION_RESCHEDULE, "current fluid re-scheduled after stale-entry removal"));
             }
         }
         // clear-ambiguous recovery: a cleared entry whose type still matches
         // the world may have been a legitimate pending tick — resume the
         // block/fluid through the existing operator reschedule path.
         for (BlockPos pos : dedupe(rescheduleFull)) {
-            try {
-                String out = TickInspector.reschedule(level, pos, 1);
-                totals.rescheduled++;
-                applied.add(new Finding(dim(level), cx, cz, "both", "-", pos,
-                        0, 0, 1, net.minecraft.world.ticks.TickPriority.NORMAL, 0,
-                        ACTION_RESCHEDULE, "post-clear recovery: " + out));
-            } catch (Throwable t) {
-                LOGGER.warn("[tick-repair] reschedule failed at {}: {}", pos.toShortString(), t.toString());
-            }
+            String out = TickInspector.reschedule(level, pos, 1);
+            totals.rescheduled++;
+            applied.add(new Finding(dim(level), cx, cz, "both", "-", pos,
+                    0, 0, 1, net.minecraft.world.ticks.TickPriority.NORMAL, 0,
+                    ACTION_RESCHEDULE, "post-clear recovery: " + out));
         }
         if (mutated) {
             markDirty(level, chunkKey);
@@ -636,17 +616,15 @@ public final class TickRepair {
         return in.stream().distinct().collect(Collectors.toList());
     }
 
-    private static void markDirty(ServerLevel level, long chunkKey) {
-        try {
-            ChunkAccess chunk = level.getChunk(ChunkPos.getX(chunkKey), ChunkPos.getZ(chunkKey),
-                    ChunkStatus.FULL, false);
-            if (chunk != null) {
-                chunk.markUnsaved();
-            }
-        } catch (Throwable t) {
-            LOGGER.warn("[tick-repair] could not mark chunk [{},{}] unsaved: {}",
-                    ChunkPos.getX(chunkKey), ChunkPos.getZ(chunkKey), t.toString());
+    static void markDirty(ServerLevel level, long chunkKey) {
+        ChunkAccess chunk = level.getChunk(ChunkPos.getX(chunkKey), ChunkPos.getZ(chunkKey),
+                ChunkStatus.FULL, false);
+        if (chunk == null) {
+            throw new IllegalStateException("mutated tick container lost its FULL chunk before dirty mark: "
+                    + dim(level) + " chunk[" + ChunkPos.getX(chunkKey) + ","
+                    + ChunkPos.getZ(chunkKey) + "]");
         }
+        chunk.markUnsaved();
     }
 
     static String dim(ServerLevel level) {
@@ -749,8 +727,8 @@ public final class TickRepair {
         long tagId = tag.fabrolia$domainIsland();
         ConsumerDomain consumer = consumerDomain(level, chunkKey);
         // NON-COUNTING probe: a classification pass performs no recovery, so
-        // it must not inflate UNRESOLVED_TAGS or emit the operational-path
-        // "adopt-without-shift" ERROR (review finding #3a).
+        // it must not inflate UNRESOLVED_TAGS or emit the operational
+        // fail-stop forensic (review finding #3a).
         long tagNow = TickDomains.probeNow(level, c);
         boolean tagResolvable = tagNow != Long.MIN_VALUE;
         boolean domainMismatch = tagResolvable && tagId != consumer.id();
@@ -890,11 +868,11 @@ public final class TickRepair {
                 // container is ambiguous and was just cleared); reinterpreting
                 // their triggers on the consumer clock is harmless because
                 // vanilla's due-time type recheck skips them anyway — whereas
-                // KEEPING the dead tag would send later schedules through
-                // rebaseTo's adopt-without-shift ERROR path and anchor packed
-                // delays via unpackBasis's caller fallback (the exact bug
-                // class this facility exists to prevent). Packed relative
-                // delays now anchor correctly against the healed tag.
+                // KEEPING the dead tag would make every later operational
+                // rebase/unpack fail-stop before it could invent a clock. This
+                // explicit operator-confirmed repair removes that dead tag, so
+                // later packed relative delays anchor against the chosen live
+                // consumer domain.
                 tag.fabrolia$setDomain(consumer.id(), consumer.gen());
             }
         }
@@ -910,36 +888,50 @@ public final class TickRepair {
     }
 
     static String typeName(boolean blockLane, Object type) {
-        try {
-            return blockLane
-                    ? BuiltInRegistries.BLOCK.getKey((Block) type).toString()
-                    : BuiltInRegistries.FLUID.getKey((Fluid) type).toString();
-        } catch (Throwable t) {
-            return String.valueOf(type);
-        }
+        return blockLane
+                ? BuiltInRegistries.BLOCK.getKey((Block) type).toString()
+                : BuiltInRegistries.FLUID.getKey((Fluid) type).toString();
     }
 
-    /** Null when the scheduled type still matches the world (or the state
-     *  cannot be read — no proof, no action); otherwise the removal reason. */
+    /** Null when the scheduled type still matches the world; otherwise the
+     *  removal reason. A failed world-state read propagates exactly. */
     static String typeMismatch(ServerLevel level, boolean blockLane, Object type, BlockPos pos) {
-        try {
-            if (blockLane) {
-                Block cur = level.getBlockState(pos).getBlock();
-                if (cur != type) {
-                    return "scheduled block no longer matches world (position holds "
-                            + BuiltInRegistries.BLOCK.getKey(cur) + ")";
-                }
-            } else {
-                Fluid cur = level.getFluidState(pos).getType();
-                if (cur != type) {
-                    return "scheduled fluid no longer matches world (position holds "
-                            + BuiltInRegistries.FLUID.getKey(cur) + ")";
-                }
+        if (blockLane) {
+            Block cur = level.getBlockState(pos).getBlock();
+            if (cur != type) {
+                return "scheduled block no longer matches world (position holds "
+                        + BuiltInRegistries.BLOCK.getKey(cur) + ")";
             }
-            return null;
-        } catch (Throwable t) {
-            return null;
+        } else {
+            Fluid cur = level.getFluidState(pos).getType();
+            if (cur != type) {
+                return "scheduled fluid no longer matches world (position holds "
+                        + BuiltInRegistries.FLUID.getKey(cur) + ")";
+            }
         }
+        return null;
+    }
+
+    private static Throwable mergeFailure(Throwable primary, Throwable cleanup) {
+        if (primary == null) return cleanup;
+        if (cleanup != null && cleanup != primary) {
+            try {
+                primary.addSuppressed(cleanup);
+            } catch (Throwable ignored) {
+                // Preserve the exact primary even if suppression bookkeeping fails.
+            }
+        }
+        return primary;
+    }
+
+    private static void publishAndRethrow(Throwable failure) {
+        TickRepair.<RuntimeException>rethrow(
+                RegionScheduler.publishFatalAndSelectWinner(failure));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 
     // ------------------------------------------------------------------

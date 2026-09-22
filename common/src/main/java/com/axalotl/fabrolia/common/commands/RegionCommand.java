@@ -42,6 +42,9 @@ import static net.minecraft.commands.Commands.literal;
  *   /fabrolia regions rate|sprint|name … — temporal control / island naming
  *   /fabrolia regions crossdim [on|off]  — Overworld↔Nether link listing +
  *                                          cadence-coupling toggle
+ *   /fabrolia regions playerticks on|off — autonomous island player ownership when
+ *                                          async is active; exact-ordinal actor otherwise;
+ *                                          serverbound handling stays on physical main
  *   /fabrolia regions tps                — action-bar TPS HUD (player)
  *   /fabrolia regions on|off|toggle      — master region-threading switch
  *   /fabrolia regions debug …            — everything diagnostic: flightrec,
@@ -250,43 +253,6 @@ public final class RegionCommand {
                     return 1;
                 })));
 
-        regionsCmd.then(literal("playerticks").requires(PlatformPermission.require("command.regions.toggle", 4))
-                .executes(ctx -> {
-                    send(ctx, "", com.axalotl.fabrolia.common.regions.RegionalPlayerTicks.status(null), false);
-                    return 1;
-                })
-                .then(literal("on").executes(ctx -> {
-                    com.axalotl.fabrolia.common.config.FabroliaConfig.regionalPlayerTicksExperimental = true;
-                    send(ctx, "regional player ticks: ", "ON (experimental — real players simulate on their island worker)", false);
-                    return 1;
-                }))
-                .then(literal("fakes").then(literal("on").executes(ctx -> {
-                    com.axalotl.fabrolia.common.regions.RegionalPlayerTicks.debugStampFakes = true;
-                    send(ctx, "playerticks debug: ", "fake-player unit-identity accounting ON", false);
-                    return 1;
-                })).then(literal("off").executes(ctx -> {
-                    com.axalotl.fabrolia.common.regions.RegionalPlayerTicks.debugStampFakes = false;
-                    send(ctx, "playerticks debug: ", "fake accounting off", false);
-                    return 1;
-                })))
-                .then(literal("off").executes(ctx -> {
-                    com.axalotl.fabrolia.common.config.FabroliaConfig.regionalPlayerTicksExperimental = false;
-                    for (net.minecraft.server.level.ServerPlayer pl
-                            : ctx.getSource().getServer().getPlayerList().getPlayers()) {
-                        com.axalotl.fabrolia.common.regions.PlayerOwnership.bumpEpoch(pl);
-                    }
-                    send(ctx, "regional player ticks: ", "off (players fall back to main-owned simulation; queued island tasks invalidated)", false);
-                    return 1;
-                }))
-                .then(net.minecraft.commands.Commands.argument("player", com.mojang.brigadier.arguments.StringArgumentType.word())
-                        .executes(ctx -> {
-                            net.minecraft.server.level.ServerPlayer pl = ctx.getSource().getServer().getPlayerList()
-                                    .getPlayerByName(com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "player"));
-                            send(ctx, "", pl == null ? "unknown player"
-                                    : com.axalotl.fabrolia.common.regions.RegionalPlayerTicks.status(pl), false);
-                            return 1;
-                        })));
-
         regionsCmd.then(literal("async").requires(PlatformPermission.require("command.regions.toggle", 4))
                         .executes(ctx -> setAsyncIslands(ctx, !FabroliaConfig.asyncIslands))
                         .then(literal("on").executes(ctx -> setAsyncIslands(ctx, true)))
@@ -307,6 +273,17 @@ public final class RegionCommand {
                             send(ctx, "diagnostics: ", "OFF — corrective actions still log one concise line", true);
                             return 1;
                         }))));
+
+        regionsCmd.then(literal("playerticks")
+                .requires(PlatformPermission.require("command.regions.toggle", 4))
+                .executes(ctx -> {
+                    send(ctx, "regional player entity ticks v2: ",
+                            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                                    .status(ctx.getSource().getServer()), false);
+                    return 1;
+                })
+                .then(literal("on").executes(ctx -> setPlayerEntityTicks(ctx, true)))
+                .then(literal("off").executes(ctx -> setPlayerEntityTicks(ctx, false))));
         LiteralArgumentBuilder<CommandSourceStack> coherenceCmd = literal("coherence")
                 .requires(PlatformPermission.require("command.regions.toggle", 4))
                 .then(literal("add").executes(ctx -> {
@@ -433,26 +410,34 @@ public final class RegionCommand {
         regionsCmd.then(literal("name").requires(PlatformPermission.require("command.regions.toggle", 4))
                                 .then(literal("here").then(net.minecraft.commands.Commands.argument("alias", com.mojang.brigadier.arguments.StringArgumentType.word())
                                         .executes(ctx -> {
+                                            final net.minecraft.server.level.ServerPlayer pl;
                                             try {
-                                                var pl = ctx.getSource().getPlayerOrException();
-                                                var rsN = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel((net.minecraft.server.level.ServerLevel) pl.level());
-                                                var islN = rsN == null ? null : rsN.islandOwnerOfChunk(pl.chunkPosition().pack());
-                                                if (islN == null) { send(ctx, "name: ", "no island here", false); return 0; }
-                                                islN.alias = com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "alias");
-                                                islN.labelCache = null;
-                                                send(ctx, "name: ", islN.alias + " [" + com.axalotl.fabrolia.common.regions.IslandMetrics.handle(rsN, islN) + "]", false);
-                                                return 1;
-                                            } catch (Exception e) { send(ctx, "name: ", "player required", false); return 0; }
+                                                pl = ctx.getSource().getPlayerOrException();
+                                            } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+                                                send(ctx, "name: ", "player required", false);
+                                                return 0;
+                                            }
+                                            var rsN = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel((net.minecraft.server.level.ServerLevel) pl.level());
+                                            var islN = rsN == null ? null : rsN.islandOwnerOfChunk(pl.chunkPosition().pack());
+                                            if (islN == null) { send(ctx, "name: ", "no island here", false); return 0; }
+                                            islN.alias = com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "alias");
+                                            islN.labelCache = null;
+                                            send(ctx, "name: ", islN.alias + " [" + com.axalotl.fabrolia.common.regions.IslandMetrics.handle(rsN, islN) + "]", false);
+                                            return 1;
                                         })))
                                 .then(literal("clear").then(literal("here").executes(ctx -> {
+                                    final net.minecraft.server.level.ServerPlayer pl;
                                     try {
-                                        var pl = ctx.getSource().getPlayerOrException();
-                                        var rsN = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel((net.minecraft.server.level.ServerLevel) pl.level());
-                                        var islN = rsN == null ? null : rsN.islandOwnerOfChunk(pl.chunkPosition().pack());
-                                        if (islN != null) { islN.alias = null; islN.labelCache = null; }
-                                        send(ctx, "name: ", "cleared", false);
-                                        return 1;
-                                    } catch (Exception e) { send(ctx, "name: ", "player required", false); return 0; }
+                                        pl = ctx.getSource().getPlayerOrException();
+                                    } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+                                        send(ctx, "name: ", "player required", false);
+                                        return 0;
+                                    }
+                                    var rsN = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel((net.minecraft.server.level.ServerLevel) pl.level());
+                                    var islN = rsN == null ? null : rsN.islandOwnerOfChunk(pl.chunkPosition().pack());
+                                    if (islN != null) { islN.alias = null; islN.labelCache = null; }
+                                    send(ctx, "name: ", "cleared", false);
+                                    return 1;
                                 }))));
         // Local-cap pack reservation (task #32 endgame). Approval of a chunk
         // pass atomically reserves the pack's worth of per-player slots, so
@@ -478,13 +463,16 @@ public final class RegionCommand {
                     return 1;
                 })));
         regionsCmd.then(literal("tps").executes(ctx -> {
+                    final net.minecraft.server.level.ServerPlayer player;
                     try {
-                        boolean on = com.axalotl.fabrolia.common.regions.TpsHud.toggle(
-                                ctx.getSource().getPlayerOrException());
-                        send(ctx, "tps hud: ", on ? "subscribed (action bar)" : "unsubscribed", false);
-                    } catch (Exception e) {
+                        player = ctx.getSource().getPlayerOrException();
+                    } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
                         send(ctx, "tps hud: ", "player required", false);
+                        return 0;
                     }
+                    boolean on = com.axalotl.fabrolia.common.regions.TpsHud.toggle(player);
+                    send(ctx, "tps hud: ",
+                            on ? "subscribed (action bar)" : "unsubscribed", false);
                     return 1;
                 }));
         regionsCmd.then(literal("on").requires(PlatformPermission.require("command.regions.toggle", 4))
@@ -564,16 +552,14 @@ public final class RegionCommand {
                                 for (int i = 0; i < Math.min(8, regions.size()); i++) {
                                     var r = regions.get(i);
                                     int rx = (int) r.gridKey, rz = (int) (r.gridKey >>> 32);
-                                    sb.append(String.format("%s cell(%d,%d) ent=%d ema=%.2fms last=%.2fms batches=%d batchMax=%.2fms ordered=%.2fms%n",
+                                    sb.append(String.format("%s cell(%d,%d) ent=%d ema=%.2fms last=%.2fms%n",
                                             lvl.dimension().identifier(), rx, rz, r.entityCount.get(),
-                                            r.emaPhaseNanos / 1e6, r.lastPhaseNanos / 1e6,
-                                            r.lastFanoutBatches, r.lastBatchMaxNanos / 1e6,
-                                            r.lastOrderedNanos / 1e6));
+                                            r.emaPhaseNanos / 1e6, r.lastPhaseNanos / 1e6));
                                 }
                             }
                             sb.append(String.format("main-steal: %d help batches, %.1f ms total",
-                                    com.axalotl.fabrolia.common.regions.RegionWorkerPool.MAIN_HELP_BATCHES.sum(),
-                                    com.axalotl.fabrolia.common.regions.RegionWorkerPool.MAIN_HELP_NANOS.sum() / 1e6));
+                                    com.axalotl.fabrolia.common.regions.RegionWorkerPool.MAIN_HELP_BATCHES.get(),
+                                    com.axalotl.fabrolia.common.regions.RegionWorkerPool.MAIN_HELP_NANOS.get() / 1e6));
                             send(ctx, "", sb.toString(), false);
                             org.slf4j.LoggerFactory.getLogger("fabrolia").info("REGTOP\n" + sb);
                             return 1;
@@ -647,17 +633,17 @@ public final class RegionCommand {
                         com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 120000))
                         .executes(ctx -> {
                             int ms = com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "ms");
-                            // task #24 reproduction tool: parks MAIN mid-tick the way the
-                            // production watchdog wedges do (LockSupport slices, no tick
-                            // progression, packet queue frozen) while region workers and
-                            // island unit-chaining continue unimpeded.
-                            org.slf4j.LoggerFactory.getLogger("fabrolia").warn(
-                                    "[wedgemain] parking main for {} ms (debug injector)", ms);
-                            long until = System.nanoTime() + ms * 1_000_000L;
-                            while (System.nanoTime() < until) {
-                                java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
-                            }
-                            org.slf4j.LoggerFactory.getLogger("fabrolia").warn("[wedgemain] released");
+                            // Always enqueue the park behind this command. CommandsMixin
+                            // holds the all-island command fence around the current dispatch;
+                            // parking inline would therefore freeze the islands too and make
+                            // this autonomy probe invalid. TickTask starts only after the
+                            // wrapper returns and releases that fence.
+                            net.minecraft.server.MinecraftServer server =
+                                    ctx.getSource().getServer();
+                            RegionScheduler.runSuccessBodyIfHealthy(() ->
+                                    server.schedule(new net.minecraft.server.TickTask(
+                                            server.getTickCount(),
+                                            () -> fabrolia$runWedgeMainTask(ms))));
                             return 1;
                         })));
         dbg.then(literal("claims").requires(PlatformPermission.require("command.regions", 0))
@@ -698,7 +684,7 @@ public final class RegionCommand {
                             final net.minecraft.server.level.ServerPlayer sp;
                             try {
                                 sp = ctx.getSource().getPlayerOrException();
-                            } catch (Exception e) {
+                            } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
                                 send(ctx, "", "needs a player source", false);
                                 return 0;
                             }
@@ -712,11 +698,17 @@ public final class RegionCommand {
                                     log.error("[offmainpkt] handler RETURNED NORMALLY off-main — "
                                             + "wrap did not pass through (defect present)");
                                 } catch (Throwable th) {
-                                    if (th.getClass().getSimpleName().contains("RunningOnDifferentThread")) {
+                                    if (th instanceof net.minecraft.server.RunningOnDifferentThreadException) {
                                         log.info("[offmainpkt] vanilla requeue observed off-main "
                                                 + "(pass-through correct) — replay lands on main");
                                     } else {
-                                        log.error("[offmainpkt] unexpected off-main throw", th);
+                                        // handleUseItem was entered. An unexpected failure may
+                                        // follow partial vanilla/mod simulation and must close the
+                                        // generation before this debug thread can return normally.
+                                        com.axalotl.fabrolia.common.regions.IslandCommands
+                                                .publishAndPropagate(th);
+                                        throw new AssertionError(
+                                                "fatal off-main packet publication returned");
                                     }
                                 }
                             }, "fabrolia-offmainpkt-test");
@@ -729,7 +721,7 @@ public final class RegionCommand {
                             // task #26: cross-dimension arrival pipeline
                             // counters + queued PTM handoffs.
                             String out = com.axalotl.fabrolia.common.regions.CrossDimArrivals.status()
-                                    + " ptmPending=" + com.axalotl.fabrolia.common.parallelised.utils.PortalTeleportationManager.pendingCount();
+                                    + " ptmPending=" + com.axalotl.fabrolia.common.regions.NetherPortalTransfers.pendingCount();
                             send(ctx, "", out, false);
                             org.slf4j.LoggerFactory.getLogger("fabrolia").info("[xfer]\n{}", out);
                             return 1;
@@ -919,32 +911,12 @@ public final class RegionCommand {
         dbg.then(boolToggle("eventsched", "R5 event-driven entity dispatch (off = legacy group dispatch)",
                         () -> FabroliaConfig.regionEventScheduler,
                         v -> FabroliaConfig.regionEventScheduler = v));
-        dbg.then(boolToggle("tntlane", "R6 explosion-segmented parallel TNT lane (off = fully serial ordered lane)",
-                        () -> FabroliaConfig.fabroliaTntSegmentedLane,
-                        v -> FabroliaConfig.fabroliaTntSegmentedLane = v));
         dbg.then(boolToggle("setIslandScheduledTicks", "island scheduled ticks",
                         () -> FabroliaConfig.fabroliaIslandScheduledTicks,
                         v -> FabroliaConfig.fabroliaIslandScheduledTicks = v));
         dbg.then(boolToggle("setIslandBlockEntityTicks", "island block-entity ticks",
                         () -> FabroliaConfig.fabroliaIslandBlockEntityTicks,
                         v -> FabroliaConfig.fabroliaIslandBlockEntityTicks = v));
-        dbg.then(literal("densefanout").requires(PlatformPermission.require("command.regions.toggle", 4))
-                        .executes(ctx -> {
-                            send(ctx, "regionDenseFanoutThreshold: ",
-                                    FabroliaConfig.regionDenseFanoutThreshold
-                                            + " (region fans its entity work to helper workers above this entity count; ≤0 = disabled/region-serial)",
-                                    false);
-                            return 1;
-                        })
-                        .then(Commands.argument("value", IntegerArgumentType.integer())
-                                .executes(ctx -> {
-                                    int v = IntegerArgumentType.getInteger(ctx, "value");
-                                    FabroliaConfig.regionDenseFanoutThreshold = v;
-                                    PlatformUtils.saveConfig();
-                                    send(ctx, "regionDenseFanoutThreshold set to ",
-                                            v + (v <= 0 ? " (fan-out DISABLED — regions tick serial)" : ""), true);
-                                    return 1;
-                                })));
         dbg.then(literal("access").requires(PlatformPermission.require("command.regions.toggle", 4))
                         .executes(ctx -> {
                             String status = com.axalotl.fabrolia.common.regions.RegionAccessDetector.status()
@@ -1132,8 +1104,8 @@ public final class RegionCommand {
         RegionGrid grid = RegionScheduler.grid();
         int cellChunks = grid != null ? 1 << grid.shift : 1 << RegionGrid.DEFAULT_SHIFT;
         msg.append(Component.literal("  " + RegionScheduler.workerCount() + " workers · grid "
-                + cellChunks + "×" + cellChunks + " chunks · dense fan-out >"
-                + FabroliaConfig.regionDenseFanoutThreshold + " entities").withStyle(ChatFormatting.GRAY));
+                + cellChunks + "×" + cellChunks
+                + " chunks · serial entities per region").withStyle(ChatFormatting.GRAY));
 
         long totalRegions = 0;
         long totalEntities = 0;
@@ -1144,23 +1116,17 @@ public final class RegionCommand {
             if (regions.isEmpty()) continue;
             long entities = 0;
             int nonEmpty = 0;
-            int dense = 0;
             for (Region r : regions) {
                 long c = r.entityCount.get();
                 entities += c;
                 if (c > 0) nonEmpty++;
-                if (FabroliaConfig.regionDenseFanoutThreshold > 0
-                        && c > FabroliaConfig.regionDenseFanoutThreshold) dense++;
             }
             totalRegions += regions.size();
             totalEntities += entities;
             msg.append(Component.literal("\n  " + lvl.dimension().identifier() + ": ").withStyle(ChatFormatting.WHITE))
                     .append(Component.literal(regions.size() + " regions").withStyle(ChatFormatting.AQUA))
                     .append(Component.literal(" · " + nonEmpty + " non-empty · ").withStyle(ChatFormatting.GRAY))
-                    .append(Component.literal(entities + " entities").withStyle(ChatFormatting.GOLD))
-                    .append(dense > 0
-                            ? Component.literal(" · " + dense + " dense").withStyle(ChatFormatting.RED)
-                            : Component.empty());
+                    .append(Component.literal(entities + " entities").withStyle(ChatFormatting.GOLD));
         }
         msg.append(Component.literal("\nTotal: ").withStyle(ChatFormatting.WHITE))
                 .append(Component.literal(totalRegions + " regions · " + totalEntities + " entities")
@@ -1197,19 +1163,15 @@ public final class RegionCommand {
                 int rz = grid != null ? grid.regionZ(r.gridKey) : 0;
                 Thread worker = r.currentWorker();
                 long entities = r.entityCount.get();
-                boolean dense = FabroliaConfig.regionDenseFanoutThreshold > 0
-                        && entities > FabroliaConfig.regionDenseFanoutThreshold;
 
                 MutableComponent line = Component.literal("  #" + r.id).withStyle(ChatFormatting.DARK_AQUA)
                         .append(Component.literal("  cell[" + rx + "," + rz + "]").withStyle(ChatFormatting.GRAY))
                         .append(Component.literal(" @ " + (rx << blockShift) + "," + (rz << blockShift))
                                 .withStyle(ChatFormatting.DARK_GRAY))
-                        .append(Component.literal("  " + entities + " ent")
-                                .withStyle(dense ? ChatFormatting.RED : ChatFormatting.GOLD))
-                        .append(Component.literal(dense ? " (dense)" : "").withStyle(ChatFormatting.RED))
+                        .append(Component.literal("  " + entities + " ent").withStyle(ChatFormatting.GOLD))
                         .append(Component.literal("  q" + r.queue().size()).withStyle(ChatFormatting.GRAY))
                         .append(worker != null
-                                ? Component.literal("  ⚙ " + worker.getName()).withStyle(ChatFormatting.GREEN)
+                                ? Component.literal("  \u2699 " + worker.getName()).withStyle(ChatFormatting.GREEN)
                                 : Component.empty());
                 src.sendSuccess(() -> line, false);
             }
@@ -1260,6 +1222,22 @@ public final class RegionCommand {
         return true;
     }
 
+    /** Physical-Main debug task: atomic entry, then no normal diagnostic tail
+     * may cross a peer generation failure selected while Main was parked. */
+    private static void fabrolia$runWedgeMainTask(int ms) {
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            org.slf4j.LoggerFactory.getLogger("fabrolia").warn(
+                    "[wedgemain] parking main for {} ms (debug injector)", ms);
+            long until = System.nanoTime() + ms * 1_000_000L;
+            while (System.nanoTime() < until) {
+                java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
+            }
+        });
+        RegionScheduler.runSuccessBodyIfHealthy(() ->
+                org.slf4j.LoggerFactory.getLogger("fabrolia").warn(
+                        "[wedgemain] released"));
+    }
+
     // ------------------------------------------------------------------
     // runtime toggle for the master region-threading switch
     // ------------------------------------------------------------------
@@ -1269,6 +1247,28 @@ public final class RegionCommand {
      * their current path. Persisted to config; idempotent.
      */
     private static void setEnabled(CommandSourceStack src, boolean enable) {
+        if (!com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                .isPhysicalServerThread(src.getServer())) {
+            src.sendFailure(prefix.copy().append(Component.literal(
+                    "Region threading may only be changed on the server thread")
+                    .withStyle(ChatFormatting.RED)));
+            return;
+        }
+        if (!com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                .schedulerLifecycleTransitionAllowed(src.getServer())) {
+            src.sendFailure(prefix.copy().append(Component.literal(
+                    "Region threading cannot change inside an open server-tick phase; retry next tick")
+                    .withStyle(ChatFormatting.RED)));
+            return;
+        }
+        if (RegionScheduler.deferLifecycleTransitionFromCurrentBody(
+                src.getServer(), () -> setEnabled(src, enable))) {
+            // The current command is itself represented by a pool ExternalPermit.
+            // Its raw Main baton begins only after this complete command stack
+            // returns and retires that permit; stop() can then await every older
+            // obligation without waiting for itself.
+            return;
+        }
         boolean previous = FabroliaConfig.enableRegionThreading;
         if (previous == enable) {
             MutableComponent msg = prefix.copy().append(Component.literal(
@@ -1282,17 +1282,49 @@ public final class RegionCommand {
         try {
             PlatformUtils.saveConfig();
         } catch (Throwable t) {
+            Throwable winner = RegionScheduler.publishFatalAndSelectWinner(t);
             FabroliaConfig.enableRegionThreading = previous;
-            MutableComponent err = prefix.copy().append(Component.literal(
-                    "Failed to persist config: " + t.getMessage()).withStyle(ChatFormatting.RED));
-            src.sendFailure(err);
-            return;
+            com.axalotl.fabrolia.common.regions.IslandCommands
+                    .publishAndPropagate(winner);
+            throw new AssertionError("fatal config publication returned");
         }
 
-        if (enable) {
-            RegionScheduler.start(src.getServer());
-        } else {
-            RegionScheduler.stop();
+        Throwable transitionFailure = null;
+        try {
+            if (enable) {
+                RegionScheduler.start(src.getServer());
+                if (!RegionScheduler.isActive()) {
+                    throw new IllegalStateException(
+                            "region scheduler start returned without an active runtime");
+                }
+            } else {
+                com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                        .setEnabled(src.getServer(), false);
+                RegionScheduler.stop();
+                if (RegionScheduler.isActive()) {
+                    throw new IllegalStateException(
+                            "region scheduler stop returned with an active runtime");
+                }
+            }
+        } catch (Throwable failure) {
+            // start/stop may already have entered a runtime transition. Select its
+            // exact W before any fallible preference rollback is attempted.
+            transitionFailure = RegionScheduler.publishFatalAndSelectWinner(failure);
+        }
+        if (transitionFailure != null) {
+            // Persistence rollback is mandatory cleanup only. A failed runtime
+            // transition is never retried/re-enabled and never reported as a
+            // recoverable command result: the exact failure stops this generation.
+            FabroliaConfig.enableRegionThreading = previous;
+            try {
+                PlatformUtils.saveConfig();
+            } catch (Throwable rollbackFailure) {
+                transitionFailure = fabrolia$mergeFailure(
+                        transitionFailure, rollbackFailure);
+            }
+            com.axalotl.fabrolia.common.regions.IslandCommands
+                    .publishAndPropagate(transitionFailure);
+            throw new AssertionError("fatal region transition publication returned");
         }
 
         boolean nowActive = RegionScheduler.isActive();
@@ -1341,6 +1373,12 @@ public final class RegionCommand {
     private static int setAsyncIslands(
             com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> ctx,
             boolean turningOn) {
+        if (!com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                .isPhysicalServerThread(ctx.getSource().getServer())) {
+            send(ctx, "async islands: ",
+                    "REFUSED — scheduler modes may only change on the server thread", false);
+            return 0;
+        }
         if (turningOn && !com.axalotl.fabrolia.common.regions.IslandTickUnit.unitImplemented()) {
             send(ctx, "async islands: ", "unavailable (tick unit incomplete in this build)", false);
             return 0;
@@ -1353,6 +1391,92 @@ public final class RegionCommand {
         send(ctx, "async islands: ", (turningOn ? "ON" : "OFF")
                 + " (applies at next tick; saved as the boot default)", true);
         return 1;
+    }
+
+    private static int setPlayerEntityTicks(
+            com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> ctx,
+            boolean turningOn) {
+        MinecraftServer server = ctx.getSource().getServer();
+        if (!com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                .isPhysicalServerThread(server)) {
+            send(ctx, "regional player entity ticks v2: ",
+                    "REFUSED — mode transitions may only run on the server thread", false);
+            return 0;
+        }
+        boolean previousPreference = FabroliaConfig.enablePlayerTickActor;
+        String refusal = turningOn
+                ? com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                        .refusalReason(server)
+                : null;
+        if (refusal != null) {
+            send(ctx, "regional player entity ticks v2: ",
+                    "REFUSED — " + refusal, false);
+            return 0;
+        }
+
+        FabroliaConfig.enablePlayerTickActor = turningOn;
+        try {
+            PlatformUtils.saveConfig();
+        } catch (Throwable persistenceFailure) {
+            Throwable winner = RegionScheduler.publishFatalAndSelectWinner(
+                    persistenceFailure);
+            FabroliaConfig.enablePlayerTickActor = previousPreference;
+            com.axalotl.fabrolia.common.regions.IslandCommands
+                    .publishAndPropagate(winner);
+            throw new AssertionError("fatal player-config publication returned");
+        }
+
+        Throwable transitionFailure = null;
+        try {
+            if (!com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                    .setEnabled(server, turningOn)) {
+                throw new IllegalStateException(
+                        "player-tick runtime refused after its prerequisites were validated");
+            }
+        } catch (Throwable failure) {
+            // setEnabled may have partially transferred player ownership. Publish
+            // the exact transition W before fallible persisted-metadata cleanup.
+            transitionFailure = RegionScheduler.publishFatalAndSelectWinner(failure);
+        }
+        if (transitionFailure != null) {
+            // Restore only persisted preference metadata. Never retry or reverse a
+            // runtime transition after its body failed: that would continue from an
+            // unknown partial ownership state.
+            FabroliaConfig.enablePlayerTickActor = previousPreference;
+            try {
+                PlatformUtils.saveConfig();
+            } catch (Throwable cleanup) {
+                transitionFailure = fabrolia$mergeFailure(transitionFailure, cleanup);
+            }
+            com.axalotl.fabrolia.common.regions.IslandCommands
+                    .publishAndPropagate(transitionFailure);
+            throw new AssertionError("fatal player transition publication returned");
+        }
+        boolean asyncVenue = com.axalotl.fabrolia.common.regions.RegionScheduler.anyAsyncActive()
+                || FabroliaConfig.asyncIslands;
+        send(ctx, "regional player entity ticks: ", turningOn
+                ? (asyncVenue
+                    ? "ON — supported real players and exact Carpet fake players are owned by their autonomous island; "
+                      + "island-safe packets, entity tick and real listener/tickPlayer use the island FIFO; block use runs on Main; "
+                      + "saved and restored automatically after restart"
+                    : "ON — async is currently off, so the synchronous exact-ordinal compatibility actor is used; "
+                      + "switching async on changes venue at the next safe island boundary; saved for restart")
+                : "off — island player ownership and the synchronous exact actor are disabled; "
+                  + "players return to MAIN_SYNC at the next safe boundary; saved for restart",
+                true);
+        return 1;
+    }
+
+    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
+        if (primary == null) return cleanup;
+        if (cleanup != null && cleanup != primary) {
+            try {
+                primary.addSuppressed(cleanup);
+            } catch (Throwable ignored) {
+                // Mandatory cleanup diagnostics cannot replace the exact primary.
+            }
+        }
+        return primary;
     }
 
     private static int islandTop(net.minecraft.commands.CommandSourceStack src, int count,
@@ -1480,37 +1604,39 @@ public final class RegionCommand {
     }
 
     private static int islandRateHere(net.minecraft.commands.CommandSourceStack src, float tps) {
+        net.minecraft.server.level.ServerPlayer pl;
         try {
-            var pl = src.getPlayerOrException();
-            var lvl = (net.minecraft.server.level.ServerLevel) pl.level();
-            var rs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(lvl);
-            var isl = rs == null ? null : rs.islandOwnerOfChunk(pl.chunkPosition().pack());
-            if (isl == null) {
-                src.sendSystemMessage(net.minecraft.network.chat.Component.literal("no island here (GLOBAL)"));
-                return 0;
-            }
-            return applyRate(src, new Object[]{rs, isl}, tps);
-        } catch (Exception e) {
+            pl = src.getPlayerOrException();
+        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
             src.sendSystemMessage(net.minecraft.network.chat.Component.literal("player required"));
             return 0;
         }
+        var lvl = (net.minecraft.server.level.ServerLevel) pl.level();
+        var rs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(lvl);
+        var isl = rs == null ? null : rs.islandOwnerOfChunk(pl.chunkPosition().pack());
+        if (isl == null) {
+            src.sendSystemMessage(net.minecraft.network.chat.Component.literal("no island here (GLOBAL)"));
+            return 0;
+        }
+        return applyRate(src, new Object[]{rs, isl}, tps);
     }
 
     private static int islandSprintHere(net.minecraft.commands.CommandSourceStack src, long ticks) {
+        net.minecraft.server.level.ServerPlayer pl;
         try {
-            var pl = src.getPlayerOrException();
-            var lvl = (net.minecraft.server.level.ServerLevel) pl.level();
-            var rs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(lvl);
-            var isl = rs == null ? null : rs.islandOwnerOfChunk(pl.chunkPosition().pack());
-            if (isl == null) {
-                src.sendSystemMessage(net.minecraft.network.chat.Component.literal("no island here (GLOBAL)"));
-                return 0;
-            }
-            return applySprint(src, new Object[]{rs, isl}, ticks);
-        } catch (Exception e) {
+            pl = src.getPlayerOrException();
+        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
             src.sendSystemMessage(net.minecraft.network.chat.Component.literal("player required"));
             return 0;
         }
+        var lvl = (net.minecraft.server.level.ServerLevel) pl.level();
+        var rs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(lvl);
+        var isl = rs == null ? null : rs.islandOwnerOfChunk(pl.chunkPosition().pack());
+        if (isl == null) {
+            src.sendSystemMessage(net.minecraft.network.chat.Component.literal("no island here (GLOBAL)"));
+            return 0;
+        }
+        return applySprint(src, new Object[]{rs, isl}, ticks);
     }
 
 }

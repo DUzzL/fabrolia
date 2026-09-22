@@ -241,12 +241,67 @@ class CrossDimProjectionTest {
     }
 
     @Test
-    void exactLog2RecognisesPowersOfTwoIncludingReciprocals() {
-        assertEquals(-3, CrossDimProjection.exactLog2(0.125));
-        assertEquals(3, CrossDimProjection.exactLog2(8.0));
-        assertEquals(0, CrossDimProjection.exactLog2(1.0));
-        assertEquals(Integer.MIN_VALUE, CrossDimProjection.exactLog2(3.0));
-        assertEquals(Integer.MIN_VALUE, CrossDimProjection.exactLog2(1.0 / 3.0));
+    void populatedProjectionRetainsExtremeScaleEdgesWithoutExpandingEmptySpace() {
+        LongOpenHashSet populated = cells(cellKey(-2, 0), cellKey(-1, 0),
+                cellKey(0, 0), cellKey(Integer.MAX_VALUE, Integer.MAX_VALUE),
+                cellKey(0, -2), cellKey(0, -1));
+        LongOpenHashSet projected = new LongOpenHashSet();
+        CrossDimProjection.projectOnto(cells(cellKey(0, 0)), populated, SHIFT,
+                30_000_000.0 / 0.00001, 128, projected);
+        assertEquals(cells(cellKey(-1, 0), cellKey(0, 0),
+                cellKey(Integer.MAX_VALUE, Integer.MAX_VALUE), cellKey(0, -1)), projected);
+        assertTrue(CrossDimProjection.linked(cells(cellKey(0, 0)),
+                cells(cellKey(Integer.MAX_VALUE, Integer.MAX_VALUE)), SHIFT,
+                30_000_000.0 / 0.00001, 128));
+    }
+
+    @Test
+    void projectionsOutsideTheCellKeyRangeNeverWrapOntoPopulatedCells() {
+        LongOpenHashSet populated = cells(cellKey(0, 0), cellKey(-1, -1),
+                cellKey(Integer.MAX_VALUE, Integer.MAX_VALUE),
+                cellKey(Integer.MIN_VALUE, Integer.MIN_VALUE));
+        LongOpenHashSet projected = new LongOpenHashSet();
+        CrossDimProjection.projectOnto(
+                cells(cellKey(Integer.MAX_VALUE, Integer.MAX_VALUE),
+                        cellKey(Integer.MIN_VALUE, Integer.MIN_VALUE)),
+                populated, SHIFT, 30_000_000.0 / 0.00001, 128, projected);
+        assertEquals(cells(), projected);
+    }
+
+    @Test
+    void populatedIntersectionMatchesMaterializedProjectionAcrossFractionalBoundaries() {
+        LongOpenHashSet src = cells(cellKey(-2, 1), cellKey(1, -2));
+        LongOpenHashSet populated = cells(cellKey(-4, 1), cellKey(-3, 2), cellKey(1, -4),
+                cellKey(2, -3), cellKey(-2, -2), cellKey(0, 0));
+        LongOpenHashSet expected = project(src, 1.5, 16);
+        expected.retainAll(populated);
+        LongOpenHashSet actual = new LongOpenHashSet();
+        CrossDimProjection.projectOnto(src, populated, SHIFT, 1.5, 16, actual);
+        assertEquals(cells(cellKey(-4, 1), cellKey(-3, 2), cellKey(1, -4), cellKey(2, -3)),
+                actual);
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    void expandedContinuousCellFringeAndDilationRetainTheirExactUpperEdge() {
+        LongOpenHashSet projected = new LongOpenHashSet();
+        CrossDimProjection.projectOnto(cells(cellKey(0, 0)),
+                cells(cellKey(511, 0), cellKey(512, 0), cellKey(513, 0)),
+                SHIFT, 512.0, 128, projected);
+        // x=127.75 scales into cell 511; the search radius also reaches 512,
+        // but the source's exclusive endpoint must not extend reach into 513.
+        assertEquals(cells(cellKey(511, 0), cellKey(512, 0)), projected);
+    }
+
+    @Test
+    void negativeContinuousCellFringeStopsAtTheExclusiveOrigin() {
+        LongOpenHashSet projected = new LongOpenHashSet();
+        CrossDimProjection.projectOnto(cells(cellKey(-1, 0)),
+                cells(cellKey(-1, 0), cellKey(0, 0)),
+                SHIFT, 512.0, 0, projected);
+        // Coordinates just below zero still reach cell -1. Zero itself belongs
+        // to the next source cell, so destination cell 0 must remain excluded.
+        assertEquals(cells(cellKey(-1, 0)), projected);
     }
 
     // ------------------------------------------------------------ hygiene

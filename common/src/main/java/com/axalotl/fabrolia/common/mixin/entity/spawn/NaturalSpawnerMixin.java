@@ -4,6 +4,7 @@ import com.axalotl.fabrolia.api.spawn.FabroliaSpawnStateView;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.parallelised.utils.ParallelSpawnHelper;
+import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
@@ -90,15 +91,58 @@ public abstract class NaturalSpawnerMixin {
             @Share("fabrolia$packReservation") LocalIntRef reservation) {
         int token = reservation.get();
         if (token == 0) {
-            original.call(category, level, chunk, extraTest, spawnCallback);
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> original.call(category, level, chunk, extraTest, spawnCallback));
             return;
         }
-        reservation.set(0);
+        Throwable failure = null;
         try {
-            original.call(category, level, chunk, extraTest, spawnCallback);
-        } finally {
-            ((FabroliaSpawnStateView) state).fabrolia$releaseLocalPack(category, chunk.getPos().pack(), token);
+            reservation.set(0);
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> original.call(category, level, chunk, extraTest, spawnCallback));
+        } catch (Throwable thrown) {
+            // Whether marker clear, admission, or the vanilla pack failed,
+            // select W before returning the reservation so no later pack can
+            // enter through the gap.
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         }
+        // Reservation return is mandatory cleanup even when the pack was
+        // refused before body entry or threw after partial vanilla effects.
+        try {
+            ((FabroliaSpawnStateView) state).fabrolia$releaseLocalPack(category, chunk.getPos().pack(), token);
+        } catch (Throwable cleanup) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(
+                    fabrolia$mergeFailure(failure, cleanup));
+        }
+        if (failure == null) {
+            try {
+                // Cleanup completion is not a success edge. Refuse a normal
+                // return if peer W won while the reservation was released.
+                RegionScheduler.commitSuccessIfHealthy(() -> {});
+            } catch (Throwable peerFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
+            }
+        }
+        if (failure != null) {
+            NaturalSpawnerMixin.<RuntimeException>fabrolia$rethrow(failure);
+        }
+    }
+
+    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
+        if (primary == null) return cleanup;
+        if (cleanup != null && cleanup != primary) {
+            try {
+                primary.addSuppressed(cleanup);
+            } catch (Throwable suppressionFailure) {
+                // Suppression metadata cannot replace the exact pack failure.
+            }
+        }
+        return primary;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 
     // Deliberately NO getMobForSpawn cap bail and NO spawnForChunk state binding.

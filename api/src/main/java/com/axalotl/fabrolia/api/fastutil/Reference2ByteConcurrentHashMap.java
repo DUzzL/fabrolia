@@ -30,9 +30,11 @@ public final class Reference2ByteConcurrentHashMap<K> extends Reference2ByteOpen
     private ReentrantReadWriteLock lock() {
         ReentrantReadWriteLock l = lockField;
         if (l != null) return l;
-        l = new ReentrantReadWriteLock();
-        lockField = l;
-        return l;
+        synchronized (this) {
+            l = lockField;
+            if (l == null) lockField = l = new ReentrantReadWriteLock();
+            return l;
+        }
     }
 
     public Reference2ByteConcurrentHashMap() { super(); }
@@ -93,7 +95,7 @@ public final class Reference2ByteConcurrentHashMap<K> extends Reference2ByteOpen
             ObjectIterator<Reference2ByteMap.Entry<K>> it = super.reference2ByteEntrySet().iterator();
             while (it.hasNext()) {
                 Reference2ByteMap.Entry<K> e = it.next();
-                out.add(Map.entry(e.getKey(), e.getByteValue()));
+                out.add(new java.util.AbstractMap.SimpleImmutableEntry<>(e.getKey(), e.getByteValue()));
             }
             return out;
         } finally { l.readLock().unlock(); }

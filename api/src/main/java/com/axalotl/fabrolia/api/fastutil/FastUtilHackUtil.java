@@ -104,12 +104,15 @@ public final class FastUtilHackUtil {
 
         @Override
         public byte[] toByteArray() {
-            return null;
+            return ArrayUtils.toPrimitive(backing.toArray(new Byte[0]));
         }
 
         @Override
         public byte[] toArray(byte[] a) {
-            return ArrayUtils.toPrimitive(backing.toArray(new Byte[0]));
+            byte[] snapshot = toByteArray();
+            if (a == null || a.length < snapshot.length) return snapshot;
+            System.arraycopy(snapshot, 0, a, 0, snapshot.length);
+            return a;
         }
 
         @Override
@@ -634,7 +637,10 @@ public final class FastUtilHackUtil {
 
         @Override
         public int[] toArray(int[] a) {
-            return ArrayUtils.toPrimitive(backing.toArray(new Integer[0]));
+            int[] snapshot = toIntArray();
+            if (a == null || a.length < snapshot.length) return snapshot;
+            System.arraycopy(snapshot, 0, a, 0, snapshot.length);
+            return a;
         }
 
         @Override
@@ -737,11 +743,10 @@ public final class FastUtilHackUtil {
 
         @Override
         public long[] toArray(long[] a) {
-            if (a.length >= size()) {
-                return null;
-            } else {
-                return toLongArray();
-            }
+            long[] snapshot = toLongArray();
+            if (a == null || a.length < snapshot.length) return snapshot;
+            System.arraycopy(snapshot, 0, a, 0, snapshot.length);
+            return a;
         }
 
         @Override

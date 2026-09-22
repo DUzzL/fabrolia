@@ -92,13 +92,13 @@ import java.util.Locale;
  * is untouched structurally, not by promise. Config entries naming the End
  * (or anything else) are refused at parse time, and a defensive guard refuses
  * an End level even if handed one directly. This class never touches the
- * transfer lane: no reference to CrossDimArrivals, PortalTeleportationManager
- * or EndPlatformHandoff exists here (pinned by a source test).
+ * transfer lane: no reference to CrossDimArrivals, NetherPortalTransfers
+ * or EndPlatformHandoff exists here.
  *
  * <h2>Honest limits</h2>
- * The anchor removes DRIFT; it does not remove the existing ~1 destination
- * tick of transfer latency (that would need the deferred bridge unit). And if
- * one member genuinely overruns (unit cost &gt; shared period), no cadence can
+ * The anchor removes DRIFT; transfer readiness and endpoint acquisition remain
+ * the separate Nether transfer lane's responsibility. If one member genuinely
+ * overruns (unit cost &gt; shared period), no cadence can
  * keep completion counts in lockstep — its deadline re-anchors to completion
  * (the existing overload rule) and the phase offset shifts once, then holds;
  * {@link #mainTick}'s heal re-anchors the pair when the deadlines break more
@@ -161,6 +161,7 @@ public final class CrossDimLinks {
     /** Reused projection scratch (island rebuild once had Long boxing as its
      *  single largest allocation source; this runs on the same path). */
     private static final LongOpenHashSet PROJ_SCRATCH = new LongOpenHashSet(64);
+    private static final LongOpenHashSet POPULATED_SCRATCH = new LongOpenHashSet(64);
     private static final java.util.HashSet<String> WARNED_PAIR_ENTRIES = new java.util.HashSet<>(2);
 
     // ---- counters (main-written; read by the status command on main) -------
@@ -178,17 +179,14 @@ public final class CrossDimLinks {
      * Main thread, called at the tail of {@code rebuildIslandsBody} — INSIDE
      * the rebuild quiesce window for {@code rs} (review D7). Recomputes the
      * link table against the partner level's last-committed topology.
-     * Contained: a failure here must never take the rebuild down.
+     * A failure propagates through the physical Main tick; a partially-mutated
+     * coupling table is not safe input for later simulation.
      */
     public static void onRebuild(RegionizedServer rs) {
         if (rs == null) {
             return;
         }
-        try {
-            onRebuildInner(rs);
-        } catch (Throwable t) {
-            LOGGER.error("[crossdim] link pass failed (contained; links unchanged)", t);
-        }
+        onRebuildInner(rs);
     }
 
     /**
@@ -198,11 +196,7 @@ public final class CrossDimLinks {
      * intersections only change when cells change, which latches a rebuild.
      */
     public static void mainTick() {
-        try {
-            mainTickInner();
-        } catch (Throwable t) {
-            LOGGER.error("[crossdim] tick pass failed (contained)", t);
-        }
+        mainTickInner();
     }
 
     /** Scheduler stop: drop every link and published coupling. Counters are
@@ -302,17 +296,27 @@ public final class CrossDimLinks {
         double scale = DimensionType.getTeleportationScale(
                 owRs.level.dimensionType(), netherRs.level.dimensionType());
         if (!(scale > 0.0) || !Double.isFinite(scale)) {
-            LOGGER.warn("[crossdim] non-positive teleportation scale {} — pass skipped", scale);
-            return;
+            IslandCommands.publishAndPropagate(new IllegalStateException(
+                    "invalid cross-dimension teleportation scale " + scale
+                            + " between " + owRs.level.dimension().identifier()
+                            + " and " + netherRs.level.dimension().identifier()));
+            throw new AssertionError("fatal cross-dimension scale publication returned");
         }
         int dilation = CrossDimProjection.dilationInDestBlocks(scale);
         int shift = gridShift();
+        POPULATED_SCRATCH.clear();
+        for (IslandRegistry.PIsland ne : netherRs.islandRegistry.islands()) {
+            if (!ne.retired) {
+                POPULATED_SCRATCH.addAll(ne.cells);
+            }
+        }
         for (IslandRegistry.PIsland ow : owRs.islandRegistry.islands()) {
             if (ow.retired || ow.cells.isEmpty()) {
                 continue;
             }
             PROJ_SCRATCH.clear();
-            CrossDimProjection.project(ow.cells, shift, scale, dilation, PROJ_SCRATCH);
+            CrossDimProjection.projectOnto(ow.cells, POPULATED_SCRATCH,
+                    shift, scale, dilation, PROJ_SCRATCH);
             for (IslandRegistry.PIsland ne : netherRs.islandRegistry.islands()) {
                 if (ne.retired || ne.cells.isEmpty()) {
                     continue;
@@ -550,63 +554,117 @@ public final class CrossDimLinks {
      * proves no concurrent roll.
      */
     private static boolean tryAnchor(Coupling c, RegionizedServer owRs, RegionizedServer netherRs) {
-        ArrayList<IslandRegistry.PIsland> claimed = new ArrayList<>(c.members.size());
-        for (int i = 0; i < c.members.size(); i++) {
-            IslandRegistry.PIsland m = c.members.get(i);
-            RegionizedServer mrs = rsOf(m, owRs, netherRs);
-            boolean mainHeld = mrs != null && mrs.mainHoldsAllClaims();
-            if (mainHeld) {
-                continue; // rebuild quiesce window: main already owns the claim
-            }
-            if (!m.unitClaim.compareAndSet(false, true)) {
-                // A unit is in flight (or another fence holds it): back out in
-                // reverse and retry next tick. Harmless — unlinked-cadence
-                // operation for one more tick is today's behaviour.
-                for (int r = claimed.size() - 1; r >= 0; r--) {
-                    claimed.get(r).clearClaim();
-                    claimed.get(r).unitClaim.set(false);
-                }
-                anchorsDeferred++;
-                return false;
-            }
-            m.noteClaim("crossdim-anchor");
-            claimed.add(m);
-        }
+        IslandRegistry.PIsland[] members =
+                c.members.toArray(IslandRegistry.PIsland[]::new);
+        ArrayList<IslandRegistry.PIsland> claimed = new ArrayList<>(members.length);
         try {
+            for (IslandRegistry.PIsland member : members) {
+                RegionizedServer memberRuntime = rsOf(member, owRs, netherRs);
+                if (memberRuntime != null
+                        && memberRuntime.currentThreadHoldsAllClaims()) {
+                    continue;
+                }
+                if (!member.tryClaimAutonomousWork()) {
+                    // Pre-body refusal: release every claim already accepted;
+                    // no anchor state or pacing successor was published.
+                    releaseAnchorClaims(claimed, null);
+                    try {
+                        // Claim cleanup is part of the refusal result. A peer W
+                        // selected during release must win before this normal
+                        // retry signal becomes visible to the caller.
+                        RegionScheduler.commitSuccessIfHealthy(
+                                () -> anchorsDeferred++);
+                    } catch (Throwable peerFailure) {
+                        CrossDimLinks.<RuntimeException>rethrow(
+                                RegionScheduler.publishFatalAndSelectWinner(peerFailure));
+                    }
+                    return false;
+                }
+                // Record ownership before the fallible ledger stamp so this
+                // exact claim is still released if the stamp fails.
+                claimed.add(member);
+                member.noteClaim("crossdim-anchor");
+            }
+
             long anchor = 0;
-            for (int i = 0; i < c.members.size(); i++) {
-                long d = c.members.get(i).nextDeadlineNanos;
+            for (IslandRegistry.PIsland member : members) {
+                long d = member.nextDeadlineNanos;
                 if (d != 0 && (anchor == 0 || d < anchor)) {
                     anchor = d;
                 }
             }
-            if (anchor != 0) {
-                for (int i = 0; i < c.members.size(); i++) {
-                    c.members.get(i).nextDeadlineNanos = anchor;
-                }
-            }
-            for (int i = 0; i < c.members.size(); i++) {
-                c.members.get(i).pacingGen++;
-            }
-            c.anchored = true;
-            anchorsApplied++;
             StringBuilder sb = new StringBuilder("CROSSDIM-ANCHOR members=[");
-            for (int i = 0; i < c.members.size(); i++) {
+            for (int i = 0; i < members.length; i++) {
                 if (i > 0) {
                     sb.append(' ');
                 }
-                sb.append('#').append(c.members.get(i).id).append("/g").append(c.members.get(i).gen);
+                sb.append('#').append(members[i].id).append("/g").append(members[i].gen);
             }
             sb.append("] anchor=").append(anchor)
               .append(" sharedNanos=").append(c.sharedTargetNanos);
+            // Diagnostics are prepared and emitted before the plain-field
+            // commit; they cannot turn an already anchored coupling into W.
             FlightRecorder.record(sb.toString());
-        } finally {
-            for (int r = claimed.size() - 1; r >= 0; r--) {
-                claimed.get(r).clearClaim();
-                claimed.get(r).unitClaim.set(false);
-            }
+
+            final long committedAnchor = anchor;
+            RegionScheduler.commitSuccessIfHealthy(() -> {
+                if (committedAnchor != 0) {
+                    for (IslandRegistry.PIsland member : members) {
+                        member.nextDeadlineNanos = committedAnchor;
+                    }
+                }
+                for (IslandRegistry.PIsland member : members) member.pacingGen++;
+                c.anchored = true;
+                anchorsApplied++;
+            });
+        } catch (Throwable thrown) {
+            Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+            releaseAnchorClaims(claimed, failure);
+            CrossDimLinks.<RuntimeException>rethrow(failure);
+        }
+        releaseAnchorClaims(claimed, null);
+        try {
+            // The anchor commit precedes mandatory release. Close the peer-W
+            // window opened by that cleanup before reporting normal success.
+            RegionScheduler.commitSuccessIfHealthy(() -> {});
+        } catch (Throwable peerFailure) {
+            CrossDimLinks.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(peerFailure));
         }
         return true;
+    }
+
+    private static void releaseAnchorClaims(ArrayList<IslandRegistry.PIsland> claimed,
+                                            Throwable primary) {
+        Throwable failure = primary;
+        for (int r = claimed.size() - 1; r >= 0; r--) {
+            IslandRegistry.PIsland member;
+            try {
+                // Consume the receipt BEFORE releasing it. Refusal cleanup can
+                // re-enter here after a late W; the physical claim may already
+                // belong to a different worker by then.
+                member = claimed.remove(r);
+            } catch (Throwable cleanup) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        mergeFailure(failure, cleanup));
+                continue;
+            }
+            try {
+                member.clearClaim();
+            } catch (Throwable cleanup) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        mergeFailure(failure, cleanup));
+            }
+            try {
+                // Exact permit release is independent: a ledger-cleanup
+                // Throwable must never retain the physical claim.
+                member.unitClaim.set(false);
+            } catch (Throwable cleanup) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        mergeFailure(failure, cleanup));
+            }
+        }
+        if (failure != null) CrossDimLinks.<RuntimeException>rethrow(failure);
     }
 
     // ---- helpers -----------------------------------------------------------
@@ -641,6 +699,23 @@ public final class CrossDimLinks {
             }
         }
         return best;
+    }
+
+    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
+        if (primary == null) return secondary;
+        if (secondary != null && secondary != primary) {
+            try {
+                primary.addSuppressed(secondary);
+            } catch (Throwable ignored) {
+                // Suppression is diagnostic only; W remains authoritative.
+            }
+        }
+        return primary;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 
     private static void refill(LongOpenHashSet dst, LongOpenHashSet src) {

@@ -3,6 +3,7 @@ package com.axalotl.fabrolia.common.regions;
 import com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
+import com.axalotl.fabrolia.common.utils.FabroliaDebug;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.server.level.DistanceManager;
@@ -18,9 +19,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.LockSupport;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import net.minecraft.world.entity.EntityType;
+import java.util.concurrent.atomic.AtomicReference;
 import net.minecraft.server.level.ServerChunkCache;
 
 /**
@@ -64,13 +64,31 @@ public final class RegionizedServer {
 
     public ThreadedRegionizer regionizer() { return regionizer; }
 
+    /** Identity check used to reject a delayed Region from a retired scheduler generation. */
+    boolean ownsRegion(Region region) {
+        return region != null && region.level == level
+                && regionizer.peekByGridKey(region.gridKey) == region;
+    }
+
     /** A2: the level's default scheduling timeline. Sync mode: every region's
      *  {@link Region#domain} points here — behavior is field-for-field what the
      *  old RegionizedServer epoch/barrier state gave. Async mode: island member
      *  regions move to their island's domain; gap/unpopulated regions stay here,
      *  and this domain still runs one dispatch per level tick for them. */
     final EpochDomain globalDomain = new EpochDomain();
-    /** Cross-dimension arrivals bound for this level's global lane. */
+    /**
+     * Epoch for which the global dispatch is deliberately queue-only.
+     *
+     * <p>The event worker path derives an entity obligation from
+     * {@link Region#groupedEpoch}.  Exact player-order mode still has to stamp that
+     * field so the colour-gated queue drain can reach a fixed point, but it must not
+     * let an already-ready worker interpret the stamp as permission to call
+     * {@link #tickOwned(Region)}.  Publish this epoch before the first grouped stamp
+     * and retain it until the next level epoch; {@link #owesEntityPhase(Region)} is
+     * the single admission predicate used by every opportunistic worker path.
+     */
+    private volatile long queueOnlyEntityEpoch = Long.MIN_VALUE;
+    /** Global-owned arrivals and unresolved topology transport awaiting Main's cut. */
     final java.util.concurrent.ConcurrentLinkedQueue<CrossDimArrivals.StagedOp> globalArrivals =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
     /** audit13 — global-lane ordering monitor: guards every BATCH append to
@@ -81,10 +99,10 @@ public final class RegionizedServer {
      *  route() landing between publishGlobal's poll() drain and its re-add of
      *  the gate-held head jumped AHEAD of the held ops — either way one cohort
      *  fragments and the End-platform handoff gate sees the fragments as
-     *  successive cohorts (a machine cohort split). Leaf lock: only queue
-     *  moves ever run under it — NEVER publication, world mutation, or any
-     *  other lock acquisition (the tracker monitor inside the gated extract is
-     *  itself a leaf). */
+     *  successive cohorts (a machine cohort split). Arrival routing takes the
+     *  topology admission read side, then this monitor, then an island queue
+     *  or the leaf handoff tracker. No receipt waits, destination callbacks,
+     *  or world mutation run under those monitors. */
     final Object globalArrivalsLock = new Object();
 
     /** End-platform falling-block handoff tracker for THIS destination level
@@ -97,8 +115,7 @@ public final class RegionizedServer {
      *  the vanilla removal event: a FallingBlockEntity is removed on the
      *  same entity tick it places its block, breaks, or drops as an item. */
     final EndPlatformHandoff.Tracker platformHandoff = new EndPlatformHandoff.Tracker(
-            h -> ((net.minecraft.world.entity.Entity) h).isRemoved(),
-            System::nanoTime, EndPlatformHandoff.DEFAULT_TTL_NANOS);
+            h -> ((net.minecraft.world.entity.Entity) h).isRemoved());
 
     private static boolean failClosedMarkerChecked;
 
@@ -106,6 +123,9 @@ public final class RegionizedServer {
      *  tick HEAD (onLevelTickStart), consumed by rebuild (domain assignment)
      *  and the entity-phase drive later the same tick. */
     public volatile boolean asyncActive;
+    /** One wall-tick v2 batch. Non-null only between entity dispatch and the
+     *  per-level barrier immediately before vanilla block-entity ticking. */
+    volatile RegionalPlayerEntityTicksV2.LevelBatch playerTickV2Batch;
     /** Regions currently carry island domains (forces one reassignment pass
      *  back to globalDomain after an ON→OFF flip). */
     private boolean domainsIslandized;
@@ -125,37 +145,12 @@ public final class RegionizedServer {
 
     public long dispatchedEpoch() { return globalDomain.dispatchedEpoch; }
 
-    /** A2: the domain a region created RIGHT NOW should join. A worker holding
-     *  a claim (entity phase / queue drain) creates destination regions for
-     *  index moves — those are spatially adjacent to the source, hence same
-     *  island: inherit the claimed region's domain. A unit coordinator between
-     *  claims publishes its island domain via currentDomain. Everything else
-     *  (main-thread chunk loads, gap-area executeAt targets) joins the global
-     *  domain until the next island rebuild adopts it. */
-    EpochDomain domainForCreation() {
-        return domainForCreation(Long.MIN_VALUE);
-    }
-
-    /** Domain for a region born at {@code gridKey} (MIN_VALUE = unknown).
-     *  Priority: creating worker's claimed/current domain (mid-phase index
-     *  moves stay in their own timeline — a foreign-halo destination would
-     *  imply two islands ≤2 cells apart, which the gap rule already merges) →
-     *  published core/halo cell domain → global. */
+    /** Domain for a newly materialized target cell. The immutable topology
+     *  snapshot, not the publishing worker's claim or coordinator context,
+     *  owns the destination. A cold gap stays global until a rebuild adopts it.
+     *  Creation READ admission is paired with topology publication's WRITE cut. */
     EpochDomain domainForCreation(long gridKey) {
-        if (Thread.currentThread() instanceof RegionWorkerThread w) {
-            // CROSS-LEVEL GUARD (2026-07-14 sand-duper cold-End loss): a worker
-            // mid-End-portal-teleport CREATES destination regions in the OTHER
-            // level. Its claimed/current domain belongs to the SOURCE level —
-            // stamping it onto a destination region parks that region in a
-            // domain no drive of the destination level ever ticks (arrival
-            // entities stranded until the next rebuild adopts the region).
-            // Worker context applies only to regions of ITS OWN level.
-            Region cur = w.currentRegion;
-            if (cur != null && cur.domain != null && sameLevelDomain(cur.domain)) return cur.domain;
-            EpochDomain d = w.currentDomain;
-            if (d != null && sameLevelDomain(d)) return d;
-        }
-        if (gridKey != Long.MIN_VALUE && asyncActive) {
+        if (asyncActive) {
             var snap = cellDomainSnapshot;
             if (snap != null) {
                 EpochDomain d = snap.get(gridKey);
@@ -165,62 +160,73 @@ public final class RegionizedServer {
         return globalDomain;
     }
 
-    private boolean sameLevelDomain(EpochDomain d) {
-        if (d == globalDomain) return true;
-        IslandRegistry.PIsland o = d.owner;
-        return o != null && o.level == level;
-    }
-
     /** CAS-gated ENTITY-phase push: at most one ready-lane seed/re-arm per epoch.
      *  Eligibility is monotonic within an epoch (doneEpoch only advances; regions born
      *  post-dispatch are stamped done at creation), so a pushed region can never regress
      *  to ineligible — the pop side may still drop it on a lost claim CAS, which the
      *  claim holder's release epilogue re-arms (see RegionWorkerPool). */
     boolean tryEnqueueEntity(Region r) {
-        long e = r.domain.epoch;
-        long prev = r.entityEnqueuedEpoch.get();
-        if (prev >= e || !r.entityEnqueuedEpoch.compareAndSet(prev, e)) {
-            return false;
-        }
-        RegionScheduler.enqueueReady(r);
-        return true;
+        return RegionScheduler.callSuccessBooleanIfHealthy(() -> {
+            long e = r.domain.epoch;
+            long prev = r.entityEnqueuedEpoch.get();
+            if (prev >= e || !r.entityEnqueuedEpoch.compareAndSet(prev, e)) {
+                return false;
+            }
+            RegionScheduler.enqueueEntityReady(r);
+            return true;
+        });
     }
 
     /** Does {@code r} still owe its entity phase this epoch (of ITS domain)? */
     boolean owesEntityPhase(Region r) {
         long e = r.domain.epoch;
+        if (r.domain == globalDomain && queueOnlyEntityEpoch == e) return false;
         return r.groupedEpoch == e && r.entityEpoch < e;
     }
 
     /**
-     * R5: run the owed entity phase under an ALREADY-HELD claim (caller = claim holder,
-     * {@code currentRegion} published). Gated on ColorGate eligibility — a pre-dispatch
-     * claim holder whose region got stamped mid-drain must NOT tick entities ahead of
-     * its lower-color blockers; the last blocker's markDone re-arms it instead.
-     * A Throwable inside the phase is contained (logged, phase counted as ran) so one
-     * broken entity can never wedge the barrier — same net behavior as the legacy
-     * group path's complete-on-failure.
+     * Exact queue-only dispatch identity used by ColorGate completion.  A
+     * grouped queue-only participant owes no entity body, but it may complete
+     * only after its physical normal/help queues are empty.  Keep the global
+     * domain identity in this predicate: an ownerless look-alike domain must
+     * never borrow the level's exact-player dispatch decision.
      */
-    void runOwedEntityPhase(Region r) {
-        if (!owesEntityPhase(r) || !ColorGate.eligible(r, this)) {
-            return;
+    boolean isQueueOnlyEntityEpoch(EpochDomain expectedDomain, long expectedEpoch) {
+        return expectedDomain == globalDomain
+                && expectedDomain.epoch == expectedEpoch
+                && queueOnlyEntityEpoch == expectedEpoch;
+    }
+
+    /**
+     * R5: run the owed entity phase under an ALREADY-HELD claim (caller = claim holder,
+     * {@code currentRegion} published). Requires this epoch's accepted event
+     * protocol and ColorGate eligibility: a pre-dispatch claimant may have read
+     * the old receipt before dispatch stamped its region mid-drain.
+     * A Throwable inside the phase propagates unchanged.  In particular, the
+     * completion epoch is published only after the complete entity body returns;
+     * a broken vanilla tick must never satisfy the entity barrier as successful.
+     */
+    boolean runOwedEntityPhase(Region r) {
+        EpochDomain d = r.domain;
+        long epoch = d.epoch;
+        // Read acceptance AFTER the mode witness: armedEpoch is published after
+        // the new OFFERING receipt, so an old accepted receipt cannot authorize it.
+        if (!d.isEventEntityEpoch(epoch) || !d.entityDispatchPublication.isAccepted()
+                || !owesEntityPhase(r) || !ColorGate.eligible(r, this)) {
+            return false;
         }
-        long t0 = System.nanoTime();
-        r.lastFanoutBatches = 0;   // serial path leaves these zeroed; the dense
-        r.lastBatchMaxNanos = 0;   // path overwrites them after fan-in
-        r.lastOrderedNanos = 0;
-        try {
-            tickOwned(r);
-        } catch (Throwable t) {
-            ThrottledLog.error(LOGGER, "entityPhase", t, "Entity phase failed for region {} ({})",
-                    Long.toHexString(r.gridKey), level.dimension().identifier());
-        }
-        // LPT feed: EWMA (α=1/4) of the phase's measured cost. Entity count alone
-        // under-weighs BE/AI-heavy regions; the measured tail region ran 1.5–1.7×
-        // the pool average on the 2026-07-07/11 profiles, so dispatch order by
-        // observed cost starts the true long pole first. Scheduling-order only —
-        // correctness is carried by the color gate, not by this hint.
-        long dt = System.nanoTime() - t0;
+        tickOwned(r);
+        return true;
+    }
+
+    /**
+     * Publish the claim-private entity completion only after every part of the
+     * phase transaction (notably the portal visibility frame) has succeeded.
+     * The epoch is deliberately the last write: barrier observers can never see
+     * a completed epoch without its corresponding diagnostics.
+     */
+    void commitEntityPhase(Region r) {
+        long dt = r.stagedPhaseNanos;
         long ema = r.emaPhaseNanos;
         r.emaPhaseNanos = ema == 0 ? dt : ema + ((dt - ema) >> 2);
         r.lastPhaseNanos = dt;
@@ -228,25 +234,49 @@ public final class RegionizedServer {
     }
 
     /** R5: contribute {@code r}'s barrier decrement — exactly once per epoch of ITS
-     *  domain, and only once its entity phase has actually run. Any thread may call
-     *  this blindly. */
+     *  domain, and only after its entity phase and a claim/queue-linearized done
+     *  seal both published. Any successful tail may call this blindly; this lets
+     *  the last duplicate/no-op claimant close work committed by its predecessor. */
     void contributeEntityBarrier(Region r) {
-        EpochDomain d = r.domain;
-        long e = d.epoch;
-        if (d.entityBarrierArmedEpoch != e) return;
-        if (r.groupedEpoch != e || r.entityEpoch < e) return;
-        long prev = r.entityBarrierEpoch.get();
-        if (prev >= e || !r.entityBarrierEpoch.compareAndSet(prev, e)) return;
-        if (d.entityPending.decrementAndGet() == 0) {
-            CompletableFuture<Void> b = d.entityBarrier;
-            if (b != null) b.complete(null);
+        try {
+            AtomicReference<CompletableFuture<Void>> completion =
+                    new AtomicReference<>();
+            Runnable commit = () -> {
+                EpochDomain d = r.domain;
+                long e = d.epoch;
+                if (!d.isEventEntityEpoch(e)) return;
+                if (r.groupedEpoch != e || r.entityEpoch < e
+                        || !r.hasSealedDone(e)) return;
+                long prev = r.entityBarrierEpoch.get();
+                if (prev >= e || !r.entityBarrierEpoch.compareAndSet(prev, e)) return;
+                if (d.entityPending.decrementAndGet() == 0) {
+                    completion.set(d.entityBarrier);
+                }
+            };
+            if (RegionScheduler.isActive()) {
+                RegionScheduler.commitSuccessIfHealthy(commit);
+            } else {
+                commit.run();
+            }
+            CompletableFuture<Void> barrier = completion.get();
+            if (barrier != null) {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    if (!barrier.complete(null)) {
+                        throw new IllegalStateException(
+                                "entity barrier completed more than once");
+                    }
+                });
+            }
+        } catch (Throwable completionFailure) {
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(completionFailure));
         }
     }
 
     /** Heal/watchdog view: owing regions left this GLOBAL-domain epoch (0 = barrier
      *  done). Island domains pump their own barriers inside the tick unit. */
     int entityPendingCount() {
-        return globalDomain.entityBarrierArmedEpoch == globalDomain.epoch
+        return globalDomain.isEventEntityEpoch(globalDomain.epoch)
                 ? globalDomain.entityPending.get() : 0;
     }
 
@@ -256,10 +286,21 @@ public final class RegionizedServer {
 
     public void onLevelTickStart() {
         RegionScheduler.mainCurrentLevel = level;
-        // A2 mode latch: async mode requires the event scheduler + color gate
-        // (the unit's dispatch/eligibility model IS the R5 event path). A flip
-        // takes effect exactly here — before rebuild (domain assignment) and
-        // the entity drive of the same tick — never mid-tick.
+        boolean wantAsync = RegionScheduler.asyncModeWantedAtLevelHead()
+                && RegionalPlayerEntityTicksV2.asyncActivationAllowedAtLevelHead();
+        if (wantAsync != asyncActive) {
+            changeModeAndRebuild(() -> {
+                publishLevelTickHead(wantAsync);
+                evictIdleRegions();
+            });
+        } else {
+            publishLevelTickHead(wantAsync);
+            evictIdleRegions();
+            rebuildIslandsIfDirty();
+        }
+    }
+
+    private void publishLevelTickHead(boolean wantAsync) {
         if (!failClosedMarkerChecked) {
             failClosedMarkerChecked = true;
             // Crash/trip state is SESSION-ONLY (2026-07-18 policy): a marker
@@ -271,15 +312,13 @@ public final class RegionizedServer {
                     LOGGER.info("[async-islands] deleted stale fail-closed marker from an older "
                             + "Fabrolia — crash state no longer persists across restarts.");
                 }
-            } catch (Throwable ignored) {
+            } catch (java.io.IOException | SecurityException markerFailure) {
+                // This callback is part of the admitted level-tick HEAD. It may
+                // not swallow a failure and continue into vanilla simulation.
+                RegionizedServer.<RuntimeException>rethrow(
+                        RegionScheduler.publishFatalAndSelectWinner(markerFailure));
             }
         }
-        boolean wantAsync = FabroliaConfig.asyncIslands
-                && !FabroliaConfig.asyncFailClosedTripped
-                && FabroliaConfig.regionEventScheduler
-                && FabroliaConfig.useRegionColorGate()
-                && FabroliaConfig.enableRegionThreading
-                && !FabroliaConfig.disabled;
         if (FabroliaConfig.asyncFailClosedTripped && asyncActive) {
             // FAIL-CLOSED CONTAINMENT (2026-07-14 rate-40 wedge): the old rule
             // kept async RUNNING post-trip ("no live collapse") — so the very
@@ -290,8 +329,7 @@ public final class RegionizedServer {
             // exercises (quiesce → domain collapse → carry-state unstash),
             // hardened since (claimWanted fences, migration drains) and proven
             // by the a8toggle battery — so containment now actually contains:
-            // collapse to SYNC at this tick head; the marker still forces SYNC
-            // on the next boot until the operator clears it.
+            // collapse to SYNC at this tick head; the trip is session-only.
             LOGGER.error("[async-islands] FAIL-CLOSED containment: collapsing to SYNC now "
                     + "(this tick head) for {} — async stays refused for the rest of this session "
                     + "(a restart clears it).",
@@ -318,7 +356,9 @@ public final class RegionizedServer {
                     wantAsync ? "ENABLED" : "DISABLED", level.dimension().identifier());
             if (wantAsync) {
                 LOGGER.info("[async-islands] compatibility envelope: vanilla mechanics island-isolated by construction; "
-                        + "players main-owned (packets serialized with player state); commands exactly-once "
+                        + "A5 exact real players and audited Carpet fakes use their autonomous island owner "
+                        + "when /fabrolia regions playerticks is enabled; unsupported player states fail per-player to Main; "
+                        + "commands exactly-once "
                         + "(local=island cadence, global=fenced); mods writing across islands are detected "
                         + "(crossDOMAIN counter) and fail-closed{}; command-block minecarts + posless custom "
                         + "tickers run at world cadence.",
@@ -345,6 +385,32 @@ public final class RegionizedServer {
                         i, b, String.format("%.1f", 100.0 * b / t),
                         FabroliaConfig.fabroliaOptimisticBorderMargin, 1L << (regionizer.grid.shift + 4));
             }
+        }
+    }
+
+    /** Mode, clocks, handoff and topology commit share one terminal local quiesce. */
+    private void changeModeAndRebuild(Runnable publishMode) {
+        if (mainHoldsAllClaims() || IslandCommands.fenceWindowHeld()) {
+            // A global writer frame may only have parked a unit at an ACK.
+            // Neither mode publication nor topology may overtake its remaining tail.
+            throw new IllegalStateException("mode transition requires an unowned completed Main boundary");
+        }
+        boolean quiesced = quiesceAllIslands();
+        boolean committed = false;
+        Throwable failure = null;
+        try {
+            committed = RegionScheduler.callSuccessBooleanIfHealthy(() -> {
+                publishMode.run();
+                return rebuildIslandsIfDirty(true);
+            });
+        } catch (Throwable primary) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(primary);
+        }
+        if (quiesced) failure = releaseAllIslands(failure);
+        failure = finishTopologyRebuild(failure, committed);
+        if (failure != null) {
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
         }
     }
 
@@ -383,6 +449,22 @@ public final class RegionizedServer {
     private volatile boolean islandsDirty = true;
     private volatile List<Island> islands = List.of();
 
+    /**
+     * Populated static cells which can still contain physical-Main scheduled
+     * work. Main-thread confined: the FULL-status seam is the producer and the
+     * block/fluid LevelTicks slots are the consumers.
+     *
+     * <p>This is intentionally a CELL population index, not a mirror of
+     * nextTickForContainer. A stored scheduler key in a non-FULL cell cannot
+     * pass vanilla's tickCheck; the exact 0 -> 1 population boundary adds all
+     * 64 possible keys at once. Once topology adopts a cell, the owner lane
+     * discovers it from PIsland.cells/haloCells and Main removes the candidate
+     * lazily. Consequently discovery cost follows newly populated global cells,
+     * never the scheduler map's historical capacity.</p>
+     */
+    private final it.unimi.dsi.fastutil.longs.LongOpenHashSet scheduledTickDiscoveryCells =
+            new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+
     /** Main thread (updateChunkScheduling seam). Region created eagerly: a
      *  freshly populated cell must exist to be claimable by the rebuild. */
     /** Redundant-delivery counters (fabric event + vanilla seam feed the same
@@ -390,10 +472,6 @@ public final class RegionizedServer {
      *  popcheck can show which source is actually firing). */
     public final java.util.concurrent.atomic.AtomicLong popIgnoredAdds = new java.util.concurrent.atomic.AtomicLong();
     public final java.util.concurrent.atomic.AtomicLong popIgnoredRemoves = new java.util.concurrent.atomic.AtomicLong();
-
-    /** One-shot latch for the population-thread invariant below. */
-    private static final java.util.concurrent.atomic.AtomicBoolean POP_THREAD_WARNED =
-            new java.util.concurrent.atomic.AtomicBoolean();
 
     public void onChunkFullTransition(long packedChunkPos, boolean nowFull, LevelChunk chunk) {
         // INVARIANT (audit 2026-07-26): this runs on the main thread only, which is
@@ -404,36 +482,46 @@ public final class RegionizedServer {
         // unload pass. But that is an assumption about EVERY chunk-system mod in the
         // stack — c2me reshapes chunk loading — and if it is ever violated a fastutil
         // set corrupts silently: lost population, islands that never split or never
-        // merge. One reference comparison turns that into a diagnosable line.
-        net.minecraft.server.MinecraftServer srv = level.getServer();
-        if (srv != null && Thread.currentThread() != srv.getRunningThread()
-                && !POP_THREAD_WARNED.getAndSet(true)) {
-            LOGGER.error("INVARIANT VIOLATED: chunk population event delivered off-main "
-                            + "(thread={}, level={}, chunk={},{}). Region.fullChunks is not "
-                            + "thread-safe; island topology may be corrupt. Please report this "
-                            + "with your mod list — logged once per session.",
-                    Thread.currentThread().getName(), level.dimension().identifier(),
-                    net.minecraft.world.level.ChunkPos.getX(packedChunkPos),
-                    net.minecraft.world.level.ChunkPos.getZ(packedChunkPos));
-        }
+        // merge. Fail before touching either plain set; continuing would turn a
+        // scheduler bug into nondeterministic skipped simulation.
+        scheduledTickDiscoveryCellsMainThread("chunk population transition");
         Region r = regionizer.regionForGridKey(regionizer.grid.keyFor(packedChunkPos));
-        // Idempotent membership: the set is truth, the counter is derived. Any
-        // combination of duplicate/missing/racing-source events converges.
-        if (nowFull) {
-            if (r.fullChunks.add(packedChunkPos)) {
-                r.fullChunkCount.incrementAndGet();
-                islandsDirty = true;
+        // The set remains authoritative and advances on every accepted chunk
+        // transition. The island graph, however, sees only populated CELLS:
+        // fullChunkCount > 0. Rebuilding/quiescing every island for chunk 2..64
+        // in an already-populated 8x8 cell cannot change connectivity and only
+        // churns tracking/queues. A rebuild is required exactly at 0 <-> 1.
+        Region.FullChunkTransition transition =
+                r.applyFullChunkTransition(packedChunkPos, nowFull);
+        if (transition == Region.FullChunkTransition.POPULATION_BOUNDARY) {
+            if (nowFull) {
+                scheduledTickDiscoveryCells.add(r.gridKey);
             } else {
-                popIgnoredAdds.incrementAndGet();
+                scheduledTickDiscoveryCells.remove(r.gridKey);
             }
-        } else {
-            if (r.fullChunks.remove(packedChunkPos)) {
-                r.fullChunkCount.decrementAndGet();
-                islandsDirty = true;
-            } else {
-                popIgnoredRemoves.incrementAndGet();
-            }
+            islandsDirty = true;
+        } else if (transition == Region.FullChunkTransition.REDUNDANT) {
+            if (nowFull) popIgnoredAdds.incrementAndGet();
+            else popIgnoredRemoves.incrementAndGet();
         }
+    }
+
+    /** Main-only mutable view used by the physical LevelTicks slots. */
+    it.unimi.dsi.fastutil.longs.LongOpenHashSet scheduledTickDiscoveryCellsMainThread(
+            String operation) {
+        net.minecraft.server.MinecraftServer server = level.getServer();
+        // getRunningThread() can name a logical gameplay worker while physical
+        // Main is still pumping native chunk completions.
+        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
+            Thread expected = server instanceof RegionalPlayerEntityTicksV2.PhysicalServerThreadAccess access
+                    ? access.fabrolia$physicalServerThread() : null;
+            Thread current = Thread.currentThread();
+            throw new IllegalStateException("scheduled-tick cell index " + operation
+                    + " off main: current=" + current.getName()
+                    + " expected=" + (expected == null ? "<missing>" : expected.getName())
+                    + " level=" + level.dimension().identifier());
+        }
+        return scheduledTickDiscoveryCells;
     }
 
     /** Defensive self-check (/fabrolia regions popcheck): compare the population
@@ -496,6 +584,15 @@ public final class RegionizedServer {
      *  inside island frontiers — the 2026-07-14 fluid cross-domain window). */
     private volatile it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<EpochDomain> cellDomainSnapshot;
 
+    /** Capture the committed core+halo ownership cut, not async activation
+     *  intent: OFF may be requested while the old island units are still live.
+     *  Published maps are immutable. Arrival offers share the topology routing
+     *  admission cut so retirement and snapshot replacement cannot bisect an
+     *  offer; transition-time foreign offers retain their whole cohort. */
+    it.unimi.dsi.fastutil.longs.Long2ObjectMap<EpochDomain> arrivalOwnerSnapshot() {
+        return cellDomainSnapshot;
+    }
+
     /** Island of a chunk via the rebuild-time table. Main thread only. */
     public int islandForChunk(long packedChunkPos) {
         return gridToIsland.get(regionizer.grid.keyFor(packedChunkPos));
@@ -542,23 +639,88 @@ public final class RegionizedServer {
             new java.util.concurrent.atomic.AtomicInteger();
 
     /** A2 deadline drive — arm-seam decision for chunk-phase work targeting
-     *  {@code r} (ServerChunkCacheMixin.groupAndSubmit). 0 = arm + main awaits
-     *  the task future (global lane / async off — the pre-A2 behavior);
-     *  1 = arm, but main must NOT await (island region: its unit is the
-     *  barrier); 2 = skip entirely (island still owes the previous arm —
-     *  missed cycle, vanilla-lag semantics). Main thread only. */
-    public int armGate(Region r) {
-        if (!asyncActive) return 0;
+     *  {@code r} (ServerChunkCacheMixin.groupAndSubmit). GLOBAL = arm + main
+     *  awaits the task future (global lane / async off — the pre-A2 behavior);
+     *  an island token = arm without a main wait (the unit is the barrier);
+     *  SKIP = the island still owes the previous arm (vanilla-lag semantics).
+     *  Main thread only. The returned island token is stable and allocation-free. */
+    public IslandRegistry.ArmGate armGate(Region r) {
+        if (!asyncActive) return IslandRegistry.ArmGate.global();
         EpochDomain d = r.domain;
         IslandRegistry.PIsland owner = d != null ? d.owner : null;
-        if (owner == null) return 0;
-        long gt = level.getGameTime();
-        if (owner.armStampGameTime == gt
-                || owner.armStampGameTime == owner.armConsumedGameTime) {
-            owner.armStampGameTime = gt;
-            return 1;
+        if (owner == null) return IslandRegistry.ArmGate.global();
+        return owner.reserveChunkArm(level.getGameTime());
+    }
+
+    /**
+     * Attach one exact island-arm reservation to a region task. The pool's
+     * failed-generation sweep calls the cancellation hook without entering the
+     * vanilla body; a started body releases in its terminal path. Either edge
+     * closes the same reservation exactly once.
+     */
+    public static Runnable armReservedTask(IslandRegistry.ArmGate gate, Runnable body) {
+        if (gate == null || !gate.isIslandArm() || body == null) {
+            throw new IllegalArgumentException("island arm task requires an island gate and body");
         }
-        return 2;
+        return new ArmReservedTask(gate.owner(), body);
+    }
+
+    private static final class ArmReservedTask
+            implements Runnable, RegionTaskFanIn.CancellableQueueEntry {
+        private static final int QUEUED = 0;
+        private static final int RUNNING = 1;
+        private static final int TERMINAL = 2;
+        private static final int CANCELLED = 3;
+
+        private final IslandRegistry.PIsland owner;
+        private final Runnable body;
+        private int state = QUEUED;
+
+        private ArmReservedTask(IslandRegistry.PIsland owner, Runnable body) {
+            this.owner = owner;
+            this.body = body;
+        }
+
+        @Override
+        public void run() {
+            synchronized (this) {
+                if (state == CANCELLED) return;
+                if (state != QUEUED) {
+                    throw new IllegalStateException(
+                            "island chunk-arm task executed more than once");
+                }
+                state = RUNNING;
+            }
+            try {
+                body.run();
+            } finally {
+                try {
+                    owner.finishChunkArm();
+                } finally {
+                    synchronized (this) {
+                        state = TERMINAL;
+                    }
+                }
+            }
+        }
+
+        @Override
+        public void cancelQueuedBeforeStart() {
+            cancel();
+        }
+
+        @Override
+        public void cancelQueuedBeforeStartWithFailure(Throwable primary) {
+            cancel();
+        }
+
+        private void cancel() {
+            synchronized (this) {
+                if (state != QUEUED) return;
+                state = CANCELLED;
+            }
+            owner.finishChunkArm();
+        }
     }
 
     /** A2: exclusive claim of EVERY island's unit (topology rebuilds, save-all).
@@ -566,134 +728,619 @@ public final class RegionizedServer {
      *  never need main, so this always terminates. Main thread only; paired with
      *  {@link #releaseAllIslands}. */
     private final ArrayList<IslandRegistry.PIsland> quiescedIslands = new ArrayList<>();
-    /** True while MAIN holds every island claim (rebuild / save-all window).
-     *  Owner-safe save hooks skip their own claiming then — re-claiming a
-     *  self-held claim would deadlock (player save) or silently skip every
-     *  chunk (incremental save inside saveAllChunks). Main-only. */
-    /** Read off-main by IslandTickUnit.complete, the rate pacer, and the chunk
-     *  packet builder (which SKIPS its island claim when this is true) — a stale
-     *  read there builds a packet while the owner unit mutates the chunk. volatile
-     *  since audit 2026-07-26. */
-    private volatile boolean mainHoldsAllClaims;
+    /** Exact publication that MAIN owns an exclusive window over every island
+     *  in this level.  The immutable tuple prevents a reader from observing a
+     *  new receipt with an old thread identity.  In particular, this is never
+     *  published merely because a global fence has started acquiring claims:
+     *  ownership-sensitive callers use
+     *  {@link #currentThreadHoldsAllClaims()} as authority to skip their own
+     *  claim and therefore require an already-acquired window owned by that
+     *  exact thread, not acquisition intent. */
+    private static final class MainAllClaimsOwnership {
+        final Object receipt;
+        final Thread owner;
+        final boolean globalFence;
+
+        MainAllClaimsOwnership(Object receipt, Thread owner,
+                               boolean globalFence) {
+            this.receipt = receipt;
+            this.owner = owner;
+            this.globalFence = globalFence;
+        }
+    }
+
+    /** Read off-main by packet/save/pacing paths; immutable publication is
+     *  carried by this one volatile edge. */
+    private volatile MainAllClaimsOwnership mainAllClaimsOwnership;
+
+    /** Global-fence acquisition/release intent.  It only stops autonomous
+     *  successor publication; it grants no permission to read or mutate an
+     *  island without its claim.  Exact token identity closes timeout/ABA
+     *  cleanup against a later fence. */
+    private volatile Object globalFenceIntent;
+
+    /** Exact receipt owned by this level's save/topology quiesce. Main-only. */
+    private Object localAllClaimsReceipt;
+
+    /**
+     * Admission cut for tracker ownership decisions which may originate on VMP
+     * workers.  A topology rebuild takes the write side only to publish/retire
+     * its exact receipt; it never waits for a tracker monitor while holding the
+     * closed writer phase.  Consequently a worker may enter with tracker ->
+     * striped read admission while Main can still drain every pre-publication
+     * reader before snapshotting the old cadence sets without creating a
+     * tracker/admission inversion.
+     */
+    private final TrackingTopologyAdmissionGate trackingTopologyAdmission =
+            new TrackingTopologyAdmissionGate();
+
+    /** Immutable identity of one snapshot -> retirement -> reroute transaction. */
+    static final class TrackingTopologyTransitionReceipt {
+        final RegionizedServer runtime;
+        final Object allClaimsReceipt;
+        final Thread owner;
+        final long generation;
+        final TrackerTopologySnapshot<IslandTrackedEntityAccess, IslandRegistry.PIsland> cadences;
+
+        TrackingTopologyTransitionReceipt(
+                RegionizedServer runtime, Object allClaimsReceipt,
+                Thread owner, long generation,
+                TrackerTopologySnapshot<IslandTrackedEntityAccess, IslandRegistry.PIsland> cadences) {
+            this.runtime = runtime;
+            this.allClaimsReceipt = allClaimsReceipt;
+            this.owner = owner;
+            this.generation = generation;
+            this.cadences = cadences;
+        }
+    }
+
+    /** One volatile edge publishes the complete immutable transition identity. */
+    private volatile TrackingTopologyTransitionReceipt trackingTopologyTransition;
+    /** Main/closed-writer-phase only; zero is never a valid generation. */
+    private long trackingTopologyTransitionGeneration;
+
+    /** Server-wide admission fence used while one level establishes an exact
+     * global-sprint boundary. Unlike TickRateManager's live sprint bit, this
+     * cannot reopen halfway through the boundary when a routed command stops
+     * the sprint. Ordinary submit/chaining reads it under unitAdmissionLock. */
+    volatile boolean globalSprintAdmissionFenced;
+    /** Exact cleanup identity for {@link #globalSprintAdmissionFenced}. */
+    private volatile Object globalSprintAdmissionFenceOwner;
 
     /** task #19 arrival spacing chain for the global lane (main-only). */
     public final java.util.HashMap<Long, long[]> globalArrivalChains = new java.util.HashMap<>(4);
 
     public boolean mainHoldsAllClaims() {
-        return mainHoldsAllClaims;
+        return mainAllClaimsOwnership != null;
     }
 
-    /** A8: the cross-level command fence (IslandCommands.quiesceAllExcept)
-     *  marks the window itself — same reentrancy contract as the save-all
-     *  quiesce. Main thread only. */
-    public void markMainHoldsAllClaims(boolean held) {
-        mainHoldsAllClaims = held;
+    /** Acquisition intent OR an acquired all-claims window.  This is for the
+     *  pacer/completion admission paths only; ownership-sensitive callers must
+     *  use {@link #currentThreadHoldsAllClaims()}. */
+    boolean mainClaimsFenceActive() {
+        return globalFenceIntent != null || mainAllClaimsOwnership != null;
+    }
+
+    /** Exact global-fence acquisition token observed by a coordinator which
+     *  is about to park at a command-result boundary.  The token grants no
+     *  ownership; it is only the rendezvous identity for that coordinator's
+     *  explicit parked acknowledgement. */
+    Object globalFenceIntentReceipt() {
+        return globalFenceIntent;
+    }
+
+    boolean globalFenceIntentMatches(Object receipt) {
+        return receipt != null && globalFenceIntent == receipt;
+    }
+
+    /** Exact-owner predicate used by nested fence recognition and by callers
+     *  deciding whether THIS thread may enter without taking an island claim.
+     *  The thread-blind {@link #mainHoldsAllClaims()} is only an ownership-state
+     *  observation; it is never a lease for a foreign packet/save worker. */
+    public boolean currentThreadHoldsAllClaims() {
+        MainAllClaimsOwnership ownership = mainAllClaimsOwnership;
+        return ownership != null && ownership.owner == Thread.currentThread();
+    }
+
+    /**
+     * Enter one tracker-routing decision.  The read side spans the complete
+     * detach/attach/schedule choice, so publishing a topology receipt on the
+     * write side drains every decision which began against the old owner map.
+     * The receipt grants no island or world access; it is only an admission cut.
+     */
+    void enterTrackingTopologyRouting() {
+        trackingTopologyAdmission.readLock();
+    }
+
+    /** Exact mate of {@link #enterTrackingTopologyRouting()}. */
+    void exitTrackingTopologyRouting() {
+        trackingTopologyAdmission.readUnlock();
+    }
+
+    /** Immutable observation used only while choosing a tracker successor. */
+    TrackingTopologyTransitionReceipt trackingTopologyTransitionReceipt() {
+        TrackingTopologyTransitionReceipt receipt = trackingTopologyTransition;
+        if (receipt != null
+                && trackingTopologyAdmission.getReadHoldCount() == 0
+                && !(receipt.owner == Thread.currentThread()
+                && currentThreadHoldsAllClaims())) {
+            throw new IllegalStateException(
+                    "tracking topology receipt observed without routing admission");
+        }
+        return receipt;
+    }
+
+    /**
+     * Publish the snapshot/retirement transaction after exact claim acquisition.
+     * Closing the writer phase first is the old-route drain: after this returns,
+     * every new foreign router observes this exact receipt and may only retain an
+     * existing A5 carry or transfer its obligation to physical Main.
+     */
+    private TrackingTopologyTransitionReceipt beginTrackingTopologyTransition() {
+        MainAllClaimsOwnership claims = mainAllClaimsOwnership;
+        if (claims == null || claims.owner != Thread.currentThread()
+                || !RegionalPlayerEntityTicksV2.isPhysicalServerThread(
+                level.getServer())) {
+            throw new IllegalStateException(
+                    "tracking topology transition without exact physical-Main all-claims ownership");
+        }
+        if (trackingTopologyAdmission.getReadHoldCount() != 0) {
+            throw new IllegalStateException(
+                    "tracking topology transition attempted a read-to-write upgrade");
+        }
+        trackingTopologyAdmission.writeLock();
+        try {
+            if (mainAllClaimsOwnership != claims) {
+                throw new IllegalStateException(
+                        "tracking topology transition lost its all-claims receipt");
+            }
+            if (trackingTopologyTransition != null) {
+                throw new IllegalStateException(
+                        "tracking topology transition already active");
+            }
+            long generation = ++trackingTopologyTransitionGeneration;
+            if (generation <= 0L) {
+                throw new IllegalStateException(
+                        "tracking topology transition generation overflow");
+            }
+            TrackingTopologyTransitionReceipt receipt =
+                    new TrackingTopologyTransitionReceipt(
+                            this, claims.receipt, claims.owner, generation,
+                            TrackerTopologySnapshot.capture(
+                                    islandRegistry.islands(), island -> island.pendingEntityUpdates));
+            trackingTopologyTransition = receipt;
+            return receipt;
+        } finally {
+            trackingTopologyAdmission.writeUnlock();
+        }
+    }
+
+    /**
+     * Compare-clear only after every snapshotted tracker has rerouted.  The
+     * closed writer phase drains transition-time foreign routers before
+     * fresh-owner admission is reopened; stale/foreign cleanup is an invariant
+     * failure, never a blind null.
+     */
+    private void completeTrackingTopologyTransition(
+            TrackingTopologyTransitionReceipt receipt) {
+        if (receipt == null) {
+            throw new IllegalStateException(
+                    "tracking topology transition completion lost its receipt");
+        }
+        if (trackingTopologyAdmission.getReadHoldCount() != 0) {
+            throw new IllegalStateException(
+                    "tracking topology completion attempted a read-to-write upgrade");
+        }
+        trackingTopologyAdmission.writeLock();
+        try {
+            MainAllClaimsOwnership claims = mainAllClaimsOwnership;
+            if (trackingTopologyTransition != receipt
+                    || receipt.runtime != this
+                    || receipt.owner != Thread.currentThread()
+                    || claims == null
+                    || claims.owner != receipt.owner
+                    || claims.receipt != receipt.allClaimsReceipt) {
+                throw new IllegalStateException(
+                        "tracking topology transition cleanup refused a stale or foreign receipt");
+            }
+            trackingTopologyTransition = null;
+        } finally {
+            trackingTopologyAdmission.writeUnlock();
+        }
+    }
+
+    /** A local save/topology window may satisfy a nested global fence only on
+     *  its exact owner thread.  An orphaned global receipt is never accepted
+     *  through this fallback. */
+    boolean currentThreadHoldsLocalAllClaims() {
+        MainAllClaimsOwnership ownership = mainAllClaimsOwnership;
+        return ownership != null && !ownership.globalFence
+                && ownership.owner == Thread.currentThread();
+    }
+
+    void installGlobalFenceIntent(Object receipt) {
+        if (receipt == null) throw new NullPointerException("receipt");
+        if (globalFenceIntent != null) {
+            throw new IllegalStateException(
+                    "level already has a global-fence acquisition intent");
+        }
+        if (mainAllClaimsOwnership != null) {
+            throw new IllegalStateException(
+                    "global-fence intent attempted over an owned all-claims window");
+        }
+        globalFenceIntent = receipt;
+    }
+
+    void clearGlobalFenceIntent(Object receipt) {
+        Object current = globalFenceIntent;
+        if (current == null) return;
+        if (current != receipt) {
+            throw new IllegalStateException(
+                    "global-fence intent cleanup refused a foreign receipt");
+        }
+        globalFenceIntent = null;
+    }
+
+    void publishGlobalAllClaimsOwnership(Object receipt) {
+        publishAllClaimsOwnership(receipt, true);
+    }
+
+    void clearGlobalAllClaimsOwnership(Object receipt) {
+        clearAllClaimsOwnership(receipt, true);
+    }
+
+    private void publishLocalAllClaimsOwnership(Object receipt) {
+        publishAllClaimsOwnership(receipt, false);
+    }
+
+    private void clearLocalAllClaimsOwnership(Object receipt) {
+        clearAllClaimsOwnership(receipt, false);
+    }
+
+    private void publishAllClaimsOwnership(Object receipt, boolean global) {
+        if (receipt == null) throw new NullPointerException("receipt");
+        if (mainAllClaimsOwnership != null) {
+            throw new IllegalStateException(
+                    "all-claims ownership already published for level");
+        }
+        if (global && globalFenceIntent != receipt) {
+            throw new IllegalStateException(
+                    "global all-claims ownership lost its acquisition intent");
+        }
+        mainAllClaimsOwnership = new MainAllClaimsOwnership(
+                receipt, Thread.currentThread(), global);
+    }
+
+    private void clearAllClaimsOwnership(Object receipt, boolean global) {
+        MainAllClaimsOwnership ownership = mainAllClaimsOwnership;
+        if (ownership == null) return;
+        if (ownership.receipt != receipt || ownership.globalFence != global) {
+            throw new IllegalStateException(
+                    "all-claims cleanup refused a foreign receipt");
+        }
+        if (ownership.owner != Thread.currentThread()) {
+            throw new IllegalStateException(
+                    "all-claims cleanup entered on a non-owner thread");
+        }
+        mainAllClaimsOwnership = null;
     }
 
     private long lastQuiesceWarnNanos;
 
     public boolean quiesceAllIslands() {
+        boolean took = false;
+        Throwable failure = null;
         long q0 = System.nanoTime();
-        boolean took = quiesceAllIslandsInner();
-        long dt = System.nanoTime() - q0;
-        if (took && dt > 100_000_000L && q0 - lastQuiesceWarnNanos > 10_000_000_000L) {
-            lastQuiesceWarnNanos = q0;
-            LOGGER.warn("[async-islands] save/topology quiesce took {} ms on {} — an island's units are long; "
-                    + "check /fabrolia regions islands for the overloaded island",
-                    dt / 1_000_000, level.dimension().identifier());
+        // Prepare the exact ownership identity before the first claim CAS.
+        // Allocation failure is therefore a definite pre-acquisition failure.
+        Object receipt = new Object();
+        try {
+            took = quiesceAllIslandsInner(receipt);
+            long dt = System.nanoTime() - q0;
+            if (took && dt > 100_000_000L
+                    && q0 - lastQuiesceWarnNanos > 10_000_000_000L) {
+                lastQuiesceWarnNanos = q0;
+                LOGGER.warn("[async-islands] save/topology quiesce took {} ms on {} — an island's units are long; "
+                                + "check /fabrolia regions islands for the overloaded island",
+                        dt / 1_000_000, level.dimension().identifier());
+            }
+        } catch (Throwable primary) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(primary);
+        }
+        if (failure != null) {
+            // quiesceAllIslandsInner releases any unregistered current claim.
+            // This outer envelope also covers diagnostics after a successful
+            // acquisition, so no exceptional return can retain the claim list.
+            failure = releaseAllIslands(failure);
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
         }
         return took;
     }
 
-    private boolean quiesceAllIslandsInner() {
+    private boolean quiesceAllIslandsInner(Object receipt) {
         // Reentrancy: a console `save-all` arrives INSIDE the command fence
         // (CommandsMixin) — main already holds every claim; taking them again
         // would spin on ourselves forever (the 2026-07-12 a8cmd watchdog
         // crash, stack at this line). The outer window's exclusivity covers
         // us; report took=false so the caller skips its release.
-        if (mainHoldsAllClaims) {
+        if (mainHoldsAllClaims()) {
+            if (!currentThreadHoldsAllClaims()) {
+                throw new IllegalStateException(
+                        "all-island quiesce attempted to borrow a foreign owner");
+            }
             return false;
         }
         // A8: a claim can be held by a coordinator PARKED on a routed command
         // — it will not release until main executes the batch, and topology/
-        // save windows genuinely need the claim (the island must FINISH its
-        // unit, not merely be stable). Release everything, run the batch (the
-        // waiter resumes and completes its unit), retry. Converges: each
-        // batch completes at least one waiting command and chains are finite.
-        retry:
-        while (true) {
-            for (IslandRegistry.PIsland p : islandRegistry.islands()) {
-                long spinStart = System.nanoTime();
-                int stuckReports = 0;
-                p.claimWanted = true; // rate/sprint pacing yields to the quiesce
-                while (!p.unitClaim.compareAndSet(false, true)) {
-                    if (System.nanoTime() - spinStart > 5_000_000_000L) {
-                        spinStart = System.nanoTime();
-                        stuckReports++;
-                        LOGGER.error("[async-islands] quiesce stuck {}x5s (tasks={} shards={} L={} asyncActive={}) — retained-claim forensics: {}",
-                                stuckReports, p.pendingIslandTasks.size(), p.pendingCommandShards.size(),
-                                p.logicalTick, asyncActive, IslandCommands.claimForensics(p));
-                        // FORCED RECOVERY (fail-closed continuation): a claim
-                        // held with no coordinator running, no waiter, no
-                        // pending work, and async collapsing means the holder
-                        // is gone — reclaim it rather than watchdog the whole
-                        // server. Only ever reached after an invariant already
-                        // fired (world safety > liveness of a dead claim).
-                        if (stuckReports >= 3 && !asyncActive
-                                && !p.waitingOnRoutedCommand) {
-                            LOGGER.error("[async-islands] FORCED claim recovery on island#{} — treating holder as dead (post-fail-closed collapse)", p.id);
-                            p.unitClaim.set(true);
-                            break;
-                        }
-                    }
-                    if (p.waitingOnRoutedCommand) {
-                        // The waiter may be blocked on a SHARD whose target
-                        // island's claim WE already hold (its coordinator can
-                        // never service it) — apply those lanes ourselves:
-                        // a main-held island is fully quiescent, so main-side
-                        // application is exactly the fence argument. Then run
-                        // the routed batch and retry from scratch (a8shard
-                        // merge deadlock, 2026-07-12: rebuild quiesce vs a
-                        // parked shard-waiter).
-                        for (int i = 0, n = quiescedIslands.size(); i < n; i++) {
-                            CommandShards.serviceShards(this, quiescedIslands.get(i));
-                        }
-                        for (int i = 0, n = quiescedIslands.size(); i < n; i++) {
-                            quiescedIslands.get(i).clearClaim();
-                            quiescedIslands.get(i).unitClaim.set(false);
-                        }
-                        quiescedIslands.clear();
-                        IslandCommands.drainRoutedBatch();
-                        continue retry;
-                    }
-                    IslandCommands.drainMainChunkServices();
-                    java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
+        // save windows need the unit to FINISH, not merely park. Release physical
+        // claims to run its exact Main body, but retain the admission cut: a
+        // finished unit must not chain a successor while another unit still
+        // needs routed progress. The entered work then has a finite terminal set.
+        IslandRegistry.PIsland current = null;
+        boolean currentClaimed = false;
+        AllIslandClaimIntents intentIslands = null;
+        Throwable failure = null;
+        try {
+            retry:
+            while (true) {
+                // TWO-PHASE CLAIM INTENT: fence every island's pacer/chaining
+                // before waiting on even the first live unit. Publishing intent
+                // one island at a time made a 100-island quiesce wait roughly the
+                // SUM of unit tails: while Main waited for island A, B..Z were
+                // still free to chain another unit. With the stable snapshot
+                // fenced first, all in-flight tails drain concurrently and the
+                // claim pass waits approximately for their MAX instead.
+                var liveIslands = islandRegistry.identitySnapshot();
+                if (intentIslands == null) {
+                    intentIslands = publishAllIslandClaimIntents(liveIslands);
+                } else {
+                    intentIslands.include(liveIslands);
                 }
-                p.claimWanted = false;
-                // Leak-proof publication (task #25): registration failure must
-                // release, never strand the flag outside releaseAllIslands.
-                try {
+                for (IslandRegistry.PIsland p : liveIslands) {
+                    current = p;
+                    currentClaimed = false;
+                    long spinStart = System.nanoTime();
+                    int stuckReports = 0;
+                    while (!p.unitClaim.compareAndSet(false, true)) {
+                        if (System.nanoTime() - spinStart > 5_000_000_000L) {
+                            spinStart = System.nanoTime();
+                            stuckReports++;
+                            LOGGER.error("[async-islands] quiesce stuck {}x5s (tasks={} L={} asyncActive={}) — retained-claim forensics: {}",
+                                    stuckReports, p.pendingIslandTasks.size(),
+                                    p.logicalTick, asyncActive, IslandCommands.claimForensics(p));
+                            // A claim which survives the forensic threshold is an
+                            // invariant failure, never evidence that Main may forge
+                            // ownership. The outer fail-stop envelope releases only
+                            // claims this quiesce actually acquired.
+                            if (stuckReports >= 3 && !asyncActive
+                                    && !p.waitingOnRoutedCommand) {
+                                throw new IllegalStateException(
+                                        "island claim remained held after forensic threshold: "
+                                                + IslandCommands.claimForensics(p));
+                            }
+                        }
+                        if (p.waitingOnRoutedCommand) {
+                            // Main's global batch needs the physical claims, not
+                            // permission to start new autonomous units. Retain
+                            // every original admission interest across retries.
+                            Throwable retryFailure = releaseAllIslands(null);
+                            if (retryFailure != null) {
+                                RegionizedServer.<RuntimeException>rethrow(
+                                        RegionScheduler.publishFatalAndSelectWinner(
+                                                retryFailure));
+                            }
+                            IslandCommands.drainRoutedBatch();
+                            continue retry;
+                        }
+                        IslandCommands.drainMainChunkServices();
+                        java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
+                    }
+                    currentClaimed = true;
+                    // Leak-proof publication (task #25): registration failure must
+                    // release, never strand the flag outside releaseAllIslands. The
+                    // outer cleanup also releases every earlier registered island.
                     p.noteClaim("quiesceAll");
                     quiescedIslands.add(p);
-                } catch (Throwable t) {
-                    p.clearClaim();
-                    p.unitClaim.set(false);
-                    throw t;
+                    currentClaimed = false;
+                    current = null;
                 }
+                Throwable intentCleanupFailure =
+                        clearAllIslandClaimIntents(intentIslands, null);
+                intentIslands = null;
+                if (intentCleanupFailure != null) {
+                    RegionizedServer.<RuntimeException>rethrow(
+                            RegionScheduler.publishFatalAndSelectWinner(
+                                    intentCleanupFailure));
+                }
+                break;
             }
-            break;
+        } catch (Throwable primary) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(primary);
         }
-        mainHoldsAllClaims = true;
+        if (failure != null) {
+            // W is selected before cleanup, preserving the generation-wide
+            // first-failure cut. This attempt's intents are restored before either the
+            // current claim or the registered claim list is released.
+            failure = clearAllIslandClaimIntents(intentIslands, failure);
+            intentIslands = null;
+            if (currentClaimed && current != null) {
+                failure = releaseIslandClaim(current, failure);
+            }
+            failure = releaseAllIslands(failure);
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
+        }
+        if (localAllClaimsReceipt != null) {
+            throw new IllegalStateException(
+                    "local all-island ownership receipt already active");
+        }
+        localAllClaimsReceipt = receipt;
+        try {
+            publishLocalAllClaimsOwnership(receipt);
+        } catch (Throwable publicationFailure) {
+            localAllClaimsReceipt = null;
+            RegionizedServer.<RuntimeException>rethrow(publicationFailure);
+        }
         return true;
     }
 
-    public void releaseAllIslands() {
-        mainHoldsAllClaims = false;
-        for (int i = 0, n = quiescedIslands.size(); i < n; i++) {
-            quiescedIslands.get(i).clearClaim();
-            quiescedIslands.get(i).unitClaim.set(false);
+    static final class AllIslandClaimIntents {
+        final ArrayList<IslandRegistry.PIsland> islands;
+        final java.util.IdentityHashMap<IslandRegistry.PIsland, Boolean> priorClaimWanted;
+        int publishedCount;
+
+        AllIslandClaimIntents(int expectedSize) {
+            this.islands = new ArrayList<>(expectedSize);
+            this.priorClaimWanted = new java.util.IdentityHashMap<>(expectedSize);
         }
-        quiescedIslands.clear();
+
+        void include(java.util.Collection<IslandRegistry.PIsland> liveIslands) {
+            for (IslandRegistry.PIsland island : liveIslands) {
+                if (priorClaimWanted.containsKey(island)) continue;
+                boolean prior = island.claimWanted;
+                priorClaimWanted.put(island, prior);
+                islands.add(island);
+                publishedCount++;
+                island.claimWanted = true;
+            }
+        }
+    }
+
+    /** Fence an exact identity set; one transaction survives every routed-progress retry. */
+    private static AllIslandClaimIntents publishAllIslandClaimIntents(
+            java.util.Collection<IslandRegistry.PIsland> islands) {
+        AllIslandClaimIntents snapshot = new AllIslandClaimIntents(islands.size());
+        try {
+            snapshot.include(islands);
+            return snapshot;
+        } catch (Throwable primary) {
+            Throwable failure = RegionScheduler.publishFatalAndSelectWinner(primary);
+            failure = clearAllIslandClaimIntents(snapshot, failure);
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
+            throw new AssertionError("unreachable");
+        }
+    }
+
+    /** Idempotent, exhaustive whole-attempt cleanup. The already-selected
+     * primary remains authoritative; a cleanup failure is merged behind it and
+     * never skips later intent slots or physical claim release. */
+    static Throwable clearAllIslandClaimIntents(
+            AllIslandClaimIntents snapshot, Throwable primary) {
+        return clearAllIslandClaimIntents(snapshot, primary, null);
+    }
+
+    /** A native checkpoint may outlive a pool cutover; its cleanup belongs to
+     * the captured generation, not the mutable scheduler's replacement pool. */
+    static Throwable clearAllIslandClaimIntents(
+            AllIslandClaimIntents snapshot, Throwable primary, RegionWorkerPool failureOwner) {
+        Throwable failure = primary;
+        if (snapshot == null) return failure;
+        int count = snapshot.publishedCount;
+        snapshot.publishedCount = 0;
+        // Restore the original interest once per identity, including islands
+        // retired or replaced while a routed Main body made progress.
+        for (int i = count - 1; i >= 0; i--) {
+            try {
+                IslandRegistry.PIsland island = snapshot.islands.get(i);
+                boolean prior = snapshot.priorClaimWanted.get(island);
+                island.claimWanted = prior;
+            } catch (Throwable cleanup) {
+                failure = failureOwner == null ? publishCleanupFailure(failure, cleanup)
+                        : failureOwner.publishAndSelectFatal(
+                                failureOwner.mergeCancellationFailure(failure, cleanup));
+            }
+        }
+        return failure;
+    }
+
+    public void releaseAllIslands() {
+        Throwable failure = releaseAllIslands(null);
+        if (failure != null) {
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
+        }
+    }
+
+    public Throwable releaseAllIslands(Throwable primary) {
+        // Publish an entered-operation primary before mandatory claim cleanup.
+        // Releasing a large island set is not a window in which another root may
+        // start and beat the actual first failure into the shared authority slot.
+        Throwable failure = primary != null && RegionScheduler.isActive()
+                ? RegionScheduler.publishFatalAndSelectWinner(primary)
+                : primary;
+        Object receipt = localAllClaimsReceipt;
+        if (receipt != null) {
+            try {
+                // Revoke skip-claim authority before the first physical claim
+                // is released. Readers may briefly block on a remaining claim,
+                // but can never run claimless in a partially released window.
+                clearLocalAllClaimsOwnership(receipt);
+            } catch (Throwable cleanup) {
+                failure = publishCleanupFailure(failure, cleanup);
+            }
+            localAllClaimsReceipt = null;
+        }
+        for (int i = 0, n = quiescedIslands.size(); i < n; i++) {
+            IslandRegistry.PIsland island;
+            try {
+                island = quiescedIslands.get(i);
+            } catch (Throwable cleanup) {
+                failure = publishCleanupFailure(failure, cleanup);
+                continue;
+            }
+            failure = releaseIslandClaim(island, failure);
+        }
+        try {
+            quiescedIslands.clear();
+        } catch (Throwable cleanup) {
+            failure = publishCleanupFailure(failure, cleanup);
+        }
+        return failure;
+    }
+
+    private static Throwable releaseIslandClaim(IslandRegistry.PIsland island,
+                                                 Throwable primary) {
+        Throwable failure = primary;
+        try {
+            island.clearClaim();
+        } catch (Throwable cleanup) {
+            failure = publishCleanupFailure(failure, cleanup);
+        }
+        try {
+            island.unitClaim.set(false);
+        } catch (Throwable cleanup) {
+            failure = publishCleanupFailure(failure, cleanup);
+        }
+        return failure;
+    }
+
+    private static Throwable publishCleanupFailure(Throwable primary,
+                                                   Throwable cleanup) {
+        return RegionScheduler.publishFatalAndSelectWinner(
+                mergeFailure(primary, cleanup));
+    }
+
+    /**
+     * Main-thread shutdown boundary.  Convert an async level through the same
+     * quiesce/carry/domain-collapse path as the live async-off transition before
+     * the worker pool starts its final queue drain.  Region queues that were
+     * intentionally waiting for the next island unit are then ordinary global-
+     * domain obligations; queued unit coordinators observe {@code asyncActive=false}
+     * at their head and retire without beginning a simulation phase.
+     */
+    void prepareForSchedulerStop() {
+        if (!asyncActive && !domainsIslandized) return;
+        changeModeAndRebuild(() -> {
+            asyncActive = false;
+            RegionScheduler.updateAsyncLive();
+            islandsDirty = true;
+        });
+        if (asyncActive || domainsIslandized || mainHoldsAllClaims()) {
+            throw new IllegalStateException("async level did not reach the shutdown wall-domain boundary: "
+                    + level.dimension().identifier());
+        }
     }
 
     /** A2 deadline drive — DOMAIN-SCOPED liveness backstop, run by an idle
@@ -705,22 +1352,25 @@ public final class RegionizedServer {
      *  island). Mirrors healColorGate's per-region body: phantom blockers
      *  born mid-dispatch get swept done, missed owing regions re-armed,
      *  ran-without-contributing settled into the barrier. */
-    void healIslandBarrier(List<Region> members, EpochDomain d) {
+    int healIslandBarrier(List<Region> members, EpochDomain d) {
+        RegionScheduler.throwWorkerFailureIfAny();
         long epoch = d.epoch;
-        if (d.dispatchedEpoch != epoch) return;
+        if (d.dispatchedEpoch != epoch) return 0;
+        int acceptedRecoveries = 0;
         boolean pending = d.entityBarrierArmedEpoch == epoch && d.entityPending.get() > 0;
         for (int i = 0, n = members.size(); i < n; i++) {
+            RegionScheduler.throwWorkerFailureIfAny();
             Region r = members.get(i);
             if (r.state() != RegionState.ACTIVE) continue;
-            if (r.doneEpoch < epoch) {
-                ColorGate.tryMarkDone(r, this);
-            }
+            ColorGate.tryMarkDone(r, this);
             if (pending && owesEntityPhase(r)) {
                 if (ColorGate.eligible(r, this) && r.currentWorker() == null) {
-                    RegionScheduler.enqueueReady(r);
+                    if (RegionScheduler.enqueueEntityReady(r)) {
+                        acceptedRecoveries++;
+                    }
                     RegionScheduler.wakeWorkers(1);
                 }
-            } else if (pending) {
+            } else if (pending && r.hasSealedDone(epoch)) {
                 contributeEntityBarrier(r);
             }
         }
@@ -731,11 +1381,13 @@ public final class RegionizedServer {
         // pass is correct.
         ThreadedRegionizer reg = regionizer;
         for (int i = 0, n = members.size(); i < n; i++) {
+            RegionScheduler.throwWorkerFailureIfAny();
             Region m = members.get(i);
             int rx = (int) m.gridKey;
             int rz = (int) (m.gridKey >>> 32);
             for (int dx = -1; dx <= 1; dx++) {
                 for (int dz = -1; dz <= 1; dz++) {
+                    RegionScheduler.throwWorkerFailureIfAny();
                     if (dx == 0 && dz == 0) continue;
                     Region nb = reg.peekByGridKey(
                             ((rx + dx) & 0xFFFFFFFFL) | (((long) (rz + dz) & 0xFFFFFFFFL) << 32));
@@ -746,6 +1398,7 @@ public final class RegionizedServer {
                 }
             }
         }
+        return acceptedRecoveries;
     }
 
     /** Audit: identity handle of this level's entity manager (mixin-side
@@ -755,12 +1408,20 @@ public final class RegionizedServer {
                 .fabrolia$entityManager();
     }
 
-    /** A2 save integrity: the island whose unit owns this chunk's timeline,
-     *  or null (gap/global/async-off). Any thread (concurrent region map). */
+    /** Destination timeline owner, not execution authority. Existing Regions
+     * remain authoritative through transitions; absent cells use the immutable
+     * creation-domain snapshot without materializing a Region. */
     public IslandRegistry.PIsland islandOwnerOfChunk(long packedChunkPos) {
-        Region r = regionizer.peekByGridKey(regionizer.grid.keyFor(packedChunkPos));
-        EpochDomain d = r != null ? r.domain : null;
-        return d != null ? d.owner : null;
+        long gridKey = regionizer.grid.keyFor(packedChunkPos);
+        Region r = regionizer.peekByGridKey(gridKey);
+        if (r != null) {
+            EpochDomain d = r.domain;
+            return d != null ? d.owner : null;
+        }
+        var committed = cellDomainSnapshot;
+        EpochDomain d = committed == null ? null : committed.get(gridKey);
+        IslandRegistry.PIsland owner = d != null ? d.owner : null;
+        return owner != null && !owner.retired && owner.domain == d ? owner : null;
     }
 
     /** A2: dead tickers collected by island units' BE passes (workers), drained
@@ -804,7 +1465,7 @@ public final class RegionizedServer {
      *  isRemoved-skipped, late adds tick next unit — vanilla pending-flush
      *  semantics). Iteration order is no longer sorted — every ticking path
      *  collects and sorts keys explicitly for deterministic cell order. */
-    public final com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap<ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity>> beCells =
+    public volatile com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap<BlockEntityTickerList> beCells =
             new com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap<>();
     /** Registration sequence per live wrapper (task #14 seam-order fix):
      *  vanilla's BE phase runs the flat list in REGISTRATION order, and for
@@ -812,10 +1473,10 @@ public final class RegionizedServer {
      *  QC engine straddling a static seam stalls when the two moving_piston
      *  BEs tick in cell-key order instead of creation order — direction-
      *  asymmetric because one travel direction happens to match cell order).
-     *  Assigned at beIndexAdd (rebuild walks the vanilla list in order, so
-     *  seq order == vanilla order); read by slice mergers on workers —
-     *  ConcurrentHashMap for safe concurrent reads against main's fold; the
-     *  boxed Long is allocated once per registration. Pruned with beCellOf. */
+     *  Assigned at beIndexAdd (rebuild walks the vanilla list in order).
+     *  Immutable cell lists carry their own primitive stamps, so indexed
+     *  traversal never consults this map. Retained for rebuild continuity and
+     *  generic/foreign merge inputs. Pruned with beCellOf. */
     public final java.util.concurrent.ConcurrentHashMap<net.minecraft.world.level.block.entity.TickingBlockEntity, Long> beSeqOf =
             new java.util.concurrent.ConcurrentHashMap<>();
     private long beSeqCounter;
@@ -823,10 +1484,9 @@ public final class RegionizedServer {
     public final it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap<net.minecraft.world.level.block.entity.TickingBlockEntity> beCellOf =
             new it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap<>();
     { beCellOf.defaultReturnValue(Long.MAX_VALUE); } // 0 is a real cell key
-    private final java.util.concurrent.ConcurrentLinkedQueue<PendingBeAdd> pendingBeAdds =
-            new java.util.concurrent.ConcurrentLinkedQueue<>();
-    private final java.util.concurrent.atomic.AtomicInteger pendingBeAddCount =
-            new java.util.concurrent.atomic.AtomicInteger();
+    private static final int MAX_PENDING_BE_ADDS = 65_536;
+    private final BoundedPendingQueue<PendingBeAdd> pendingBeAdds =
+            new BoundedPendingQueue<>(MAX_PENDING_BE_ADDS);
     public volatile boolean beCellsValid = false;
 
     private record PendingBeAdd(net.minecraft.world.level.block.entity.TickingBlockEntity ticker, long cellKey) {}
@@ -836,38 +1496,60 @@ public final class RegionizedServer {
         return regionizer.grid.keyFor(net.minecraft.world.level.ChunkPos.pack(pos));
     }
 
-    /** Any thread (under LevelMixin's addBlockEntityTicker lock): stash a fresh
-     *  registration for the next partition pass. Pos is captured NOW — after
-     *  removal the wrapper rebinds to NULL_TICKER (pos=ZERO) and after Lithium
-     *  sleep getPos() is null, so routing later would misfile it. */
-    /** A8 hybrid (first increment): tickers whose tick EXECUTES COMMANDS must
-     *  never run on an island coordinator — commands reach global state
-     *  (scoreboards, @e across islands, /tp) that no single island owns. They
-     *  file under the isolated/posless cell and tick on MAIN at W cadence.
-     *  Checked once at registration; zero hot-path cost. */
+    /** Registration-time body policy, retained across sleeping wrapper rebinds.
+     *  A Main body is not a Main-cadence ticker: native producers keep their
+     *  positional cell and rendezvous at their original island ordinal. */
+    final java.util.Set<net.minecraft.world.level.block.entity.TickingBlockEntity> beMainBodyTickers =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private static boolean fabroliaIsMainOnlyTicker(net.minecraft.world.level.block.entity.TickingBlockEntity t) {
-        // A8: command blocks tick IN their island unit (island cadence, island
-        // clock); their EXECUTION is routed per invocation by IslandCommands
-        // (island-local inline, everything else exactly-once on the fenced
-        // server thread). Only the GameTest harness blocks stay main-only.
+        String type = t.getType();
+        if (type == null) return false;
+        return switch (type) {
+            // BaseSpawner uses a data-driven range and hasNearbyAlivePlayer's
+            // rich all-player scan. Trial/vault detectors (including our trial
+            // LOS prefetch) also read live all-player state before filtering.
+            case "minecraft:mob_spawner", "minecraft:trial_spawner", "minecraft:vault",
+                    // Beacon effects/advancements have no pre-body closure proof.
+                    // Bell, conduit and heart additionally retain live entity
+                    // references which may have left the original query radius.
+                    "minecraft:beacon", "minecraft:bell", "minecraft:conduit",
+                    "minecraft:creaking_heart",
+                    "minecraft:test_block", "minecraft:test_instance_block" -> true;
+            // Command blocks retain A8 per-invocation routing, not whole-body
+            // routing. 26.2 end-gateway portalTick only advances cooldown/age;
+            // enchanting-table animation has no native server ticker.
+            default -> false;
+        };
+    }
+
+    /** Only harness tickers retain the historical Main/W cadence. */
+    private static boolean fabroliaUsesMainTickerCadence(net.minecraft.world.level.block.entity.TickingBlockEntity t) {
         String type = t.getType();
         return "minecraft:test_block".equals(type) || "minecraft:test_instance_block".equals(type);
     }
 
+    /** Any thread under the registration lock: capture policy and position before
+     *  removal/sleep can rebind the native wrapper to a positionless stub. */
     public void stashPendingBeAdd(net.minecraft.world.level.block.entity.TickingBlockEntity ticker) {
-        net.minecraft.core.BlockPos pos = ticker.getPos();
-        pendingBeAdds.add(new PendingBeAdd(ticker,
-                pos == null || fabroliaIsMainOnlyTicker(ticker) ? Long.MIN_VALUE : beCellKeyFor(pos)));
+        if (fabroliaIsMainOnlyTicker(ticker)) beMainBodyTickers.add(ticker);
+        net.minecraft.core.BlockPos pos = RegionScheduler.resolveBlockEntityTickerPosition(ticker);
+        boolean pendingOverflow = pendingBeAdds.offer(new PendingBeAdd(ticker,
+                pos == null || fabroliaUsesMainTickerCadence(ticker) ? Long.MIN_VALUE : beCellKeyFor(pos)));
         // A2: a BE created from inside an island's own unit (its entity phase
         // placing a block, etc.) must tick THIS tick — vanilla's direct-list
         // add gives exactly that. The persistent index only adopts it at the
         // next maintenance pass, so hand it to the island's same-tick pending
         // list, drained by the unit's BE pass.
-        if (asyncActive && !fabroliaIsMainOnlyTicker(ticker)
-                && Thread.currentThread() instanceof RegionWorkerThread w) {
-            Region cur = w.currentRegion;
-            EpochDomain d = cur != null ? cur.domain : w.currentDomain;
-            IslandRegistry.PIsland p = d != null ? d.owner : null;
+        if (asyncActive && !fabroliaUsesMainTickerCadence(ticker)) {
+            IslandRegistry.PIsland p;
+            if (Thread.currentThread() instanceof RegionWorkerThread w) {
+                Region cur = w.currentRegion;
+                EpochDomain d = cur != null ? cur.domain : w.currentDomain;
+                p = d != null ? d.owner : null;
+            } else {
+                p = IslandCommands.routedUnitSourceOnMain(this);
+            }
             // ROUTE BY POSITION, not creating context (2026-07-17 fail-closed:
             // a flying machine's B36 created by island A's cascade in a cell
             // that a rebuild then gave island B stayed in A's same-tick list —
@@ -882,16 +1564,16 @@ public final class RegionizedServer {
                     p = null;
                 }
             }
-            if (p != null) {
+            if (p != null && pos != null) {
                 synchronized (p.pendingUnitBes) {
                     p.pendingUnitBes.add(ticker);
                 }
             }
         }
-        // Backstop for long vanilla-fallback stretches (partitioned path toggled
-        // off = nobody drains): past this bound, drop the stash and force one
-        // bulk rebuild from the vanilla list on the next partitioned pass.
-        if (pendingBeAddCount.incrementAndGet() > 65_536) {
+        // Backstop for long/cold stretches. BoundedPendingQueue has already
+        // dropped the old backlog on overflow; mark the derived index invalid
+        // so the next partitioned pass rebuilds from the authoritative list.
+        if (pendingOverflow) {
             beCellsValid = false;
         }
     }
@@ -899,42 +1581,87 @@ public final class RegionizedServer {
     /** Main, partition start: fold stashed registrations into the cell index.
      *  Long.MIN_VALUE (posless custom tickers) lands in the isolated lane's cell. */
     void drainPendingBeAdds() {
-        PendingBeAdd p;
-        while ((p = pendingBeAdds.poll()) != null) {
-            pendingBeAddCount.decrementAndGet();
+        for (PendingBeAdd p : pendingBeAdds.drain()) {
             beIndexAdd(p.ticker, p.cellKey);
         }
     }
 
+    /**
+     * Main, after the vanilla BE fallback completed: the vanilla ticker list
+     * is authoritative and the derived index is unused. Drop the whole index
+     * instead of retaining removed wrappers (and a duplicate reference to
+     * every live wrapper) for an arbitrarily long fallback session.
+     */
+    void releaseBeIndexForVanillaFallback() {
+        beCellsValid = false;
+        pendingBeAdds.clear();
+        BlockEntityIndexRetention.clear(
+                beCells, beSeqOf, beCellOf, pendingBeSweep, unitRemovedBes);
+        beMainBodyTickers.clear();
+        beSeqCounter = 0;
+    }
+
+    /** Cold/frozen path: the cell map may still be read by an older async
+     * unit, but the registration backlog itself is never needed while the
+     * next live partition pass will bulk-rebuild from the vanilla list. */
+    void discardPendingBeAdds() {
+        pendingBeAdds.clear();
+    }
+
     private void beIndexAdd(net.minecraft.world.level.block.entity.TickingBlockEntity t, long cellKey) {
-        // Copy-on-write (see beCells doc): never mutate a published list.
-        ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> list = beCells.get(cellKey);
-        ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> next =
-                list == null ? new ArrayList<>(8) : new ArrayList<>(list);
-        next.add(t);
-        beCells.put(cellKey, next);
+        // Copy-on-write: sequence and ticker are one immutable publication.
+        BlockEntityTickerList list = beCells.get(cellKey);
+        long sequence = beSequenceFor(t);
+        BlockEntityTickerList next = list == null
+                ? BlockEntityTickerList.singleton(t, sequence) : list.append(t, sequence);
         beCellOf.put(t, cellKey);
-        beSeqOf.putIfAbsent(t, beSeqCounter++);
+        beCells.put(cellKey, next);
+    }
+
+    private long beSequenceFor(net.minecraft.world.level.block.entity.TickingBlockEntity ticker) {
+        Long previous = beSeqOf.putIfAbsent(ticker, beSeqCounter++);
+        return previous == null ? beSeqCounter - 1 : previous;
     }
 
     /** Main: one-time (re)build of the cell index from the authoritative vanilla
      *  list. Runs after the pending flush so the list is complete; clears the
-     *  stash (its entries are already in the list). A ticker asleep at rebuild
-     *  time (pos=null) files under the isolated cell — it still ticks (no-op
-     *  while sleeping) and wakes correctly; only its lane placement is off. */
+     *  stash (its entries are already in the list).
+     *
+     *  <p>Universal-crafter fix (2026-08-21): a fully sleeping Lithium wrapper
+     *  currently reports {@code getPos()==null}, but it is NOT positionless.
+     *  Filing it under {@code Long.MIN_VALUE} left it in the main BE lane even
+     *  after wake; a main-lane hopper could then mutate an island-owned crafter
+     *  concurrently with its scheduled craft tick. Resolve through the stable
+     *  registration stamp so sleeping hoppers/crafters remain in their owner
+     *  cell. Only genuinely positionless and Main-cadence harness tickers use
+     *  the isolated lane; global native bodies retain their island cadence. */
     void rebuildBeCells(java.util.List<net.minecraft.world.level.block.entity.TickingBlockEntity> src) {
-        beCells.clear();
+        // Registration's level-local monitor excludes new authoritative adds.
+        // Older units retain complete lists with their own immutable sequence stamps.
+        var builders = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<BlockEntityTickerList.Builder>();
+        var nextCells = new com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap<BlockEntityTickerList>();
         beCellOf.clear();
-        beSeqOf.clear();
-        beSeqCounter = 0;
         pendingBeAdds.clear();
-        pendingBeAddCount.set(0);
         for (int i = 0, m = src.size(); i < m; i++) {
             net.minecraft.world.level.block.entity.TickingBlockEntity t = src.get(i);
-            net.minecraft.core.BlockPos pos = t.getPos();
-            beIndexAdd(t, pos == null || fabroliaIsMainOnlyTicker(t)
-                    ? Long.MIN_VALUE : beCellKeyFor(pos));
+            if (fabroliaIsMainOnlyTicker(t)) beMainBodyTickers.add(t);
+            net.minecraft.core.BlockPos pos = RegionScheduler.resolveBlockEntityTickerPosition(t);
+            long cellKey = pos == null || fabroliaUsesMainTickerCadence(t)
+                    ? Long.MIN_VALUE : beCellKeyFor(pos);
+            BlockEntityTickerList.Builder cell = builders.get(cellKey);
+            if (cell == null) {
+                cell = new BlockEntityTickerList.Builder(8);
+                builders.put(cellKey, cell);
+            }
+            cell.add(t, beSequenceFor(t));
+            beCellOf.put(t, cellKey);
         }
+        for (var entry : builders.long2ObjectEntrySet()) {
+            nextCells.put(entry.getLongKey(), entry.getValue().build());
+        }
+        beSeqOf.keySet().removeIf(t -> !beCellOf.containsKey(t));
+        beMainBodyTickers.removeIf(t -> !beCellOf.containsKey(t));
+        beCells = nextCells;
         beCellsValid = true;
     }
 
@@ -957,14 +1684,20 @@ public final class RegionizedServer {
                 new java.util.IdentityHashMap<>(Math.max(16, beCellOf.size() * 2));
         int cellEntries = 0;
         int cellOfMismatch = 0;
+        int misroutedPosless = 0;
         for (var e : beCells.long2ObjectEntrySet()) {
             long cellKey = e.getLongKey();
-            java.util.ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> list = e.getValue();
+            BlockEntityTickerList list = e.getValue();
             for (int i = 0, m = list.size(); i < m; i++) {
                 var t = list.get(i);
                 cellEntries++;
                 inCells.put(t, Boolean.TRUE);
                 if (beCellOf.getLong(t) != cellKey) cellOfMismatch++;
+                if (!t.isRemoved() && cellKey == Long.MIN_VALUE
+                        && RegionScheduler.resolveBlockEntityTickerPosition(t) != null
+                        && !fabroliaUsesMainTickerCadence(t)) {
+                    misroutedPosless++;
+                }
             }
         }
         int missing = 0;
@@ -983,7 +1716,7 @@ public final class RegionizedServer {
         int staleRemoved = 0;
         int staleLive = 0;
         for (var e : beCells.long2ObjectEntrySet()) {
-            java.util.ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> list = e.getValue();
+            BlockEntityTickerList list = e.getValue();
             for (int i = 0, m = list.size(); i < m; i++) {
                 var t = list.get(i);
                 if (!inList.containsKey(t)) {
@@ -991,11 +1724,12 @@ public final class RegionizedServer {
                 }
             }
         }
-        int stash = pendingBeAddCount.get();
-        boolean ok = cellOfMismatch == 0 && missing <= stash && staleLive == 0;
-        return String.format("beindex %s: list=%d cells=%d(%d) missing=%d stash=%d staleLive=%d staleRemoved=%d cellOfMismatch=%d sweepPending=%d",
+        int stash = pendingBeAdds.size();
+        boolean ok = cellOfMismatch == 0 && missing <= stash && staleLive == 0
+                && misroutedPosless == 0;
+        return String.format("beindex %s: list=%d cells=%d(%d) missing=%d stash=%d staleLive=%d staleRemoved=%d cellOfMismatch=%d misroutedPosless=%d sweepPending=%d",
                 ok ? "OK" : "DRIFT", src.size(), cellEntries, beCells.size(), missing, stash, staleLive,
-                staleRemoved, cellOfMismatch, pendingBeSweep.size());
+                staleRemoved, cellOfMismatch, misroutedPosless, pendingBeSweep.size());
     }
 
     // ---- heal snapshot cache (main-only; see RegionScheduler.healColorGate) ----
@@ -1019,8 +1753,11 @@ public final class RegionizedServer {
      *  populated set with radius-2 connectivity; ~450 regions × 25 lock-free
      *  peeks — µs-scale, and only on ticket-transition ticks. */
     public void rebuildIslandsIfDirty() {
-        if (!islandsDirty) return;
-        islandsDirty = false;
+        rebuildIslandsIfDirty(false);
+    }
+
+    private boolean rebuildIslandsIfDirty(boolean enclosingModeTransition) {
+        if (!islandsDirty) return false;
         // A2 deadline drive: units may be in flight at any slot — topology
         // work (BFS, unstash, registry diff, domain reassignment) requires
         // every unit quiescent. Sync drive: claims are always free, so this
@@ -1029,12 +1766,84 @@ public final class RegionizedServer {
         // ON→OFF collapse pass (asyncActive already false but last tick's
         // units may still run — the fail-closed rig caught the un-quiesced
         // collapse racing them, 2026-07-12).
-        boolean quiesced = (asyncActive || domainsIslandized) && quiesceAllIslands();
-        try {
-            rebuildIslandsBody();
-        } finally {
-            if (quiesced) releaseAllIslands();
+        boolean collapsingToWall = !asyncActive && domainsIslandized;
+        boolean trackingTopologyRequired = asyncActive || domainsIslandized;
+        if (trackingTopologyRequired && mainHoldsAllClaims()
+                && (!enclosingModeTransition || !currentThreadHoldsLocalAllClaims())) {
+            throw new IllegalStateException("topology rebuild requires terminal local ownership");
         }
+        boolean quiesced = trackingTopologyRequired && quiesceAllIslands();
+        boolean[] committed = new boolean[1];
+        TrackingTopologyTransitionReceipt[] trackingTransition = new
+                TrackingTopologyTransitionReceipt[1];
+        Throwable failure = null;
+        try {
+            // Quiesced island claims establish ownership, but they are not the
+            // generation-wide W-vs-body cut. Keep dirty retirement, A5 handoff
+            // mutation and the complete topology rebuild in one admitted body.
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                if (trackingTopologyRequired) {
+                    // This successor-state publication belongs to the same admitted
+                    // generation as the complete rebuild. The write side drains
+                    // every old-map tracker decision before the first cadence
+                    // snapshot or owner retirement. Ordinary save-all never enters
+                    // this topology-only receipt.
+                    trackingTransition[0] = beginTrackingTopologyTransition();
+                }
+                islandsDirty = false;
+                if (collapsingToWall) {
+                    // A5 owners are identities of the old autonomous topology.  The
+                    // topology rebuild below retires those identities, so detach every
+                    // player while their old island claims are still held.  Otherwise an
+                    // async ON -> OFF transition leaves the listener believing the old
+                    // island still owns it: physical Main skips listener.tick(), Netty
+                    // keeps appending to an island FIFO which no unit will ever drain,
+                    // and the player silently freezes.  clearIsland opens the ordered
+                    // MAIN_HANDOFF before the old registry entries disappear.
+                    for (IslandRegistry.PIsland island : islandRegistry.islands()) {
+                        AsyncIslandPlayerTicks.clearIsland(island);
+                    }
+                }
+                rebuildIslandsBody();
+                if (trackingTransition[0] != null) {
+                    // Begin, every topology mutation/reroute, and compare-clear
+                    // are one already-admitted transaction. A peer W may prevent
+                    // entry, but cannot expose a half-open fresh-owner map.
+                    completeTrackingTopologyTransition(trackingTransition[0]);
+                }
+                committed[0] = true;
+            });
+        } catch (Throwable primary) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(primary);
+        }
+        if (quiesced) {
+            failure = releaseAllIslands(failure);
+        }
+        // A fresh topology must not be armed until its quiesce claims are
+        // visible as released. Failed/partial rebuilds deliberately do not
+        // publish pacing authority for an uncommitted shape, and a failed
+        // release cannot publish a successor against retained ownership.
+        failure = finishTopologyRebuild(failure, !enclosingModeTransition && committed[0]);
+        if (failure != null) {
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
+        }
+        return committed[0];
+    }
+
+    private Throwable finishTopologyRebuild(Throwable failure, boolean committed) {
+        if (failure == null && committed) {
+            try {
+                // Claim cleanup is not a healthy-success publication. Pacing
+                // starts only after the scope which actually owned them releases.
+                RegionScheduler.commitSuccessIfHealthy(() -> {});
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        () -> TemporalControl.onTopologyCommitted(this));
+            } catch (Throwable completionFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(completionFailure);
+            }
+        }
+        return failure;
     }
 
     private void rebuildIslandsBody() {
@@ -1056,8 +1865,6 @@ public final class RegionizedServer {
             if (r.state() == RegionState.ACTIVE && r.fullChunkCount.get() > 0) {
                 populated.add(r);
                 byGrid.put(r.gridKey, r);
-            } else {
-                r.islandId = -1;
             }
         }
         ArrayList<Island> result = new ArrayList<>();
@@ -1073,7 +1880,6 @@ public final class RegionizedServer {
             frontier.add(seed);
             while (!frontier.isEmpty()) {
                 Region cur = frontier.poll();
-                cur.islandId = id;
                 members.add(cur);
                 load += cur.entityCount.get();
                 int rx = (int) cur.gridKey;
@@ -1091,7 +1897,6 @@ public final class RegionizedServer {
             }
             result.add(new Island(id, members, load));
         }
-        islands = result;
 
         // Refresh the gridKey → islandId table (see field docs). Own cells first,
         // then the 8-neighbour closure — putIfAbsent so a populated cell's own id
@@ -1133,6 +1938,10 @@ public final class RegionizedServer {
         java.util.ArrayList<IslandRegistry.PIsland.StampedEvent> unstashedEvs = null;
         java.util.ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> unstashedBes = null;
         java.util.ArrayList<Long> unstashedSnapshotKeys = null;
+        java.util.ArrayList<net.minecraft.server.level.ChunkHolder> unstashedBlockUpdates = null;
+        TrackingTopologyTransitionReceipt trackerTransition = trackingTopologyTransitionReceipt();
+        TrackerTopologySnapshot<IslandTrackedEntityAccess, IslandRegistry.PIsland> trackerCadences =
+                trackerTransition == null ? null : trackerTransition.cadences;
         // audit13: pre-rebuild island set, captured for the ARRIVALS carry that
         // now runs AFTER the topology commit (see the reroute loop below) —
         // applyRebuild removes retired identities from the registry, so a
@@ -1174,43 +1983,63 @@ public final class RegionizedServer {
                     }
                     unstashedSnapshotKeys.add(snapKey);
                 }
-                // A8 Phase 2: pending command shards re-partition by CURRENT
-                // ownership (invocation identity preserved; committed shards
-                // untouched; no duplication — the original is consumed).
-                java.util.ArrayList<Object> drained = null;
-                synchronized (p.pendingCommandShards) {
-                    if (!p.pendingCommandShards.isEmpty()) {
-                        drained = new java.util.ArrayList<>(p.pendingCommandShards);
-                        p.pendingCommandShards.clear();
-                    }
-                }
-                if (drained != null) {
-                    CommandShards.repartitionAt(this, p, drained);
+                if (!p.pendingBlockUpdates.isEmpty()) {
+                    if (unstashedBlockUpdates == null) unstashedBlockUpdates = new java.util.ArrayList<>();
+                    unstashedBlockUpdates.addAll(p.pendingBlockUpdates);
+                    p.pendingBlockUpdates.clear();
                 }
             }
         }
 
-        // A1: keep persistent island identities + shadow clocks in step with the
-        // fresh BFS result (merge/split/born/retire events, stable ids).
-        islandRegistry.applyRebuild(islands, level.getGameTime());
+        ArrayList<Region> topologyRebaseBatch = new ArrayList<>();
+        java.util.Set<Region> topologyRebaseMembers =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        Throwable topologyDomainFailure = null;
+        try {
+        // Close the union of OLD island cells and NEW core/halo cells before
+        // publishing islands/registry/domain mutations.  This is the missing
+        // newborn-global-halo half of quiesceAllIslands(): existing island unit
+        // claims are already held, while these per-region cuts retire global
+        // claim bodies and their post-release tails without holding admissionLock.
+        // The creation WRITE closes the map generation: a creator already in
+        // domainForCreation/map publication finishes before this snapshot; a
+        // later creator waits or is found by the fixed-point passes below.
+        regionizer.lockTopologyCreationWrite();
+        try {
+            List<Region> cutSnapshot = regionizer.snapshot();
+            for (int i = 0, n = cutSnapshot.size(); i < n; i++) {
+                Region r = cutSnapshot.get(i);
+                EpochDomain oldDomain = r.domain;
+                boolean oldIslandCell = oldDomain != null && oldDomain.owner != null;
+                boolean newIslandCell = asyncActive && gridToIsland.get(r.gridKey) >= 0;
+                if (oldIslandCell || newIslandCell) {
+                    prepareTopologyCandidateCut(r, topologyRebaseBatch);
+                    topologyRebaseMembers.add(r);
+                }
+            }
+        } finally {
+            regionizer.unlockTopologyCreationWrite();
+        }
+        // A release-successor tail is allowed to create another Region, so the
+        // writer must be released before waiting. Such a Region is collected by
+        // completeTopologyDomainRebaseFixedPoint after target domains exist.
+        awaitPreparedDomainRebaseBatch(topologyRebaseBatch);
 
-        // A2: (re)point every region at its timeline. Safe point by construction:
-        // this runs at level-tick HEAD on the server thread — in the sync-drive
-        // increment no unit is ever in flight here; the worker-drive stage adds
-        // an explicit quiesce before rebuild. Merges move absorbed members onto
-        // the survivor's domain, splits move fragment members onto the fresh
-        // fragment domain; either way assignDomain resets every epoch stamp
-        // into the new timeline.
+        // A1: keep persistent island identities + shadow clocks in step with the
+        // fresh BFS result only after every affected Region transaction retired.
+        islands = result;
+        islandRegistry.applyRebuild(result, level.getGameTime());
+
+        // A2: (re)point every region at its timeline. Merges move absorbed
+        // members onto the survivor's domain, splits move fragments onto fresh
+        // domains; the complete affected-cell union stays claim-closed until
+        // all assignments and the immutable cell snapshot have committed.
         if (asyncActive) {
             for (int ii = 0, in = result.size(); ii < in; ii++) {
                 List<Region> members = result.get(ii).members();
                 IslandRegistry.PIsland p = members.isEmpty()
                         ? null : islandRegistry.byCell(members.get(0).gridKey);
                 if (p != null) p.level = level;
-                EpochDomain d = p == null ? globalDomain : p.domain;
-                for (int mi = 0, mn = members.size(); mi < mn; mi++) {
-                    assignDomain(members.get(mi), d);
-                }
             }
             // FRONTIER HALO (2026-07-14 fluid cross-domain fix): regions in
             // the 1-cell closure around an island's populated core carry the
@@ -1219,11 +2048,10 @@ public final class RegionizedServer {
             // core — and a frontier chunk can be promoted to FULL mid-tick
             // (fresh generation), after this rebuild already ran. With the
             // halo the write target is in the island's own timeline either
-            // way. Halo regions contribute no tick work (their containers
-            // stay dormant per vanilla non-ticking rules; a container that
-            // becomes ticking implies a FULL chunk → popChanged already
-            // latched islandsDirty → adopted as CORE at the next tick head,
-            // i.e. at most one tick of vanilla-style promotion delay).
+            // way. Empty halo regions contribute no tick work. If one becomes
+            // FULL after the tick-head rebuild, owner-local scheduled discovery
+            // consumes it immediately in this same domain until popChanged's
+            // next rebuild adopts it as CORE; its ticks never wait on Main.
             // gridToIsland already holds exactly this closure (putIfAbsent:
             // core id wins; disjointness of two islands' halos is implied by
             // the ≤2-cell merge rule). Everything else stays global.
@@ -1232,22 +2060,6 @@ public final class RegionizedServer {
             }
             var cellDomains = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<EpochDomain>(
                     gridToIsland.size() * 2);
-            for (int i = 0, n = regions.size(); i < n; i++) {
-                Region r = regions.get(i);
-                if (r.islandId != -1) continue;
-                int hid = gridToIsland.get(r.gridKey);
-                IslandRegistry.PIsland hp = null;
-                if (hid >= 0 && hid < result.size()) {
-                    List<Region> hm = result.get(hid).members();
-                    hp = hm.isEmpty() ? null : islandRegistry.byCell(hm.get(0).gridKey);
-                }
-                if (hp != null) {
-                    r.islandId = hid;
-                    assignDomain(r, hp.domain);
-                } else {
-                    assignDomain(r, globalDomain);
-                }
-            }
             // haloCells must be CELL-complete (every closure cell, region
             // present or not): the per-unit done-stamp walks these cells, and
             // a region BORN later in a halo cell must be stamped from the
@@ -1261,19 +2073,16 @@ public final class RegionizedServer {
                 if (hp != null && !hp.cells.contains(e.getLongKey())) {
                     hp.haloCells.add(e.getLongKey());
                 }
-            }
-            // Publish the creation-time cell→domain view (core + halo — also
-            // cells with no region object yet, so a region BORN mid-tick in a
-            // frontier cell joins the island timeline immediately).
-            for (var e : gridToIsland.long2IntEntrySet()) {
-                int id = e.getIntValue();
-                if (id < 0 || id >= result.size()) continue;
-                List<Region> hm = result.get(id).members();
-                IslandRegistry.PIsland hp = hm.isEmpty() ? null : islandRegistry.byCell(hm.get(0).gridKey);
                 if (hp != null) cellDomains.put(e.getLongKey(), hp.domain);
             }
-            cellDomainSnapshot = cellDomains;
-            domainsIslandized = true;
+            // Settle the initially captured map generation. Queue bodies run
+            // without the creation WRITE and may create more regions; the
+            // fixed-point helper captures and settles every such successor.
+            applyPreparedTopologyTargets(
+                    topologyRebaseBatch, 0, cellDomains, true);
+            completeTopologyDomainRebaseFixedPoint(
+                    topologyRebaseBatch, topologyRebaseMembers,
+                    cellDomains, true);
             synchronized (islandLastL) {
                 for (IslandRegistry.PIsland p : islandRegistry.islands()) {
                     islandLastL.put(p.id, p.logicalTick);
@@ -1287,14 +2096,25 @@ public final class RegionizedServer {
             // were STRANDED on the dormant islands: machines froze mid-stroke
             // on toggle, 2026-07-13). assignDomain also clock-rebases each
             // region's pending scheduled ticks from island L to real time.
-            for (int i = 0, n = regions.size(); i < n; i++) {
-                assignDomain(regions.get(i), globalDomain);
-            }
-            cellDomainSnapshot = null;
+            applyPreparedTopologyTargets(
+                    topologyRebaseBatch, 0, null, false);
+            completeTopologyDomainRebaseFixedPoint(
+                    topologyRebaseBatch, topologyRebaseMembers,
+                    null, false);
             for (IslandRegistry.PIsland p : islandRegistry.islands()) {
                 p.haloCells.clear();
             }
-            domainsIslandized = false;
+        }
+        } catch (Throwable domainFailure) {
+            topologyDomainFailure = RegionScheduler.publishFatalAndSelectWinner(
+                    domainFailure);
+        }
+        topologyDomainFailure = finishDomainRebaseBatch(
+                topologyRebaseBatch, topologyDomainFailure);
+        if (topologyDomainFailure != null) {
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(
+                            topologyDomainFailure));
         }
         // audit13 — ARRIVALS carry, AFTER the topology commit (applyRebuild set
         // `retired`, the assignment passes above re-pointed every region's
@@ -1314,9 +2134,11 @@ public final class RegionizedServer {
         // way. Covers the async rebuild AND the ON→OFF collapse (where every
         // op re-resolves ownerless onto the global lane, as before).
         if (arrivalCarryIslands != null) {
+            CommandShards.finishTopology(this, arrivalCarryIslands);
             for (int i = 0, n = arrivalCarryIslands.size(); i < n; i++) {
                 CrossDimArrivals.reroute(this, arrivalCarryIslands.get(i));
             }
+            RaidIslandDispatch.reassignAfterTopology(this, arrivalCarryIslands);
         }
         // Re-deliver carry-state under the NEW ownership: events straight to
         // their owner's stash (same-tick execution at the owner's next unit —
@@ -1327,21 +2149,16 @@ public final class RegionizedServer {
         // ownerless ones are already covered by the vanilla list + index
         // dual-write.
         if (unstashedEvs != null) {
-            BlockEventQueueAccess acc = (BlockEventQueueAccess) level;
             for (int i = 0, n = unstashedEvs.size(); i < n; i++) {
                 IslandRegistry.PIsland.StampedEvent ev = unstashedEvs.get(i);
                 IslandRegistry.PIsland owner = asyncActive
                         ? islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(ev.ev().pos()))
                         : null;
                 if (owner != null) {
-                    // STAMP-PRESERVING carry (2026-07-16 audit: the old
-                    // restamp collapsed every pending generation into one
-                    // on each topology rebuild — cursor/due-pacing defeat).
+                    // Carry keeps both the source stamp and canonical pending identity.
                     owner.stashStamped(ev);
                 } else {
-                    synchronized (acc.fabrolia$blockEventLock()) {
-                        acc.fabrolia$blockEvents().add(ev.ev());
-                    }
+                    IslandBlockEvents.restoreShared(level, ev);
                 }
             }
         }
@@ -1353,6 +2170,22 @@ public final class RegionizedServer {
                 ChunkDelivery.requeueToCurrentOwner(this, unstashedSnapshotKeys.get(i));
             }
         }
+        if (unstashedBlockUpdates != null && asyncActive) {
+            for (int i = 0, n = unstashedBlockUpdates.size(); i < n; i++) {
+                net.minecraft.server.level.ChunkHolder holder = unstashedBlockUpdates.get(i);
+                IslandRegistry.PIsland owner = islandOwnerOfChunk(holder.getPos().pack());
+                if (owner != null && !owner.retired) owner.pendingBlockUpdates.add(holder);
+            }
+        }
+        if (trackerCadences != null) {
+            for (int i = 0, n = trackerCadences.size(); i < n; i++) {
+                // reroute always detaches the exact tracker from its retired
+                // owner first.  When async was disabled by this rebuild it
+                // deliberately declines to reattach, preventing the tracker
+                // from retaining the retired topology across OFF -> ON.
+                IslandEntityTracking.reroute(this, trackerCadences.tracker(i));
+            }
+        }
         // Temporal sessions re-resolve against the fresh topology (merge
         // expansion / split inheritance — TemporalControl lineage rules).
         if (asyncActive) {
@@ -1361,8 +2194,14 @@ public final class RegionizedServer {
         if (unstashedBes != null && asyncActive) {
             for (int i = 0, n = unstashedBes.size(); i < n; i++) {
                 net.minecraft.world.level.block.entity.TickingBlockEntity tbe = unstashedBes.get(i);
+                if (tbe.isRemoved()) continue;
+                net.minecraft.core.BlockPos pos =
+                        RegionScheduler.resolveBlockEntityTickerPosition(tbe);
+                // Registration already dual-wrote the Main/index pending lane.
+                // Unresolved wrappers remain there rather than guessing an owner.
+                if (pos == null || fabroliaUsesMainTickerCadence(tbe)) continue;
                 IslandRegistry.PIsland owner =
-                        islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(tbe.getPos()));
+                        islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(pos));
                 if (owner != null) {
                     synchronized (owner.pendingUnitBes) {
                         owner.pendingUnitBes.add(tbe);
@@ -1381,6 +2220,97 @@ public final class RegionizedServer {
         CrossDimLinks.onRebuild(this);
     }
 
+    /**
+     * Commit the target domain/island id for a drained slice of the topology
+     * batch.  This deliberately runs without ThreadedRegionizer's creation
+     * WRITE: the finite old-domain FIFO is allowed to execute arbitrary vanilla
+     * callbacks, including callbacks which lazily create another Region.
+     */
+    private void applyPreparedTopologyTargets(
+            ArrayList<Region> batch, int fromIndex,
+            it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<EpochDomain> targetCells,
+            boolean islandizedTarget) {
+        for (int i = fromIndex, n = batch.size(); i < n; i++) {
+            Region r = batch.get(i);
+            EpochDomain target = topologyTargetDomain(
+                    r.gridKey, targetCells, islandizedTarget);
+            if (r.domain != target) {
+                commitPreparedDomainRebase(r, target);
+            }
+            r.islandId = target == globalDomain ? -1 : gridToIsland.get(r.gridKey);
+        }
+    }
+
+    /**
+     * Fixed-point close/await/commit protocol for Regions born while topology
+     * work was in progress.
+     *
+     * <p>Each WRITE pass drains all pre-existing creators, snapshots the actual
+     * map and closes every previously unseen old-island/new-island candidate.
+     * If it found any, WRITE is released before waiting for claim tails or
+     * running migration callbacks.  Those callbacks may create more Regions,
+     * so another pass follows.  The only stable pass retains WRITE through the
+     * creation-time domain snapshot publication; a creator therefore belongs
+     * wholly to the old captured generation or starts against the new snapshot.
+     */
+    private void completeTopologyDomainRebaseFixedPoint(
+            ArrayList<Region> batch, java.util.Set<Region> members,
+            it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<EpochDomain> targetCells,
+            boolean islandizedTarget) {
+        for (;;) {
+            int firstNew = batch.size();
+            boolean published = false;
+            regionizer.lockTopologyCreationWrite();
+            try {
+                List<Region> current = regionizer.snapshot();
+                for (int i = 0, n = current.size(); i < n; i++) {
+                    Region r = current.get(i);
+                    if (members.contains(r)) continue;
+                    EpochDomain target = topologyTargetDomain(
+                            r.gridKey, targetCells, islandizedTarget);
+                    EpochDomain old = r.domain;
+                    boolean oldIslandCell = old != null && old.owner != null;
+                    boolean newIslandCell = target != globalDomain;
+                    if (!oldIslandCell && !newIslandCell) continue;
+                    prepareTopologyCandidateCut(r, batch);
+                    members.add(r);
+                }
+                if (batch.size() == firstNew) {
+                    // Linearization point for creators queued behind this WRITE.
+                    // Domain/clock commits for every map member are already done
+                    // and every pre-publication member stays claim-closed until
+                    // finishDomainRebaseBatch completes outside the writer.
+                    cellDomainSnapshot = islandizedTarget ? targetCells : null;
+                    domainsIslandized = islandizedTarget;
+                    published = true;
+                }
+            } finally {
+                regionizer.unlockTopologyCreationWrite();
+            }
+            if (published) return;
+
+            // Never wait or execute a pre-cut queue body while holding WRITE:
+            // both a release-successor tail and an arbitrary queue callback may
+            // enter regionForGridKey.  The next writer pass captures the result.
+            for (int i = firstNew, n = batch.size(); i < n; i++) {
+                awaitClaimTransactionsForDomainRebase(batch.get(i));
+            }
+            applyPreparedTopologyTargets(
+                    batch, firstNew, targetCells, islandizedTarget);
+        }
+    }
+
+    private EpochDomain topologyTargetDomain(
+            long gridKey,
+            it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<EpochDomain> targetCells,
+            boolean islandizedTarget) {
+        if (islandizedTarget && targetCells != null) {
+            EpochDomain target = targetCells.get(gridKey);
+            if (target != null) return target;
+        }
+        return globalDomain;
+    }
+
     /** A2: move {@code r} onto timeline {@code d}, translating its epoch stamps
      *  into the new domain's present: complete for d's CURRENT epoch, owing
      *  nothing — the next dispatch that includes it bumps the epoch first and
@@ -1388,29 +2318,282 @@ public final class RegionizedServer {
      *  flight in either domain); the CAS-gate resets below would otherwise
      *  race live contributions. */
     private static void assignDomain(Region r, EpochDomain d) {
+        ArrayList<Region> one = new ArrayList<>(1);
+        Throwable failure = null;
+        try {
+            assignDomain(r, d, one);
+        } catch (Throwable primary) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(primary);
+        }
+        failure = finishDomainRebaseBatch(one, failure);
+        if (failure != null) {
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
+        }
+    }
+
+    /**
+     * Close this region's exact old-domain claim transaction, settle its finite
+     * pre-cut FIFO, translate clocks and publish the new domain.  Claim admission
+     * remains closed on return; the enclosing topology rebuild reopens the whole
+     * batch only after every neighbor/domain snapshot has committed.
+     */
+    private static void assignDomain(
+            Region r, EpochDomain d, ArrayList<Region> rebaseBatch) {
+        prepareDomainRebaseCut(r, d, rebaseBatch);
         if (r.domain == d) return;
-        // DOMAIN-MIGRATION DRAIN (2026-07-13 watchdog wedge): a region born on
-        // the global lane may carry cf-AWAITED arm tasks (gate 0: main pumps
-        // the future) when the rebuild islandizes it — after the flip, its
-        // queue belongs to the unit's entity-phase drain, the ready-lane claim
-        // is refused (ColorGate.inUnitWindow), and main wedges on the cf until
-        // the watchdog fires (repro: 50 bot spawns into fresh terrain, 22:58
-        // run). Settle the queue NOW, at the rebuild safe point: claim + drain
-        // runs the pending arm inline (pre-migration main-cadence semantics
-        // for exactly one arm) and completes its futures. A claim we cannot
-        // take means a worker is mid-drain and will empty the queue itself;
-        // work submitted after this drain is futureless by construction
-        // (executeAt / gated arms) and correctly waits for the next unit.
-        if (d.owner != null && !r.queue().isEmpty()
-                && r.tryClaim(Thread.currentThread())) {
-            r.stampAcquire("migrate");
-            try {
-                r.queue().drain(Integer.MAX_VALUE);
-            } finally {
-                r.stampRelease("migrate");
-                r.release(Thread.currentThread());
+        awaitClaimTransactionsForDomainRebase(r);
+        commitPreparedDomainRebase(r, d);
+    }
+
+    /** Phase 1 for a topology batch: close every changing region before any
+     * member publishes its new domain, eliminating mixed old/new neighbors. */
+    private static void prepareDomainRebaseCut(
+            Region r, EpochDomain d, ArrayList<Region> rebaseBatch) {
+        if (r.domain == d) return;
+        prepareTopologyCandidateCut(r, rebaseBatch);
+    }
+
+    private static void prepareTopologyCandidateCut(
+            Region r, ArrayList<Region> rebaseBatch) {
+        EpochDomain migrationDomain = r.domain;
+        synchronized (r.admissionLock) {
+            if (!r.tryCloseClaimTransactionsForDomainRebase()) {
+                throw new IllegalStateException(
+                        "concurrent region domain rebase request: "
+                                + Long.toHexString(r.gridKey));
             }
         }
+        try {
+            rebaseBatch.add(r);
+        } catch (Throwable publicationFailure) {
+            Throwable failure = cleanupFailedDomainRebaseCut(
+                    r, RegionScheduler.publishFatalAndSelectWinner(
+                            publicationFailure));
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
+        }
+        // Domain identity is immutable while the cut is owned; this early read
+        // exists only to make accidental mutation in the preparation phase loud.
+        if (r.domain != migrationDomain) {
+            throw new IllegalStateException(
+                    "region source domain changed while publishing its rebase cut");
+        }
+    }
+
+    private static void awaitPreparedDomainRebaseBatch(
+            ArrayList<Region> rebaseBatch) {
+        for (int i = 0, n = rebaseBatch.size(); i < n; i++) {
+            awaitClaimTransactionsForDomainRebase(rebaseBatch.get(i));
+        }
+    }
+
+    /** Phase 2: the complete batch is closed and tail-quiescent. */
+    private static void commitPreparedDomainRebase(Region r, EpochDomain d) {
+        if (r.domain == d) {
+            throw new IllegalStateException(
+                    "prepared domain rebase target became current before commit");
+        }
+        if (!r.claimTransactionsDrainedForDomainRebase()) {
+            throw new IllegalStateException(
+                    "prepared domain rebase committed before claim-tail terminal");
+        }
+        EpochDomain migrationDomain = r.domain;
+        long migrationEpoch = migrationDomain != null
+                ? migrationDomain.epoch : Long.MIN_VALUE;
+
+        Throwable failure = null;
+        try {
+            if (r.domain != migrationDomain
+                    || (migrationDomain != null
+                        && migrationDomain.epoch != migrationEpoch)) {
+                throw new IllegalStateException(
+                        "region source domain changed behind its rebase cut: "
+                                + Long.toHexString(r.gridKey));
+            }
+            // A real tick-head safe point cannot abandon an accepted old-domain
+            // entity obligation.  Existing island units are fully quiesced and
+            // the previous global barrier is complete before rebuild entry.
+            if (migrationDomain != null
+                    && migrationDomain.entityBarrierArmedEpoch == migrationEpoch
+                    && r.groupedEpoch == migrationEpoch
+                    && r.entityEpoch < migrationEpoch) {
+                throw new IllegalStateException(
+                        "domain rebase fenced an unconsumed entity obligation: "
+                                + Long.toHexString(r.gridKey));
+            }
+
+            // DOMAIN-MIGRATION DRAIN (2026-07-13 watchdog wedge): a newborn
+            // global region may carry a cf-AWAITED arm when it becomes an island
+            // core/halo.  CLOSED_FOR_REBASE sends every later offer to the
+            // post-cut lane, so this queue is now finite.  Respect a sealed old
+            // epoch: such retained work is deliberately next-epoch/futureless
+            // and migrates without early execution.
+            boolean migrationClaimed = false;
+            boolean migrationStamped = false;
+            if (d.owner != null && !r.queue().isEmpty()) {
+                synchronized (r.admissionLock) {
+                    migrationClaimed = r.tryClaimForDomainRebase(
+                            Thread.currentThread(), migrationDomain, migrationEpoch);
+                }
+            }
+            if (migrationClaimed) {
+                try {
+                    r.stampAcquire("migrate-cut");
+                    migrationStamped = true;
+                    if (RegionScheduler.requiresExclusiveWorkerGrants()) {
+                        RegionScheduler.runGlobalMainBody(r.level.getServer(),
+                                () -> r.queue().drain(Integer.MAX_VALUE));
+                    } else {
+                        r.queue().drain(Integer.MAX_VALUE);
+                    }
+                } catch (Throwable drainFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(drainFailure);
+                } finally {
+                    if (migrationStamped) {
+                        try {
+                            r.stampRelease("migrate-cut");
+                        } catch (Throwable cleanupFailure) {
+                            failure = RegionScheduler.publishFatalAndSelectWinner(
+                                    mergeFailure(failure, cleanupFailure));
+                        }
+                    }
+                    try {
+                        r.release(Thread.currentThread());
+                    } catch (Throwable cleanupFailure) {
+                        failure = RegionScheduler.publishFatalAndSelectWinner(
+                                mergeFailure(failure, cleanupFailure));
+                    }
+                }
+            }
+            if (failure != null) {
+                RegionizedServer.<RuntimeException>rethrow(failure);
+            }
+
+            synchronized (r.admissionLock) {
+                if (!r.claimTransactionsDrainedForDomainRebase()
+                        || !r.tryBeginDomainRebaseSeal()) {
+                    throw new IllegalStateException(
+                            "domain rebase lost its closed/drained exclusive point: "
+                                    + Long.toHexString(r.gridKey));
+                }
+                boolean sealHeld = true;
+                try {
+                    rebaseScheduledTickClocksUnderSeal(r, d);
+                    RedstoneTorchHistory.rebaseAndCommit(r, d);
+                } catch (Throwable commitFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(commitFailure);
+                } finally {
+                    if (sealHeld) {
+                        try {
+                            r.releaseDomainRebaseSeal();
+                            sealHeld = false;
+                        } catch (Throwable releaseFailure) {
+                            failure = RegionScheduler.publishFatalAndSelectWinner(
+                                    mergeFailure(failure, releaseFailure));
+                        }
+                    }
+                }
+            }
+            if (failure != null) {
+                RegionizedServer.<RuntimeException>rethrow(failure);
+            }
+            return;
+        } catch (Throwable primary) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(
+                    mergeFailure(failure, primary));
+        }
+        RegionizedServer.<RuntimeException>rethrow(
+                RegionScheduler.publishFatalAndSelectWinner(failure));
+    }
+
+    /** Wait for body + release-successor/barrier/ReadyEntry receipt tails. */
+    static void awaitClaimTransactionsForDomainRebase(Region r) {
+        long warnAt = System.nanoTime() + 5_000_000_000L;
+        int warnings = 0;
+        while (!r.claimTransactionsDrainedForDomainRebase()) {
+            RegionScheduler.throwWorkerFailureIfAny();
+            RegionScheduler.drainMainSafeForDomainRebase(r.level);
+            IslandCommands.drainMainChunkServices();
+            long now = System.nanoTime();
+            if (now >= warnAt) {
+                warnAt = now + 5_000_000_000L;
+                Thread holder = r.currentWorker();
+                LOGGER.error("[async-islands] domain rebase waiting {}x5s on region {} "
+                                + "transactions={} holder={} alive={} claimPath={} queue={} help={}",
+                        ++warnings, Long.toHexString(r.gridKey),
+                        r.activeClaimTransactions(),
+                        holder == null ? "<post-release-tail>" : holder.getName(),
+                        holder != null && holder.isAlive(), r.claimPath,
+                        r.queue().size(), r.helpQueue.size());
+            }
+            LockSupport.parkNanos(20_000L);
+        }
+        RegionScheduler.throwWorkerFailureIfAny();
+    }
+
+    private static Throwable cleanupFailedDomainRebaseCut(
+            Region r, Throwable primary) {
+        Throwable failure = primary;
+        synchronized (r.admissionLock) {
+            if (r.claimRebaseClosed()
+                    && r.claimTransactionsDrainedForDomainRebase()) {
+                try {
+                    r.flushDomainRebaseDeferredAdmissions();
+                } catch (Throwable cleanupFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            mergeFailure(failure, cleanupFailure));
+                }
+                try {
+                    r.reopenClaimTransactionsAfterDomainRebase();
+                } catch (Throwable cleanupFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            mergeFailure(failure, cleanupFailure));
+                }
+            }
+        }
+        return failure;
+    }
+
+    /** Reopen a completely committed topology batch, then publish fresh ready
+     * nodes only after every member is claimable in the same new snapshot. */
+    private static Throwable finishDomainRebaseBatch(
+            ArrayList<Region> batch, Throwable primary) {
+        Throwable failure = primary;
+        boolean[] ready = new boolean[batch.size()];
+        for (int i = 0, n = batch.size(); i < n; i++) {
+            Region r = batch.get(i);
+            synchronized (r.admissionLock) {
+                try {
+                    ready[i] = r.flushDomainRebaseDeferredAdmissions();
+                    r.reopenClaimTransactionsAfterDomainRebase();
+                } catch (Throwable cleanupFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            mergeFailure(failure, cleanupFailure));
+                }
+            }
+        }
+        if (failure == null) {
+            for (int i = 0, n = batch.size(); i < n; i++) {
+                if (!ready[i]) continue;
+                Region r = batch.get(i);
+                try {
+                    RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                        RegionScheduler.enqueueReady(r);
+                        RegionScheduler.wakeWorkers(1);
+                    });
+                } catch (Throwable publicationFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            mergeFailure(failure, publicationFailure));
+                    break;
+                }
+            }
+        }
+        batch.clear();
+        return failure;
+    }
+
+    private static void rebaseScheduledTickClocksUnderSeal(Region r, EpochDomain d) {
         // CLOCK REBASE (2026-07-13, flying machines break at merge/toggle):
         // pending scheduled block/fluid ticks in this region's chunks carry
         // trigger times in the OLD domain's logical clock. Islands tick on
@@ -1464,25 +2647,37 @@ public final class RegionizedServer {
                     + " -> " + (d.owner != null ? "island#" + d.owner.id : "global")
                     + "(now=" + newNow + ") ticks=" + moved);
         }
-        r.domain = d;
-        // TOGGLE-DEADLOCK FIX (2026-07-13, user repro: /fabrolia regions
-        // async OFF wedged the very next tick): stamps must anchor STRICTLY
-        // BEFORE the next dispatch in the new timeline. The OFF-collapse runs
-        // AFTER the tick-head global epoch bump but BEFORE that same tick's
-        // sync dispatch at epoch E — resetting stamps to E made every region
-        // read as already-enqueued/contributed/ticked for E: seeding CAS
-        // refused, barrier armed with pending=N and zero workers ever given
-        // the work, contribution CAS refused, owed=false so no heal path —
-        // the pump hung forever. Anchoring at E-1 leaves every gate open for
-        // E; no-work regions are swept done by the dispatch as usual. Island
-        // assignments are equally safe: units bump their epoch before
-        // dispatching, so E-1 is strictly before E+1 too.
-        long e = d.epoch - 1;
-        r.doneEpoch = e;
-        r.groupedEpoch = e;
-        r.entityEpoch = e;
-        r.entityEnqueuedEpoch.set(e);
-        r.entityBarrierEpoch.set(e);
+    }
+
+    /**
+     * Publish one coherent domain baseline at a topology/unit safe point.
+     * Task offers share {@link Region#admissionLock}; the CAS marker excludes
+     * delayed claimants which made their eligibility decision in the old
+     * domain.  A live holder disproves the safe-point contract and is fatal.
+     */
+    static void rebaseDomainEpochAtSafePoint(Region r, EpochDomain d) {
+        Throwable failure = null;
+        synchronized (r.admissionLock) {
+            if (r.claimRebaseClosed() || r.activeClaimTransactions() != 0
+                    || !r.tryBeginDomainRebaseSeal()) {
+                throw new IllegalStateException(
+                        "region domain rebase encountered a live claim/tail/seal: "
+                                + Long.toHexString(r.gridKey)
+                                + " transactions=" + r.activeClaimTransactions());
+            }
+            try {
+                r.commitDomainRebaseSeal(d, d.epoch - 1);
+            } catch (Throwable commitFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(commitFailure);
+            }
+            try {
+                r.releaseDomainRebaseSeal();
+            } catch (Throwable releaseFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        mergeFailure(failure, releaseFailure));
+            }
+        }
+        if (failure != null) RegionizedServer.<RuntimeException>rethrow(failure);
     }
 
     private long evictedTotal;
@@ -1519,19 +2714,26 @@ public final class RegionizedServer {
      *  single-threaded. Island-domain queues are drained by their unit
      *  coordinators (see IslandTickUnit). */
     public void drainDeferredCrossRegion() {
-        drainDeferredOps(globalDomain);
+        if (globalDomain.deferredOps.isEmpty()) return;
+        RegionScheduler.runGlobalMainBody(level.getServer(),
+                () -> drainDeferredOps(globalDomain));
     }
 
     /** Drain one timeline's deferral queue in submission order (single drainer
      *  per domain per tick by construction). */
     static void drainDeferredOps(EpochDomain d) {
-        Runnable op;
-        while ((op = d.deferredOps.poll()) != null) {
-            try {
-                op.run();
-            } catch (Throwable t) {
-                LOGGER.error("[cross-region] deferred effect threw", t);
-            }
+        while (RegionScheduler.callSuccessBooleanIfHealthy(() -> {
+            // Poll and enter the exact cross-region replay in one admission.
+            // A separate poll followed by runSuccessBodyIfHealthy could detach
+            // the accepted obligation and then have the nested permit refused
+            // by a peer W, leaving no owner able to terminalize that item.
+            Runnable op = d.deferredOps.poll();
+            if (op == null) return false;
+            op.run();
+            return true;
+        })) {
+            // The permit terminal observes a W selected while this op ran, so
+            // the loop cannot detach or enter the next FIFO member afterwards.
         }
     }
 
@@ -1544,6 +2746,14 @@ public final class RegionizedServer {
      */
     public void evictIdleRegions() {
         if (FabroliaConfig.disabled || !FabroliaConfig.fabroliaRegionEviction) {
+            return;
+        }
+        // A level-tick HEAD is a quiescent boundary only in wall/sync mode. An async
+        // island unit may concurrently move an entity into an otherwise idle destination
+        // Region without publishing a task there; task admissionLock cannot serialize that
+        // direct index mutation. Reclamation therefore remains fail-closed until async mode
+        // provides an explicit all-island quiescence handshake for eviction.
+        if (asyncActive || domainsIslandized) {
             return;
         }
         int removed = regionizer.evictIdle(this);
@@ -1566,6 +2776,11 @@ public final class RegionizedServer {
 
     public Region regionFor(ChunkPos pos) {
         return regionizer.regionForChunk(pos);
+    }
+
+    /** Pure v2 ownership predicate: never creates/notices a region as a side effect. */
+    boolean regionMatches(Region region, ChunkPos pos) {
+        return region != null && region.gridKey == regionizer.grid.keyFor(pos);
     }
 
     /** Item-sync monitor for the region owning this chunk (create-if-absent; skips the
@@ -1594,6 +2809,7 @@ public final class RegionizedServer {
     void indexAdd(Entity e) {
         long key = regionizer.grid.keyFor(e.chunkPosition().pack());
         Region r = regionizer.regionForGridKey(key);
+        WorldGenEntityConstruction.revoke(e);
         if (r.entities.add(e)) r.entityCount.incrementAndGet();
         ((RegionKeyed) e).fabrolia$setRegionKey(key);
         // VANILLA ADD-DURING-ITERATION DEFERRAL (2026-07-22 duper lifecycle
@@ -1653,7 +2869,36 @@ public final class RegionizedServer {
         }
     }
 
+    /**
+     * Reconcile the auxiliary region-owned index after the canonical
+     * {@link net.minecraft.world.level.entity.EntityTickList} pass.
+     *
+     * <p>The ordinary region path performs this hand-off lazily in {@code tickOne}
+     * before each entity body. Exact-ordinal player mode deliberately bypasses that
+     * path and walks Mojang's list instead, so moved entities would otherwise remain
+     * assigned to yesterday's cell indefinitely. The exact-turn pool fence is held
+     * while this method runs; the second list walk is read-only with respect to list
+     * membership and includes entities added through Mojang's active/passive COW.
+     */
+    void reconcileCanonicalEntityIndex() {
+        // Rebuild, do not merely move live members: this also purges a stale/duplicate
+        // member left by an earlier exceptional hand-off. No worker can observe the
+        // clear/repopulate interval because the exact-turn fence is still held.
+        for (Region region : regionizer.snapshot()) {
+            region.entities.clear();
+            region.entityCount.set(0L);
+        }
+        level.entityTickList.forEach(entity -> {
+            if (!entity.isRemoved() && entity.level() == level) indexAdd(entity);
+        });
+    }
+
     private static void dropFromRegion(Region r, Entity e) {
+        // isRemoved also exposes a claim-local departure view. A still-live
+        // reserved source must remain tick-indexed so a refused transition can
+        // resume it. Real removal callbacks/reasons retain their normal cleanup.
+        if (e.getRemovalReason() == null
+                && com.axalotl.fabrolia.common.regions.NetherPortalTransfers.isSourceMutationBlocked(e)) return;
         if (r.entities.remove(e)) r.entityCount.decrementAndGet();
     }
 
@@ -1667,9 +2912,7 @@ public final class RegionizedServer {
      * regions are greedily bin-packed by entityCount into ~2×workers balanced groups.
      * A group task processes its regions back-to-back: spin-claim → drain the region's
      * queue inline (its spawn/random tasks, preserving the per-area
-     * [spawn][random][entities] FIFO) → tick entities → release. Dense regions
-     * (> regionDenseFanoutThreshold) get a group of their own so the intra-region
-     * fan-out can recruit helpers.
+     * [spawn][random][entities] FIFO) → tick entities serially → release.
      */
     /** (region, load) pair with the entity count FROZEN at dispatch time. Sorting by the
      *  live AtomicLong violated the comparator contract — workers migrate entities between
@@ -1677,10 +2920,415 @@ public final class RegionizedServer {
      *  and took the whole tick down (live crash 2026-06-10 05:17). */
     private record RegionLoad(Region region, long count) {}
 
+    /** Purely prepared entity-dispatch state; no executable root is visible yet. */
+    private record EntityDispatchPlan(
+            long epoch,
+            boolean eventSched,
+            ArrayList<RegionLoad> active,
+            CompletableFuture<Void> eventBarrier,
+            CompletableFuture<Void> result,
+            ArrayList<Runnable> roots,
+            EpochDomain.EntityDispatchPublication publication) {}
+
+    /** Ownership ledger for the runtime-wide half of one strict sprint fence.
+     * The snapshot and this object are prepared before the first flag write. */
+    private static final class GlobalSprintRuntimeFence {
+        private final RegionizedServer[] runtimes;
+        private int installed;
+
+        private GlobalSprintRuntimeFence() {
+            ArrayList<RegionizedServer> snapshot =
+                    new ArrayList<>(RegionScheduler.allLevels());
+            runtimes = snapshot.toArray(RegionizedServer[]::new);
+        }
+
+        void install() {
+            if (installed != 0) {
+                throw new IllegalStateException(
+                        "global sprint runtime fence was installed twice");
+            }
+            for (int i = 0; i < runtimes.length; i++) {
+                RegionizedServer runtime = runtimes[i];
+                if (runtime.globalSprintAdmissionFenced
+                        || runtime.globalSprintAdmissionFenceOwner != null) {
+                    throw new IllegalStateException(
+                            "global sprint runtime fence overlapped for "
+                                    + runtime.level.dimension().identifier());
+                }
+                // Cleanup ownership precedes the first state write for this
+                // runtime, including an asynchronous Throwable at either write.
+                installed = i + 1;
+                runtime.globalSprintAdmissionFenceOwner = this;
+                runtime.globalSprintAdmissionFenced = true;
+            }
+        }
+
+        void clearSuccess() {
+            for (int i = installed - 1; i >= 0; i--) {
+                RegionizedServer runtime = runtimes[i];
+                if (!runtime.globalSprintAdmissionFenced
+                        || runtime.globalSprintAdmissionFenceOwner != this) {
+                    throw new IllegalStateException(
+                            "global sprint runtime fence lost ownership for "
+                                    + runtime.level.dimension().identifier());
+                }
+                runtime.globalSprintAdmissionFenced = false;
+                runtime.globalSprintAdmissionFenceOwner = null;
+            }
+            installed = 0;
+        }
+
+        Throwable clearAfterFailure(Throwable primary) {
+            Throwable failure = primary;
+            for (int i = installed - 1; i >= 0; i--) {
+                try {
+                    RegionizedServer runtime = runtimes[i];
+                    if (runtime.globalSprintAdmissionFenceOwner == this) {
+                        runtime.globalSprintAdmissionFenced = false;
+                        runtime.globalSprintAdmissionFenceOwner = null;
+                    } else if (runtime.globalSprintAdmissionFenceOwner != null
+                            || runtime.globalSprintAdmissionFenced) {
+                        failure = RegionScheduler.publishFatalAndSelectWinner(
+                                mergeFailure(failure, new IllegalStateException(
+                                        "global sprint failure cleanup refused a foreign runtime fence for "
+                                                + runtime.level.dimension().identifier())));
+                    }
+                } catch (Throwable cleanupFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            mergeFailure(failure, cleanupFailure));
+                }
+            }
+            installed = 0;
+            return failure;
+        }
+    }
+
     public CompletableFuture<Void> dispatchOwnedEntityTicks() {
+        return dispatchOwnedEntityTicks(true);
+    }
+
+    /**
+     * Drain the region-owned chunk/spawn/random work which vanilla orders before the
+     * entity list, but deliberately leave every entity body to the canonical
+     * EntityTickList pass.  Exact player mode uses this as its quiescence boundary.
+     */
+    public CompletableFuture<Void> dispatchPreEntityWork() {
+        if (asyncActive) {
+            throw new IllegalStateException(
+                    "exact player ordinal mode cannot drain autonomous async islands");
+        }
+        return dispatchOwnedEntityTicks(false);
+    }
+
+    /**
+     * One exact global {@code /tick sprint} frame for every current island.
+     * Ordinary pacer/chained publication is fenced first; older publications
+     * are drained at a claim boundary; only then is each exact fromL captured.
+     * A strict request can terminate normally only in the sole L++ commit.
+     */
+    private void runGlobalSprintIslandFrame(
+            ArrayList<IslandRegistry.PIsland> due) {
+        IslandTickUnit.GlobalSprintRequest[] requests = null;
+        int[] installedFences = null;
+        AtomicReference<GlobalSprintRuntimeFence> runtimeFenceOwner = null;
+        boolean quiesced = false;
+        Throwable failure = null;
+        try {
+            IslandTickUnit.GlobalSprintRequest[] frameRequests =
+                    new IslandTickUnit.GlobalSprintRequest[due.size()];
+            requests = frameRequests;
+            int[] frameFenceCount = new int[1];
+            installedFences = frameFenceCount;
+            AtomicReference<GlobalSprintRuntimeFence> frameRuntimeFence =
+                    new AtomicReference<>();
+            runtimeFenceOwner = frameRuntimeFence;
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                // Snapshot/allocation and installation are one admitted body.
+                // Publish cleanup ownership before the first runtime flag write.
+                GlobalSprintRuntimeFence prepared =
+                        new GlobalSprintRuntimeFence();
+                frameRuntimeFence.set(prepared);
+                prepared.install();
+            });
+            for (int i = 0, n = due.size(); i < n; i++) {
+                IslandRegistry.PIsland island = due.get(i);
+                int installedCount = i + 1;
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    IslandTickUnit.installGlobalSprintFence(this, island);
+                    // Ownership must become cleanup-visible inside the admitted
+                    // body. A peer W may win after this body returns but before
+                    // its permit terminalizes; a caller-side increment would then
+                    // miss this already-installed fence during failure cleanup.
+                    frameFenceCount[0] = installedCount;
+                });
+            }
+
+            // `/tick sprint` is server-wide but MAIN_SYNC is one global queue.
+            // Quiescing only this level leaves a pre-existing ordinary unit in
+            // another dimension free to publish a late Main body after our empty
+            // observation. Process levels one at a time (never retain rs1 claims
+            // while rs2 may be routed/sharded into it), and while each claim set
+            // is held also drain every already-accepted pre-claim unit root. The
+            // runtime flags above prevent a processed level from starting a new
+            // ordinary unit after its claims are released.
+            drainPreexistingServerSprintUnits(frameRuntimeFence.get());
+
+            quiesced = quiesceAllIslands();
+            if (!quiesced || !currentThreadHoldsAllClaims()) {
+                throw new IllegalStateException(
+                        "global sprint entered without its all-island claim boundary");
+            }
+
+            // A completed ordinary unit can have published a MAIN_SYNC entity
+            // child which is not part of its region fan-in. The unit's L and claim
+            // may therefore be terminal while that accepted vanilla body is still
+            // queued on physical Main. Capture fromL only after those older bodies
+            // have run at this held-all-claims boundary. A drained body may publish
+            // a routed command; that batch owns its own global fence, so temporarily
+            // release this level's claims, drain it, reacquire, and repeat to a true
+            // fixed point. The per-island sprint fences remain installed throughout,
+            // so no ordinary unit can enter in either release window.
+            while (true) {
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        this::drainPreSprintAcceptedMainBodies);
+                if (!IslandCommands.hasRoutedPending()) break;
+
+                Throwable routedReleaseFailure = releaseAllIslands(null);
+                quiesced = false;
+                if (routedReleaseFailure != null) {
+                    RegionizedServer.<RuntimeException>rethrow(routedReleaseFailure);
+                }
+                IslandCommands.drainRoutedBatch();
+                quiesced = quiesceAllIslands();
+                if (!quiesced || !currentThreadHoldsAllClaims()) {
+                    throw new IllegalStateException(
+                            "global sprint lost its all-island claim boundary after routed drain");
+                }
+            }
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                awaitFencedOrdinaryUnitPublications(due);
+                for (int i = 0, n = due.size(); i < n; i++) {
+                    frameRequests[i] = IslandTickUnit.prepareGlobalSprintRequest(
+                            this, due.get(i));
+                }
+            });
+
+            Throwable releaseFailure = releaseAllIslands(null);
+            quiesced = false;
+            if (releaseFailure != null) {
+                RegionizedServer.<RuntimeException>rethrow(releaseFailure);
+            }
+
+            for (IslandTickUnit.GlobalSprintRequest request : frameRequests) {
+                request.start();
+            }
+            for (IslandTickUnit.GlobalSprintRequest request : frameRequests) {
+                // Main owns no claims here. Routed commands are part of the
+                // awaited unit and must be serviced in this same sprint frame.
+                com.axalotl.fabrolia.common.ParallelProcessor.pumpUntilDone(
+                        request.receipt, true);
+            }
+
+            // ADVANCED is committed with L++, after the coordinator has released
+            // unitClaim, but a region ordinal from that same strict unit may have
+            // handed its vanilla body to MAIN_SYNC. A receipt which proves L alone
+            // therefore is not yet the complete sprint frame. Reacquire every claim
+            // and drain those accepted children (plus any routed descendants) before
+            // validating or opening any per-island sprint fence.
+            quiesced = quiesceAllIslands();
+            if (!quiesced || !currentThreadHoldsAllClaims()) {
+                throw new IllegalStateException(
+                        "global sprint could not fence its terminal Main children");
+            }
+            while (true) {
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        this::drainPreSprintAcceptedMainBodies);
+                if (!IslandCommands.hasRoutedPending()) break;
+
+                Throwable routedReleaseFailure = releaseAllIslands(null);
+                quiesced = false;
+                if (routedReleaseFailure != null) {
+                    RegionizedServer.<RuntimeException>rethrow(routedReleaseFailure);
+                }
+                IslandCommands.drainRoutedBatch();
+                quiesced = quiesceAllIslands();
+                if (!quiesced || !currentThreadHoldsAllClaims()) {
+                    throw new IllegalStateException(
+                            "global sprint lost its terminal-child claim boundary after routed drain");
+                }
+            }
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                for (IslandTickUnit.GlobalSprintRequest request : frameRequests) {
+                    IslandTickUnit.closeGlobalSprintRequest(request);
+                }
+            });
+
+            Throwable terminalReleaseFailure = releaseAllIslands(null);
+            quiesced = false;
+            if (terminalReleaseFailure != null) {
+                RegionizedServer.<RuntimeException>rethrow(terminalReleaseFailure);
+            }
+            GlobalSprintRuntimeFence completedRuntimeFence =
+                    frameRuntimeFence.get();
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    completedRuntimeFence::clearSuccess);
+            frameRuntimeFence.set(null);
+            return;
+        } catch (Throwable thrown) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+        }
+
+        // W is already selected. Never wait for a RUNNING strict publication
+        // while Main retains a claim it could need to reach its own failure
+        // check/finally. Runtime/per-island admission fences remain installed,
+        // and the fatal pool gate forbids every new simulation body.
+        if (quiesced) {
+            failure = releaseAllIslands(failure);
+            quiesced = false;
+        }
+        if (requests != null) {
+            for (int i = requests.length - 1; i >= 0; i--) {
+                IslandTickUnit.GlobalSprintRequest request = requests[i];
+                if (request != null) {
+                    failure = IslandTickUnit.cancelGlobalSprintRequest(request, failure);
+                }
+            }
+        }
+        if (installedFences != null) {
+            for (int i = installedFences[0] - 1; i >= 0; i--) {
+                failure = IslandTickUnit.clearGlobalSprintFence(due.get(i), failure);
+            }
+        }
+        if (runtimeFenceOwner != null) {
+            GlobalSprintRuntimeFence ownedRuntimeFence = runtimeFenceOwner.get();
+            if (ownedRuntimeFence != null) {
+                failure = ownedRuntimeFence.clearAfterFailure(failure);
+            }
+        }
+        RegionizedServer.<RuntimeException>rethrow(
+                RegionScheduler.publishFatalAndSelectWinner(failure));
+    }
+
+    /** Retire every pre-fence ordinary unit/root in every level without ever
+     * holding two levels' claim sets at once (cross-level routed/shard safety). */
+    private void drainPreexistingServerSprintUnits(
+            GlobalSprintRuntimeFence runtimeFence) {
+        if (runtimeFence == null) {
+            throw new IllegalStateException(
+                    "global sprint lost its runtime-fence ownership");
+        }
+        for (RegionizedServer runtime : runtimeFence.runtimes) {
+            boolean held = false;
+            Throwable failure = null;
+            try {
+                held = runtime.quiesceAllIslands();
+                if (!held || !runtime.currentThreadHoldsAllClaims()) {
+                    throw new IllegalStateException(
+                            "global sprint could not quiesce server level "
+                                    + runtime.level.dimension().identifier());
+                }
+                ArrayList<IslandRegistry.PIsland> current =
+                        new ArrayList<>(runtime.islandRegistry.islands());
+                runtime.awaitFencedOrdinaryUnitPublications(current);
+            } catch (Throwable boundaryFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        boundaryFailure);
+            } finally {
+                if (held) failure = runtime.releaseAllIslands(failure);
+            }
+            if (failure != null) {
+                RegionizedServer.<RuntimeException>rethrow(
+                        RegionScheduler.publishFatalAndSelectWinner(failure));
+            }
+        }
+    }
+
+    /** Physical Main owns every island claim in this level. Drain every older
+     * accepted MAIN_SYNC body before the strict sprint request captures fromL. */
+    private void drainPreSprintAcceptedMainBodies() {
+        while (RegionScheduler.drainMainSyncTicks()) {
+            RegionScheduler.throwWorkerFailureIfAny();
+        }
+        RegionScheduler.throwWorkerFailureIfAny();
+    }
+
+    /** Main owns every unitClaim while this waits. An older publication can
+     *  only retire its pre-claim reservation; it cannot begin a tick body. */
+    private void awaitFencedOrdinaryUnitPublications(
+            ArrayList<IslandRegistry.PIsland> due) {
+        for (int i = 0, n = due.size(); i < n; i++) {
+            IslandRegistry.PIsland island = due.get(i);
+            // The runtime flag is volatile, but its writer does not own this
+            // per-island monitor. A publisher may have read false while holding
+            // unitAdmissionLock and then paused immediately before submitQueued
+            // CAS. Acquiring the same monitor after the flag write is the missing
+            // admission handshake: that old decision must finish its CAS before
+            // this point; every later decision must observe the installed fence.
+            synchronized (island.unitAdmissionLock) {
+                if (!currentThreadHoldsAllClaims() || !island.unitClaim.get()
+                        || (!island.globalSprintFenced
+                        && !globalSprintAdmissionFenced)
+                        || island.globalSprintRequest != null) {
+                    throw new IllegalStateException(
+                            "global sprint ordinary-publication boundary lost its claim/fence");
+                }
+            }
+            long waitStart = System.nanoTime();
+            int stuckReports = 0;
+            while (island.submitQueued.get()) {
+                RegionScheduler.throwWorkerFailureIfAny();
+                if (RegionScheduler.requiresExclusiveUnitGrants()) {
+                    // The server-wide sprint admission fence is already closed.
+                    // Release the actual claims before granting the old unentered
+                    // attempts: they retire their reservations through the normal
+                    // unit admission path, never by forging a completed receipt.
+                    Throwable releaseFailure = releaseAllIslands(null);
+                    if (releaseFailure != null) {
+                        RegionizedServer.<RuntimeException>rethrow(releaseFailure);
+                    }
+                    RegionScheduler.drainQueuedUnitAttempts();
+                    if (!quiesceAllIslands() || !currentThreadHoldsAllClaims()) {
+                        throw new IllegalStateException(
+                                "global sprint lost claims after ordinary unit retirement");
+                    }
+                    continue;
+                }
+                if (!RegionScheduler.poolRunning()) {
+                    throw new IllegalStateException(
+                            "global sprint lost the unit pool while draining its fence");
+                }
+                IslandCommands.drainMainChunkServices();
+                if (System.nanoTime() - waitStart > 5_000_000_000L) {
+                    waitStart = System.nanoTime();
+                    if (++stuckReports >= 3) {
+                        throw new IllegalStateException(
+                                "global sprint ordinary publication did not drain: "
+                                        + IslandCommands.claimForensics(island));
+                    }
+                }
+                java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
+            }
+            // A zero-iteration observation is still a terminal boundary, not a
+            // license to release this claim set after a concurrently selected W.
+            RegionScheduler.throwWorkerFailureIfAny();
+        }
+    }
+
+    private CompletableFuture<Void> dispatchOwnedEntityTicks(boolean tickEntities) {
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            if (playerTickV2Batch != null) {
+                throw new IllegalStateException("regional player level batch was not sealed");
+            }
+            playerTickV2Batch = RegionalPlayerEntityTicksV2.beginLevel(this);
+        });
         // Cross-dimension arrival cohorts for this level's global lane:
         // published BEFORE any dispatch — the vanilla-equivalent boundary.
         CrossDimArrivals.publishGlobal(this);
+        // Main TPS/MSPT remains useful in wall-tick mode (including the exact
+        // player actor, which intentionally requires autonomous islands OFF).
+        // The HUD itself renders Island: SYNC when this level is not async.
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> TpsHud.tick(level.getServer(), level));
         if (asyncActive) {
             // Adopt anything populated DURING this tick's chunk phase before
             // dispatch: a freshly populated region adjacent to an island must
@@ -1695,40 +3343,46 @@ public final class RegionizedServer {
             // command-block commands.
             IslandCommands.drainRoutedBatch();
             rebuildIslandsIfDirty();
-            TpsHud.tick(level.getServer(), level);
             if (net.minecraft.world.level.Level.OVERWORLD.equals(level.dimension())) {
-                TemporalControl.tickAcks();
+                RegionScheduler.runSuccessBodyIfHealthy(TemporalControl::tickAcks);
                 // Task #43: coupling maintenance — shared-rate refresh,
                 // deferred-anchor retries, operator-session eligibility, and
                 // the phase heal. Geometry is rebuild-only.
-                CrossDimLinks.mainTick();
-                ChunkDelivery.stressTick();
+                RegionScheduler.runSuccessBodyIfHealthy(CrossDimLinks::mainTick);
+                RegionScheduler.runSuccessBodyIfHealthy(ChunkDelivery::stressTick);
                 if (level.getGameTime() % 20 == 0) {
-                    ChunkDelivery.liveness();
+                    RegionScheduler.runSuccessBodyIfHealthy(ChunkDelivery::liveness);
                 }
             }
             // BE index visibility for this tick's units (vanilla flush + fold)
             // — main is quiescent, the one legal mutation window outside the
             // BE slot.
-            IslandBlockEntityTicks.preUnitMaintenance(level, this);
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> IslandBlockEntityTicks.preUnitMaintenance(level, this));
 
-            // DEADLINE DRIVE: submit only islands whose deadline is due,
-            // heaviest first (LPT — the long pole starts earliest), and do
-            // NOT await them — each unit's own coordinator is its barrier;
-            // an overrunning island reschedules from completion and slips
-            // below 20 TPS ALONE. Main awaits only the global remainder lane
-            // (plus global-scoped chunk-phase futures — see armGate).
-            long now = System.nanoTime();
-            ArrayList<IslandRegistry.PIsland> due = new ArrayList<>(islandRegistry.islands());
-            // freeze the key before sorting: costNanos is written by
-            // completing units CONCURRENTLY with this sort — TimSort throws
-            // "Comparison method violates its general contract" when a key
-            // moves mid-sort (production crash 2026-07-17 05:39).
-            for (int di = 0, dn = due.size(); di < dn; di++) {
-                IslandRegistry.PIsland p = due.get(di);
-                p.driveSortCost = p.costNanos;
-            }
-            due.sort((a, b) -> Long.compare(b.driveSortCost, a.driveSortCost));
+            // PACER WATCHDOG: Main preserves the existing topology/control
+            // ordering, but ordinary tick production is autonomous. This pass
+            // only seeds a missing/stale ticket; it never directly submits an
+            // ordinary unit and never awaits one. Main still awaits only the
+            // global remainder lane (plus global-scoped chunk-phase futures).
+            AtomicReference<ArrayList<IslandRegistry.PIsland>> dueRef =
+                    new AtomicReference<>();
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                ArrayList<IslandRegistry.PIsland> prepared =
+                        new ArrayList<>(islandRegistry.islands());
+                // Freeze the key before sorting: costNanos is written by
+                // completing units CONCURRENTLY with this sort — TimSort throws
+                // "Comparison method violates its general contract" when a key
+                // moves mid-sort (production crash 2026-07-17 05:39).
+                for (int di = 0, dn = prepared.size(); di < dn; di++) {
+                    IslandRegistry.PIsland p = prepared.get(di);
+                    p.driveSortCost = p.costNanos;
+                }
+                prepared.sort((a, b) ->
+                        Long.compare(b.driveSortCost, a.driveSortCost));
+                dueRef.set(prepared);
+            });
+            ArrayList<IslandRegistry.PIsland> due = dueRef.get();
             // GLOBAL SPRINT LOCKSTEP (/tick sprint): exact synchronized barrier
             // ticks — every island runs exactly ONE complete unit per main
             // sprint tick, awaited HERE at the tick barrier (after complete
@@ -1736,80 +3390,96 @@ public final class RegionizedServer {
             // (TemporalControl.onUnitComplete) so counts stay exact. Topology
             // committed above at the tick head = the sprint-tick boundary.
             if (level.getServer().tickRateManager().isSprinting()) {
-                ArrayList<java.util.concurrent.CompletableFuture<Void>> barriers =
-                        new ArrayList<>(due.size());
-                for (int i = 0, n = due.size(); i < n; i++) {
-                    barriers.add(IslandTickUnit.submitUnit(this, due.get(i)));
-                }
-                for (int i = 0, n = barriers.size(); i < n; i++) {
-                    // Task #33 (2026-07-28 sprint wedge): serviceRoutedCommands —
-                    // an awaited unit's command block may be parked on the routed
-                    // batch only MAIN can execute; without the drain this await is
-                    // a main ⇄ coordinator deadlock (the nudge sits on the MS task
-                    // queue pumpUntilDone deliberately never polls). Main holds no
-                    // claims here and the global lane is not dispatched yet — this
-                    // is the drive-head serialization point re-entered mid-tick.
-                    com.axalotl.fabrolia.common.ParallelProcessor.pumpUntilDone(barriers.get(i), true);
-                }
-                List<Region> sprintRegions = regionizer.snapshot();
-                ArrayList<Region> sprintGlobals = new ArrayList<>(8);
-                for (int i = 0, n = sprintRegions.size(); i < n; i++) {
-                    Region r = sprintRegions.get(i);
-                    if (r.domain == globalDomain) sprintGlobals.add(r);
-                }
-                return dispatchEntityPhase(globalDomain, sprintGlobals);
+                runGlobalSprintIslandFrame(due);
+                AtomicReference<ArrayList<Region>> sprintGlobalsRef =
+                        new AtomicReference<>();
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    List<Region> sprintRegions =
+                            regionizer.snapshotAtEntityDispatchCut(globalDomain);
+                    ArrayList<Region> sprintGlobals = new ArrayList<>(8);
+                    for (int i = 0, n = sprintRegions.size(); i < n; i++) {
+                        Region r = sprintRegions.get(i);
+                        if (r.domain == globalDomain) sprintGlobals.add(r);
+                    }
+                    sprintGlobalsRef.set(sprintGlobals);
+                });
+                return dispatchEntityPhase(
+                        globalDomain, sprintGlobalsRef.get(), tickEntities);
             }
             for (int i = 0, n = due.size(); i < n; i++) {
                 IslandRegistry.PIsland p = due.get(i);
-                // /tick freeze: units are gated at submitUnit; skip the pacing
-                // branches entirely. Command-time cross-dim arrivals still
-                // deliver NOW — vanilla applies command mutations synchronously
-                // while frozen, and with units gated the claim is free, so main
-                // publishes against the quiescent island (regen-before-add
-                // FIFO preserved by publishIsland itself).
-                if (!level.getServer().tickRateManager().runsNormally()) {
-                    if (!p.pendingArrivals.isEmpty()
-                            && p.unitClaim.compareAndSet(false, true)) {
-                        try {
-                            CrossDimArrivals.publishIsland(p);
-                        } finally {
-                            p.unitClaim.set(false);
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    // /tick freeze: units are gated at submitUnit; skip the pacing
+                    // branches entirely. Command-time cross-dim arrivals still
+                    // deliver NOW — vanilla applies command mutations synchronously
+                    // while frozen, and with units gated the claim is free, so main
+                    // publishes against the quiescent island (regen-before-add
+                    // FIFO preserved by publishIsland itself).
+                    if (!level.getServer().tickRateManager().runsNormally()) {
+                        if (!p.pendingArrivals.isEmpty()) {
+                            boolean arrivalClaimed = false;
+                            Throwable arrivalFailure = null;
+                            try {
+                                if (p.tryClaimAutonomousWork()) {
+                                    // Arm cleanup ownership before the ledger or
+                                    // arrival body can fail.
+                                    arrivalClaimed = true;
+                                    p.noteClaim("frozen-arrival");
+                                    CrossDimArrivals.publishIsland(p);
+                                }
+                            } catch (Throwable primary) {
+                                arrivalFailure = RegionScheduler
+                                        .publishFatalAndSelectWinner(primary);
+                            }
+                            if (arrivalClaimed) {
+                                try {
+                                    p.clearClaim();
+                                } catch (Throwable cleanupFailure) {
+                                    arrivalFailure = RegionScheduler
+                                            .publishFatalAndSelectWinner(
+                                                    mergeFailure(arrivalFailure,
+                                                            cleanupFailure));
+                                }
+                                try {
+                                    p.unitClaim.set(false);
+                                } catch (Throwable cleanupFailure) {
+                                    arrivalFailure = RegionScheduler
+                                            .publishFatalAndSelectWinner(
+                                                    mergeFailure(arrivalFailure,
+                                                            cleanupFailure));
+                                }
+                            }
+                            if (arrivalFailure != null) {
+                                RegionizedServer.<RuntimeException>rethrow(arrivalFailure);
+                            }
                         }
+                        return;
                     }
-                    continue;
-                }
-                // Local sprint sessions own tick production for their islands
-                // (self-chaining at unit completion) — the drive kick-starts a
-                // stalled session but never double-drives an active one.
-                if (TemporalControl.isSprinting(this, p)) {
-                    if (!p.unitClaim.get()) {
-                        IslandTickUnit.submitUnit(this, p);
+                    // Local sprint sessions own tick production for their islands
+                    // (self-chaining at unit completion) — the drive kick-starts a
+                    // stalled session but never double-drives an active one.
+                    if (TemporalControl.isSprinting(this, p)) {
+                        if (!p.unitClaim.get()) {
+                            IslandTickUnit.submitUnit(this, p);
+                        }
+                        return;
                     }
-                    continue;
-                }
-                // Coherence pin: exactly one unit per WALL tick, released at
-                // this fixed drive point, never ahead of the wall clock —
-                // L tracks W 1:1 (phase + count parity with the global lane;
-                // catch-up when behind chains at unit completion instead).
-                if (TemporalControl.isCoherent(this, p)) {
-                    if (p.logicalTick < level.getGameTime() && !p.unitClaim.get()) {
-                        IslandTickUnit.submitUnit(this, p);
+                    // Coherence pin: exactly one unit per WALL tick, released at
+                    // this fixed drive point, never ahead of the wall clock —
+                    // L tracks W 1:1 (phase + count parity with the global lane;
+                    // catch-up when behind chains at unit completion instead).
+                    if (TemporalControl.isCoherent(this, p)) {
+                        if (p.logicalTick < level.getGameTime() && !p.unitClaim.get()) {
+                            IslandTickUnit.submitUnit(this, p);
+                        }
+                        return;
                     }
-                    continue;
-                }
-                long deadline = p.nextDeadlineNanos;
-                // 10ms slack: the deadline of a healthy island sits ε around
-                // the drive point (scheduling jitter); without slack an ε-late
-                // deadline skips a whole drive. Double-fire is impossible —
-                // the +50ms roll moves the deadline a full tick, and the unit
-                // claim CAS refuses overlap regardless.
-                if (deadline == 0 || deadline <= now + 10_000_000L) {
-                    IslandTickUnit.submitUnit(this, p);
-                }
+                    TemporalControl.ensurePaced(this, p);
+                });
             }
             // Global remainder lane: gap regions holding executeAt work and
             // regions born on the global domain since the rebuild above.
-            List<Region> regions = regionizer.snapshot();
+            List<Region> regions = regionizer.snapshotAtEntityDispatchCut(globalDomain);
             ArrayList<Region> globals = new ArrayList<>(Math.max(8, regions.size() / 4));
             for (int i = 0, n = regions.size(); i < n; i++) {
                 Region r = regions.get(i);
@@ -1835,185 +3505,257 @@ public final class RegionizedServer {
                     // if population returns. Main thread, dead source domain,
                     // global target owned by this thread: the documented
                     // assignDomain safe point.
-                    FlightRecorder.record("GAP-DOMAIN-ADOPT " + level.dimension().identifier()
-                            + " cell=" + Long.toHexString(r.gridKey)
-                            + " oldDomain=" + (r.domain == null ? "null"
-                                    : (r.domain.owner == null ? "<ownerless>"
-                                    : "island#" + r.domain.owner.id + "/g" + r.domain.owner.gen
-                                      + (r.domain.owner.retired ? "(retired)" : "(LIVE?)")))
-                            + " entities=" + r.entityCount.get());
-                    assignDomain(r, globalDomain);
-                    globals.add(r);
+                    RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                        // Revalidate after winning admission: domain retirement and
+                        // this success cut must not leave a stale check-to-migration edge.
+                        if (r.state() != RegionState.ACTIVE) return;
+                        if (r.domain == globalDomain) {
+                            globals.add(r);
+                            return;
+                        }
+                        if (r.domain != null && r.domain.owner != null
+                                && !r.domain.owner.retired) return;
+                        FlightRecorder.record("GAP-DOMAIN-ADOPT "
+                                + level.dimension().identifier()
+                                + " cell=" + Long.toHexString(r.gridKey)
+                                + " oldDomain=" + (r.domain == null ? "null"
+                                : (r.domain.owner == null ? "<ownerless>"
+                                : "island#" + r.domain.owner.id + "/g"
+                                + r.domain.owner.gen
+                                + (r.domain.owner.retired ? "(retired)" : "(LIVE?)")))
+                                + " entities=" + r.entityCount.get());
+                        assignDomain(r, globalDomain);
+                        globals.add(r);
+                    });
                 }
             }
-            return dispatchEntityPhase(globalDomain, globals);
+            return dispatchEntityPhase(globalDomain, globals, tickEntities);
         }
-        return dispatchEntityPhase(globalDomain, regionizer.snapshot());
+        return dispatchEntityPhase(
+                globalDomain,
+                regionizer.snapshotAtEntityDispatchCut(globalDomain),
+                tickEntities);
     }
 
     /**
      * A2 core: dispatch one entity phase for {@code regions} against timeline
      * {@code d} — arm d's barrier, stamp who owes, sweep no-work regions done,
-     * seed the ready lane. Caller contract: {@code d.epoch} was bumped for this
-     * drive and every region in {@code regions} has {@code r.domain == d}
-     * (single-domain dispatch; the ColorGate ignores cross-domain neighbors).
+     * seed the ready lane. Caller contract: {@code d.epoch} was bumped, then
+     * {@code regions} and {@link EpochDomain#entityDispatchCutEpoch} were
+     * published under the region-creation WRITE cutoff; every member has
+     * {@code r.domain == d} (single-domain dispatch; the ColorGate ignores
+     * cross-domain neighbors).
      * The legacy (non-event) group path remains global-domain-only — async mode
      * requires the event scheduler (enforced by the tick-head mode latch).
      */
     CompletableFuture<Void> dispatchEntityPhase(EpochDomain d, List<Region> regions) {
-        RegionScheduler.resetHealBackoff(); // new epoch = new orphan window: full heal cadence
-        final boolean eventSched = FabroliaConfig.regionEventScheduler;
+        return dispatchEntityPhase(d, regions, true);
+    }
+
+    private CompletableFuture<Void> dispatchEntityPhase(EpochDomain d, List<Region> regions,
+                                                         boolean tickEntities) {
+        AtomicReference<EntityDispatchPlan> planRef = new AtomicReference<>();
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            if (d.entityDispatchCutEpoch != d.epoch) {
+                throw new IllegalStateException(
+                        "entity dispatch started without an exact region-creation cut");
+            }
+            planRef.set(prepareEntityDispatchPlan(d, regions, tickEntities));
+        });
+        EntityDispatchPlan plan = planRef.get();
+        final long epoch = plan.epoch;
+        final boolean eventSched = plan.eventSched;
+        ArrayList<RegionLoad> active = plan.active;
+        CompletableFuture<Void> eventBarrier = plan.eventBarrier;
+        CompletableFuture<Void> result = plan.result;
+        ArrayList<Runnable> roots = plan.roots;
+        EpochDomain.EntityDispatchPublication publication = plan.publication;
+
+        try {
+            // Publication ownership is itself a successor state mutation and must
+            // not begin after a peer selected W during local plan preparation.
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> d.entityDispatchPublication = publication);
+            // Offer every obligation while consumers are fenced on OFFERING.
+            if (eventSched) {
+                // Seed every participant. Ineligible colors simply drop this
+                // first entry after acceptance and are re-armed by their last
+                // lower-color blocker; over-seeding removes fallible sweep pushes.
+                for (int i = 0, n = active.size(); i < n; i++) {
+                    tryEnqueueEntity(active.get(i).region);
+                }
+            } else if (roots != null) {
+                for (int i = 0, n = roots.size(); i < n; i++) {
+                    RegionScheduler.enqueueGlobal(roots.get(i));
+                }
+            }
+
+            if (!active.isEmpty()) {
+                // Wake first: awakened consumers stop on OFFERING until the
+                // final receipt CAS below.
+                RegionScheduler.wakeWorkers(Integer.MAX_VALUE);
+            }
+            // Prepare the complete epoch decision while every offered consumer
+            // is fenced on OFFERING. This variable/fallible work runs outside
+            // lifecycleLock; only the final receipt CAS is the success commit.
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                if (!tickEntities) queueOnlyEntityEpoch = epoch;
+                if (eventSched) {
+                    d.entityPending.set(active.size());
+                    d.entityBarrier = eventBarrier;
+                    d.entityBarrierArmedEpoch = epoch;
+                    d.entityBarrierArmedNanos = System.nanoTime();
+                }
+                for (int i = 0, n = active.size(); i < n; i++) {
+                    active.get(i).region.groupedEpoch = epoch;
+                }
+                d.dispatchedEpoch = epoch;
+                if (com.axalotl.fabrolia.common.config.FabroliaConfig.useRegionColorGate()) {
+                    for (int i = 0, n = regions.size(); i < n; i++) {
+                        Region region = regions.get(i);
+                        if (region.state() != RegionState.ACTIVE) continue;
+                        ColorGate.tryMarkDoneWithoutPush(region, this);
+                    }
+                }
+            });
+            RegionScheduler.commitSuccessIfHealthy(publication::accept);
+            if (eventBarrier != null && active.isEmpty()) {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    if (!eventBarrier.complete(null)) {
+                        throw new IllegalStateException(
+                                "empty entity dispatch barrier completed more than once");
+                    }
+                });
+            }
+            return result;
+        } catch (Throwable dispatchFailure) {
+            Throwable failure = RegionScheduler.publishFatalAndSelectWinner(dispatchFailure);
+            try {
+                publication.cancel();
+            } catch (Throwable cleanupFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        mergeFailure(failure, cleanupFailure));
+            }
+            if (roots != null) {
+                for (int i = 0, n = roots.size(); i < n; i++) {
+                    Runnable root = roots.get(i);
+                    if (root instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
+                        try {
+                            cancellable.cancelQueuedBeforeStartWithFailure(failure);
+                        } catch (Throwable cleanupFailure) {
+                            failure = RegionScheduler.publishFatalAndSelectWinner(
+                                    mergeFailure(failure, cleanupFailure));
+                        }
+                    }
+                }
+            }
+            if (eventBarrier != null) {
+                try {
+                    eventBarrier.completeExceptionally(failure);
+                } catch (Throwable cleanupFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            mergeFailure(failure, cleanupFailure));
+                }
+            }
+            RegionizedServer.<RuntimeException>rethrow(failure);
+            return result;
+        }
+    }
+
+    private EntityDispatchPlan prepareEntityDispatchPlan(
+            EpochDomain d, List<Region> regions, boolean tickEntities) {
+        // New epoch = new orphan window: full heal cadence. This and every plan
+        // read/allocation below belong to one admitted preparation body.
+        RegionScheduler.resetHealBackoff();
+        // The event scheduler's workerLoop owns the entity-phase callback implicitly.
+        // Queue-only exact mode therefore uses the explicit group path, where the
+        // tickEntities flag is carried with the submitted continuation.
+        final boolean eventSched = tickEntities && FabroliaConfig.regionEventScheduler;
         ArrayList<RegionLoad> active = new ArrayList<>(regions.size());
         for (int i = 0, n = regions.size(); i < n; i++) {
             Region r = regions.get(i);
             if (r.state() == RegionState.ACTIVE
-                    && (!r.entities.isEmpty() || !r.queue().isEmpty())) {
+                    && hasEntityDispatchWork(r, tickEntities)) {
                 // Load weight: measured EWMA of the region's entity phase when we have
                 // one (captures BE/AI-heavy regions entity counts under-weigh — the
                 // profiled tail region ran 1.5–1.7× pool average), scaled to pseudo-
                 // entity units; count+queue heuristic as cold-start fallback.
                 long ema = r.emaPhaseNanos;
+                boolean hasQueuedWork = !r.queue().isEmpty()
+                        || !r.helpQueue.isEmpty();
                 long weight = ema > 0
-                        ? ema / 10_000L + (r.queue().isEmpty() ? 0 : 96)
-                        : r.entityCount.get() + (r.queue().isEmpty() ? 0 : 96);
+                        ? ema / 10_000L + (hasQueuedWork ? 96 : 0)
+                        : r.entityCount.get() + (hasQueuedWork ? 96 : 0);
                 active.add(new RegionLoad(r, weight));
             }
         }
         final long epoch = d.epoch;
-        CompletableFuture<Void> eventBarrier = null;
-        if (eventSched) {
-            // R5: arm the barrier BEFORE stamping groupedEpochs — a pre-dispatch claim
-            // holder's release epilogue may run an owed entity phase the instant its
-            // region is stamped, and its barrier contribution must see this counter.
-            eventBarrier = new CompletableFuture<>();
-            d.entityPending.set(active.size());
-            d.entityBarrier = eventBarrier;
-            d.entityBarrierArmedEpoch = epoch;
-            d.entityBarrierArmedNanos = System.nanoTime();
-        }
-        for (int i = 0, n = active.size(); i < n; i++) {
-            active.get(i).region.groupedEpoch = epoch;   // owes an entity phase this epoch
-        }
-        // Dispatch decision is now committed: groupedEpochs stamped above.
-        // Completion marks become legal from this point (ColorGate.tryMarkDone
-        // refuses anything earlier — see dispatchedEpoch).
-        d.dispatchedEpoch = epoch;
-        // R4 sweep: regions with no work this epoch are trivially complete —
-        // without this, their higher-color neighbors would wait forever.
-        // tryMarkDone carries all the guards (grouped regions refuse until
-        // their entity phase, claimed regions defer to the holder's epilogue,
-        // a queue that filled in the race window refuses) so one blind pass
-        // over the snapshot is correct.
-        if (com.axalotl.fabrolia.common.config.FabroliaConfig.useRegionColorGate()) {
-            for (int i = 0, n = regions.size(); i < n; i++) {
-                Region r = regions.get(i);
-                if (r.state() == RegionState.ACTIVE) {
-                    // wakeOnPush=false: hundreds of sweep completions on main each
-                    // unparking a worker was 680ms/30s of Unsafe.unpark (2026-07-02
-                    // profile); the single flag-scan wake after the seed loop below
-                    // covers every region the sweep pushed.
-                    ColorGate.tryMarkDone(r, this, false);
-                    // ISLAND ORPHAN BLACK HOLE (production 2026-07-16 04:15,
-                    // island#66 post-split, repeating BARRIER-LEAK + 3s main
-                    // stalls): a member whose queue was empty at the grouping
-                    // instant (grouped=n) and FILLED before this sweep can
-                    // neither run this epoch (the orphan rule refuses the
-                    // claim to protect color order) nor pass tryMarkDone
-                    // (queue non-empty) — its same-domain neighbors then wait
-                    // on its done stamp until the force-complete belt. Main
-                    // arms halo/core gates concurrently with units, so the
-                    // fill race is routine. An UNGROUPED member owes nothing
-                    // this epoch and its queued work is the NEXT unit's by
-                    // design (identical to the documented outside-window
-                    // semantics) — stamp it done directly, exactly like the
-                    // pre-parity unconditional halo stamp. Island lanes only:
-                    // the global lane's queues hold work main awaits THIS
-                    // tick and must keep the strict run-when-filled path.
-                    if (d.owner != null && r.groupedEpoch != epoch && r.doneEpoch < epoch) {
-                        r.doneEpoch = epoch;
-                    }
-                }
-            }
-        }
-        if (active.isEmpty()) {
-            if (eventBarrier != null) eventBarrier.complete(null);
-            return CompletableFuture.completedFuture(null);
+        if (!tickEntities && d != globalDomain) {
+            throw new IllegalStateException(
+                    "queue-only entity dispatch requires the global domain");
         }
 
-        if (eventSched) {
-            // R5 event-driven path: regions ARE the tasks. Heaviest first (dense solos
-            // lead, mirroring the LPT dense-prefix of the legacy grouping); seed the
-            // ready lane with the regions that are eligible RIGHT NOW — every other
-            // owing region is pushed by ColorGate.markDone at the exact moment its
-            // last lower-color blocker completes (event, not poll: the legacy group
-            // continuations burned ~a core in 20µs park slices at low load and added
-            // up to a poll-slice of latency per DAG level, 2026-07-01 profile).
-            // Execution lives in RegionWorkerPool.workerLoop's claim path (drain →
-            // owed entity phase → markDone → barrier contribution).
+        // Build the complete dispatch plan before publishing a single epoch
+        // stamp or executable root.
+        CompletableFuture<Void> eventBarrier = eventSched ? new CompletableFuture<>() : null;
+        CompletableFuture<Void> result;
+        ArrayList<Runnable> roots = null;
+        EpochDomain.EntityDispatchPublication publication =
+                new EpochDomain.EntityDispatchPublication();
+
+        if (active.isEmpty()) {
+            result = eventBarrier != null
+                    ? eventBarrier : CompletableFuture.completedFuture(null);
+        } else if (eventSched) {
             active.sort((a, b) -> Long.compare(b.count, a.count));
+            result = eventBarrier;
+        } else {
+            active.sort((a, b) -> Long.compare(b.count, a.count));
+            int groupCount = Math.max(1,
+                    Math.min(RegionScheduler.workerCount() * 3, active.size()));
+            ArrayList<ArrayList<Region>> groups = new ArrayList<>(groupCount);
+            long[] groupLoad = new long[groupCount];
+            int created = 0;
             for (int i = 0, n = active.size(); i < n; i++) {
                 Region r = active.get(i).region;
-                if (ColorGate.eligible(r, this)) {
-                    tryEnqueueEntity(r);
+                long count = active.get(i).count;
+                if (created < groupCount) {
+                    ArrayList<Region> group = new ArrayList<>(8);
+                    group.add(r);
+                    groups.add(group);
+                    groupLoad[created++] = count;
+                    continue;
                 }
+                int best = 0;
+                for (int gi = 1; gi < created; gi++) {
+                    if (groupLoad[gi] < groupLoad[best]) best = gi;
+                }
+                groups.get(best).add(r);
+                groupLoad[best] += count;
             }
-            // ONE wake for everything the sweep + seed pushed: the flag-scan variant
-            // unparks only genuinely parked workers (busy ones are skipped for free),
-            // so this is strictly cheaper than the legacy per-submit wakeAll.
-            RegionScheduler.wakeWorkers(Integer.MAX_VALUE);
-            return eventBarrier;
+            ArrayList<CompletableFuture<Void>> futures = new ArrayList<>(groups.size());
+            roots = new ArrayList<>(groups.size());
+            for (int gi = 0, gn = groups.size(); gi < gn; gi++) {
+                ArrayList<Region> group = groups.get(gi);
+                CompletableFuture<Void> future = new CompletableFuture<>();
+                futures.add(future);
+                group.sort((left, right) -> Integer.compare(left.color, right.color));
+                roots.add(cancellableGroupRoot(group, 0, future, tickEntities,
+                        publication));
+            }
+            result = CompletableFuture.allOf(
+                    futures.toArray(new CompletableFuture<?>[0]));
         }
+        return new EntityDispatchPlan(epoch, eventSched, active, eventBarrier,
+                result, roots, publication);
+    }
 
-        final int denseThreshold = FabroliaConfig.regionDenseFanoutThreshold;
-        // Largest first, then greedy into the lightest group — classic LPT balancing.
-        // Frozen counts: stable comparator AND a guaranteed dense-prefix ordering.
-        // workers×3 groups: finer grains balance the tail better than ×2 (stragglers
-        // dominated the barrier on the 50-bot load), at ~16 extra futures per tick.
-        active.sort((a, b) -> Long.compare(b.count, a.count));
-        int groupCount = Math.max(1, Math.min(RegionScheduler.workerCount() * 3, active.size()));
-
-        ArrayList<ArrayList<Region>> groups = new ArrayList<>(groupCount);
-        long[] groupLoad = new long[groupCount];
-        int created = 0;
-        for (int i = 0, n = active.size(); i < n; i++) {
-            Region r = active.get(i).region;
-            long count = active.get(i).count;
-            if (denseThreshold > 0 && count > denseThreshold) {
-                // Own group — parallelTickOwned will fan out with helpers.
-                ArrayList<Region> solo = new ArrayList<>(1);
-                solo.add(r);
-                groups.add(solo);
-                continue;
-            }
-            if (created < groupCount) {
-                ArrayList<Region> g = new ArrayList<>(8);
-                g.add(r);
-                groups.add(g);
-                groupLoad[created++] = count;
-                continue;
-            }
-            int best = 0;
-            for (int gi = 1; gi < created; gi++) {
-                if (groupLoad[gi] < groupLoad[best]) best = gi;
-            }
-            // Dense solos sit at the front of `groups`; the load array tracks only the
-            // `created` shared groups, whose list indices are offset by the solo count.
-            groups.get(groups.size() - created + best).add(r);
-            groupLoad[best] += count;
-        }
-
-        ArrayList<CompletableFuture<Void>> futures = new ArrayList<>(groups.size());
-        for (int gi = 0, gn = groups.size(); gi < gn; gi++) {
-            final ArrayList<Region> group = groups.get(gi);
-            CompletableFuture<Void> cf = new CompletableFuture<>();
-            futures.add(cf);
-            // Lower colors first: a group's own early entries unblock its later
-            // ones; cross-group blockers are handled by the continuation requeue.
-            group.sort((ra, rb) -> Integer.compare(ra.color, rb.color));
-            RegionScheduler.enqueueGlobal(() -> processGroup(group, 0, cf));
-        }
-        RegionScheduler.wakeWorkers();
-        return CompletableFuture.allOf(futures.toArray(new CompletableFuture<?>[0]));
+    /** Exact next-dispatch seed predicate, including a helper left behind by
+     *  the just-closed queue/entity phase. */
+    static boolean hasEntityDispatchWork(Region region, boolean tickEntities) {
+        return (tickEntities && !region.entities.isEmpty())
+                || !region.queue().isEmpty()
+                || !region.helpQueue.isEmpty();
     }
 
     /**
@@ -2023,15 +3765,33 @@ public final class RegionizedServer {
      * the worker is never parked inside a group, so blocker groups always
      * find a free worker (deadlock-free by construction; colors are a DAG).
      */
-    private void processGroup(ArrayList<Region> group, int depth, CompletableFuture<Void> cf) {
+    private void processGroup(ArrayList<Region> group, int depth, CompletableFuture<Void> cf,
+                              boolean tickEntities) {
         RegionWorkerThread me = (RegionWorkerThread) Thread.currentThread();
         ArrayList<Region> deferred = null;
         try {
             for (int ri = 0, rn = group.size(); ri < rn; ri++) {
+                RegionScheduler.throwWorkerFailureIfAny();
                 Region r = group.get(ri);
-                if (!ColorGate.eligible(r, this)) {
-                    if (deferred == null) deferred = new ArrayList<>(rn - ri);
-                    deferred.add(r);
+                EpochDomain claimDomain = r.domain;
+                long claimEpoch = claimDomain != null
+                        ? claimDomain.epoch : Long.MIN_VALUE;
+                boolean claimEligible = ColorGate.eligible(r, this);
+                // Token mismatch retires this OLD group obligation. Deferring
+                // it would let the old root spin on, or enter, the replacement
+                // domain whose own dispatch is now authoritative.
+                if (r.domain != claimDomain
+                        || (claimDomain != null
+                            && claimDomain.epoch != claimEpoch)) {
+                    continue;
+                }
+                if (!claimEligible) {
+                    EpochDomain currentDomain = r.domain;
+                    if (currentDomain == null
+                            || !r.hasSealedDone(currentDomain.epoch)) {
+                        if (deferred == null) deferred = new ArrayList<>(rn - ri);
+                        deferred.add(r);
+                    }
                     continue;
                 }
                 // Spin-claim with backoff: competing holders are queue drains
@@ -2042,507 +3802,568 @@ public final class RegionizedServer {
                 // iteration below), and claim holders never wait on group tasks.
                 int spins = 0;
                 me.currentRegion = r; // coherent protocol: publish BEFORE claim
-                while (!r.tryClaim(me)) {
+                boolean claimed = false;
+                boolean staleGeneration = false;
+                while (!(claimed = r.tryClaim(me, claimDomain, claimEpoch))) {
+                    if (r.claimRebaseClosed()
+                            || r.domain != claimDomain
+                            || (claimDomain != null
+                                && claimDomain.epoch != claimEpoch)) {
+                        staleGeneration = true;
+                        break;
+                    }
+                    if (!ColorGate.eligible(r, this)) break;
                     if (++spins > 500) {
                         LockSupport.parkNanos(10_000L);
                     } else {
                         Thread.onSpinWait();
                     }
                 }
-                r.stampAcquire("group");
-                // audit11: portal transfers staged by this claim's entity phase
-                // publish ONCE, below, at claim release — never per entity —
-                // so main's drain cannot bisect one activation into batches
-                // that land at different destination epochs.
-                com.axalotl.fabrolia.common.parallelised.utils.PortalTeleportationManager
-                        .beginRegionClaimFrame();
-                try {
-                    r.queue().drain(Integer.MAX_VALUE); // spawn/random first (FIFO)
-                    tickOwned(r);
-                    r.entityEpoch = r.domain.epoch;
-                } finally {
-                    // Publish the claim's whole transfer frame (one atomic queue
-                    // element) — in the finally, so a throwing tick still publishes.
-                    com.axalotl.fabrolia.common.parallelised.utils.PortalTeleportationManager
-                            .endRegionClaimFrame();
-                    r.stampRelease("group");
-                    r.release(me);
-                    me.currentRegion = null; // unpublish AFTER release
-                    // Re-arm, mirroring the workerLoop claim path: a task submitted
-                    // while we held the claim (e.g. the offloaded spawn/random
-                    // grouping landing mid-tick) had its ready entry dropped by the
-                    // failed-claim path — without this, that task strands and its
-                    // future wedges the entity barrier (live deadlock 2026-06-10).
-                    if (!r.queue().isEmpty() || !r.helpQueue.isEmpty()) {
-                        RegionScheduler.enqueueReady(r);
+                if (!claimed) {
+                    me.currentRegion = null;
+                    // This group belongs to the old dispatch generation. The
+                    // replacement domain's own dispatch is now authoritative;
+                    // requeueing this root would spin or execute old work in it.
+                    if (staleGeneration) continue;
+                    EpochDomain currentDomain = r.domain;
+                    if (currentDomain == null
+                            || !r.hasSealedDone(currentDomain.epoch)) {
+                        if (deferred == null) deferred = new ArrayList<>(rn - ri);
+                        deferred.add(r);
                     }
-                    ColorGate.tryMarkDone(r, this);
+                    continue;
+                }
+                boolean claimStamped = false;
+                boolean entityPhaseRan = false;
+                Throwable regionFailure = null;
+                try {
+                    // Claim acquisition may have waited while a peer selected
+                    // W. Release the claim below, but enter no new phase body.
+                    RegionScheduler.throwWorkerFailureIfAny();
+                    // Required post-CAS half of DONE_SEAL. A claimant whose
+                    // first eligibility read predates done publication owns no
+                    // group body and releases through the same exact tail.
+                    if (ColorGate.eligible(r, this)) {
+                        r.stampAcquire("group");
+                        claimStamped = true;
+                        // The active predicate includes a retained helper even
+                        // when no normal task/entity remains. Mirror the event
+                        // worker path: the exact group claimant is then the
+                        // orphan helper's only legal consumer, and must settle
+                        // it before normal FIFO and queue-only completion.
+                        drainGroupOrphanHelp(r);
+                        r.queue().drain(Integer.MAX_VALUE); // spawn/random first (FIFO)
+                        if (tickEntities) {
+                            tickOwned(r);
+                            entityPhaseRan = true;
+                        }
+                    }
+                } catch (Throwable thrown) {
+                    regionFailure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+                } finally {
+                    if (regionFailure == null) {
+                        regionFailure = RegionScheduler.workerFailureOrNull();
+                    }
+                    if (regionFailure == null) {
+                        try {
+                            final boolean commitEntity = entityPhaseRan;
+                            RegionScheduler.commitSuccessIfHealthy(() -> {
+                                if (commitEntity) commitEntityPhase(r);
+                            });
+                        } catch (Throwable completionFailure) {
+                            regionFailure = RegionScheduler.publishFatalAndSelectWinner(
+                                    completionFailure);
+                        }
+                    }
+                    if (claimStamped) {
+                        try {
+                            r.stampRelease("group");
+                        } catch (Throwable cleanupFailure) {
+                            regionFailure = RegionScheduler.publishFatalAndSelectWinner(
+                                    mergeFailure(regionFailure, cleanupFailure));
+                        }
+                    }
+                    try {
+                        r.release(me);
+                    } catch (Throwable cleanupFailure) {
+                        regionFailure = RegionScheduler.publishFatalAndSelectWinner(
+                                mergeFailure(regionFailure, cleanupFailure));
+                    } finally {
+                        me.currentRegion = null; // unpublish AFTER release attempt
+                    }
+                    if (regionFailure == null) {
+                        regionFailure = RegionScheduler.workerFailureOrNull();
+                    }
+                    if (regionFailure == null) {
+                        try {
+                            // Re-arm only a successful phase. A fatal generation
+                            // has no legal successor simulation step.
+                            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                                if (!r.queue().isEmpty() || !r.helpQueue.isEmpty()) {
+                                    RegionScheduler.enqueueReady(r);
+                                }
+                                ColorGate.tryMarkDone(r, this);
+                            });
+                        } catch (Throwable completionFailure) {
+                            regionFailure = RegionScheduler.publishFatalAndSelectWinner(
+                                    mergeFailure(regionFailure, completionFailure));
+                        }
+                    }
+                    try {
+                        // tryClaim's transaction spans the release-to-ColorGate
+                        // successor tail. Domain migration may proceed only
+                        // after this exact terminal, never at currentWorker=null.
+                        r.finishClaimTransaction();
+                    } catch (Throwable cleanupFailure) {
+                        regionFailure = RegionScheduler.publishFatalAndSelectWinner(
+                                mergeFailure(regionFailure, cleanupFailure));
+                    }
+                }
+                if (regionFailure != null) {
+                    RegionizedServer.<RuntimeException>rethrow(regionFailure);
                 }
             }
         } catch (Throwable t) {
-            // Never lose the barrier: complete on unexpected failure.
-            cf.complete(null);
-            throw t;
+            // Close the generation-wide start gate before publishing this group's
+            // terminal. Completing the future first leaves a real race in which Main
+            // (or another worker) can observe the local failure while an unrelated
+            // queued simulation root still enters. The shared slot also selects a
+            // concurrent earlier winner; this group failure is only suppressed context
+            // in that case.
+            Throwable winner = RegionScheduler.publishFatalAndSelectWinner(t);
+            completeExceptionallyAndRethrow(cf, winner);
         }
-        if (deferred == null) {
-            cf.complete(null);
-        } else {
-            final ArrayList<Region> rest = deferred;
-            if (rest.size() == group.size()) {
-                // Zero progress this pass: the blockers are mid-drain elsewhere
-                // or orphans awaiting the barrier pump's heal sweep. Chew one
-                // unit of real work if any exists, else breathe 20µs — bounds
-                // the requeue churn without parking inside the group (the
-                // deadlock-free continuation shape stays intact).
-                if (!RegionScheduler.stealOneRegionTask()) {
-                    LockSupport.parkNanos(20_000L);
+        try {
+            // The group-local body may have returned normally while another
+            // worker selected W.  Keep both the normal future terminal and a
+            // continuation publication behind the generation-wide fail-stop
+            // gate; neither is legal after W.
+            RegionScheduler.throwWorkerFailureIfAny();
+            if (deferred == null) {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    if (!cf.complete(null)) {
+                        throw new IllegalStateException(
+                                "region group future completed more than once");
+                    }
+                });
+            } else {
+                final ArrayList<Region> rest = deferred;
+                if (rest.size() == group.size()) {
+                    // Zero progress this pass: the blockers are mid-drain elsewhere
+                    // or orphans awaiting the barrier pump's heal sweep. Chew one
+                    // unit of real work if any exists, else breathe 20µs — bounds
+                    // the requeue churn without parking inside the group (the
+                    // deadlock-free continuation shape stays intact).
+                    RegionScheduler.throwWorkerFailureIfAny();
+                    if (!RegionScheduler.stealOneRegionTask()) {
+                        LockSupport.parkNanos(20_000L);
+                    }
+                    RegionScheduler.throwWorkerFailureIfAny();
+                    // ~1s of zero progress (50k passes × 20µs) = something is
+                    // genuinely wedged — say WHO instead of parking silently
+                    // (the 2026-06-12 wedge was 203s of anonymous spinning).
+                    if (depth > 0 && depth % 50_000 == 0) {
+                        LOGGER.error("[color-gate] group stalled {} passes; {}",
+                                depth, ColorGate.diagnose(rest.get(0), this));
+                    }
                 }
-                // ~1s of zero progress (50k passes × 20µs) = something is
-                // genuinely wedged — say WHO instead of parking silently
-                // (the 2026-06-12 wedge was 203s of anonymous spinning).
-                if (depth > 0 && depth % 50_000 == 0) {
-                    LOGGER.error("[color-gate] group stalled {} passes; {}",
-                            depth, ColorGate.diagnose(rest.get(0), this));
-                }
+                RegionScheduler.throwWorkerFailureIfAny();
+                RegionScheduler.enqueueGlobal(
+                        cancellableGroupRoot(rest, depth + 1, cf, tickEntities,
+                                rest.get(0).domain.entityDispatchPublication));
             }
-            RegionScheduler.enqueueGlobal(() -> processGroup(rest, depth + 1, cf));
+        } catch (Throwable terminalFailure) {
+            Throwable winner = RegionScheduler.publishFatalAndSelectWinner(terminalFailure);
+            completeExceptionallyAndRethrow(cf, winner);
         }
     }
 
+    /** Execute every accepted helper inherited by an exact legacy-group claim. */
+    static void drainGroupOrphanHelp(Region region) {
+        while (true) {
+            RegionScheduler.throwWorkerFailureIfAny();
+            Runnable help = region.helpQueue.poll();
+            if (help == null) return;
+            // The queued ExternalTask owns the exact W-vs-body admission.
+            help.run();
+            RegionScheduler.throwWorkerFailureIfAny();
+        }
+    }
+
+    private Runnable cancellableGroupRoot(ArrayList<Region> group, int depth,
+                                          CompletableFuture<Void> future,
+                                          boolean tickEntities,
+                                          EpochDomain.EntityDispatchPublication publication) {
+        return RegionScheduler.cancellableRoot(
+                () -> {
+                    if (!publication.awaitAccepted()) {
+                        RegionScheduler.throwWorkerFailureIfAny();
+                        return;
+                    }
+                    processGroup(group, depth, future, tickEntities);
+                },
+                future::completeExceptionally);
+    }
+
+    /** Future notification is diagnostic/wakeup work and cannot replace the phase primary. */
+    private static void completeExceptionallyAndRethrow(
+            CompletableFuture<Void> future, Throwable primary) {
+        Throwable failure = primary;
+        try {
+            future.completeExceptionally(primary);
+        } catch (Throwable notificationFailure) {
+            failure = mergeFailure(failure, notificationFailure);
+        } finally {
+            RegionizedServer.<RuntimeException>rethrow(failure);
+        }
+    }
+
+    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
+        if (primary == null) return secondary;
+        if (secondary != null && secondary != primary) {
+            try {
+                if (primary.getSuppressed().length >= 8) return primary;
+                primary.addSuppressed(secondary);
+            } catch (Throwable ignored) {
+                // Suppression is diagnostics only; physical Main must receive
+                // the exact first vanilla-phase failure under allocation stress.
+            }
+        }
+        return primary;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
+    }
+
     /**
-     * The per-region tick body. Below the dense threshold: vanilla's entityTickList.forEach
-     * lambda, scoped to this region's own entities, serial on the claiming worker (id order
-     * — vanilla insertion order, TNT-cannon safe). Above it: intra-region fan-out, see
-     * {@link #parallelTickOwned}.
+     * The per-region tick body: vanilla's entity loop, serial on the claiming
+     * worker in entity-ID order. Independently eligible regions remain parallel.
      */
     private void tickOwned(Region region) {
-        // Region-scoped precompute hook (Oxidizium cramming candidates etc.) —
-        // fires on the coordinator BEFORE any entity of the region ticks, so
-        // dense-path helpers observe its writes via the helpQueue publication.
-        RegionTickHooks.firePre(region);
+        long phaseStart = System.nanoTime();
         try {
-            final int threshold = FabroliaConfig.regionDenseFanoutThreshold;
-            if (threshold > 0 && region.entityCount.get() > threshold) {
-                parallelTickOwned(region);
-                return;
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> RegionTickHooks.firePre(region));
+            var entities = region.entities.iterator();
+            if (entities.hasNext()) {
+                new EntityTickCursor(region, entities).tick();
             }
-            final ServerLevel lvl = level;
-            final TickRateManager trm = lvl.tickRateManager();
-            final ServerChunkCache chunkSource = lvl.getChunkSource();
-            final DistanceManager dm = chunkSource.chunkMap.getDistanceManager();
-            final boolean playersInRegions = FabroliaConfig.enableRegionPlayerTicks;
-
-            // Per-region-task entity-ticking gate memo — see fabrolia$chunkGate.
-            final it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate =
-                    new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(16);
-            Entity prevGap = null;
-            long gapT0 = System.nanoTime();
-            for (Entity e : region.entities) {
-                tickOne(region, e, lvl, trm, chunkSource, dm, playersInRegions, gate, true);
-                long t1 = System.nanoTime();
-                if (t1 - gapT0 > 100_000_000L) {
-                    // COHORT_PHASE_SPLIT forensics: name the exact entity
-                    // whose tick blocked ≥100ms mid-phase (the wall that,
-                    // with the old belt, split a teleport cohort in two).
-                    FlightRecorder.record("PHASE-GAP region=" + Long.toHexString(region.gridKey)
-                            + " ms=" + (t1 - gapT0) / 1_000_000L
-                            + " in=" + e.getType() + "#" + e.getId()
-                            + " after=" + (prevGap == null ? "-" : prevGap.getType() + "#" + prevGap.getId())
-                            + " L=" + (region.domain != null ? region.domain.unitGameTime : -1));
-                }
-                prevGap = e;
-                gapT0 = t1;
-            }
-        } finally {
-            RegionTickHooks.firePost(region);
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> RegionTickHooks.firePost(region));
+            long phaseNanos = System.nanoTime() - phaseStart;
+            RegionScheduler.commitSuccessIfHealthy(
+                    () -> region.stagedPhaseNanos = phaseNanos);
+        } catch (Throwable thrown) {
+            Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+            RegionizedServer.<RuntimeException>rethrow(failure);
         }
     }
 
     /**
-     * Combined per-chunk entity-ticking gate ({@code inEntityTickingRange} + a live
-     * ticking chunk on the holder), memoized PER REGION TASK: one coherent answer per
-     * chunk per tick, mirroring vanilla — which evaluates this on main where nothing
-     * mutates ticket state mid-phase. Evaluated live per entity on a worker it raced
+     * Vanilla per-chunk entity-ticking gate ({@code inEntityTickingRange}), memoized
+     * PER REGION TASK: one coherent answer per chunk per tick, mirroring vanilla —
+     * which evaluates this on main where nothing mutates ticket state mid-phase.
+     * Evaluated live per entity on a worker it raced
      * (a) distance-tracker propagation waves from ChunkMap.move on OTHER workers
-     * (region player ticks: remove-source decay then re-add — intermediate levels are
+     * (off-main movement callbacks: remove-source decay then re-add — intermediate levels are
      * visible in the concurrent maps mid-wave) and (b) main's barrier pump applying
      * ticket updates mid-phase. A read landing in the decay window sees the chunk
      * transiently OUT of entity-ticking range and the entity silently skips a whole
      * tick — items freezing/jittering in sorter water streams near moving players,
      * load-scaled (2026-07-06). One memoized read per chunk is also cheaper than the
-     * old two-probe-plus-holder-deref per entity.
+     * old per-entity probes.
      *
-     * <p>{@code writable=false} on the dense-path shared memo (prebuilt by the
-     * coordinator, read concurrently by helper batches): an entity that crossed a
-     * chunk line mid-phase misses the memo and gets one live read, uncached — one
-     * coherent value per entity, same as vanilla gives a mover.
+     * <p>Do NOT add a live {@code ChunkHolder.getTickingChunk()} condition here.
+     * Vanilla 26.2's guarded entity loop uses only {@code inEntityTickingRange}.
+     * With c2me the holder's BLOCK_TICKING future changes asynchronously and can
+     * temporarily be incomplete after our completed simulation snapshot already
+     * says entity-ticking. The extra condition can skip minecarts/items for one
+     * region unit while block events and BEs continue.
+     *
+     * <p>The memo belongs to the serial region owner; newly encountered chunks
+     * are resolved lazily and cached for the rest of this phase.
      */
     private byte fabrolia$chunkGate(long packed, it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap memo,
-                                 boolean writable, ServerChunkCache chunkSource, DistanceManager dm) {
+                                 DistanceManager dm) {
         byte g = memo.get(packed);   // 0 = unknown, 1 = tick, 2 = skip
         if (g != 0) {
             return g;
         }
         boolean ok = dm.inEntityTickingRange(packed);
-        if (ok) {
-            ChunkHolder holder = chunkSource.getVisibleChunkIfPresent(packed);
-            ok = holder != null && holder.getTickingChunk() != null;
-        }
         g = ok ? (byte) 1 : (byte) 2;
-        if (writable) {
-            memo.put(packed, g);
-        }
+        memo.put(packed, g);
         return g;
     }
 
-    /**
-     * Dense-region intra-region fan-out (the user's "регион = домен синхронизации" model).
-     * The claiming worker becomes the COORDINATOR: it splits the region's entities into
-     * sub-batches on the region's {@link Region#helpQueue} (any region worker picks them
-     * up under THIS region's lock discipline — currentRegion is set by the help protocol,
-     * so tickLockOr scopes contention to this region instead of global statics), ticks its
-     * own share, helps drain leftovers, runs the ordered lane, then waits region-locally
-     * on a plain countdown — the fan-in never touches main.
-     *
-     * <p>Ordered lane: entity types the user listed in synchronizedEntities (TNT, items…)
-     * are extracted into a single id-ordered serial chain run by the coordinator — TNT
-     * cannons keep their exact mutual tick order even inside a dense region. Everything
-     * else gives up within-region ordering, same as the old flat-pool mode this load ran
-     * under before regions existed.
-     */
-    private void parallelTickOwned(Region region) {
-        final ServerLevel lvl = level;
-        final TickRateManager trm = lvl.tickRateManager();
-        final ServerChunkCache chunkSource = lvl.getChunkSource();
-        final DistanceManager dm = chunkSource.chunkMap.getDistanceManager();
-        final boolean playersInRegions = FabroliaConfig.enableRegionPlayerTicks;
 
-        ArrayList<Entity> parallel = new ArrayList<>((int) Math.min(Integer.MAX_VALUE, region.entityCount.get() + 16));
-        ArrayList<Entity> ordered = null;
-        // Prebuilt per-region-task gate memo (see fabrolia$chunkGate): resolved once per
-        // chunk HERE on the coordinator, then shared READ-ONLY by helper batches — every
-        // entity of a chunk gets the same coherent answer regardless of which batch or
-        // thread ticks it. Mid-phase movers miss the memo and take one uncached live read.
-        final it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate =
-                new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(64);
-        for (Entity e : region.entities) {
-            if (e == null) continue;
-            fabrolia$chunkGate(e.chunkPosition().pack(), gate, true, chunkSource, dm);
-            // synchronizedEntities types keep exact mutual order (the TNT-cannon
-            // contract) — id-ordered serial lane on the coordinator. The flat-pool
-            // class blacklist rides the same lane: those classes write OTHER
-            // entities' state when they tick (cart/boat mutual pushes, projectile
-            // hits), which is only safe serially — racing batches lost cart
-            // separation impulses (2026-07-10 splitter pile-up). The segmented TNT
-            // lane treats them as exact-order serial barriers, so R6 stays intact.
-            if (FabroliaConfig.isEntitySynchronized(EntityType.getKey(e.getType()))
-                    || ParallelProcessor.requiresOrderedLane(e)) {
-                if (ordered == null) ordered = new ArrayList<>(16);
-                ordered.add(e);
-            } else {
-                parallel.add(e);
+    /** One entity through vanilla admission and tick on the region owner.
+     *  The per-entity tick token deduplicates same-epoch migration visits. */
+    private final class EntityTickCursor implements Runnable {
+        private final Region region;
+        private final java.util.Iterator<Entity> entities;
+        private final ServerLevel lvl = level;
+        private final TickRateManager trm = lvl.tickRateManager();
+        private final DistanceManager dm = lvl.getChunkSource().chunkMap.getDistanceManager();
+        private final it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate =
+                new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(16);
+        private final Runnable workerOrdinal = this::tickOnWorker;
+        private final Runnable mainOrdinal = this::tickNextOnMain;
+        private Entity current;
+        private Entity previous;
+        private long packed;
+        private long gapStart = System.nanoTime();
+        private boolean pending;
+
+        EntityTickCursor(Region region, java.util.Iterator<Entity> entities) {
+            this.region = region;
+            this.entities = entities;
+        }
+
+        void tick() {
+            while (pending || advance()) {
+                pending = false;
+                // Each ordinal, including its entire native prefix, is admitted
+                // against W before index/token/despawn or routing state changes.
+                RegionScheduler.runSuccessBodyIfHealthy(workerOrdinal);
             }
         }
 
-        int n = parallel.size();
-        int workers = Math.max(1, RegionScheduler.workerCount());
-        // Batch sizing MEASURED (2026-07-12 dense-pen, 600 packed zombies, 30
-        // workers): max(32, n/workers) -> phase 4.8 ms mean / 8.9 p99; halving
-        // to max(16, n/(2*workers)) -> 5.1 mean / 10.8 p99 — WORSE. Packed pens
-        // parallelize at ~13% efficiency (shared entity-section reads + neighbor
-        // deltaMovement writes contend), so smaller batches buy contention, not
-        // speedup. Keep the coarse batches.
-        int batchSize = Math.max(32, (n + workers - 1) / workers);
-        int batchCount = n == 0 ? 0 : (n + batchSize - 1) / batchSize;
-        AtomicInteger latch = new AtomicInteger(batchCount);
-        final AtomicLong batchMax = new AtomicLong(); // /fabrolia regions top
-
-        // Publish batches 1..K-1 for helpers; coordinator ticks batch 0 itself.
-        for (int b = 1; b < batchCount; b++) {
-            final int from = b * batchSize;
-            final int to = Math.min(from + batchSize, n);
-            region.helpQueue.add(() -> {
-                long bt0 = System.nanoTime();
-                try {
-                    for (int j = from; j < to; j++) {
-                        tickOne(region, parallel.get(j), lvl, trm, chunkSource, dm, playersInRegions, gate, false);
-                    }
-                } finally {
-                    latch.decrementAndGet();
-                    batchMax.accumulateAndGet(System.nanoTime() - bt0, Math::max);
-                }
-            });
-            RegionScheduler.enqueueReady(region);
-        }
-        if (batchCount > 1) RegionScheduler.wakeWorkers();
-
-        if (batchCount > 0) {
-            long bt0 = System.nanoTime();
-            try {
-                int to = Math.min(batchSize, n);
-                for (int j = 0; j < to; j++) {
-                    tickOne(region, parallel.get(j), lvl, trm, chunkSource, dm, playersInRegions, gate, false);
-                }
-            } finally {
-                latch.decrementAndGet();
-                batchMax.accumulateAndGet(System.nanoTime() - bt0, Math::max);
-            }
+        private boolean advance() {
+            if (!entities.hasNext()) return false;
+            current = entities.next();
+            return true;
         }
 
-        // Help-drain whatever no other worker picked up — guarantees progress even if
-        // every other worker is busy (worst case degenerates to the serial path).
-        Runnable help;
-        while ((help = region.helpQueue.poll()) != null) {
-            help.run();
-        }
-
-        // Region-local fan-in MUST complete BEFORE the ordered lane runs.
-        //
-        // Reproducible bug 2026-06-14 (item sorters): the previous layout
-        // ticked ordered (items/TNT/exp orbs) while non-item batches were
-        // still in flight on helper workers. A mob in a parallel batch
-        // calling Entity.collide → Entity.push(Entity) writes the item's
-        // deltaMovement at the same moment item.tick reads it on the
-        // coordinator. Two writers on item.deltaMovement (and on item
-        // position via the collision push-back path) garbles the item's
-        // motion — observed as shulker-box drops ending up at the piston
-        // wall / outside the sorter instead of along the sorter path.
-        // Vanilla never has this race because everything ticks serially on
-        // main. The overlap saved ~stragglers-wait of wall clock but at
-        // the cost of vanilla-correct motion arithmetic for
-        // synchronizedEntities — exactly the contract that listing them
-        // there asks us to keep.
-        long spinUntil = System.nanoTime() + 30_000L;
-        while (latch.get() > 0) {
-            if (System.nanoTime() < spinUntil) {
-                Thread.onSpinWait();
-            } else {
-                LockSupport.parkNanos(25_000L);
-            }
-        }
-
-        region.lastFanoutBatches = batchCount;
-        region.lastBatchMaxNanos = batchMax.get();
-        long ord0 = System.nanoTime();
-        // Ordered lane: every parallel mob has settled its position/motion
-        // pushes by now, so item.tick reads a stable mob population (and no
-        // mob.push is racing item.deltaMovement). Vanilla mutual order kept.
-        if (ordered != null) {
-            if (FabroliaConfig.fabroliaTntSegmentedLane) {
-                fabrolia$tickOrderedSegmented(region, ordered, lvl, trm, chunkSource, dm, playersInRegions, gate);
-            } else {
-                for (int i = 0, m = ordered.size(); i < m; i++) {
-                    tickOne(region, ordered.get(i), lvl, trm, chunkSource, dm, playersInRegions, gate, false);
-                }
-            }
-        }
-        region.lastOrderedNanos = System.nanoTime() - ord0;
-    }
-
-    /**
-     * R6 TNT lane: the ordered lane with EXPLOSION-SEGMENTED parallelism. The vanilla
-     * contract behind synchronizedEntities is the exact MUTUAL order of interacting
-     * entities — and vanilla-exact TNT interacts with its peers through exactly one
-     * channel: an EXPLOSION (block destruction + knockback writes into later entities'
-     * state). A PrimedTnt that does NOT explode this tick (fuse is deterministic —
-     * it detonates when getFuse()==1 enters tick) reads only level/block state and
-     * writes only itself: no entity-entity coupling, so a CONSECUTIVE RUN of
-     * non-exploding vanilla TNT is order-independent and legal to tick in parallel —
-     * the same worker machinery, gates and striped random the parallel mob phase
-     * already uses. Everything else is a SERIAL BARRIER in exact list order: items,
-     * exp orbs, exploding TNT, removed/odd entries, and PrimedTnt SUBCLASSES (a mod
-     * override may add entity coupling we can't see). An explosion therefore observes
-     * every earlier entity's completed move and mutates later ones before they move —
-     * bit-identical to the serial lane. 18k TNT in one region was a 15s serial wall
-     * (1 TPS, 2026-07-02); this turns the movement share into ~workers-way parallel.
-     */
-    private void fabrolia$tickOrderedSegmented(Region region, ArrayList<Entity> ordered,
-                                            ServerLevel lvl, TickRateManager trm,
-                                            ServerChunkCache chunkSource, DistanceManager dm,
-                                            boolean playersInRegions,
-                                            it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate) {
-        final int n = ordered.size();
-        int i = 0;
-        while (i < n) {
-            // Accumulate a run of parallel-safe TNT.
-            int runStart = i;
-            while (i < n && fabrolia$isParallelSafeTnt(ordered.get(i))) {
-                i++;
-            }
-            int runLen = i - runStart;
-            if (runLen > 0) {
-                if (runLen < 64) {
-                    // Short run: fan-out overhead exceeds the win — serial.
-                    for (int j = runStart; j < i; j++) {
-                        tickOne(region, ordered.get(j), lvl, trm, chunkSource, dm, playersInRegions, gate, false);
-                    }
-                } else {
-                    fabrolia$tickTntRunParallel(region, ordered, runStart, i, lvl, trm, chunkSource, dm, playersInRegions, gate);
-                }
-            }
-            if (i < n) {
-                // Barrier entity (item / orb / exploding or modded TNT): exact serial order.
-                tickOne(region, ordered.get(i), lvl, trm, chunkSource, dm, playersInRegions, gate, false);
-                i++;
-            }
-        }
-    }
-
-    /** Parallel-safe = EXACTLY vanilla PrimedTnt (subclasses may couple entities) that is
-     *  alive and will NOT detonate this tick (vanilla: fuse decrements, then <=0 explodes —
-     *  so getFuse() > 1 cannot reach the explode branch). Fuse is written only by the
-     *  entity's own tick / commands (main, between ticks) — stable within the lane. */
-    private static boolean fabrolia$isParallelSafeTnt(Entity e) {
-        return e != null
-                && e.getClass() == net.minecraft.world.entity.item.PrimedTnt.class
-                && !e.isRemoved()
-                && ((net.minecraft.world.entity.item.PrimedTnt) e).getFuse() > 1;
-    }
-
-    /** Fan a non-exploding TNT run out to helper workers (same helpQueue + region-lock
-     *  discipline + latch fan-in as the main parallel phase); the coordinator ticks its
-     *  own share and help-drains, so progress never depends on free workers. */
-    private void fabrolia$tickTntRunParallel(Region region, ArrayList<Entity> ordered, int from, int to,
-                                          ServerLevel lvl, TickRateManager trm,
-                                          ServerChunkCache chunkSource, DistanceManager dm,
-                                          boolean playersInRegions,
-                                          it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate) {
-        int len = to - from;
-        int workers = Math.max(1, RegionScheduler.workerCount());
-        int batchSize = Math.max(32, (len + workers - 1) / workers);
-        int batchCount = (len + batchSize - 1) / batchSize;
-        AtomicInteger latch = new AtomicInteger(batchCount);
-        for (int b = 1; b < batchCount; b++) {
-            final int s = from + b * batchSize;
-            final int e = Math.min(s + batchSize, to);
-            region.helpQueue.add(() -> {
-                try {
-                    for (int j = s; j < e; j++) {
-                        tickOne(region, ordered.get(j), lvl, trm, chunkSource, dm, playersInRegions, gate, false);
-                    }
-                } finally {
-                    latch.decrementAndGet();
-                }
-            });
-            RegionScheduler.enqueueReady(region);
-        }
-        if (batchCount > 1) RegionScheduler.wakeWorkers();
-        try {
-            int e0 = Math.min(from + batchSize, to);
-            for (int j = from; j < e0; j++) {
-                tickOne(region, ordered.get(j), lvl, trm, chunkSource, dm, playersInRegions, gate, false);
-            }
-        } finally {
-            latch.decrementAndGet();
-        }
-        Runnable help;
-        while ((help = region.helpQueue.poll()) != null) {
-            help.run();
-        }
-        long spinUntil = System.nanoTime() + 30_000L;
-        while (latch.get() > 0) {
-            if (System.nanoTime() < spinUntil) {
-                Thread.onSpinWait();
-            } else {
-                LockSupport.parkNanos(25_000L);
-            }
-        }
-    }
-
-    /** One entity through the full vanilla gate sequence + tick. Shared by the serial
-     *  region drain and the dense fan-out batches (thread-safe: index ops are concurrent,
-     *  the per-entity region tick token dedups any same-epoch double-visit). */
-    private void tickOne(Region region, Entity e, ServerLevel lvl, TickRateManager trm,
-                         ServerChunkCache chunkSource,
-                         DistanceManager dm, boolean playersInRegions,
-                         it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate, boolean gateWritable) {
-        if (e == null) return;
-        if (e.isRemoved()) {
-            // Lazy cleanup: removal callbacks normally pull entities out, but a stale
-            // RegionKeyed key (cross-thread move race) can strand one here.
-            dropFromRegion(region, e);
-            return;
-        }
-        long packed = e.chunkPosition().pack();
-        long curKey = regionizer.grid.keyFor(packed);
-        if (curKey != region.gridKey) {
-            // Crossed a grid line since last tick: hand off to the new owner but still
-            // tick it HERE this tick (same "ticks where it was grouped" rule as the old
-            // grouped dispatch). If the new owner's drain also reaches it this tick,
-            // the region tick token below turns one of the two into a no-op.
-            indexMove(e, region, curKey);
-        }
-
-        RegionKeyed keyed = (RegionKeyed) e;
-        if (!keyed.fabrolia$tryMarkRegionTick(region.domain.tickToken())) {
-            return;
-        }
-
-        if (trm.isEntityFrozen(e)) return;
-
-        // task #19: a queued main-owned portal teleport = this entity is
-        // causally GONE from the source (vanilla teleports the tick portal-
-        // time fires). Ticking it while the handoff waits produced source-
-        // side double-motion and extra source epochs under main backlog.
-        if (keyed instanceof com.axalotl.fabrolia.common.ParallelProcessor.TickGuard tg
-                && tg.fabrolia$isPortalPending()) {
-            return;
-        }
-
-        boolean isPlayer = e instanceof ServerPlayer;
-        if (!isPlayer) {
-            // Ticking-readiness gate, ONE coherent answer per chunk per region task (see
-            // fabrolia$chunkGate — live per-entity reads raced distance-tracker propagation
-            // and missed ticks). The memo's live resolution MUST use the
-            // getVisibleChunkIfPresent holder path (worker-safe: c2me's lock-guarded
-            // getHolder + the holder's volatile ticking future) — never a main-thread-only
-            // cache. A prior "optimization" that read the since-removed loadedChunks cache
-            // here was a data race, reverted 2026-06-29.
-            if (fabrolia$chunkGate(packed, gate, gateWritable, chunkSource, dm) != 1) {
-                // VANILLA ORDER (26.2 ServerLevel guarded entity loop, bytecode-
-                // verified): checkDespawn runs BEFORE the entity-ticking range
-                // gate, for every tick-list entity — a mob parked beyond the
-                // gate still hard-despawns (>128) and a /kill corpse there
-                // still discards; only the TICK is range-gated. Skipping the
-                // whole entity froze far mobs alive-and-censused (2026-07-22
-                // mob-switch A/B: vanilla band=0 instant despawn vs regions
-                // band=120 frozen; after /kill the frozen corpses held the
-                // monster cap forever — Z3=0). The despawn check is chunk-
-                // independent (player distance + own removal), safe under this
-                // region's claim like the gate-passing path's call below.
-                try {
-                    e.checkDespawn();
-                } catch (Exception ex) {
-                    LOGGER.error("checkDespawn failed for {} ({})", e.getType(), e.getUUID(), ex);
-                }
+        private void tickOnWorker() {
+            var position = prepareEntityOrdinal(region, current, trm);
+            if (position == null) {
+                completed();
                 return;
             }
+            packed = position.pack();
+            if (tickPreparedEntity(region, current, lvl, dm, gate, packed)) {
+                completed();
+                return;
+            }
+            if (current instanceof ServerPlayer) {
+                // Direct players retain their original fallback/A5 venue. They
+                // are never part of a streamed NPC run.
+                IslandCommands.runEntityTickOnMain(RegionizedServer.this, region,
+                        () -> tickOneNativeAdmitted(region, current, lvl, dm, gate, packed, true));
+                completed();
+            } else {
+                IslandCommands.runEntityTickOnMain(RegionizedServer.this, region, this);
+            }
         }
 
-        Entity vehicle = e.getVehicle();
-        if (vehicle != null) {
-            if (!vehicle.isRemoved() && vehicle.hasPassenger(e)) return;
-            e.stopRiding();
+        /** The original worker is parked for this exact source member/clock. */
+        @Override
+        public void run() {
+            IslandRegistry.PIsland source = IslandCommands.routedUnitSourceOnMain(RegionizedServer.this);
+            if (source == null) throw new IllegalStateException("native entity run lost its source");
+            tickOneNativeAdmitted(region, current, lvl, dm, gate, packed, true);
+            completed();
+            // No precollection: predecessor callbacks finish before observing
+            // the next iterator entry. An invalidated source cannot enter it.
+            for (;;) {
+                if (IslandCommands.routedUnitSourceOnMain(RegionizedServer.this) != source) {
+                    throw new IllegalStateException("native entity run lost its source after an ordinal");
+                }
+                if (!advance()) return;
+                RegionScheduler.runSuccessBodyIfHealthy(mainOrdinal);
+                if (pending) return;
+            }
         }
 
-        if ((isPlayer && !playersInRegions) || ParallelProcessor.requiresMainThread(e)) {
-            RegionScheduler.queueMainSyncTick(e);
+        private void tickNextOnMain() {
+            if (!NativeEntityDependencies.canContinueMainRun(RegionizedServer.this, region, current)) {
+                // Other requests in this same writer batch may still change
+                // this entity. Leave even its prefix untouched, and let the
+                // worker classify afresh after release-before-result.
+                pending = true;
+                return;
+            }
+            var position = prepareEntityOrdinal(region, current, trm);
+            if (position != null) {
+                packed = position.pack();
+                tickOneNativeAdmitted(region, current, lvl, dm, gate, packed, true);
+            }
+            completed();
+        }
+
+        private void completed() {
+            long now = System.nanoTime();
+            if (now - gapStart > 100_000_000L && current != null) {
+                FlightRecorder.record("PHASE-GAP region=" + Long.toHexString(region.gridKey)
+                        + " ms=" + (now - gapStart) / 1_000_000L
+                        + " in=" + current.getType() + "#" + current.getId()
+                        + " after=" + (previous == null ? "-" : previous.getType() + "#" + previous.getId())
+                        + " L=" + (region.domain != null ? region.domain.unitGameTime : -1));
+            }
+            previous = current;
+            gapStart = now;
+        }
+    }
+
+    /** Return the original cached chunk position only after the whole prefix. */
+    private net.minecraft.world.level.ChunkPos prepareEntityOrdinal(
+            Region region, Entity entity, TickRateManager trm) {
+        if (entity == null) return null;
+        if (entity.isRemoved()) {
+            // Removal callbacks normally pull entities out; repair a stale key.
+            dropFromRegion(region, entity);
+            return null;
+        }
+        var position = entity.chunkPosition();
+        long curKey = regionizer.grid.keyFor(position.pack());
+        if (curKey != region.gridKey) {
+            // Tick where grouped; the token deduplicates a second migration visit.
+            indexMove(entity, region, curKey);
+        }
+        RegionKeyed keyed = (RegionKeyed) entity;
+        if (!keyed.fabrolia$tryMarkRegionTick(region.domain.tickToken())) return null;
+        if (trm.isEntityFrozen(entity)) return null;
+        if (((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return null;
+        // A queued portal transfer is already causally gone from this source.
+        if (((ParallelProcessor.TickGuard) entity).fabrolia$isPortalPending()) return null;
+        return position;
+    }
+
+    /** False means the complete native body still needs its Main rendezvous. */
+    private boolean tickPreparedEntity(Region region, Entity entity, ServerLevel lvl, DistanceManager dm,
+            it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate, long packed) {
+        boolean exclusive = RegionScheduler.ownsExclusiveGameplay();
+        boolean islandNpc = !(entity instanceof ServerPlayer)
+                && region.domain != null && region.domain.owner != null;
+        boolean mainOnly = islandNpc && ParallelProcessor.requiresMainThread(entity);
+        try (NativeEntityDependencies.TickAdmission admission =
+                     !exclusive && islandNpc && !mainOnly
+                             ? NativeEntityDependencies.prepareEntityTick(this, region, entity) : null) {
+            boolean needsGlobal = mainOnly || (!exclusive && (admission != null
+                    ? admission.requiresGlobal() : NativeEntityDependencies.requiresFence(this, region, entity)));
+            if (needsGlobal) {
+                return entity instanceof ServerPlayer player
+                        && AsyncIslandPlayerTicks.tryRunNativeDependencyFallback(player);
+            }
+            if (admission != null) admission.enterLocal();
+            tickOneNativeAdmitted(region, entity, lvl, dm, gate, packed, false);
+            return true;
+        }
+    }
+
+    private static boolean containsPearlImpactProducer(Entity entity) {
+        if (entity instanceof net.minecraft.world.entity.projectile
+                .throwableitemprojectile.ThrownEnderpearl) return true;
+        for (Entity passenger : entity.getPassengers()) {
+            if (containsPearlImpactProducer(passenger)) return true;
+        }
+        return false;
+    }
+
+    private void tickOneNativeAdmitted(Region region, Entity e, ServerLevel lvl, DistanceManager dm,
+            it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate, long packed, boolean mainBody) {
+    // A previous Main operation may have terminalized this actor while the exact
+    // source ordinal waited. Do not replay its marker or tick a transferred body.
+    if (mainBody) {
+        if (e.level() != lvl || e.isRemoved()
+                || ((ParallelProcessor.TickGuard) e).fabrolia$isPortalPending()
+                || ((ParallelProcessor.TickGuard) e).fabrolia$tickLease().isArrivalPending()) return;
+        packed = e.chunkPosition().pack();
+    }
+    boolean directPlayer = e instanceof ServerPlayer;
+    boolean containsPlayerTick = !mainBody && ParallelProcessor.containsServerPlayerTick(e);
+    if (!directPlayer) {
+        // Ticking-readiness gate, ONE coherent answer per chunk per region task (see
+        // fabrolia$chunkGate — live per-entity reads raced distance-tracker propagation
+        // and missed ticks). The completed DistanceManager view is the exact vanilla
+        // authority; a second live holder-future probe is both non-vanilla and racy.
+        boolean ticking = mainBody ? dm.inEntityTickingRange(packed)
+                : fabrolia$chunkGate(packed, gate, dm) == 1;
+        if (!ticking) {
+            // VANILLA ORDER (26.2 ServerLevel guarded entity loop, bytecode-
+            // verified): checkDespawn runs BEFORE the entity-ticking range
+            // gate, for every tick-list entity — a mob parked beyond the
+            // gate still hard-despawns (>128) and a /kill corpse there
+            // still discards; only the TICK is range-gated. Skipping the
+            // whole entity froze far mobs alive-and-censused (2026-07-22
+            // mob-switch A/B: vanilla band=0 instant despawn vs regions
+            // band=120 frozen; after /kill the frozen corpses held the
+            // monster cap forever — Z3=0). The despawn check is chunk-
+            // independent (player distance + own removal), safe under this
+            // region's claim like the gate-passing path's call below.
+            e.checkDespawn();
             return;
         }
-
-        try {
-            e.checkDespawn();
-        } catch (Exception ex) {
-            LOGGER.error("checkDespawn failed for {} ({})", e.getType(), e.getUUID(), ex);
+    }
+    
+    Entity vehicle = e.getVehicle();
+    if (vehicle != null) {
+        // PORTAL-HANDOFF (2026-08-06 minecart-passenger despawn): a vehicle
+        // with a queued main-side portal teleport is NOT removed — vanilla
+        // would carry its riders through teleportCrossDimension's
+        // eject→recursive-passenger-teleport→re-seat. But the isRemoved
+        // spoof (EntityMixin.fabrolia$removedWhileDeparted) made this gate
+        // read the staged vehicle as removed and stopRiding() the
+        // passenger on the SOURCE side: the mob then arrived as a separate
+        // unmounted copy, lost requiresCustomPersistence()'s isPassenger
+        // protection, and vanilla checkDespawn discarded it instantly in a
+        // no-players-nearby destination. Skip the passenger exactly like
+        // the vehicle itself (the portalPending early-out above) — main's
+        // deferred teleport re-seats it on the destination copy.
+        if (vehicle instanceof com.axalotl.fabrolia.common.ParallelProcessor.TickGuard vg
+                && vg.fabrolia$isPortalPending()) {
+            return;
         }
+        if (!vehicle.isRemoved() && vehicle.hasPassenger(e)) return;
+        e.stopRiding();
+    }
+    
+    // A5: a direct, supported player is owned by this autonomous island unit.
+    // Preserve vanilla's checkDespawn-before-body order before irreversible A5
+    // admission.  Unsupported subclasses/vehicle trees/session transitions simply
+    // fall through to the established MAIN_SYNC compatibility lane.
+    if (directPlayer) {
+        e.checkDespawn();
         if (e.isRemoved()) {
             dropFromRegion(region, e);
             return;
         }
-        if (FabroliaConfig.fabroliaOptimisticBorderMetric) {
-            if (isBorderForMetric(region, e)) METRIC_BORDER.incrementAndGet();
-            else METRIC_INTERIOR.incrementAndGet();
+        if (!mainBody && AsyncIslandPlayerTicks.tryRunEarly(region, (ServerPlayer) e)) {
+            return;
         }
-        ParallelProcessor.tickEntity(lvl, e, true);
     }
+    
+    if (!mainBody && containsPlayerTick) {
+        // A5-disabled/unsupported players and passenger carriers need their
+        // complete native producer envelope before Main takes a source claim.
+        RegionScheduler.queueMainSyncFencedTick(e, () -> true, null);
+        return;
+    }
+    if (!mainBody && (region.domain == null || region.domain.owner == null)
+            && containsPearlImpactProducer(e)) {
+        // Compatibility regions have no source-unit writer ACK. Admit the entire
+        // still-unentered native tick on Main instead of parking an ownerless worker.
+        RegionScheduler.queueMainSyncFencedTick(e, () -> true, null);
+        return;
+    }
+
+    
+    if (!mainBody && ParallelProcessor.requiresMainThread(e)) {
+        // The global-domain compatibility lane has no autonomous source unit.
+        RegionScheduler.queueMainSyncTick(e);
+        return;
+    }
+
+    if (!directPlayer) e.checkDespawn();
+    if (e.isRemoved()) {
+        dropFromRegion(region, e);
+        return;
+    }
+    if (FabroliaConfig.fabroliaOptimisticBorderMetric) {
+        if (isBorderForMetric(region, e)) METRIC_BORDER.incrementAndGet();
+        else METRIC_INTERIOR.incrementAndGet();
+    }
+    ParallelProcessor.tickEntity(lvl, e, !mainBody); }
 }

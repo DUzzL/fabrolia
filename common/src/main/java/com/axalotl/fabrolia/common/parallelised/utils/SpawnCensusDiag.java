@@ -48,10 +48,9 @@ public final class SpawnCensusDiag {
     /** Entities re-added by the ground-truth reconciliation sweep. */
     public static final AtomicLong RECONCILE_HEALED = new AtomicLong();
     /** Incremental census (task #21): fast-path builds, all-saturated skips,
-     *  audit failures, and reduce cost. */
+     *  and reduce cost. Audit failure is fail-stop, not a diagnostic count. */
     public static final AtomicLong CENSUS_FAST = new AtomicLong();
     public static final AtomicLong CENSUS_SKIP_ALL = new AtomicLong();
-    public static final AtomicLong AUDIT_ERRORS = new AtomicLong();
     public static final AtomicLong EV_ADD = new AtomicLong();
     public static final AtomicLong EV_REMOVE = new AtomicLong();
     public static final java.util.concurrent.atomic.LongAdder REDUCE_NANOS =
@@ -166,7 +165,6 @@ public final class SpawnCensusDiag {
           .append(" reduceAvgUs=").append(CENSUS_FAST.get() == 0 ? 0
                   : REDUCE_NANOS.sum() / Math.max(1, CENSUS_FAST.get()) / 1000)
           .append(" reduceMaxUs=").append(REDUCE_NANOS_MAX.get() / 1000)
-          .append(" auditErr=").append(AUDIT_ERRORS.get())
           .append(" evAdd=").append(EV_ADD.get())
           .append(" evRem=").append(EV_REMOVE.get())
           .append(" healed=").append(RECONCILE_HEALED.get()).append(']');

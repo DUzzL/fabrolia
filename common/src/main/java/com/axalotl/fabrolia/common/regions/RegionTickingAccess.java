@@ -24,4 +24,11 @@ public interface RegionTickingAccess {
 
     /** Pending-unloads holder map. Kept for diagnostics. */
     Iterable<net.minecraft.server.level.ChunkHolder> fabrolia$pendingUnloadHolders();
+
+    /**
+     * Run every accepted ChunkMap unload continuation before a level save can
+     * report success. The implementation requires physical Main and asserts
+     * that the deferred queue is empty on return.
+     */
+    void fabrolia$flushDeferredOwnerUnloads();
 }

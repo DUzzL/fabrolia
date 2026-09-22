@@ -68,10 +68,15 @@ public final class FastBitRadixSort {
             }
             if (DistanceSortBridge.sort(nb.xs, nb.ys, nb.zs, tx, ty, tz, size, nb.perm)) {
                 Object[] scratch = nb.scratch;
-                for (int k = 0; k < size; k++) {
-                    scratch[k] = entities[nb.perm.getInt(k * 4)];
+                try {
+                    for (int k = 0; k < size; k++) {
+                        scratch[k] = entities[nb.perm.getInt(k * 4)];
+                    }
+                    System.arraycopy(scratch, 0, entities, 0, size);
+                } finally {
+                    // Worker-local buffers outlive entities and their levels.
+                    java.util.Arrays.fill(scratch, 0, size, null);
                 }
-                System.arraycopy(scratch, 0, entities, 0, size);
                 return;
             }
         }

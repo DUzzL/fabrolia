@@ -15,6 +15,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.material.FluidState;
@@ -46,6 +47,8 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -277,6 +280,8 @@ class TickRepairProductionPathTest {
         final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap next =
                 new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
         final Object lock = new Object();
+        final IslandScheduledTicks.SliceRegistry sliceRegistry =
+                new IslandScheduledTicks.SliceRegistry();
 
         TestLevelTicks() { super(k -> true); }
 
@@ -284,6 +289,9 @@ class TickRepairProductionPathTest {
         @Override public it.unimi.dsi.fastutil.longs.Long2LongMap fabrolia$nextTickForContainer() { return next; }
         @Override public java.util.function.LongPredicate fabrolia$tickCheck() { return k -> true; }
         @Override public Object fabrolia$tickLock() { return lock; }
+        @Override public IslandScheduledTicks.SliceRegistry fabrolia$sliceRegistry() { return sliceRegistry; }
+        @Override public java.util.Queue<ScheduledTick<T>> fabrolia$vanillaToRunThisTick() { return new java.util.ArrayDeque<>(); }
+        @Override public java.util.List<ScheduledTick<T>> fabrolia$vanillaAlreadyRunThisTick() { return new java.util.ArrayList<>(); }
     }
 
     /** LevelData carrying the raw-wall-counter duck. */
@@ -298,6 +306,78 @@ class TickRepairProductionPathTest {
 
     record Scheduled(BlockPos pos, Object type, int delay) {}
 
+    /** Minimal FULL-chunk seam for the production dirty-mark contract. The
+     *  constructor is never entered: like {@link TestLevel}, the instance is
+     *  allocated through Unsafe so this fixture cannot accidentally exercise
+     *  unrelated LevelChunk construction. */
+    static final class TestFullChunk extends LevelChunk {
+        boolean markedUnsaved;
+
+        private TestFullChunk() {
+            super(null, new ChunkPos(1, 1));
+            throw new AssertionError("never constructed — allocated via Unsafe");
+        }
+
+        static TestFullChunk alloc() {
+            try {
+                return (TestFullChunk) UNSAFE.allocateInstance(TestFullChunk.class);
+            } catch (InstantiationException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        @Override
+        public void markUnsaved() {
+            markedUnsaved = true;
+        }
+    }
+
+    /** IO-flush seam used by TickRepairRun's mandatory pre-mutation backup.
+     *  It models a completed ChunkMap flush; the temporary test world has no
+     *  region file, so production then classifies the backup source as absent. */
+    static final class TestChunkMap extends net.minecraft.server.level.ChunkMap {
+        private TestChunkMap() {
+            super(null, null, null, null, Runnable::run, null, null, null,
+                    null, null, null, 0, false);
+            throw new AssertionError("never constructed — allocated via Unsafe");
+        }
+
+        static TestChunkMap alloc() {
+            try {
+                return (TestChunkMap) UNSAFE.allocateInstance(TestChunkMap.class);
+            } catch (InstantiationException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<Void> synchronize(boolean flush) {
+            return java.util.concurrent.CompletableFuture.completedFuture(null);
+        }
+    }
+
+    static final class TestChunkSource extends net.minecraft.server.level.ServerChunkCache {
+        private TestChunkSource() {
+            super(null, null, null, null, Runnable::run, null,
+                    0, 0, false, null, null);
+            throw new AssertionError("never constructed — allocated via Unsafe");
+        }
+
+        static TestChunkSource alloc() {
+            try {
+                TestChunkSource source =
+                        (TestChunkSource) UNSAFE.allocateInstance(TestChunkSource.class);
+                Field chunkMap = net.minecraft.server.level.ServerChunkCache.class
+                        .getDeclaredField("chunkMap");
+                chunkMap.setAccessible(true);
+                chunkMap.set(source, TestChunkMap.alloc());
+                return source;
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
     /** Constructor-bypassed ServerLevel overriding exactly the accessors the
      *  repair facility reads: clocks, lanes, dimension, world state at
      *  positions, and the schedule/chunk seams. */
@@ -309,6 +389,9 @@ class TickRepairProductionPathTest {
         ResourceKey<Level> fabricatedDimension;
         Map<BlockPos, BlockState> states;
         List<Scheduled> scheduled;
+        Map<Long, TestFullChunk> fullChunks;
+        TestChunkSource chunkSource;
+        boolean scheduleCanonicalTicks;
 
         private TestLevel() {
             super(null, null, null, null, null, null, false, 0L, null, false);
@@ -322,6 +405,8 @@ class TickRepairProductionPathTest {
                 l.fabricatedDimension = Level.OVERWORLD;
                 l.states = new HashMap<>();
                 l.scheduled = new ArrayList<>();
+                l.fullChunks = new HashMap<>();
+                l.chunkSource = TestChunkSource.alloc();
                 return l;
             } catch (InstantiationException e) {
                 throw new IllegalStateException(e);
@@ -331,6 +416,7 @@ class TickRepairProductionPathTest {
         @Override public long getGameTime() { return fabricatedGameTime; }
         @Override public LevelData getLevelData() { return fabricatedLevelData; }
         @Override public MinecraftServer getServer() { return null; }
+        @Override public net.minecraft.server.level.ServerChunkCache getChunkSource() { return chunkSource; }
         @Override public ResourceKey<Level> dimension() { return fabricatedDimension; }
         @Override public LevelTicks<Block> getBlockTicks() { return blockLane; }
         @Override public LevelTicks<Fluid> getFluidTicks() { return fluidLane; }
@@ -348,16 +434,27 @@ class TickRepairProductionPathTest {
         @Override
         public void scheduleTick(BlockPos pos, Block block, int delay) {
             scheduled.add(new Scheduled(pos.immutable(), block, delay));
+            if (scheduleCanonicalTicks) {
+                blockLane.schedule(new ScheduledTick<>(block, pos, fabricatedGameTime + delay, TickPriority.NORMAL, 0L));
+            }
         }
 
         @Override
         public void scheduleTick(BlockPos pos, Fluid fluid, int delay) {
             scheduled.add(new Scheduled(pos.immutable(), fluid, delay));
+            if (scheduleCanonicalTicks) {
+                fluidLane.schedule(new ScheduledTick<>(fluid, pos, fabricatedGameTime + delay, TickPriority.NORMAL, 0L));
+            }
         }
 
         @Override
         public ChunkAccess getChunk(int x, int z, ChunkStatus status, boolean create) {
-            return null;   // markDirty seam: nothing to mark in the harness
+            if (status != ChunkStatus.FULL || create) {
+                return null;
+            }
+            // Every container installed by this harness represents an already
+            // loaded chunk. Materialize only its minimal dirty-mark seam.
+            return fullChunks.computeIfAbsent(ChunkPos.pack(x, z), ignored -> TestFullChunk.alloc());
         }
     }
 
@@ -388,6 +485,7 @@ class TickRepairProductionPathTest {
     void resetGlobalState() throws ReflectiveOperationException {
         setStatic(RegionScheduler.class, "active", false);
         ((Map<?, ?>) getStatic(RegionScheduler.class, "PER_LEVEL")).clear();
+        setStatic(RegionScheduler.class, "orphanFatalFailure", null);
         TickDomains.clearFinalClocks();
     }
 
@@ -444,6 +542,64 @@ class TickRepairProductionPathTest {
 
     private static TickRepair.Result run(TestLevel level, TickRepair.Mode mode, Path dir) {
         return TickRepair.runLoadedPass(List.of(level), mode, dir, null);
+    }
+
+    @Test
+    void inspectorPositionClearPersistsOnlyConfirmedMutation() {
+        Fixture f = new Fixture(100L);
+        BlockPos pos = inChunk(0, 64, 0);
+        f.block.schedule(new ScheduledTick<>(Blocks.STONE, pos, 100L + TickInspector.SUSPECT_FUTURE + 1, TickPriority.NORMAL, 0L));
+        TestFullChunk chunk = (TestFullChunk) f.level.getChunk(1, 1, ChunkStatus.FULL, false);
+        TickInspector.clearStale(f.level, pos, false);
+        assertTrue(f.block.hasScheduledTick(pos, Blocks.STONE));
+        assertFalse(chunk.markedUnsaved);
+        TickInspector.clearStale(f.level, pos, true);
+        assertFalse(f.block.hasScheduledTick(pos, Blocks.STONE));
+        assertTrue(chunk.markedUnsaved, "cleared ticks must be eligible for chunk persistence");
+        chunk.markedUnsaved = false;
+        TickInspector.clearStale(f.level, pos, true);
+        assertFalse(chunk.markedUnsaved, "an already-clean container is not a mutation");
+    }
+
+    @Test
+    void inspectorChunkClearPersistsBothLanesWithoutDirtyingDryRun() {
+        Fixture f = new Fixture(100L);
+        BlockPos pos = inChunk(0, 64, 0);
+        long stale = 100L + TickInspector.SUSPECT_FUTURE + 1;
+        f.block.schedule(new ScheduledTick<>(Blocks.STONE, pos, stale, TickPriority.NORMAL, 0L));
+        f.fluid.schedule(new ScheduledTick<>(Fluids.WATER, pos, stale, TickPriority.NORMAL, 1L));
+        TestFullChunk chunk = (TestFullChunk) f.level.getChunk(1, 1, ChunkStatus.FULL, false);
+        TickInspector.clearStaleChunk(f.level, 1, 1, false, true);
+        assertEquals(1, f.block.count());
+        assertEquals(1, f.fluid.count());
+        assertFalse(chunk.markedUnsaved);
+        TickInspector.clearStaleChunk(f.level, 1, 1, false, false);
+        assertEquals(0, f.block.count());
+        assertEquals(0, f.fluid.count());
+        assertTrue(chunk.markedUnsaved);
+        chunk.markedUnsaved = false;
+        TickInspector.clearStaleChunk(f.level, 1, 1, false, false);
+        assertFalse(chunk.markedUnsaved);
+    }
+
+    @Test
+    void inspectorReschedulePersistsAcceptedTickButNotDedupRefusal() {
+        Fixture f = new Fixture(100L);
+        BlockPos pos = inChunk(0, 64, 0);
+        f.level.states.put(pos, Blocks.WATER.defaultBlockState());
+        f.level.scheduleCanonicalTicks = true;
+        f.level.blockLane.addContainer(new ChunkPos(1, 1), f.block);
+        f.level.fluidLane.addContainer(new ChunkPos(1, 1), f.fluid);
+        TestFullChunk chunk = (TestFullChunk) f.level.getChunk(1, 1, ChunkStatus.FULL, false);
+        TickInspector.reschedule(f.level, pos, 5);
+        assertTrue(f.block.hasScheduledTick(pos, Blocks.WATER));
+        assertTrue(f.fluid.hasScheduledTick(pos, Fluids.WATER));
+        assertTrue(chunk.markedUnsaved);
+        chunk.markedUnsaved = false;
+        TickInspector.reschedule(f.level, pos, 1);
+        assertEquals(105L, f.block.peek().triggerTick());
+        assertEquals(105L, f.fluid.peek().triggerTick());
+        assertFalse(chunk.markedUnsaved, "vanilla dedup retained the original ticks unchanged");
     }
 
     // ------------------------------------------------------------------
@@ -668,10 +824,10 @@ class TickRepairProductionPathTest {
     /** Review finding #5 pin: clearing the ambiguous entries must heal the
      *  dead tag EVEN IF proven-stale mismatch entries remain in the queue
      *  (clear mode deliberately leaves those for repair-all confirm) —
-     *  otherwise later schedules at this chunk go through rebaseTo's
-     *  adopt-without-shift ERROR path and packed delays anchor via
-     *  unpackBasis's caller fallback, the exact bug class this facility
-     *  exists to prevent. */
+     *  otherwise later schedules at this chunk hit the operational
+     *  rebase/unpack fail-stop because no legitimate clock exists. This
+     *  operator-confirmed mode is the explicit point that selects a live
+     *  consumer domain. */
     @Test
     void clearConfirmHealsTagEvenWhenMismatchEntriesRemain() throws Exception {
         long wall = 8_000;
@@ -922,9 +1078,9 @@ class TickRepairProductionPathTest {
     }
 
     // ------------------------------------------------------------------
-    // 6c. Per-chunk transaction (audit15): an injected failure mid-run rolls
-    //     ITS chunk back exactly and the run CONTINUES; committed chunks are
-    //     recorded incrementally so nothing is lost or unreported.
+    // 6c. Per-chunk transaction: an injected failure rolls its partially
+    //     entered chunk back exhaustively, then the exact primary fail-stops.
+    //     No later chunk may be entered.
     // ------------------------------------------------------------------
 
     /** Injects one failure into the repair's own removal call AFTER the
@@ -934,6 +1090,8 @@ class TickRepairProductionPathTest {
      *  container fault. */
     static final class FailOnceChunkTicks<T> extends RepairChunkTicks<T> {
         int nonNullPolls;
+        final IllegalStateException primary = new IllegalStateException(
+                "injected post-mutation poll failure (test)");
 
         // task #37: the repair mutates through the poll-drain now (removeIf is
         // impl-broken under Lithium) — the injected fault moves to poll, same
@@ -941,28 +1099,27 @@ class TickRepairProductionPathTest {
         @Override public ScheduledTick<T> poll() {
             ScheduledTick<T> t = super.poll();
             if (t != null && ++nonNullPolls == 1) {
-                throw new IllegalStateException("injected post-mutation poll failure (test)");
+                throw primary;
             }
             return t;
         }
     }
 
     @Test
-    void injectedMidRunFailureRollsBackItsChunkAndRunContinues() throws Exception {
+    void injectedMidRunFailureRollsBackThenFailStopsBeforeSuccessorChunk() throws Exception {
         long wall = 7_700;
         Fixture fx = new Fixture(wall);
-        // three chunks, each with one stale entry; chunk [2,2] fails on its
-        // first removal attempt
-        long key1 = fx.chunkKey;                       // [1,1] healthy RepairChunkTicks
-        long key2 = ChunkPos.pack(2, 2);
-        long key3 = ChunkPos.pack(3, 3);
+        // LongOpenHashSet iteration for these keys is [1,1], [3,3], [2,2]:
+        // the middle chunk fails and [2,2] is the forbidden successor.
+        long key2 = ChunkPos.pack(3, 3);
+        long key3 = ChunkPos.pack(2, 2);
         FailOnceChunkTicks<Block> failing = new FailOnceChunkTicks<>();
         RepairChunkTicks<Block> third = new RepairChunkTicks<>();
         fx.level.blockLane.containers.put(key2, failing);
         fx.level.blockLane.containers.put(key3, third);
         BlockPos p1 = new BlockPos(16 + 1, 64, 16 + 1);
-        BlockPos p2 = new BlockPos(32 + 1, 64, 32 + 1);
-        BlockPos p3 = new BlockPos(48 + 1, 64, 48 + 1);
+        BlockPos p2 = new BlockPos(48 + 1, 64, 48 + 1);
+        BlockPos p3 = new BlockPos(32 + 1, 64, 32 + 1);
         fx.level.states.put(p1, Blocks.STONE.defaultBlockState());
         fx.level.states.put(p2, Blocks.STONE.defaultBlockState());
         fx.level.states.put(p3, Blocks.STONE.defaultBlockState());
@@ -975,13 +1132,17 @@ class TickRepairProductionPathTest {
         fx.level.blockLane.next.put(key2, wall + 4);
         failing.fabrolia$setDomain(WALL, -1);
 
-        TickRepair.Result r = run(fx.level, TickRepair.Mode.CONFIRM, tmp.resolve("tx"));
+        Path reportDir = tmp.resolve("tx");
+        Throwable thrown = assertThrows(Throwable.class,
+                () -> run(fx.level, TickRepair.Mode.CONFIRM, reportDir));
+        assertSame(failing.primary, thrown,
+                "rollback and fatal publication must not replace the entered failure");
 
-        // the two healthy chunks committed — the failure did NOT abort the run
-        assertEquals(2, r.totals.removedMismatch,
-                "chunks [1,1] and [3,3] must commit despite the [2,2] failure");
+        // The first chunk committed before the primary. The later third chunk
+        // is a forbidden successor and remains byte-for-byte live.
         assertEquals(0, fx.block.count());
-        assertEquals(0, third.count());
+        assertEquals(1, third.count(), "a later chunk must never start after the primary");
+        assertTrue(third.hasScheduledTick(p3, Blocks.REDSTONE_ORE));
         // the failing chunk rolled back EXACTLY
         assertEquals(List.of(stale2), failing.getAll().toList(),
                 "the failed chunk must be restored to its exact pre-mutation state");
@@ -990,25 +1151,23 @@ class TickRepairProductionPathTest {
         assertEquals(wall + 4, fx.level.blockLane.next.get(key2),
                 "the lane's next-tick index must be restored");
         assertEquals(WALL, failing.fabrolia$domainIsland());
-        // ... and is reported as FAILED-ROLLED-BACK with verified-exact restore
-        String rollbackNote = r.notes.stream()
-                .filter(n -> n.contains("FAILED-ROLLED-BACK")).findFirst().orElseThrow();
-        assertTrue(rollbackNote.contains("chunk[2,2]"));
-        assertTrue(rollbackNote.contains("injected post-mutation poll failure"));
-        assertTrue(rollbackNote.contains("no mutation from this chunk was committed"));
-        assertTrue(rollbackNote.contains("restored and verified exact"),
-                "the restore must be verified exact, not assumed");
-        // the report carries the committed records AND the rollback record
-        String report = Files.readString(r.reportFile);
-        assertTrue(report.contains("chunk[1,1]") && report.contains("chunk[3,3]"),
-                "committed chunks must be identified in the report");
-        assertTrue(report.contains("FAILED-ROLLED-BACK") && report.contains("chunk[2,2]"));
-        assertEquals(2, r.applied.stream().filter(f -> f.action().equals(TickRepair.ACTION_REMOVE)).count());
 
-        // a re-run repairs the (now healthy) failing chunk — transient fault
-        TickRepair.Result r2 = run(fx.level, TickRepair.Mode.CONFIRM, tmp.resolve("tx2"));
-        assertEquals(1, r2.totals.removedMismatch);
-        assertEquals(0, failing.count());
+        Path reportFile;
+        try (var files = Files.list(reportDir)) {
+            reportFile = files.filter(Files::isRegularFile).findFirst().orElseThrow();
+        }
+        String report = Files.readString(reportFile);
+        int appliedHeader = report.indexOf("== applied (");
+        assertTrue(appliedHeader >= 0);
+        String appliedSection = report.substring(appliedHeader);
+        assertTrue(appliedSection.contains("chunk[1,1]"),
+                "the earlier committed chunk must already be crash-safely recorded");
+        assertFalse(appliedSection.contains("chunk[3,3]"),
+                "a rolled-back failed chunk cannot be published as applied");
+        assertFalse(appliedSection.contains("chunk[2,2]"),
+                "the forbidden successor chunk cannot be published as applied");
+        assertFalse(appliedSection.contains("applied trailer"),
+                "a failed run must not publish its success trailer");
     }
 
     // ------------------------------------------------------------------

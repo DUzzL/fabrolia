@@ -1,9 +1,7 @@
 package com.axalotl.fabrolia.common.api;
 
+import com.axalotl.fabrolia.common.regions.FunctionAnalyzer;
 import net.minecraft.resources.Identifier;
-
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * A8/MCFC bridge — scope metadata for datapack functions (interpreted or
@@ -50,22 +48,26 @@ public final class FabroliaFunctionScopes {
                 new Scope(false, false, true, true, true, false, "no metadata: fenced global path");
     }
 
-    private static final Map<Identifier, Scope> SCOPES = new ConcurrentHashMap<>();
-
-    /** Compiler/analyzer registration (datapack reload replaces entries). */
+    /**
+     * Compiler registration. During {@code CommandFunction.fromLines} this is
+     * bound to the exact candidate-library transaction; a failed reload cannot
+     * overwrite live metadata. An id-only registration outside that exact
+     * scope is ignored because it cannot prove which function generation it
+     * describes.
+     */
     public static void register(Identifier function, Scope scope) {
-        SCOPES.put(function, scope);
+        FunctionAnalyzer.registerScope(function, scope);
     }
 
     public static void clear() {
-        SCOPES.clear();
+        FunctionAnalyzer.clear();
     }
 
     public static Scope scopeOf(Identifier function) {
-        return SCOPES.getOrDefault(function, Scope.UNKNOWN);
+        return FunctionAnalyzer.scopeOf(function);
     }
 
     public static int registered() {
-        return SCOPES.size();
+        return FunctionAnalyzer.registered();
     }
 }

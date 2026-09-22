@@ -1,12 +1,13 @@
 package com.axalotl.fabrolia.common.regions;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
-import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientboundChunkBatchFinishedPacket;
 import net.minecraft.network.protocol.game.ClientboundChunkBatchStartPacket;
+import net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,7 +28,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <pre>
  * TRACKED → REQUESTED(leased to owner) → READY(sealed @L) → RESERVED →
- * ENQUEUED → ACKNOWLEDGED   (terminal: CANCELLED / REPLACED)
+ * ADMITTED(receipt ordered) → ENQUEUED(real send returned) → ACKNOWLEDGED
+ * (terminal: CANCELLED / REPLACED)
  * </pre>
  *
  * Ownership contract:
@@ -43,21 +45,24 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>The sender/main NEVER acquires an island claim and never spins.</li>
  * </ul>
  *
- * Revision fence (no lost increments, no overtaking): a sealed packet may be
- * enqueued only while {@code owner.logicalTick == sealL} — logicalTick is
- * written once per unit AFTER all its writes, so equality proves no unit
- * completed since the seal; a unit still in flight has not had its dirty
- * flags broadcast-cleared yet (broadcast runs on main after this enqueue),
- * so its updates still reach the player in order. On fence failure the lease
- * is re-issued (bounded); after {@link #ESCALATE_AFTER} failures the record
- * escalates to a fenced main build (mainClaimScoped — correct at any island
- * rate, bounded to pathological always-written chunks).
+ * Revision fence (no lost increments, no overtaking): selection first checks
+ * the packet's per-chunk write generation, then the final enqueue takes that
+ * exact generation's narrow commit reservation. Main never waits for a chunk
+ * writer. If Main commits first, one immutable batch task is already in the
+ * connection EventLoop FIFO before the next writer can publish its incremental
+ * update; if the writer wins, Main rejects the stale snapshot. A receipt keeps
+ * that queued task closed until every exact admission commits. Main never
+ * awaits the real send body.
+ * On failure the
+ * lease is re-issued (bounded); after {@link #ESCALATE_AFTER} failures the
+ * record escalates to a fenced main build (mainClaimScoped — correct at any
+ * island rate, bounded to pathological always-written chunks).
  *
- * Batches are transactional: reserve → (only if non-empty) Start → enqueue
- * every reserved packet → Finished(count) → commit unacknowledged. Failures
- * before Start release reservations and touch nothing; vanilla's
- * unacknowledged counter is only incremented after Finished is enqueued, so
- * an acknowledgement obligation can never leak. Acks apply to an explicit
+ * Batches are transactional: reserve → offer closed receipt → admit → real
+ * EventLoop Start/full/Finished → Main completion intent. Every Throwable
+ * selects the global first winner before exhaustive terminal cleanup. Vanilla
+ * pacing and success metrics advance only when Main consumes a real successful
+ * completion, so an acknowledgement obligation can never leak. Acks apply to an explicit
  * outstanding-batch record (FIFO per connection); surplus acks are logged
  * and ignored. No heuristic reset exists in normal operation.
  */
@@ -83,7 +88,8 @@ public final class ChunkDelivery {
         REQUESTED,          // leased to an owner mailbox (or main inline)
         READY,              // sealed packet available (shared cache entry)
         RESERVED,           // selected into an in-flight batch transaction
-        ENQUEUED,           // full packet written to the connection
+        ADMITTED,           // ordered receipt committed; real send still pending
+        ENQUEUED,           // the exact full listener send returned successfully
         ACKNOWLEDGED,       // client acked the containing batch (terminal)
         CANCELLED,          // untracked / disconnected (terminal)
         REPLACED            // superseded by a newer record (terminal)
@@ -102,6 +108,16 @@ public final class ChunkDelivery {
         volatile int fenceFails;
         volatile long stateNanos = System.nanoTime();
         volatile long enqueuedNanos;
+        /**
+         * Leaf lifecycle/publication gate. A successful full-packet EventLoop
+         * offer and every terminal retirement of this exact record are one
+         * transaction. The gate may nest only the chunk fence's zero-time
+         * generation try-reservation; it is never held across world work,
+         * Connection.send, compatibility callbacks, or network backpressure.
+         */
+        final Object transportRetireGate = new Object();
+        /** Guarded by {@link #transportRetireGate}. */
+        boolean clientMayHaveChunk;
 
         private static final java.lang.invoke.VarHandle ST;
         static {
@@ -125,8 +141,9 @@ public final class ChunkDelivery {
          * whichever thread wins a transition owns exactly the cleanup attached to
          * that edge. Reference rules — who holds a strong Entry ref per state:
          * TRACKED/REQUESTED none; READY one (the record's); RESERVED two (record
-         * deferred + reservation); ENQUEUED one (record, until ack); terminal
-         * none. Payload-publishing edges (TRACKED/REQUESTED → READY) set {@code
+         * deferred + reservation); ADMITTED/ENQUEUED keep both until the real
+         * batch succeeds on EventLoop, then one record ref until ACK; terminal none.
+         * Payload-publishing edges (TRACKED/REQUESTED → READY) set {@code
          * entry} BEFORE the CAS and undo on CAS failure, so an observer that
          * reads state READY is guaranteed a non-null entry; only the winner of a
          * ref-releasing edge nulls {@code entry}.
@@ -134,9 +151,6 @@ public final class ChunkDelivery {
         boolean cas(St from, St next) {
             if (ST.compareAndSet(this, from, next)) {
                 stateNanos = System.nanoTime();
-                if (traceKey == chunkKey) {
-                    trace("(" + owner.player.getName().getString() + ") " + from + " -> " + next);
-                }
                 return true;
             }
             return false;
@@ -150,20 +164,25 @@ public final class ChunkDelivery {
         /** ATOMIC READY→RESERVED: the CAS claims the record; the payload is
          *  captured ONCE into an immutable Reservation with its own strong
          *  cache reference. A concurrent retire() can only run AFTER losing
-         *  this CAS (it then marks RESERVED terminal and the sender's
-         *  enqueue-CAS failure releases both references). */
+         *  this CAS (it then waits only for the exact record's bounded
+         *  publication transaction, marks RESERVED terminal, and the sender's
+         *  enqueue validation releases both references). */
         Reservation tryReserve() {
             if (!cas(St.READY, St.RESERVED)) {
                 return null;
             }
             Entry e = entry;
             if (e == null) {
-                // Unreachable by the publication contract (entry precedes
-                // READY); kept as a loud recovery, never a crash.
                 INVALID_PAYLOAD.incrementAndGet();
                 owner.nullEntryRecoveries++;
-                invariantError("RESERVED record with null entry", this);
-                cas(St.RESERVED, St.TRACKED); // re-lease on the next pass
+                IllegalStateException failure = new IllegalStateException(
+                        "RESERVED chunk-delivery record has no payload: player="
+                                + owner.player.getUUID() + " chunk=["
+                                + ChunkPos.getX(chunkKey) + "," + ChunkPos.getZ(chunkKey)
+                                + "] connGen=" + connGen + " trackingGen=" + trackingGen);
+                Throwable winner = publishFatalPreserving(failure);
+                cas(St.RESERVED, St.CANCELLED);
+                ChunkDelivery.<RuntimeException>rethrow(winner);
                 return null;
             }
             e.refs.incrementAndGet(); // reservation's own strong reference
@@ -175,20 +194,28 @@ public final class ChunkDelivery {
      * Exactly-once retirement from ANY thread (untrack, quit, dimension change,
      * replacement): CAS-loop to the terminal state; the winner releases the
      * reference the prior state held. RESERVED is special — the in-flight
-     * sender owns the cleanup: its enqueue-CAS fails against the terminal
+     * sender owns the cleanup: its gated enqueue validation sees the terminal
      * state and {@link Reservation#abandonCancelled} releases both refs.
+     * Returns whether a full-packet task for this exact lifecycle was already
+     * accepted, which is the authoritative drop/Forget decision.
      */
-    static void retire(Rec r, St terminal) {
-        for (;;) {
-            St s = r.st;
-            if (s == St.CANCELLED || s == St.REPLACED || s == St.ACKNOWLEDGED) return;
-            if (r.cas(s, terminal)) {
-                if (s == St.READY || s == St.ENQUEUED) {
-                    Entry e = r.entry;
-                    r.entry = null;
-                    if (e != null) e.refs.decrementAndGet();
+    static boolean retire(Rec r, St terminal) {
+        synchronized (r.transportRetireGate) {
+            boolean clientMayHaveChunk = r.clientMayHaveChunk;
+            for (;;) {
+                St s = r.st;
+                if (s == St.CANCELLED || s == St.REPLACED
+                        || s == St.ACKNOWLEDGED) {
+                    return clientMayHaveChunk;
                 }
-                return;
+                if (r.cas(s, terminal)) {
+                    if (s == St.READY || s == St.ADMITTED || s == St.ENQUEUED) {
+                        Entry e = r.entry;
+                        r.entry = null;
+                        if (e != null) e.refs.decrementAndGet();
+                    }
+                    return clientMayHaveChunk;
+                }
             }
         }
     }
@@ -198,41 +225,138 @@ public final class ChunkDelivery {
     public static final class Reservation {
         final Rec rec;
         final Entry entry;
+        /** Retained until the real EventLoop batch body succeeds or fails. */
+        boolean reservationReferenceHeld = true;
 
         Reservation(Rec rec, Entry entry) {
             this.rec = rec;
             this.entry = entry;
         }
 
-        /** Sent: record advances, reservation reference released (the
-         *  record's own reference stays until ACKNOWLEDGED). */
-        void commit() {
-            entry.refs.decrementAndGet();
+        /** Release the temporary reservation ref exactly once. Success keeps
+         * the separate record ref pinned until ACK; terminal cleanup releases
+         * that record ref independently. */
+        void releaseReservationReference() {
+            if (reservationReferenceHeld) {
+                reservationReferenceHeld = false;
+                entry.refs.decrementAndGet();
+            }
         }
 
-        /** Not sent, record still live: back to READY keeping its payload.
-         *  Handles both the pre-send failure (still RESERVED) and the
-         *  post-claim send failure (already ENQUEUED). */
+        /** Not sent, record still live: back to READY keeping its payload. */
         void rollback() {
-            entry.refs.decrementAndGet();
-            if (rec.cas(St.RESERVED, St.READY) || rec.cas(St.ENQUEUED, St.READY)) {
-                return;
+            synchronized (rec.transportRetireGate) {
+                releaseReservationReference();
+                if (rec.cas(St.RESERVED, St.READY)) {
+                    return;
+                }
+                // A retirement which won while RESERVED deliberately deferred
+                // the record ref to this reservation.
+                Entry recordEntry = rec.entry;
+                rec.entry = null;
+                if (recordEntry != null) recordEntry.refs.decrementAndGet();
             }
-            // retired while in flight: release the record's deferred reference
-            // unless the retire edge (READY/ENQUEUED winner) already did —
-            // the null check makes the release exactly-once.
-            Entry e2 = rec.entry;
-            rec.entry = null;
-            if (e2 != null) e2.refs.decrementAndGet();
         }
 
         /** Record was cancelled/replaced while reserved: skip the send and
          *  release both references (reservation + the record's deferred one). */
         void abandonCancelled() {
-            rec.entry = null;
-            entry.refs.addAndGet(-2);
+            synchronized (rec.transportRetireGate) {
+                releaseReservationReference();
+                Entry recordEntry = rec.entry;
+                rec.entry = null;
+                if (recordEntry != null) recordEntry.refs.decrementAndGet();
+            }
+        }
+
+        /** Fatal batch cleanup: no READY successor and no replay. */
+        void terminalizeFailure() {
+            synchronized (rec.transportRetireGate) {
+                for (;;) {
+                    St state = rec.st;
+                    if (state == St.CANCELLED || state == St.REPLACED
+                            || state == St.ACKNOWLEDGED) {
+                        break;
+                    }
+                    if (rec.cas(state, St.CANCELLED)) {
+                        break;
+                    }
+                }
+                Entry recordEntry = rec.entry;
+                rec.entry = null;
+                if (recordEntry != null) recordEntry.refs.decrementAndGet();
+                releaseReservationReference();
+            }
+        }
+
+        /**
+         * Final generation commit after the receipt-gated EventLoop task has
+         * been offered but before that task may enter Start/full/Finished. The
+         * already-ordered task is the publication edge; the zero-time write
+         * reservation proves the selected immutable snapshot was current at
+         * that edge. Main never waits for an island writer or the EventLoop.
+         */
+        EnqueueResult admitAfterBatchOffer() {
+            synchronized (rec.transportRetireGate) {
+                if (rec.st != St.RESERVED) {
+                    return EnqueueResult.CANCELLED;
+                }
+                FabroliaWriteGen writes = (FabroliaWriteGen) entry.chunk;
+                if (!writes.fabrolia$tryReserveFullChunkEnqueue(entry.writeGenAtSeal)) {
+                    return EnqueueResult.STALE;
+                }
+                Throwable failure = null;
+                try {
+                    if (!rec.cas(St.RESERVED, St.ADMITTED)) {
+                        throw new IllegalStateException(
+                                "chunk publication gate lost RESERVED after batch offer: "
+                                        + "player=" + rec.owner.player.getUUID() + " chunk=["
+                                        + ChunkPos.getX(rec.chunkKey) + ","
+                                        + ChunkPos.getZ(rec.chunkKey) + "] state=" + rec.st);
+                    }
+                    // A concurrent retirement now necessarily offers Forget
+                    // after the already-queued, still receipt-blocked batch.
+                    rec.clientMayHaveChunk = true;
+                } catch (Throwable bodyFailure) {
+                    failure = publishFatalPreserving(bodyFailure);
+                }
+                try {
+                    writes.fabrolia$releaseFullChunkEnqueue(entry.writeGenAtSeal);
+                } catch (Throwable cleanupFailure) {
+                    failure = publishFatalPreserving(
+                            mergeFailure(failure, cleanupFailure));
+                }
+                if (failure != null) {
+                    ChunkDelivery.<RuntimeException>rethrow(
+                            publishFatalPreserving(failure));
+                }
+                return EnqueueResult.SENT;
+            }
+        }
+
+        /** Real listener send returned. A concurrent retirement may already
+         * have won ADMITTED and queued Forget behind this batch task. */
+        void markRealSendSucceeded() {
+            synchronized (rec.transportRetireGate) {
+                if (rec.cas(St.ADMITTED, St.ENQUEUED)) {
+                    return;
+                }
+                St state = rec.st;
+                if (state != St.CANCELLED && state != St.REPLACED
+                        && state != St.ACKNOWLEDGED) {
+                    IllegalStateException failure = new IllegalStateException(
+                            "real full send lost ADMITTED record state: player="
+                                    + rec.owner.player.getUUID() + " chunk=["
+                                    + ChunkPos.getX(rec.chunkKey) + ","
+                                    + ChunkPos.getZ(rec.chunkKey) + "] state=" + state);
+                    ChunkDelivery.<RuntimeException>rethrow(
+                            publishFatalPreserving(failure));
+                }
+            }
         }
     }
+
+    enum EnqueueResult { SENT, STALE, CANCELLED }
 
     // ------------------------------------------------------------------
     // shared sealed snapshot (refcounted, coalesced across players)
@@ -241,23 +365,22 @@ public final class ChunkDelivery {
         final LevelChunk chunk;                 // identity = lifecycle witness
         final ClientboundLevelChunkWithLightPacket packet;
         final long sealL;
-        /** Chunk write witness captured under the owner's claim at seal:
-         *  the enqueue fence compares against the LIVE gen — equality proves
-         *  no block/BE write happened since the seal, so no increment a
-         *  pending player missed can exist. Per-CHUNK precision: quiet
-         *  chunks (virtually all, during flight) pass on the first try. */
+        /** Witness sampled before copying block/BE/light payload. A light update
+         *  may publish concurrently with an owner-held seal; a post-copy sample
+         *  would incorrectly bless the older payload with its newer generation.
+         *  Admission compares this witness with the live per-chunk generation. */
         final long writeGenAtSeal;
         final PIslandRef ownerRef;
         final AtomicInteger refs = new AtomicInteger();
         final long bytes;
         final long builtNanos = System.nanoTime();
 
-        Entry(LevelChunk chunk, ClientboundLevelChunkWithLightPacket packet,
+        Entry(LevelChunk chunk, long writeGenBeforeCopy, ClientboundLevelChunkWithLightPacket packet,
               long sealL, IslandRegistry.PIsland island) {
             this.chunk = chunk;
             this.packet = packet;
             this.sealL = sealL;
-            this.writeGenAtSeal = ((FabroliaWriteGen) chunk).fabrolia$writeGen();
+            this.writeGenAtSeal = writeGenBeforeCopy;
             this.ownerRef = new PIslandRef(island);
             this.bytes = 40_000; // section-payload class estimate for budget math
         }
@@ -277,9 +400,15 @@ public final class ChunkDelivery {
          *  thread; iteration/copies are weakly consistent and can never throw.
          *  Record lifecycle safety lives in the per-record CAS transitions. */
         final ConcurrentHashMap<Long, Rec> records = new ConcurrentHashMap<>();
-        /** Batch obligations stay batcher/ack-owned: both run on the server
-         *  thread (26.2 acks are ensureRunningOnSameThread'd). */
+        final ChunkDeliveryCandidates<Rec> candidates = new ChunkDeliveryCandidates<>(
+                records.values(), r -> r.chunkKey, Rec::isTerminal);
+        /** Batch obligations stay physical-Main-owned: island ingress records
+         *  only bounded ACK intent; PlayerChunkSender drains it here from its
+         *  Main send slot. */
         final ArrayDeque<Batch> outstanding = new ArrayDeque<>();
+        /** At most one offered batch awaits real EventLoop completion/Main commit. */
+        volatile BatchPublication activePublication;
+        volatile boolean closed;
         volatile ServerLevel level;
         // metrics mutated by trackers (any thread):
         final AtomicLong created = new AtomicLong(), cancelled = new AtomicLong(),
@@ -299,17 +428,401 @@ public final class ChunkDelivery {
     }
 
     public static final class Batch {
+        private static final int OFFERING = 0;
+        private static final int ACCEPTED = 1;
+        private static final int CANCELLED = 2;
+
         final long id;
         final long connGen;
         final long createdNanos = System.nanoTime();
-        final long[] keys;
+        /** Exact identities successfully enqueued by THIS batch. A chunk key
+         *  is reusable after untrack, replacement or dimension change, so a
+         *  key lookup at ACK time could retire a newer record. */
+        final Rec[] records;
         final int count;
+        /** The deque node is visible before success commits, but ACK may consume
+         *  it only after the same lifecycle cut accepts this receipt. */
+        final AtomicInteger publication = new AtomicInteger(OFFERING);
 
-        Batch(long id, long connGen, long[] keys) {
+        Batch(long id, long connGen, Rec[] records, int count) {
             this.id = id;
             this.connGen = connGen;
-            this.keys = keys;
-            this.count = keys.length;
+            this.records = records;
+            this.count = count;
+        }
+
+        void acceptPublication() {
+            if (!publication.compareAndSet(OFFERING, ACCEPTED)) {
+                throw new IllegalStateException(
+                        "chunk ACK batch accepted from publication state "
+                                + publication.get());
+            }
+        }
+
+        void cancelPublication() {
+            for (;;) {
+                int observed = publication.get();
+                if (observed == CANCELLED) return;
+                if (publication.compareAndSet(observed, CANCELLED)) return;
+            }
+        }
+
+        boolean publicationAccepted() {
+            return publication.get() == ACCEPTED;
+        }
+    }
+
+    /**
+     * One receipt-gated EventLoop transaction. Main offers this object once,
+     * finalizes exact record/write-generation admission while the queued task
+     * is blocked on this monitor, then returns without waiting. The EventLoop
+     * performs the real Start/full/Finished bodies. Only a later Main drain may
+     * convert SUCCEEDED into pacing, metrics and an ACK skeleton.
+     */
+    private static final class BatchPublication
+            implements FabroliaFullChunkPublisher.FullChunkBatchPublication {
+        private static final int PREPARED = 0;
+        private static final int OFFERING = 1;
+        private static final int ADMITTED = 2;
+        private static final int RUNNING = 3;
+        private static final int SUCCEEDED = 4;
+        private static final int EMPTY = 5;
+        private static final int APPLIED = 6;
+        private static final int FAILED = 7;
+        private static final int DISCARDED = 8;
+
+        final PlayerState owner;
+        final Reservation[] reservations;
+        final Reservation[] admitted;
+        final Rec[] admittedRecords;
+        final boolean injectStartFailure;
+        final boolean injectFullFailure;
+        int admittedCount;
+        int state = PREPARED;
+        Throwable failure;
+
+        BatchPublication(PlayerState owner, Reservation[] reservations,
+                         boolean injectStartFailure, boolean injectFullFailure) {
+            this.owner = owner;
+            this.reservations = reservations;
+            this.admitted = new Reservation[reservations.length];
+            this.admittedRecords = new Rec[reservations.length];
+            this.injectStartFailure = injectStartFailure;
+            this.injectFullFailure = injectFullFailure;
+        }
+
+        void publish(ServerPlayer player) {
+            finishPublicationOnMain(admitPublication(player));
+        }
+
+        private Throwable admitPublication(ServerPlayer player) {
+            Throwable publicationFailure = null;
+            synchronized (this) {
+                if (state != PREPARED) {
+                    publicationFailure = publishFatalPreserving(
+                            new IllegalStateException(
+                                    "full-chunk batch publication entered twice"));
+                } else {
+                    try {
+                        RegionScheduler.commitSuccessIfHealthy(
+                                () -> state = OFFERING);
+                        RegionScheduler.runSuccessBodyIfHealthy(() ->
+                                ((FabroliaFullChunkPublisher) player.connection)
+                                        .fabrolia$enqueueFullChunkBatch(this));
+                    } catch (Throwable offerFailure) {
+                        // The queued Runnable may already exist. Publish W
+                        // before cancelling its receipt and touching records.
+                        publicationFailure = publishFatalPreserving(offerFailure);
+                    }
+                }
+
+                if (publicationFailure == null) {
+                    for (int i = 0; i < reservations.length; i++) {
+                        Reservation reservation = reservations[i];
+                        EnqueueResult[] result = new EnqueueResult[1];
+                        try {
+                            // Admission and its result publication are distinct
+                            // bodies. If W wins while the reservation is being
+                            // admitted, its terminal permit prevents any SENT /
+                            // retry accounting and the next reservation entry.
+                            RegionScheduler.runSuccessBodyIfHealthy(() ->
+                                    result[0] = reservation.admitAfterBatchOffer());
+                        } catch (Throwable admissionFailure) {
+                            publicationFailure = publishFatalPreserving(admissionFailure);
+                            break;
+                        }
+                        try {
+                            if (result[0] == EnqueueResult.SENT) {
+                                RegionScheduler.commitSuccessIfHealthy(() -> {
+                                    admitted[admittedCount] = reservation;
+                                    admittedRecords[admittedCount] = reservation.rec;
+                                    admittedCount++;
+                                });
+                            } else if (result[0] == EnqueueResult.STALE) {
+                                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                                    reservation.rollback();
+                                    if (demoteReady(reservation.rec)) {
+                                        reservation.rec.fenceFails++;
+                                        owner.retriesFence++;
+                                        FENCE_RETRIES.incrementAndGet();
+                                    }
+                                });
+                            } else {
+                                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                                    reservation.abandonCancelled();
+                                    owner.cancelledInBatch++;
+                                });
+                            }
+                        } catch (Throwable resultFailure) {
+                            publicationFailure = publishFatalPreserving(resultFailure);
+                            break;
+                        }
+                    }
+                }
+
+                if (publicationFailure == null
+                        && (injectStartFailure || injectFullFailure)
+                        && admittedCount == 0) {
+                    publicationFailure = publishFatalPreserving(
+                            new IllegalStateException(
+                                    "injected batch failure without an admitted snapshot"));
+                }
+                if (publicationFailure == null) {
+                    try {
+                        RegionScheduler.commitSuccessIfHealthy(() -> {
+                            state = admittedCount == 0 ? EMPTY : ADMITTED;
+                            // EMPTY has no packet or ACK obligation. Detach its
+                            // exact sender slot before EventLoop consumption can
+                            // replace EMPTY with APPLIED.
+                            if (state == EMPTY && owner.activePublication == this) {
+                                owner.activePublication = null;
+                            }
+                        });
+                    } catch (Throwable successFailure) {
+                        publicationFailure = publishFatalPreserving(successFailure);
+                    }
+                }
+                if (publicationFailure != null) {
+                    publicationFailure = terminalizeReservations(
+                            reservations, publicationFailure);
+                    failure = publishFatalPreserving(publicationFailure);
+                    state = FAILED;
+                } else {
+                    failure = null;
+                }
+            }
+            return publicationFailure;
+        }
+
+        private void finishPublicationOnMain(Throwable publicationFailure) {
+            if (publicationFailure != null) {
+                ChunkDelivery.<RuntimeException>rethrow(
+                        publishFatalPreserving(publicationFailure));
+            }
+        }
+
+        @Override
+        public void runPublished(FabroliaFullChunkPublisher.PacketSender sender) {
+            Throwable terminalFailure = null;
+            boolean invariantCleanup = false;
+            boolean emptyPublication = false;
+            synchronized (this) {
+                if (state == ADMITTED) {
+                    if (owner.closed) {
+                        state = DISCARDED;
+                    } else {
+                        try {
+                            RegionScheduler.commitSuccessIfHealthy(
+                                    () -> state = RUNNING);
+                        } catch (Throwable startFailure) {
+                            terminalFailure = publishFatalPreserving(startFailure);
+                            failure = terminalFailure;
+                            state = FAILED;
+                            invariantCleanup = true;
+                        }
+                    }
+                } else if (state == FAILED) {
+                    terminalFailure = failure;
+                } else if (state == EMPTY) {
+                    emptyPublication = true;
+                } else if (state != DISCARDED) {
+                    terminalFailure = publishFatalPreserving(
+                            new IllegalStateException(
+                                    "full-chunk receipt entered illegal state " + state));
+                    failure = terminalFailure;
+                    state = FAILED;
+                    invariantCleanup = true;
+                }
+            }
+            if (terminalFailure != null) {
+                if (invariantCleanup) {
+                    terminalFailure = terminalizeReservations(
+                            reservations, terminalFailure);
+                    failure = publishFatalPreserving(terminalFailure);
+                }
+                ChunkDelivery.<RuntimeException>rethrow(terminalFailure);
+            }
+            if (emptyPublication) {
+                try {
+                    synchronized (this) {
+                        RegionScheduler.commitSuccessIfHealthy(() -> state = APPLIED);
+                    }
+                    return;
+                } catch (Throwable successFailure) {
+                    terminalFailure = publishFatalPreserving(successFailure);
+                }
+                terminalFailure = terminalizeReservations(reservations, terminalFailure);
+                synchronized (this) {
+                    failure = publishFatalPreserving(terminalFailure);
+                    state = FAILED;
+                }
+                ChunkDelivery.<RuntimeException>rethrow(failure);
+            }
+            if (state == DISCARDED) {
+                terminalizeReservationsWithoutFailure(reservations);
+                return;
+            }
+
+            try {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    if (injectStartFailure) {
+                        throw new IllegalStateException("injected failstart");
+                    }
+                    sender.send(ClientboundChunkBatchStartPacket.INSTANCE);
+                });
+                for (int i = 0; i < admittedCount; i++) {
+                    int entry = i;
+                    RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                        if (injectFullFailure
+                                && entry == Math.min(1, admittedCount - 1)) {
+                            throw new IllegalStateException("injected failenqueue");
+                        }
+                        sender.send(admitted[entry].entry.packet);
+                        admitted[entry].markRealSendSucceeded();
+                    });
+                }
+                RegionScheduler.runSuccessBodyIfHealthy(() ->
+                        sender.send(new ClientboundChunkBatchFinishedPacket(admittedCount)));
+            } catch (Throwable bodyFailure) {
+                // No cleanup, successor or Finished may run before W exists.
+                terminalFailure = publishFatalPreserving(bodyFailure);
+            }
+
+            if (terminalFailure == null) {
+                try {
+                    // Keep the established lock order (publication -> lifecycle).
+                    // Either this exact success state wins the global cut, or an
+                    // already-selected peer W prevents the raw SUCCEEDED write.
+                    synchronized (this) {
+                        RegionScheduler.commitSuccessIfHealthy(() -> {
+                            if (owner.closed) {
+                                for (int i = 0; i < admittedCount; i++) {
+                                    admitted[i].releaseReservationReference();
+                                }
+                                state = DISCARDED;
+                            } else {
+                                state = SUCCEEDED;
+                            }
+                        });
+                    }
+                } catch (Throwable successFailure) {
+                    terminalFailure = publishFatalPreserving(successFailure);
+                }
+            }
+
+            if (terminalFailure != null) {
+                terminalFailure = terminalizeReservations(reservations, terminalFailure);
+                synchronized (this) {
+                    failure = publishFatalPreserving(terminalFailure);
+                    state = FAILED;
+                }
+                ChunkDelivery.<RuntimeException>rethrow(failure);
+            }
+        }
+
+        int applySuccessOnMain() {
+            synchronized (this) {
+                if (state == FAILED) {
+                    ChunkDelivery.<RuntimeException>rethrow(
+                            publishFatalPreserving(failure));
+                }
+                if (state != SUCCEEDED) {
+                    return 0;
+                }
+
+                Throwable applyFailure = null;
+                Batch completedBatch = null;
+                Batch[] completedSlot = new Batch[1];
+                long[] completedNanos = new long[1];
+                long[] completedBytes = new long[1];
+                try {
+                    RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                        Batch prepared = new Batch(BATCH_IDS.incrementAndGet(), owner.connGen,
+                                admittedRecords, admittedCount);
+                        long bytes = 0L;
+                        for (int i = 0; i < admittedCount; i++) {
+                            bytes += admitted[i].entry.bytes;
+                        }
+                        // Fallible deque growth happens while the Batch receipt
+                        // is OFFERING. ACK cannot consume it before the commit.
+                        owner.outstanding.addLast(prepared);
+                        completedSlot[0] = prepared;
+                        completedNanos[0] = System.nanoTime();
+                        completedBytes[0] = bytes;
+                    });
+                    completedBatch = completedSlot[0];
+                    final Batch batchCommit = completedBatch;
+                    final long nanosCommit = completedNanos[0];
+                    final long bytesCommit = completedBytes[0];
+                    RegionScheduler.commitSuccessIfHealthy(() -> {
+                        batchCommit.acceptPublication();
+                        for (int i = 0; i < admittedCount; i++) {
+                            Reservation reservation = admitted[i];
+                            reservation.releaseReservationReference();
+                            reservation.rec.enqueuedNanos = nanosCommit;
+                        }
+                        owner.enqueued += admittedCount;
+                        owner.bytesEnqueued += bytesCommit;
+                        owner.lastFullSendNanos = nanosCommit;
+                        owner.batches++;
+                        state = APPLIED;
+                        owner.activePublication = null;
+                    });
+                } catch (Throwable bodyFailure) {
+                    applyFailure = publishFatalPreserving(bodyFailure);
+                }
+                if (applyFailure != null) {
+                    if (completedBatch != null) {
+                        try {
+                            completedBatch.cancelPublication();
+                        } catch (Throwable cleanupFailure) {
+                            applyFailure = publishFatalPreserving(
+                                    mergeFailure(applyFailure, cleanupFailure));
+                        }
+                        try {
+                            owner.outstanding.removeLastOccurrence(completedBatch);
+                        } catch (Throwable cleanupFailure) {
+                            applyFailure = publishFatalPreserving(
+                                    mergeFailure(applyFailure, cleanupFailure));
+                        }
+                    }
+                    applyFailure = terminalizeReservations(
+                            reservations, applyFailure);
+                    failure = publishFatalPreserving(applyFailure);
+                    state = FAILED;
+                    ChunkDelivery.<RuntimeException>rethrow(failure);
+                }
+                return admittedCount;
+            }
+        }
+
+        void discard() {
+            synchronized (this) {
+                if (state == ADMITTED || state == SUCCEEDED) {
+                    terminalizeReservationsWithoutFailure(reservations);
+                    state = DISCARDED;
+                }
+            }
         }
     }
 
@@ -336,7 +849,6 @@ public final class ChunkDelivery {
     public static final AtomicLong INVALID_PAYLOAD = new AtomicLong();
     public static final AtomicLong REQUESTED_TIMEOUTS = new AtomicLong();
     /** rate-limited log gate: key → last emit nanos */
-    private static final ConcurrentHashMap<String, Long> LOG_GATE = new ConcurrentHashMap<>();
     private static long livenessEmaNanos;
     // trace
     private static volatile long traceKey = Long.MIN_VALUE;
@@ -364,30 +876,6 @@ public final class ChunkDelivery {
         return !faults.isEmpty() && faults.contains(f);
     }
 
-    static void warnRateLimited(String key, String msg) {
-        long now = System.nanoTime();
-        Long last = LOG_GATE.get(key);
-        if (last == null || now - last > 60_000_000_000L) {
-            LOG_GATE.put(key, now);
-            LOGGER.warn("{} (rate-limited; counters in chunksender status)", msg);
-        }
-    }
-
-    static void invariantError(String what, Rec r) {
-        long now = System.nanoTime();
-        Long last = LOG_GATE.get("invariant");
-        if (last == null || now - last > 60_000_000_000L) {
-            LOG_GATE.put("invariant", now);
-            LOGGER.error("[delivery-invariant] {} — player={} chunk=[{},{}] state={} connGen={} trackGen={} "
-                    + "fenceFails={} ageMs={} (rate-limited; one per minute)",
-                    what, r.owner.player.getName().getString(),
-                    net.minecraft.world.level.ChunkPos.getX(r.chunkKey),
-                    net.minecraft.world.level.ChunkPos.getZ(r.chunkKey),
-                    r.st, r.connGen, r.trackingGen, r.fenceFails,
-                    (now - r.stateNanos) / 1_000_000);
-        }
-    }
-
     private static void trace(String msg) {
         TRACE.add(System.nanoTime() / 1_000_000 + "ms " + msg);
         while (TRACE.size() > 256) TRACE.poll();
@@ -405,16 +893,21 @@ public final class ChunkDelivery {
     public static void quit(ServerPlayer p) {
         PlayerState ps = PLAYERS.remove(p.getUUID());
         if (ps == null) return;
+        ps.closed = true;
+        BatchPublication publication = ps.activePublication;
+        if (publication != null) {
+            publication.discard();
+        }
         // Exactly-once retirement per record from ANY thread: the state CAS
         // arbitrates against concurrent reservation/enqueue; refs release on
-        // the winning edge only. The outstanding deque is main-owned — the
-        // vanilla disconnect path IS main; a hypothetical foreign quit still
-        // retires records safely and merely leaves dead batch skeletons that
-        // die with the PlayerState.
+        // the winning edge only. A currently running EventLoop publication
+        // observes closed at its terminal edge and releases its retained
+        // reservation references without publishing a success intent.
         for (Rec r : ps.records.values()) {
             retire(r, St.CANCELLED);
         }
         ps.records.clear();
+        ps.candidates.changed();
         ps.outstanding.clear(); // connection gone: obligations die with it
     }
 
@@ -424,12 +917,19 @@ public final class ChunkDelivery {
     }
 
     /** markChunkPendingToSend: the chunk is desired and server-ready.
-     *  Callable from ANY thread: map put is linearizable (CHM), record
-     *  replacement retires the displaced record via CAS exactly-once. */
+     *  Same-level record mutation is callable from any thread: the per-key
+     *  CHM transaction is linearizable, and replacement retires the displaced
+     *  record exactly once. A level transition is a connection-wide epoch cut
+     *  and therefore requires physical Main before retiring the old map; its
+     *  outstanding ACK skeletons remain in Main-owned FIFO order. */
     public static void track(ServerPlayer p, LevelChunk chunk) {
         PlayerState ps = ps(p);
         ServerLevel lvl = (ServerLevel) chunk.getLevel();
         if (ps.level != null && ps.level != lvl) {
+            if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(lvl.getServer())) {
+                throw new IllegalStateException(
+                        "chunk-delivery level transition entered off physical Main");
+            }
             // dimension change: everything from the old level is obsolete —
             // retire by generation, not by thread timing: the trackingGen
             // bump invalidates in-flight work even before the sweep lands.
@@ -438,40 +938,96 @@ public final class ChunkDelivery {
                 retire(r0, St.CANCELLED);
             }
             ps.records.clear();
-            // outstanding is server-thread-owned; dimension changes arrive on
-            // main (respawn orchestration), matching that ownership.
-            ps.outstanding.clear();
+            ps.candidates.changed();
+            // RETAIN old batch skeletons in this connection's FIFO. Vanilla's
+            // PlayerChunkSender survives respawn with the matching unacked
+            // count, and a late old-world ACK must consume its old skeleton —
+            // never the first new-world batch. Each skeleton pins exact retired
+            // Rec identities, so reused chunk keys cannot retire new records.
             // fresh delivery epoch: the old enqueue timestamp belongs to the
             // previous view and must not age the new one (liveness heuristics)
             ps.lastFullSendNanos = System.nanoTime();
         }
         ps.level = lvl;
         long key = chunk.getPos().pack();
-        Rec r = new Rec(ps, key, ps.trackingGen.get());
-        Rec old = ps.records.put(key, r);
-        if (old != null && !old.isTerminal()) {
-            // Re-entered so fast the old delivery is still live. The new record
-            // (fresh trackingGen) has already replaced it in the map — the old
-            // one's late seal cannot satisfy the new lifecycle (entry chunk
-            // identity re-checked at reservation).
-            retire(old, St.REPLACED);
+        long trackingGen = ps.trackingGen.get();
+        Rec[] installed = new Rec[1];
+        boolean[] replacedLive = new boolean[1];
+        ps.records.compute(key, (ignored, old) -> {
+            Rec next = new Rec(ps, key, trackingGen);
+            if (old != null) {
+                // The CHM key transaction prevents drop from observing the
+                // replacement before publication exposure has transferred.
+                // retire() serializes against an old full-task offer on that
+                // exact Rec; a later drop of `next` therefore still sends the
+                // one Forget required by the older lifecycle.
+                replacedLive[0] = !old.isTerminal();
+                next.clientMayHaveChunk = retire(old, St.REPLACED);
+            }
+            installed[0] = next;
+            return next;
+        });
+        ps.candidates.changed();
+        Rec r = installed[0];
+        if (replacedLive[0]) {
             ps.replaced.incrementAndGet();
         }
         ps.created.incrementAndGet();
         if (traceKey == key) trace("(" + p.getName().getString() + ") TRACKED gen=" + r.trackingGen);
     }
 
-    /** dropChunk: no longer desired — cancel whatever stage it is in.
-     *  Any thread; removal + retirement are individually linearizable and the
-     *  batcher revalidates state at both reservation and enqueue CAS. */
-    public static void untrack(ServerPlayer p, long chunkKey) {
+    /**
+     * dropChunk replacement: no longer desired. The CHM key transaction spans
+     * exact-record retirement and, when a full task already won, the bounded
+     * Forget task offer. A concurrent same-key re-track cannot publish its new
+     * full task in the remove/null window: it enters this bin afterwards, so
+     * the one EventLoop order is old-full → Forget → new-full.
+     */
+    public static boolean untrack(ServerPlayer p, ChunkPos pos) {
+        return untrack(p, pos.pack(), pos);
+    }
+
+    /** Internal cancellation seam used before a packet can have been offered. */
+    private static boolean untrack(ServerPlayer p, long chunkKey) {
+        return untrack(p, chunkKey, null);
+    }
+
+    private static boolean untrack(ServerPlayer p, long chunkKey, ChunkPos forgetPos) {
         PlayerState ps = PLAYERS.get(p.getUUID());
-        if (ps == null) return;
-        Rec r = ps.records.remove(chunkKey);
-        if (r != null) {
-            retire(r, St.CANCELLED);
+        if (ps == null) return false;
+        ClientboundForgetLevelChunkPacket forget = forgetPos != null && p.isAlive()
+                ? new ClientboundForgetLevelChunkPacket(forgetPos) : null;
+        boolean[] removed = new boolean[1];
+        boolean[] clientMayHaveChunk = new boolean[1];
+        Throwable[] offerFailure = new Throwable[1];
+        ps.records.compute(chunkKey, (ignored, r) -> {
+            if (r == null) {
+                return null;
+            }
+            removed[0] = true;
+            clientMayHaveChunk[0] = retire(r, St.CANCELLED);
+            if (clientMayHaveChunk[0] && forget != null) {
+                try {
+                    ((FabroliaChunkForgetPublisher) p.connection)
+                            .fabrolia$enqueueChunkForget(forget);
+                } catch (Throwable failure) {
+                    // The receipt publisher already cancelled any accepted
+                    // Runnable. Select W before the CHM retirement cleanup,
+                    // then rethrow it after the key transaction is released.
+                    offerFailure[0] = publishFatalPreserving(failure);
+                }
+            }
+            return null;
+        });
+        if (removed[0]) ps.candidates.changed();
+        if (offerFailure[0] != null) {
+            ChunkDelivery.<RuntimeException>rethrow(
+                    publishFatalPreserving(offerFailure[0]));
+        }
+        if (removed[0]) {
             ps.cancelled.incrementAndGet();
         }
+        return clientMayHaveChunk[0];
     }
 
     /** Movement burst boundary: one generation per tracking update batch. */
@@ -481,13 +1037,13 @@ public final class ChunkDelivery {
     }
 
     /** Vanilla isPending gate: excluded from increment broadcasts until the
-     *  full packet is on the wire (the enqueue flip + L-fence make that
-     *  hand-off lossless). */
+     *  receipt-gated full batch is ordered ahead of them (the enqueue flip +
+     *  generation fence make that hand-off lossless). */
     public static boolean isPending(ServerPlayer p, long chunkKey) {
         PlayerState ps = PLAYERS.get(p.getUUID());
         if (ps == null) return false;
         Rec r = ps.records.get(chunkKey);
-        return r != null && r.st.ordinal() < St.ENQUEUED.ordinal();
+        return r != null && r.st.ordinal() < St.ADMITTED.ordinal();
     }
 
     /** Batcher-side READY→TRACKED demotion (stale witness / fence fail):
@@ -529,17 +1085,14 @@ public final class ChunkDelivery {
                 return;
             }
         }
-        Region region = rs == null ? null : rs.regionizer().peekByGridKey(
-                rs.regionizer().grid.keyFor(key));
-        IslandRegistry.PIsland island = region != null && region.domain != null
-                ? region.domain.owner : null;
+        IslandRegistry.PIsland island = rs == null ? null : rs.islandOwnerOfChunk(key);
         if (island == null || !rs.asyncActive) {
             // Ownerless / sync: main IS the executor of the global domain —
             // building here is the vanilla path (zero fence gap by
             // construction, exactly like sendNextChunks always did).
             if (fault("failinline")) return;
             long t0 = System.nanoTime();
-            Entry e = new Entry(live,
+            Entry e = new Entry(live, ((FabroliaWriteGen) live).fabrolia$writeGen(),
                     new ClientboundLevelChunkWithLightPacket(live,
                             level.getLightEngine(), null, null),
                     island == null ? 0 : island.logicalTick, island);
@@ -560,8 +1113,9 @@ public final class ChunkDelivery {
             ESCALATED.incrementAndGet();
             r.owner.escalations++;
             boolean took = IslandCommands.mainClaimScoped(island);
+            Throwable failure = null;
             try {
-                Entry e = new Entry(live,
+                Entry e = new Entry(live, ((FabroliaWriteGen) live).fabrolia$writeGen(),
                         new ClientboundLevelChunkWithLightPacket(live,
                                 level.getLightEngine(), null, null),
                         island.logicalTick, island);
@@ -573,10 +1127,19 @@ public final class ChunkDelivery {
                     r.entry = null;
                     e.refs.decrementAndGet();
                 }
-            } finally {
-                if (took) {
+            } catch (Throwable bodyFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);
+            }
+            if (took) {
+                try {
                     IslandCommands.mainRelease(island);
+                } catch (Throwable cleanupFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            mergeFailure(failure, cleanupFailure));
                 }
+            }
+            if (failure != null) {
+                ChunkDelivery.<RuntimeException>rethrow(failure);
             }
             return;
         }
@@ -594,44 +1157,55 @@ public final class ChunkDelivery {
         if (island.pendingChunkSnapshots.isEmpty()) return;
         ServerLevel level = rs.level;
         int budget = SEALS_PER_UNIT;
-        Long key;
-        ArrayList<Long> notReady = null;
-        while (budget > 0 && (key = island.pendingChunkSnapshots.poll()) != null) {
-            island.pendingSnapshotKeys.remove(key);
-            long k = key;
-            // fire-time validation: still owned by THIS island?
-            Region region = rs.regionizer().peekByGridKey(rs.regionizer().grid.keyFor(k));
-            if (region == null || region.domain == null || region.domain.owner != island) {
-                REROUTED.incrementAndGet();
-                requeueToCurrentOwner(rs, k); // owner moved: re-lease, never lost
-                continue;
-            }
-            LevelChunk chunk = level.getChunkSource().getChunkNow(
-                    net.minecraft.world.level.ChunkPos.getX(k), net.minecraft.world.level.ChunkPos.getZ(k));
-            if (chunk == null) {
-                // not-ready wait state: readiness returns via tracking/batcher,
-                // NOT by per-tick recollection through the sender
-                continue;
-            }
-            if (fault("delayseal") && (k & 1) == 0) {
-                if (notReady == null) notReady = new ArrayList<>();
-                notReady.add(k);
-                continue;
-            }
-            long t0 = System.nanoTime();
-            Entry e = new Entry(chunk,
-                    new ClientboundLevelChunkWithLightPacket(chunk,
-                            level.getLightEngine(), null, null),
-                    island.logicalTick + 1, island); // unit runs AT L+1 (unitGameTime)
-            SEALS.incrementAndGet();
-            SEAL_NANOS.addAndGet(System.nanoTime() - t0);
-            publish(level, k, e);
-            budget--;
+        ArrayList<Long> notReady = new ArrayList<>();
+        int[] outcome = new int[1]; // 0=empty, 1=consumed, 2=sealed
+        while (budget > 0) {
+            outcome[0] = 0;
+            // Detach and execute one exact snapshot/publication body in the
+            // same admission. A nested post-poll admission could be refused by
+            // peer W after the key had left the FIFO while its coalescing bit
+            // remained set, permanently orphaning that accepted request.
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                Long key = island.pendingChunkSnapshots.poll();
+                if (key == null) return;
+                long k = key;
+                outcome[0] = 1;
+                island.pendingSnapshotKeys.remove(k);
+                // fire-time validation: still owned by THIS island?
+                if (rs.islandOwnerOfChunk(k) != island) {
+                    REROUTED.incrementAndGet();
+                    requeueToCurrentOwner(rs, k); // owner moved: re-lease, never lost
+                    return;
+                }
+                LevelChunk chunk = level.getChunkSource().getChunkNow(
+                        net.minecraft.world.level.ChunkPos.getX(k),
+                        net.minecraft.world.level.ChunkPos.getZ(k));
+                if (chunk == null) {
+                    // not-ready wait state: readiness returns via tracking/batcher,
+                    // NOT by per-tick recollection through the sender
+                    return;
+                }
+                if (fault("delayseal") && (k & 1) == 0) {
+                    notReady.add(k);
+                    return;
+                }
+                long t0 = System.nanoTime();
+                Entry e = new Entry(chunk, ((FabroliaWriteGen) chunk).fabrolia$writeGen(),
+                        new ClientboundLevelChunkWithLightPacket(chunk,
+                                level.getLightEngine(), null, null),
+                        island.logicalTick + 1, island); // unit runs AT L+1 (unitGameTime)
+                publish(level, k, e);
+                SEALS.incrementAndGet();
+                SEAL_NANOS.addAndGet(System.nanoTime() - t0);
+                outcome[0] = 2;
+            });
+            if (outcome[0] == 0) break;
+            if (outcome[0] == 2) budget--;
         }
-        if (notReady != null) {
-            for (Long k : notReady) {
+        for (Long k : notReady) {
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
                 if (island.pendingSnapshotKeys.add(k)) island.pendingChunkSnapshots.add(k);
-            }
+            });
         }
     }
 
@@ -671,9 +1245,7 @@ public final class ChunkDelivery {
      *  the chunk's CURRENT owner (or leave for main-inline). Never lost,
      *  never duplicated (pendingSnapshotKeys dedups per island). */
     public static void requeueToCurrentOwner(RegionizedServer rs, long chunkKey) {
-        Region region = rs.regionizer().peekByGridKey(rs.regionizer().grid.keyFor(chunkKey));
-        IslandRegistry.PIsland owner = region != null && region.domain != null
-                ? region.domain.owner : null;
+        IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(chunkKey);
         if (owner != null && !owner.retired) {
             if (owner.pendingSnapshotKeys.add(chunkKey)) {
                 owner.pendingChunkSnapshots.add(chunkKey);
@@ -696,140 +1268,161 @@ public final class ChunkDelivery {
     // ------------------------------------------------------------------
 
     /** Replaces vanilla sendNextChunks entirely. Returns the number of full
-     *  chunk packets enqueued (0 = no batch was started). {@code onEnqueued}
-     *  keeps vanilla's pendingChunks mirror exact (isPending correctness). */
-    public static int sendNextChunks(ServerPlayer p, ServerLevel level, int maxToSend,
-                                     it.unimi.dsi.fastutil.longs.LongPredicate onEnqueued) {
+     *  chunk packets synchronously completed. Publication is asynchronous, so
+     *  this method returns zero after offering a batch; the next Main sender
+     *  pass obtains the real completed count from
+     *  {@link #applyCompletedChunkBatch}. */
+    public static int sendNextChunks(ServerPlayer p, ServerLevel level, int maxToSend) {
+        RegionScheduler.throwWorkerFailureIfAny();
         PlayerState ps = PLAYERS.get(p.getUUID());
-        if (ps == null || ps.records.isEmpty() || maxToSend <= 0) return 0;
-        RegionizedServer rs = RegionScheduler.forLevel(level);
+        if (ps == null || ps.closed || ps.activePublication != null
+                || ps.records.isEmpty() || maxToSend <= 0) return 0;
+        RegionizedServer[] runtime = new RegionizedServer[1];
+        @SuppressWarnings("unchecked")
+        ArrayList<Rec>[] candidateSlot = new ArrayList[1];
+        // Preparation is one admitted body; every selected candidate below is
+        // then admitted independently.
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            runtime[0] = RegionScheduler.forLevel(level);
+            long playerPos = p.chunkPosition().pack();
+            candidateSlot[0] = ps.candidates.prepare(playerPos);
+        });
+        RegionizedServer rs = runtime[0];
+        ArrayList<Rec> candidates = candidateSlot[0];
+        if (candidates.isEmpty()) return 0;
         // 1) drive TRACKED → lease, and collect fence-valid READY records
-        long playerPos = p.chunkPosition().pack();
-        ArrayList<Rec> candidates = new ArrayList<>(ps.records.values());
-        // nearest-first: current view priority, obsolete flight path ages out
-        candidates.sort((a, b) -> Long.compare(dist(a.chunkKey, playerPos), dist(b.chunkKey, playerPos)));
         ArrayList<Reservation> reservations = new ArrayList<>(Math.min(maxToSend, 64));
-        for (Rec r : candidates) {
-            if (reservations.size() >= maxToSend) break;
-            switch (r.st) {
-                case TRACKED -> lease(level, rs, r);
-                case REQUESTED -> {
-                    // Owner mailbox owns it — but ONLY a ticking island drains
-                    // its mailbox. A lease into an idle island (no entities →
-                    // the drive never submits units → sealPending never runs)
-                    // stalled forever with fenceFails=0 (production liveness:
-                    // REQUESTED for 22s). Bounded wait, then escalate to the
-                    // fenced main build — on an idle island the claim is free
-                    // and the build is instant; on a busy one this is the same
-                    // bounded escalation the fence-fail path already takes.
-                    if (System.nanoTime() - r.stateNanos > REQUESTED_TIMEOUT_NANOS
-                            && r.cas(St.REQUESTED, St.TRACKED)) {
-                        r.fenceFails = ESCALATE_AFTER;
-                        r.owner.requestedTimeouts++;
-                        REQUESTED_TIMEOUTS.incrementAndGet();
-                        lease(level, rs, r);
-                    }
-                }
-                default -> { }
+        try {
+            for (Rec r : candidates) {
+                if (reservations.size() >= maxToSend) break;
+                // Each candidate may enter lease/snapshot/mod code.  A single
+                // method-head check cannot cover this loop: every candidate
+                // owns a generation permit whose terminal edge stops the next.
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        () -> selectCandidate(level, rs, ps, r, reservations));
             }
-            if (r.st == St.READY || (r.st == St.REQUESTED && adoptSeal(level, r))) {
-                Entry e = r.entry;
-                if (e == null) { r.cas(St.READY, St.TRACKED); continue; }
-                // lifecycle witness: same LevelChunk object still installed?
-                LevelChunk live = level.getChunkSource().getChunkNow(
-                        net.minecraft.world.level.ChunkPos.getX(r.chunkKey),
-                        net.minecraft.world.level.ChunkPos.getZ(r.chunkKey));
-                if (live == null) { demoteReady(r); continue; }
-                if (live != e.chunk) { demoteReady(r); continue; }
-                // Write-witness fence: the chunk itself must be untouched
-                // since the seal (per-chunk precision — an island completing
-                // unrelated units does NOT fail this).
-                if (((FabroliaWriteGen) live).fabrolia$writeGen() != e.writeGenAtSeal) {
-                    if (demoteReady(r)) {
-                        r.fenceFails++;
-                        ps.retriesFence++;
-                        FENCE_RETRIES.incrementAndGet();
-                    }
-                    continue;
-                }
-                // ATOMIC selection: reserve IMMEDIATELY (payload captured into
-                // the immutable Reservation) — no window in which a later
-                // lease() escalation's drain re-entrancy can strip the entry
-                // of an already-selected record.
-                Reservation res = r.tryReserve();
-                if (res != null) {
-                    reservations.add(res);
-                }
-            }
+        } catch (Throwable selectionFailure) {
+            Throwable failure = publishFatalPreserving(selectionFailure);
+            failure = terminalizeReservations(reservations, failure);
+            ChunkDelivery.<RuntimeException>rethrow(
+                    publishFatalPreserving(failure));
+            return 0;
         }
         if (reservations.isEmpty()) return 0;
-        if (fault("cancelmidbatch")) {
+        if (RegionScheduler.callSuccessBooleanIfHealthy(
+                () -> fault("cancelmidbatch"))) {
             // deterministic test hook: re-entrant cancellation between
             // selection and enqueue (the production drain re-entrancy)
-            untrack(p, reservations.get(0).rec.chunkKey);
-        }
-        // 2) transactional batch over immutable reservations
-        long[] keys = new long[reservations.size()];
-        for (int i = 0; i < keys.length; i++) keys[i] = reservations.get(i).rec.chunkKey;
-        Batch batch = new Batch(BATCH_IDS.incrementAndGet(), ps.connGen, keys);
-        try {
-            if (fault("failstart")) throw new IllegalStateException("injected failstart");
-            p.connection.send(ClientboundChunkBatchStartPacket.INSTANCE);
-        } catch (Throwable t) {
-            // nothing on the wire: roll back every reservation, no ack state
-            for (Reservation res : reservations) res.rollback();
-            LOGGER.error("batch start failed for {} — released {} reservations",
-                    p.getName().getString(), reservations.size(), t);
-            return 0;
-        }
-        int sent = 0;
-        for (Reservation res : reservations) {
-            Rec r = res.rec;
-            if (!r.cas(St.RESERVED, St.ENQUEUED)) {
-                // cancelled/replaced while the batch formed: skip cleanly
-                // (never send to a lifecycle the tracker abandoned), release
-                // both references. THIS was the NPE: the old loop sent from
-                // the record's mutable entry field after cancellation nulled
-                // it, then "restored" the cancelled ghost to READY.
-                res.abandonCancelled();
-                ps.cancelledInBatch++;
-                continue;
-            }
             try {
-                if (fault("failenqueue") && sent == 1) throw new IllegalStateException("injected failenqueue");
-                p.connection.send(res.entry.packet);
-                onEnqueued.test(r.chunkKey);
-                res.commit();
-                r.enqueuedNanos = System.nanoTime();
-                ps.enqueued++;
-                ps.bytesEnqueued += res.entry.bytes;
-                ps.lastFullSendNanos = r.enqueuedNanos;
-                sent++;
-            } catch (Throwable t) {
-                // transient enqueue failure: roll back THIS reservation to a
-                // valid READY-with-payload (or fully release if cancelled);
-                // batch continues, Finished carries the true count. DEBUG
-                // counter + one rate-limited WARN — not an error stack per
-                // record per tick.
-                res.rollback();
-                ps.enqueueFails++;
-                warnRateLimited("enqueue-fail", "full-chunk enqueue failed for "
-                        + p.getName().getString() + " @ [" + net.minecraft.world.level.ChunkPos.getX(r.chunkKey)
-                        + "," + net.minecraft.world.level.ChunkPos.getZ(r.chunkKey)
-                        + "] — reservation rolled back: " + t);
+                RegionScheduler.runSuccessBodyIfHealthy(() ->
+                        untrack(p, reservations.get(0).rec.chunkKey));
+            } catch (Throwable cancellationFailure) {
+                Throwable failure = publishFatalPreserving(cancellationFailure);
+                failure = terminalizeReservations(reservations, failure);
+                ChunkDelivery.<RuntimeException>rethrow(
+                        publishFatalPreserving(failure));
             }
         }
-        // 3) close the batch with the REAL count; commit only if closable
+        // 2) Offer one receipt-gated transaction. The EventLoop cannot enter
+        // Start until publish() has either admitted every exact snapshot or
+        // terminalized the complete reservation set with W.
+        BatchPublication[] publicationSlot = new BatchPublication[1];
         try {
-            p.connection.send(new ClientboundChunkBatchFinishedPacket(Math.max(1, sent)));
-        } catch (Throwable t) {
-            LOGGER.error("batch finish failed for {} — connection presumed dead", p.getName().getString(), t);
-            // connection teardown will quit() this player; no commit
+            RegionScheduler.runSuccessBodyIfHealthy(() ->
+                    publicationSlot[0] = new BatchPublication(ps,
+                            reservations.toArray(Reservation[]::new),
+                            fault("failstart"), fault("failenqueue")));
+        } catch (Throwable constructionFailure) {
+            Throwable failure = publishFatalPreserving(constructionFailure);
+            failure = terminalizeReservations(reservations, failure);
+            ChunkDelivery.<RuntimeException>rethrow(
+                    publishFatalPreserving(failure));
             return 0;
         }
-        ps.outstanding.addLast(batch);
-        ps.batches++;
-        return Math.max(1, sent);
+        BatchPublication publication = publicationSlot[0];
+        RegionScheduler.commitSuccessIfHealthy(
+                () -> ps.activePublication = publication);
+        publication.publish(p);
+        return 0;
+    }
+
+    private static void selectCandidate(ServerLevel level,
+                                        RegionizedServer rs,
+                                        PlayerState ps,
+                                        Rec r,
+                                        ArrayList<Reservation> reservations) {
+        switch (r.st) {
+            case TRACKED -> lease(level, rs, r);
+            case REQUESTED -> {
+                // Owner mailbox owns it — but ONLY a ticking island drains
+                // its mailbox. A lease into an idle island (no entities → the
+                // drive never submits units → sealPending never runs) stalled
+                // forever. Escalation remains in the same admitted candidate.
+                if (System.nanoTime() - r.stateNanos > REQUESTED_TIMEOUT_NANOS
+                        && r.cas(St.REQUESTED, St.TRACKED)) {
+                    r.fenceFails = ESCALATE_AFTER;
+                    r.owner.requestedTimeouts++;
+                    REQUESTED_TIMEOUTS.incrementAndGet();
+                    lease(level, rs, r);
+                }
+            }
+            default -> { }
+        }
+        if (r.st != St.READY && !(r.st == St.REQUESTED && adoptSeal(level, r))) {
+            return;
+        }
+        Entry e = r.entry;
+        if (e == null) {
+            r.cas(St.READY, St.TRACKED);
+            return;
+        }
+        // lifecycle witness: same LevelChunk object still installed?
+        LevelChunk live = level.getChunkSource().getChunkNow(
+                net.minecraft.world.level.ChunkPos.getX(r.chunkKey),
+                net.minecraft.world.level.ChunkPos.getZ(r.chunkKey));
+        if (live == null || live != e.chunk) {
+            demoteReady(r);
+            return;
+        }
+        // Write-witness fence: the chunk itself must be untouched since seal.
+        if (((FabroliaWriteGen) live).fabrolia$writeGen() != e.writeGenAtSeal) {
+            if (demoteReady(r)) {
+                r.fenceFails++;
+                ps.retriesFence++;
+                FENCE_RETRIES.incrementAndGet();
+            }
+            return;
+        }
+        // Reserve immediately; no later candidate may enter until this
+        // reservation and its permit are terminal.
+        Reservation res = r.tryReserve();
+        if (res == null) return;
+        try {
+            reservations.add(res);
+        } catch (Throwable appendFailure) {
+            Throwable failure = publishFatalPreserving(appendFailure);
+            try {
+                res.terminalizeFailure();
+            } catch (Throwable cleanupFailure) {
+                failure = publishFatalPreserving(
+                        mergeFailure(failure, cleanupFailure));
+            }
+            ChunkDelivery.<RuntimeException>rethrow(
+                    publishFatalPreserving(failure));
+        }
+    }
+
+    /**
+     * Main-side terminal edge for a real EventLoop success. Installs the ACK
+     * skeleton and success accounting exactly once; an offered/running batch
+     * has no completion to apply and cannot start a successor batch.
+     */
+    public static int applyCompletedChunkBatch(ServerPlayer p) {
+        RegionScheduler.throwWorkerFailureIfAny();
+        PlayerState ps = PLAYERS.get(p.getUUID());
+        if (ps == null) return 0;
+        BatchPublication publication = ps.activePublication;
+        return publication == null ? 0 : publication.applySuccessOnMain();
     }
 
     /** REQUESTED record: adopt a seal the owner published meanwhile. */
@@ -846,15 +1439,9 @@ public final class ChunkDelivery {
         return true;
     }
 
-    private static long dist(long chunkKey, long playerKey) {
-        long dx = net.minecraft.world.level.ChunkPos.getX(chunkKey) - net.minecraft.world.level.ChunkPos.getX(playerKey);
-        long dz = net.minecraft.world.level.ChunkPos.getZ(chunkKey) - net.minecraft.world.level.ChunkPos.getZ(playerKey);
-        return dx * dx + dz * dz;
-    }
-
     /** Client acked one batch: retire the OLDEST outstanding record set.
-     *  26.2 vanilla hops handleChunkBatchReceived to main (ensureRunningOnSameThread);
-     *  the gate stays as the ownership assertion should that ever change. */
+     *  Called only by PlayerChunkSender's physical-Main intent drain; packet
+     *  ingress itself never touches this deque. */
     public static void onAck(ServerPlayer p) {
         PlayerState ps = PLAYERS.get(p.getUUID());
         if (ps == null) return;
@@ -866,10 +1453,17 @@ public final class ChunkDelivery {
                     p.getName().getString());
             return;
         }
+        if (!b.publicationAccepted()) {
+            RegionScheduler.throwWorkerFailureIfAny();
+            Throwable failure = publishFatalPreserving(new IllegalStateException(
+                    "chunk ACK observed an uncommitted batch publication"));
+            b.cancelPublication();
+            ChunkDelivery.<RuntimeException>rethrow(failure);
+        }
         ps.lastAckNanos = System.nanoTime();
-        for (long k : b.keys) {
-            Rec r = ps.records.get(k);
-            if (r != null && r.cas(St.ENQUEUED, St.ACKNOWLEDGED)) {
+        for (int i = 0; i < b.count; i++) {
+            Rec r = b.records[i];
+            if (r.cas(St.ENQUEUED, St.ACKNOWLEDGED)) {
                 Entry e = r.entry;
                 r.entry = null;
                 if (e != null) e.refs.decrementAndGet();
@@ -1117,6 +1711,78 @@ public final class ChunkDelivery {
             if (r.st.ordinal() < St.ENQUEUED.ordinal() && now - r.stateNanos > 30_000_000_000L) stuck++;
         }
         return stuck;
+    }
+
+    private static Throwable terminalizeReservations(
+            Reservation[] reservations, Throwable primary) {
+        Throwable failure = publishFatalPreserving(primary);
+        for (Reservation reservation : reservations) {
+            try {
+                reservation.terminalizeFailure();
+            } catch (Throwable cleanupFailure) {
+                failure = publishFatalPreserving(
+                        mergeFailure(failure, cleanupFailure));
+            }
+        }
+        return publishFatalPreserving(failure);
+    }
+
+    private static Throwable terminalizeReservations(
+            Iterable<Reservation> reservations, Throwable primary) {
+        Throwable failure = publishFatalPreserving(primary);
+        for (Reservation reservation : reservations) {
+            try {
+                reservation.terminalizeFailure();
+            } catch (Throwable cleanupFailure) {
+                failure = publishFatalPreserving(
+                        mergeFailure(failure, cleanupFailure));
+            }
+        }
+        return publishFatalPreserving(failure);
+    }
+
+    private static void terminalizeReservationsWithoutFailure(
+            Reservation[] reservations) {
+        Throwable failure = null;
+        for (Reservation reservation : reservations) {
+            try {
+                reservation.terminalizeFailure();
+            } catch (Throwable cleanupFailure) {
+                failure = failure == null
+                        ? publishFatalPreserving(cleanupFailure)
+                        : publishFatalPreserving(
+                                mergeFailure(failure, cleanupFailure));
+            }
+        }
+        if (failure != null) {
+            ChunkDelivery.<RuntimeException>rethrow(
+                    publishFatalPreserving(failure));
+        }
+    }
+
+    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
+        if (primary == null) return secondary;
+        if (secondary != null && secondary != primary) {
+            try {
+                primary.addSuppressed(secondary);
+            } catch (Throwable suppressionFailure) {
+                // Suppression is cleanup too: keep the already-published W,
+                // but publish this cleanup failure before returning W.
+                return publishFatalPreserving(suppressionFailure);
+            }
+        }
+        return primary;
+    }
+
+    /** Fatal publication is mandatory diagnostics, never a replacement for
+     * the exact simulation/transport primary. */
+    private static Throwable publishFatalPreserving(Throwable primary) {
+        return RegionScheduler.publishFatalAndSelectWinner(primary);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 
     public static String traceCmd(ServerPlayer p, int cx, int cz) {

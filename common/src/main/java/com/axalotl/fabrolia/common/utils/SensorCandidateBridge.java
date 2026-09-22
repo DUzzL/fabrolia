@@ -22,9 +22,10 @@ import java.util.List;
  *       order — the caller sorts;</li>
  *   <li>return {@code null} to decline (body not batched, sensor box exceeds
  *       coverage, candidate overflow) — the caller falls back to vanilla;</li>
- *   <li>never wedge the entity tick: a throw drops the provider for the
- *       session, same containment rule as {@link
- *       com.axalotl.fabrolia.common.regions.RegionTickHooks}.</li>
+ *   <li>a provider failure propagates through the vanilla entity-tick crash
+ *       boundary; only an explicit {@code null} is a supported vanilla fallback.</li>
+ *   <li>register during bootstrap, or on physical Main once island workers
+ *       have started; live replacement acquires exclusive gameplay ownership.</li>
  * </ul>
  */
 public final class SensorCandidateBridge {
@@ -41,28 +42,50 @@ public final class SensorCandidateBridge {
     }
 
     private static volatile Provider provider;
+    private static final Object BOOTSTRAP = new Object();
+    private static boolean bootstrapSealed;
 
     private SensorCandidateBridge() {}
 
-    /** Register the (single) sensor query provider. Last registration wins. */
+    /** Last registration wins; live publication excludes every entered island E. */
     public static void register(Provider p) {
-        provider = p;
-        LOGGER.info("Sensor candidate provider registered: {}", p.getClass().getName());
+        java.util.Objects.requireNonNull(p);
+        boolean bootstrap;
+        synchronized (BOOTSTRAP) {
+            bootstrap = !bootstrapSealed;
+            if (bootstrap) provider = p;
+        }
+        if (bootstrap) {
+            LOGGER.info("Sensor candidate provider registered: {}", p.getClass().getName());
+            return;
+        }
+        com.axalotl.fabrolia.common.regions.RegionScheduler.runGlobalMainBody(
+                com.axalotl.fabrolia.common.ParallelProcessor.getServer(), () -> {
+                    provider = p;
+                    LOGGER.info("Sensor candidate provider registered: {}", p.getClass().getName());
+                });
+    }
+    /** Closes bootstrap publication before the first worker can enter gameplay. */
+    public static void sealBootstrap() {
+        synchronized (BOOTSTRAP) {
+            bootstrapSealed = true;
+        }
     }
 
+    /** Absence remains stable while a real island or global claim is retained. */
+    public static boolean hasProvider() {
+        return provider != null;
+    }
+
+
     /**
-     * Query the provider, or return {@code null} when absent / declining /
-     * broken (callers always have the vanilla query as the fallback).
+     * Query the provider, or return {@code null} when absent/declining. A thrown
+     * provider failure is not converted into a successful vanilla fallback because
+     * the partially entered provider may already have observed or mutated state.
      */
     public static List<LivingEntity> tryNearestLiving(ServerLevel level, LivingEntity body, double followRange) {
         Provider p = provider;
         if (p == null) return null;
-        try {
-            return p.nearestLiving(level, body, followRange);
-        } catch (Throwable t) {
-            provider = null;
-            LOGGER.error("Sensor candidate provider threw — provider disabled for this session", t);
-            return null;
-        }
+        return p.nearestLiving(level, body, followRange);
     }
 }

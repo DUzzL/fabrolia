@@ -1,9 +1,17 @@
 package com.axalotl.fabrolia.common.mixin.world;
 
 import com.axalotl.fabrolia.common.regions.FabroliaTickDomain;
+import com.axalotl.fabrolia.common.regions.CausalScheduledTickIndex;
+import com.axalotl.fabrolia.common.regions.ScheduledTickIslandAdmission;
 import net.minecraft.world.ticks.LevelChunkTicks;
+import net.minecraft.world.ticks.SavedTick;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+import java.util.List;
 
 /** Clock-domain tag storage (see {@link FabroliaTickDomain}). Volatile: the
  *  tag is written at safe points (main rebuild fence, container registration
@@ -59,7 +67,74 @@ import org.spongepowered.asm.mixin.Unique;
  *  </ul>
  */
 @Mixin(value = LevelChunkTicks.class, priority = 2000)
-public abstract class LevelChunkTicksMixin implements FabroliaTickDomain {
+public abstract class LevelChunkTicksMixin implements FabroliaTickDomain,
+        CausalScheduledTickIndex, com.axalotl.fabrolia.common.regions.AcceptedTickAccess<Object> {
+
+    @Unique
+    private boolean fabrolia$restoringAccepted;
+
+    @Override
+    public void fabrolia$restoreAccepted(net.minecraft.world.ticks.ScheduledTick<Object> tick) {
+        synchronized (this) {
+            fabrolia$restoringAccepted = true;
+            try {
+                ((LevelChunkTicks<Object>) (Object) this).schedule(tick);
+            } finally {
+                fabrolia$restoringAccepted = false;
+            }
+        }
+    }
+
+    // Consume the one-call bypass at admission, BEFORE queue insertion invokes
+    // onTickAdded. Any reentrant new schedule still uses ordinary dedup.
+    @org.spongepowered.asm.mixin.injection.Group(name = "fabrolia$acceptedAdmission", min = 1, max = 1)
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+            method = "schedule", at = @At(value = "INVOKE",
+            target = "Ljava/util/Set;add(Ljava/lang/Object;)Z"), require = 0)
+    private boolean fabrolia$restoreVanillaAdmission(java.util.Set<Object> set, Object tick,
+            com.llamalad7.mixinextras.injector.wrapoperation.Operation<Boolean> original) {
+        boolean restore = fabrolia$restoringAccepted;
+        fabrolia$restoringAccepted = false;
+        return original.call(set, tick) | restore;
+    }
+
+    @org.spongepowered.asm.mixin.injection.Group(name = "fabrolia$acceptedAdmission", min = 1, max = 1)
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+            method = "schedule", at = @At(value = "INVOKE",
+            target = "Lit/unimi/dsi/fastutil/ints/IntOpenHashSet;add(I)Z", remap = false),
+            require = 0)
+    private boolean fabrolia$restoreLithiumAdmission(
+            it.unimi.dsi.fastutil.ints.IntOpenHashSet set, int tick,
+            com.llamalad7.mixinextras.injector.wrapoperation.Operation<Boolean> original) {
+        boolean restore = fabrolia$restoringAccepted;
+        fabrolia$restoringAccepted = false;
+        return original.call(set, tick) | restore;
+    }
+
+    /** Monotonic by design; see {@link CausalScheduledTickIndex}. */
+    @Unique
+    private volatile boolean fabrolia$mayContainPulseSensitiveTick;
+
+    @Inject(method = "<init>(Ljava/util/List;)V", at = @At("RETURN"))
+    private void fabrolia$indexPackedPulseTicks(List<SavedTick<?>> pendingTicks,
+                                                CallbackInfo ci) {
+        for (SavedTick<?> tick : pendingTicks) {
+            if (ScheduledTickIslandAdmission.requiresPulseCoherence(tick.type())) {
+                fabrolia$markPulseSensitiveTick();
+                return;
+            }
+        }
+    }
+
+    @Override
+    public boolean fabrolia$mayContainPulseSensitiveTick() {
+        return fabrolia$mayContainPulseSensitiveTick;
+    }
+
+    @Override
+    public void fabrolia$markPulseSensitiveTick() {
+        fabrolia$mayContainPulseSensitiveTick = true;
+    }
 
     /** Priority 2000: must wrap the FINAL body (after Lithium's @Overwrite at
      *  1000). Never calls {@code original} — the drain IS the replacement
@@ -125,29 +200,6 @@ public abstract class LevelChunkTicksMixin implements FabroliaTickDomain {
         java.util.function.Supplier supplier = () -> original.call(currentTick);
         return com.axalotl.fabrolia.common.regions.TickDomains.packUnderMonitor(
                 (LevelChunkTicks) (Object) this, supplier);
-    }
-
-    /** Contains Lithium's {@code updateNextTickQueue(true)} remove-before-check,
-     *  which destroys a bucket of live ticks and then throws out of
-     *  {@code LevelTicks.tick}. See
-     *  {@link com.axalotl.fabrolia.common.regions.TickDomains#recoverFromBucketInvariantViolation}.
-     *
-     *  <p>HOT PATH — the {@code try} body stays bare and the retry supplier is
-     *  built inside {@code catch}, so the happy path costs nothing: no extra
-     *  monitor (the original body still carries the blanket bit), no capture,
-     *  no allocation. Do not "tidy" this into a helper taking a supplier. */
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    @com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod(method = "poll")
-    private net.minecraft.world.ticks.ScheduledTick<?> fabrolia$pollGuarded(
-            com.llamalad7.mixinextras.injector.wrapoperation.Operation<net.minecraft.world.ticks.ScheduledTick<?>> original) {
-        try {
-            return original.call();
-        } catch (IllegalStateException e) {
-            return (net.minecraft.world.ticks.ScheduledTick<?>)
-                    com.axalotl.fabrolia.common.regions.TickDomains.recoverFromBucketInvariantViolation(
-                            (LevelChunkTicks) (Object) this, e,
-                            (java.util.function.Supplier) original::call);
-        }
     }
 
     @Unique

@@ -16,11 +16,9 @@ import org.spongepowered.asm.mixin.Mixin;
  * calls the static {@code NbtPredicate.getEntityTagToCompare} directly — it never goes
  * through {@code NbtPredicate.matches(Entity)} — so without this wrap the direct-accessor
  * fast path ({@link NbtPredicateFastPath}) was dead for every criterion parsed into this
- * shape (BACAP's hot using_item / enter_block predicates included) and each eval paid a
- * full {@code saveWithoutId}, or on the concurrent belt now defers to batch-end. Fast-path
- * hits stay on the concurrent belt with zero serialization; unhandled shapes fall through
- * to the original, whose static fetch is guarded by the choke-point wrap in
- * {@link NbtPredicateMixin} (cache / defer discipline lives there).
+ * shape (BACAP's hot using_item / enter_block predicates included). Fast-path
+ * hits avoid serialization; other shapes use the original fetch guarded by
+ * {@link NbtPredicateMixin}. Neither path reuses state from an earlier predicate.
  */
 @Mixin(EntityNbtPredicate.class)
 public abstract class EntityNbtPredicateMixin {
@@ -28,6 +26,8 @@ public abstract class EntityNbtPredicateMixin {
     @WrapMethod(method = "matches")
     private boolean fabrolia$tryFastMatch(Entity entity, ServerLevel level, @Nullable Vec3 position,
                                           Operation<Boolean> original) {
+        com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership
+                .requireEntityObservationOwnership(entity);
         CompoundTag expected = ((EntityNbtPredicate) (Object) this).nbt().tag();
         if (NbtPredicateFastPath.isHandled(expected)) {
             Boolean fast = NbtPredicateFastPath.tryMatch(entity, expected);

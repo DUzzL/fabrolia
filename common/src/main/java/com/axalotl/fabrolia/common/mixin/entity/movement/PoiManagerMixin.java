@@ -1,6 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.entity.movement;
 
 import com.axalotl.fabrolia.api.fastutil.ConcurrentLongOpenHashSet;
+import com.axalotl.fabrolia.common.utils.FabroliaPoiLoadGate;
 import com.axalotl.fabrolia.common.utils.PoiStripes;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -54,9 +55,10 @@ import java.util.function.Predicate;
  * outer=s2/inner=s1) — the exact nested-stripe cycle class item (2) above died
  * of. So {@code take} now holds NO outer stripe: the stream runs lock-free like
  * every other query, and the single point of truth is
- * {@link PoiStripes#takeTicketAtomically} — atomic check-and-acquire under
- * {@code stripe(record.pos)}, honouring the boolean, on both the vanilla path
- * (here) and Lithium's ({@code FabroliaLithiumPoiTakeAtMixin}).
+ * {@link PoiStripes#takeTicketAtomically} — resident-identity validation and
+ * atomic check-and-acquire under {@code stripe(record.pos)}, honouring the
+ * boolean. Single-column mutations retain a column lease through their dirty
+ * publication; unload is deferred without holding a lock across the body.
  */
 @Mixin(PoiManager.class)
 public class PoiManagerMixin {
@@ -105,14 +107,13 @@ public class PoiManagerMixin {
         return self.getInRange(typePredicate, center, distance, PoiManager.Occupancy.HAS_SPACE)
                 .filter(poi -> combinedPredicate.test(poi.getPoiType(), poi.getPos()))
                 .findFirst()
-                .flatMap(PoiStripes::takeTicketAtomically);
+                .flatMap(record -> PoiStripes.takeTicketAtomically((FabroliaPoiLoadGate) self, record));
     }
 
     @WrapMethod(method = "release")
     private boolean fabrolia$syncRelease(BlockPos pos, Operation<Boolean> original) {
-        synchronized (PoiStripes.stripe(pos)) {
-            return original.call(pos);
-        }
+        return PoiStripes.mutateColumn((FabroliaPoiLoadGate) this, pos.getX() >> 4, pos.getZ() >> 4,
+                () -> original.call(pos));
     }
 
     /**
@@ -133,16 +134,14 @@ public class PoiManagerMixin {
      */
     @WrapMethod(method = "add")
     private PoiRecord fabrolia$syncAdd(BlockPos pos, net.minecraft.core.Holder<PoiType> type, Operation<PoiRecord> original) {
-        synchronized (PoiStripes.stripe(pos)) {
-            return original.call(pos, type);
-        }
+        return PoiStripes.mutateColumn((FabroliaPoiLoadGate) this, pos.getX() >> 4, pos.getZ() >> 4,
+                () -> original.call(pos, type));
     }
 
     @WrapMethod(method = "remove")
     private void fabrolia$syncRemove(BlockPos pos, Operation<Void> original) {
-        synchronized (PoiStripes.stripe(pos)) {
-            original.call(pos);
-        }
+        PoiStripes.mutateColumn((FabroliaPoiLoadGate) this, pos.getX() >> 4, pos.getZ() >> 4,
+                () -> original.call(pos));
     }
 
     /**
@@ -171,8 +170,7 @@ public class PoiManagerMixin {
     private void fabrolia$syncCheckConsistency(net.minecraft.core.SectionPos sectionPos,
                                             net.minecraft.world.level.chunk.LevelChunkSection section,
                                             Operation<Void> original) {
-        synchronized (PoiStripes.stripe(sectionPos.x(), sectionPos.z())) {
-            original.call(sectionPos, section);
-        }
+        PoiStripes.mutateColumn((FabroliaPoiLoadGate) this, sectionPos.x(), sectionPos.z(),
+                () -> original.call(sectionPos, section));
     }
 }

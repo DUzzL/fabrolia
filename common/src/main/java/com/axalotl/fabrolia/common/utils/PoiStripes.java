@@ -1,9 +1,12 @@
 package com.axalotl.fabrolia.common.utils;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.world.entity.ai.village.poi.PoiRecord;
+import net.minecraft.world.level.ChunkPos;
 
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * The POI write-path stripe locks, extracted from {@code PoiManagerMixin} so
@@ -53,6 +56,19 @@ public final class PoiStripes {
     }
 
     /**
+     * Retain the resident column through the complete mutation, including its
+     * dirty publication. Admission precedes the stripe; neither a loadLock nor
+     * a storage read lock is held across unpack, the stripe, or the body.
+     */
+    public static <T> T mutateColumn(FabroliaPoiLoadGate storage, int chunkX, int chunkZ, Supplier<T> body) {
+        return storage.fabrolia$acquirePoiColumn(ChunkPos.pack(chunkX, chunkZ), () -> {
+            synchronized (stripe(chunkX, chunkZ)) {
+                return body.get();
+            }
+        });
+    }
+
+    /**
      * The one true ticket acquire: atomic check-and-acquire under the stripe of
      * the record's own position, honouring {@code acquireTicket()}'s boolean.
      *
@@ -67,9 +83,18 @@ public final class PoiStripes {
      * <p>{@code PoiRecord.acquireTicket} is access-widened (fabrolia.accesswidener
      * / accesstransformer.cfg).
      */
-    public static Optional<BlockPos> takeTicketAtomically(PoiRecord record) {
-        synchronized (stripe(record.getPos())) {
-            return record.acquireTicket() ? Optional.of(record.getPos()) : Optional.empty();
-        }
+    public static Optional<BlockPos> takeTicketAtomically(FabroliaPoiLoadGate storage, PoiRecord record) {
+        BlockPos pos = record.getPos();
+        return mutateColumn(storage, pos.getX() >> 4, pos.getZ() >> 4, () -> {
+            // Queries intentionally return immutable membership snapshots, not
+            // residency leases. A selected record may have been removed or
+            // unloaded/reloaded before admission. Never mutate that orphan (or
+            // silently substitute a new record that the query did not select).
+            Optional<PoiSectionReadSnapshot> section = storage.fabrolia$portalSectionSnapshot(SectionPos.asLong(pos));
+            if (section == null || section.isEmpty() || section.get().recordAt(pos) != record) {
+                return Optional.empty();
+            }
+            return record.acquireTicket() ? Optional.of(pos) : Optional.empty();
+        });
     }
 }

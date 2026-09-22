@@ -1,5 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.entity.movement;
 
+import com.axalotl.fabrolia.common.parallelised.utils.FabroliaPushableEntityQuery;
+
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.world.entity.Entity;
@@ -14,7 +16,12 @@ import java.util.List;
 public abstract class LevelPushableEntitiesMixin {
 
     @WrapMethod(method = "getPushableEntities")
-    private List<Entity> fabrolia$getPushableEntities(Entity pusher, AABB boundingBox, Operation<List<Entity>> original) {
-        return ((Level) (Object) this).getEntities(pusher, boundingBox, EntitySelector.pushableBy(pusher));
+    private List<Entity> fabrolia$getPushableEntities(
+            Entity pusher, AABB boundingBox, Operation<List<Entity>> original) {
+        Level level = (Level) (Object) this;
+        if (level instanceof FabroliaPushableEntityQuery indexed) {
+            return indexed.fabrolia$getPushableEntities(pusher, boundingBox);
+        }
+        return level.getEntities(pusher, boundingBox, EntitySelector.pushableBy(pusher));
     }
 }

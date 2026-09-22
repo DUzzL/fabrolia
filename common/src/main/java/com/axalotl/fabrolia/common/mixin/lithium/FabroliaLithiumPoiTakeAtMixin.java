@@ -1,6 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.lithium;
 
 import com.axalotl.fabrolia.common.utils.PoiStripes;
+import com.axalotl.fabrolia.common.utils.FabroliaPoiLoadGate;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.caffeinemc.mods.lithium.common.world.interests.PointOfInterestSetExtended;
@@ -33,9 +34,9 @@ import java.util.function.Predicate;
  * 11-line method rather than a call-site wrap: honouring the boolean requires
  * changing control flow ({@code false} → {@code Optional.empty()}), which no
  * {@code @WrapOperation} on the ignored call can do. The acquire goes through
- * {@link PoiStripes#takeTicketAtomically} — the same stripe
- * ({@code stripe(record.pos)}) that {@code release}/{@code add}/{@code remove}
- * hold for that position, restoring atomic check-and-acquire.
+ * {@link PoiStripes#takeTicketAtomically} — the same resident column lease and
+ * stripe ({@code stripe(record.pos)}) that {@code release}/{@code add}/{@code remove}
+ * hold, validating that the selected record is still resident before acquiring.
  *
  * <p>The biPredicate call matches vanilla {@code take} exactly; in the only
  * vanilla call site (AcquirePoi) it is a pure position-equality lambda, so
@@ -74,6 +75,6 @@ public abstract class FabroliaLithiumPoiTakeAtMixin extends SectionStorage<PoiSe
                 || !biPredicate.test(record.getPoiType(), record.getPos())) {
             return Optional.empty();
         }
-        return PoiStripes.takeTicketAtomically(record);
+        return PoiStripes.takeTicketAtomically((FabroliaPoiLoadGate) this, record);
     }
 }

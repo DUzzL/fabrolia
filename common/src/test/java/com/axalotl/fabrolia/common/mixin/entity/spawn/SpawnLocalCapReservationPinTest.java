@@ -134,10 +134,39 @@ class SpawnLocalCapReservationPinTest {
         assertTrue(src.contains("fabrolia$releasePackAfterSpawn"),
                 "the pack-end release must stay wired — leaked reservations ratchet the counts up "
                         + "and strangle later approvals");
-        assertTrue(src.matches("(?s).*try\\s*\\{\\s*original\\.call\\(category, level, chunk, extraTest, "
-                        + "spawnCallback\\);\\s*\\}\\s*finally\\s*\\{.*fabrolia\\$releaseLocalPack.*"),
-                "release must sit in a finally around the pack — a throwing pack must not leak its "
-                        + "reservation");
+        int releaseMethod = src.indexOf("private static void fabrolia$releasePackAfterSpawn");
+        int releaseEnd = src.indexOf("private static Throwable fabrolia$mergeFailure", releaseMethod);
+        String releaseBody = src.substring(releaseMethod, releaseEnd);
+        int noToken = releaseBody.indexOf("if (token == 0)");
+        int noTokenAdmission = releaseBody.indexOf(
+                "RegionScheduler.runSuccessBodyIfHealthy(", noToken);
+        int tokenClear = releaseBody.indexOf("reservation.set(0)");
+        int packAdmission = releaseBody.indexOf(
+                "RegionScheduler.runSuccessBodyIfHealthy(", tokenClear);
+        int pack = releaseBody.indexOf(
+                "original.call(category, level, chunk, extraTest, spawnCallback)", packAdmission);
+        int bodyCatch = releaseBody.indexOf("catch (Throwable thrown)", pack);
+        int selectWinner = releaseBody.indexOf(
+                "failure = RegionScheduler.publishFatalAndSelectWinner(thrown)", bodyCatch);
+        int release = releaseBody.indexOf("fabrolia$releaseLocalPack", selectWinner);
+        int cleanupCatch = releaseBody.indexOf("catch (Throwable cleanup)", release);
+        int merge = releaseBody.indexOf("fabrolia$mergeFailure(failure, cleanup)", cleanupCatch);
+        int terminal = releaseBody.indexOf(
+                "RegionScheduler.commitSuccessIfHealthy(() -> {})", merge);
+        int rethrow = releaseBody.indexOf("fabrolia$rethrow(failure)", terminal);
+        assertTrue(releaseMethod >= 0 && releaseEnd > releaseMethod
+                        && noToken >= 0 && noTokenAdmission > noToken
+                        && tokenClear > noTokenAdmission && packAdmission > tokenClear
+                        && pack > packAdmission && bodyCatch > pack
+                        && selectWinner > bodyCatch && release > selectWinner
+                        && cleanupCatch > release && merge > cleanupCatch
+                        && terminal > merge && rethrow > terminal,
+                "a throwing entered pack must select W before exhaustive reservation release, "
+                        + "merge cleanup failure, pass a post-cleanup success cut and rethrow W");
+        assertFalse(releaseBody.contains("throwWorkerFailureIfAny"),
+                "pack entry must not use a check-then-original window");
+        assertFalse(releaseBody.substring(tokenClear, rethrow).contains("finally"),
+                "a throwing finally cleanup could replace the exact pack-body primary");
         assertTrue(src.contains("@Share(\"fabrolia$packReservation\")"),
                 "reserve and release must pair through the shared per-invocation token (never "
                         + "re-derived from config — a mid-tick toggle flip must not leak or "

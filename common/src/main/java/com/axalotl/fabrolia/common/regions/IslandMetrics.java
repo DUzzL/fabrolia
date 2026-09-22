@@ -5,28 +5,53 @@ import net.minecraft.server.level.ServerPlayer;
 /**
  * Reader-side island metrics (2026-07-14). TPS windows live entirely on the
  * READER (main-thread commands/HUD): actual TPS = Δ(unitsCompleted)/Δt using
- * per-island sample fields — the unit hot path only bumps a counter and two
- * EWMAs. Never clamped; correct at any target rate and during sprint.
+ * a cached per-island window — the unit hot path only bumps a counter and two
+ * EWMAs. Reads within one window are idempotent, so a command cannot consume
+ * the HUD's sample (or make the next reader observe 0 TPS). Never clamped;
+ * correct at any target rate and during sprint.
  */
 public final class IslandMetrics {
 
     private IslandMetrics() {}
 
-    /** Main thread only (sample fields are reader-owned). */
+    /** Main thread only; NaN means no complete observation window yet. */
     public static double actualTps(IslandRegistry.PIsland p) {
-        long now = System.nanoTime();
-        long count = p.unitsCompleted;
-        double tps;
-        if (p.tpsSampleNanos == 0 || now <= p.tpsSampleNanos) {
-            tps = 0.0;
-        } else {
-            tps = (count - p.tpsSampleCount) * 1_000_000_000.0 / (now - p.tpsSampleNanos);
+        p.tpsWindow.update(p.unitsCompleted, System.nanoTime());
+        return p.tpsWindow.value();
+    }
+
+    static String formatTps(double tps) {
+        return Double.isNaN(tps) ? "warming"
+                : String.format(java.util.Locale.ROOT, "%.1f", tps);
+    }
+
+    static long overdueNanos(IslandRegistry.PIsland p, long now) {
+        long deadline = p.nextDeadlineNanos;
+        return deadline == 0 ? 0 : Math.max(0, now - deadline);
+    }
+
+    static long completionAgeNanos(IslandRegistry.PIsland p, long now) {
+        return p.unitsCompleted == 0 ? -1 : Math.max(0, now - p.lastCompletionNanos);
+    }
+
+    /** Completed pre-seal cost is historical; current delay is reported separately. */
+    static String completedCostAndState(IslandRegistry.PIsland p, long now) {
+        long age = completionAgeNanos(p, now);
+        String cost = age < 0 ? "warming completed pre-seal MSPT"
+                : String.format(java.util.Locale.ROOT,
+                        "%.2f completed pre-seal MSPT (last=%dms)",
+                        p.emaUnitNanos / 1_000_000.0, age / 1_000_000);
+        StringBuilder out = new StringBuilder(cost);
+        long overdue = overdueNanos(p, now);
+        if (overdue > 0) out.append(" overdue=").append(overdue / 1_000_000).append("ms");
+        if (p.submitQueued.get()) out.append(" queued");
+        if (p.unitClaim.get()) {
+            out.append(" claim-held");
+            long acquired = p.claimSiteNanos;
+            if (acquired != 0) out.append('=').append(Math.max(0, now - acquired) / 1_000_000).append("ms");
         }
-        if (now - p.tpsSampleNanos > 1_000_000_000L) {
-            p.tpsSampleCount = count;
-            p.tpsSampleNanos = now;
-        }
-        return tps;
+        if (p.waitingOnRoutedCommand) out.append(" waiting-routed-command");
+        return out.toString();
     }
 
     /** Human label (cached ~5s; recomputed on demand, never in the unit hot
@@ -127,55 +152,60 @@ public final class IslandMetrics {
     }
 
     /**
-     * Admin state classification (main thread). The four states cover every
-     * combination an operator actually needs to act on:
-     * Stalled — a unit claim has been held for seconds (worker wedged or
-     *   phase barrier stuck): investigate.
-     * Lagging — the island is behind the wall clock or completing units
-     *   below its target rate: overloaded, only this island slips.
-     * Idle — caught up (L tracks the wall clock) with no recent unit
-     *   completions in the sample window. 0.0 measured TPS here is EXPECTED
-     *   (nothing to tick), not a fault — lag=0/missed=0 alongside it is the
-     *   consistent signature, not a contradiction.
-     * Healthy — keeping pace at its target.
+     * Reader-side progress classification. Claims can belong to Main, topology
+     * or portals as well as a unit; a held claim is not an in-flight tick.
+     * No complete rate window means warming, never a guessed 20 or measured 0.
      */
     public static String classify(RegionizedServer rs, IslandRegistry.PIsland p) {
+        return classify(rs, p, actualTps(p));
+    }
+
+    private static String classify(RegionizedServer rs, IslandRegistry.PIsland p, double tps) {
         long now = System.nanoTime();
-        if (p.unitClaim.get() && p.claimSiteNanos != 0 && now - p.claimSiteNanos > 3_000_000_000L) {
-            return "Stalled";
-        }
-        long behind = rs.level.getGameTime() - p.logicalTick;
-        long targetNanos = TemporalControl.effectiveTargetNanos(rs, p);
+        long claimAge = p.unitClaim.get() && p.claimSiteNanos != 0
+                ? Math.max(0, now - p.claimSiteNanos) : 0;
+        return classifyProgress(tps, IslandClock.wallTime(rs.level) - p.logicalTick,
+                pacingTargetNanos(rs, p), claimAge, overdueNanos(p, now));
+    }
+
+    static String classifyProgress(double tps, long behind, long targetNanos,
+                                   long claimAge, long overdue) {
+        if (claimAge > 3_000_000_000L) return "Claim-held";
+        if (Double.isNaN(tps)) return "Warming";
         double target = 1_000_000_000.0 / targetNanos;
-        double tps = actualTps(p);
-        if (behind > 40 || (tps > 0.5 && tps < target - 2.0)) {
-            return "Lagging";
-        }
-        if (tps < 0.5 && behind <= 2) {
-            return "Idle";
-        }
+        if (tps < 0.5 && behind <= 2 && overdue <= targetNanos) return "Idle";
+        if (behind > 40 || tps < target - 2.0 || (tps < 0.5 && behind > 2)
+                || overdue > targetNanos) return "Lagging";
         return "Healthy";
+    }
+
+    /** Same final cadence override consumed by unit completion, not just the requested rate. */
+    private static long pacingTargetNanos(RegionizedServer rs, IslandRegistry.PIsland p) {
+        CrossDimLinks.Coupling coupling = p.crossDimCoupling;
+        if (coupling != null) {
+            long shared = coupling.sharedTargetNanos;
+            if (shared > 0) return shared;
+        }
+        return TemporalControl.effectiveTargetNanos(rs, p);
     }
 
     /** Admin-facing default row: state, who/where, dimension, rates, cost,
      *  size. Internal identifiers/clocks/counters live in {@link #row}
      *  (the `top verbose` form). */
     public static String adminRow(RegionizedServer rs, IslandRegistry.PIsland p, int rank) {
-        long targetNanos = TemporalControl.effectiveTargetNanos(rs, p);
-        String state = classify(rs, p);
+        long targetNanos = pacingTargetNanos(rs, p);
+        double tps = actualTps(p);
+        String state = classify(rs, p, tps);
         String tag = TemporalControl.isSprinting(rs, p) ? " [sprint]"
                 : TemporalControl.isCoherent(rs, p) ? " [pinned]"
                 : targetNanos != TemporalControl.globalIslandTargetNanos ? " [rated]" : "";
-        double tps = actualTps(p);
-        String tpsStr = "Idle".equals(state)
-                ? String.format(java.util.Locale.ROOT, "idle/%.0f", 1_000_000_000.0 / targetNanos)
-                : String.format(java.util.Locale.ROOT, "%.1f/%.0f", tps, 1_000_000_000.0 / targetNanos);
+        String tpsStr = String.format(java.util.Locale.ROOT, "%s/%.0f",
+                formatTps(tps), 1_000_000_000.0 / targetNanos);
         return String.format(java.util.Locale.ROOT,
-                "#%-2d %-8s %-24s %-11s %9s TPS  %5.2fms avg %5.2fms max  %d cells%s",
+                "#%-2d %-10s %-24s %-11s %9s TPS  %s  %d cells%s",
                 rank, state, trim(label(rs, p), 24),
                 rs.level.dimension().identifier().getPath(),
-                tpsStr, p.emaUnitNanos / 1_000_000.0, p.maxUnitNanos / 1_000_000.0,
-                p.cells.size(), tag);
+                tpsStr, completedCostAndState(p, System.nanoTime()), p.cells.size(), tag);
     }
 
     private static String trim(String s, int max) {
@@ -184,14 +214,14 @@ public final class IslandMetrics {
 
     /** One tpstop/list row (the `top verbose` diagnostic form). */
     public static String row(RegionizedServer rs, IslandRegistry.PIsland p, int rank) {
-        long targetNanos = TemporalControl.effectiveTargetNanos(rs, p);
+        long targetNanos = pacingTargetNanos(rs, p);
         return String.format(java.util.Locale.ROOT,
-                "#%d %s [%s] %s island#%d/gen%d cells=%d+%dh L=%d gt=%d ev=%d/%d tps=%.1f/%.1f mspt=%.2f max=%.2f lag=%dms missed=%d%s%s",
+                "#%d %s [%s] %s island#%d/gen%d cells=%d+%dh L=%d gt=%d ev=%d/%d tps=%s/%.1f %s completed-pre-seal-decaying-max=%.2fms lag=%dms missed=%d%s%s",
                 rank, label(rs, p), handle(rs, p), rs.level.dimension().identifier(), p.id, p.gen,
                 p.cells.size(), p.haloCells.size(), p.logicalTick,
-                rs.level.getGameTime(), p.eventStashDepths()[0], p.eventStashDepths()[1],
-                actualTps(p), 1_000_000_000.0 / targetNanos,
-                p.emaUnitNanos / 1_000_000.0, p.maxUnitNanos / 1_000_000.0,
+                IslandClock.wallTime(rs.level), p.eventStashDepths()[0], p.eventStashDepths()[1],
+                formatTps(actualTps(p)), 1_000_000_000.0 / targetNanos,
+                completedCostAndState(p, System.nanoTime()), p.maxUnitNanos / 1_000_000.0,
                 p.lagNanos / 1_000_000, p.missedDeadlines,
                 TemporalControl.isSprinting(rs, p) ? " SPRINT" : "",
                 targetNanos != TemporalControl.globalIslandTargetNanos ? " RATE-OVERRIDE" : "");

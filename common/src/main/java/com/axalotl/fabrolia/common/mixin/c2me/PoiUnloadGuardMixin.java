@@ -3,15 +3,10 @@ package com.axalotl.fabrolia.common.mixin.c2me;
 import com.axalotl.fabrolia.common.utils.FabroliaPoiLoadGate;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
-import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.storage.SectionStorage;
-import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
 
-import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * Task #38, review D3 — C2ME's merged {@code c2me$unloadPoi} was a full
@@ -32,14 +27,12 @@ import java.util.concurrent.CompletableFuture;
  * orphaned {@code PoiRecord}s (the double-bed class of bug). The reverse
  * order leaves {@code columns} bits set for removed sections.
  *
- * <p>Fix: the whole unload body runs under {@code loadLock} (its own inner
- * {@code synchronized (loadLock)} is reentrant), and the unload is SKIPPED
- * while a load is in flight for the chunk — either a pending disk read or an
- * unpack winner between claim and fan-out (the {@code PoiChunkLoadFence}
- * state, reached through {@link FabroliaPoiLoadGate}). Combined with the D4
- * handshake this makes unload and unpack mutually exclusive per chunk. A
- * skipped unload is retried by C2ME's next downgrade pass — the chunk merely
- * stays resident one cycle longer.
+ * <p>The whole unload body runs under {@code loadLock}. A column lease
+ * covers both unpack and the final result acquisition, including already
+ * loaded query enumeration. Conflicting unloads remain pending until the
+ * normal Main POI tick can run them; the installed C2ME downgrade calls this
+ * method only once and then clears its holder, so merely skipping leaks the
+ * column. A newer C2ME disk residency cancels the old residency's request.
  *
  * <p>Lock order: {@code loadLock → storageRW.read/write} (via flush's
  * {@code writeChunk} reads and the removes) — the same direction main's
@@ -53,25 +46,8 @@ import java.util.concurrent.CompletableFuture;
 @Mixin(value = SectionStorage.class, priority = 2000)
 public abstract class PoiUnloadGuardMixin<R, P> {
 
-    @Shadow
-    @Final
-    private Object loadLock;
-
-    @Shadow
-    @Final
-    private Long2ObjectMap<CompletableFuture<Optional<SectionStorage.PackedChunk<P>>>> pendingLoads;
-
     @WrapMethod(method = "c2me$unloadPoi", remap = false)
     private void fabrolia$guardPoiUnload(ChunkPos pos, Operation<Void> original) {
-        synchronized (this.loadLock) {
-            long chunkKey = pos.pack();
-            if (this.pendingLoads.containsKey(chunkKey)
-                    || ((FabroliaPoiLoadGate) this).fabrolia$poiLoadInFlight(chunkKey)) {
-                // A load is in flight — unloading now would strand it
-                // (sections-present / loadedChunks-absent divergence).
-                return;
-            }
-            original.call(pos);
-        }
+        ((FabroliaPoiLoadGate) this).fabrolia$unloadPoiColumn(pos.pack(), () -> original.call(pos));
     }
 }

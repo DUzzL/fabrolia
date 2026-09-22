@@ -5,10 +5,11 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -30,9 +31,7 @@ class ChunkBridgeWaitTest {
     void loadFalseStrandedFutureGivesVanillaNullWithinBudget() {
         CompletableFuture<Object> stranded = new CompletableFuture<>();
         long t0 = System.nanoTime();
-        var out = ChunkBridgeWait.await(stranded,
-                () -> { throw new AssertionError("load=false must never resubmit"); },
-                () -> null, false, POS);
+        var out = ChunkBridgeWait.await(stranded, () -> null, false, POS);
         long elapsed = System.nanoTime() - t0;
         assertInstanceOf(ChunkBridgeWait.Result.GiveUpNull.class, out,
                 "stranded load=false future must resolve to the vanilla null");
@@ -53,7 +52,7 @@ class ChunkBridgeWaitTest {
             fut.complete("chunk-result");
         });
         completer.start();
-        var out = ChunkBridgeWait.await(fut, () -> fut, () -> null, false, POS);
+        var out = ChunkBridgeWait.await(fut, () -> null, false, POS);
         assertInstanceOf(ChunkBridgeWait.Result.Done.class, out);
         assertEquals("chunk-result",
                 ((ChunkBridgeWait.Result.Done<Object, Object>) out).future().join());
@@ -66,7 +65,7 @@ class ChunkBridgeWaitTest {
     void probeShortCircuitsStrandedFuture() {
         CompletableFuture<Object> stranded = new CompletableFuture<>();
         AtomicInteger calls = new AtomicInteger();
-        ChunkBridgeWait.Result<Object, String> out = ChunkBridgeWait.await(stranded, () -> stranded,
+        ChunkBridgeWait.Result<Object, String> out = ChunkBridgeWait.await(stranded,
                 () -> calls.incrementAndGet() >= 3 ? "probed-chunk" : null,
                 true, POS);
         assertInstanceOf(ChunkBridgeWait.Result.Ready.class, out);
@@ -74,48 +73,57 @@ class ChunkBridgeWaitTest {
                 ((ChunkBridgeWait.Result.Ready<Object, String>) out).chunk());
     }
 
-    /** load=true self-heal: a stranded first request is re-submitted after
-     *  the interval and the FRESH future's completion wins — a load the
-     *  chunk system dropped no longer pins the worker forever. Runs with a
-     *  test-shortened interval via the race structure: we simulate the
-     *  interval passing by completing only the resubmitted future. */
+    /** load=true keeps one exact upgrade obligation and returns that same
+     * future; the API exposes no successor-submission hook. */
     @Test
-    @Timeout(60)
-    void loadTrueResubmitsAndFreshFutureWins() throws Exception {
-        CompletableFuture<Object> stranded = new CompletableFuture<>();
-        CompletableFuture<Object> fresh = new CompletableFuture<>();
-        AtomicInteger resubmits = new AtomicInteger();
-        // Result captured for MAIN-thread assertion — an assertion inside the
-        // spawned thread would be swallowed by JUnit (review finding).
-        AtomicReference<ChunkBridgeWait.Result<Object, Object>> outcome = new AtomicReference<>();
-        AtomicReference<Throwable> thrown = new AtomicReference<>();
-
-        Thread t = new Thread(() -> {
-            try {
-                outcome.set(ChunkBridgeWait.await(stranded, () -> {
-                    resubmits.incrementAndGet();
-                    return fresh;
-                }, () -> null, true, POS));
-            } catch (Throwable e) {
-                thrown.set(e);
+    @Timeout(30)
+    void loadTrueNeverSubmitsSuccessorAndReturnsOriginalFuture() throws Exception {
+        CompletableFuture<Object> original = new CompletableFuture<>();
+        Thread completer = new Thread(() -> {
+            try { Thread.sleep(30); } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
             }
-        }, "bridge-waiter");
-        t.setDaemon(true);
-        t.start();
+            original.complete("done");
+        });
+        completer.start();
+        var outcome = ChunkBridgeWait.await(original, () -> null, true, POS);
+        completer.join();
+        assertInstanceOf(ChunkBridgeWait.Result.Done.class, outcome);
+        assertEquals(original,
+                ((ChunkBridgeWait.Result.Done<Object, Object>) outcome).future());
+    }
 
-        // Wait out the real 5s resubmit interval once (bounded, not flaky:
-        // the loop re-checks monotonic time each iteration).
-        long deadline = System.nanoTime() + ChunkBridgeWait.RESUBMIT_INTERVAL_NS + 10_000_000_000L;
-        while (resubmits.get() == 0 && System.nanoTime() < deadline) {
-            Thread.sleep(50);
+    /** A RUNNING ray can already be parked in this bridge when peer W wins.
+     * It must unwind with that exact object so Main can passively quiesce the
+     * ray fan-in without polling a level-wide chunk successor after W. */
+    @Test
+    @Timeout(3)
+    void physicalWinnerTerminatesAStrandedAcceptedBodyExactly() throws Exception {
+        var poolField = RegionScheduler.class.getDeclaredField("pool");
+        var fatalField = RegionScheduler.class.getDeclaredField("orphanFatalFailure");
+        poolField.setAccessible(true);
+        fatalField.setAccessible(true);
+        Object previousPool = poolField.get(null);
+        Object previousFatal = fatalField.get(null);
+        AssertionError winner = new AssertionError("ray chunk-bridge W");
+        AtomicInteger probes = new AtomicInteger();
+        try {
+            poolField.set(null, null);
+            fatalField.set(null, winner);
+            AssertionError surfaced = assertThrows(AssertionError.class,
+                    () -> ChunkBridgeWait.await(
+                            new CompletableFuture<>(),
+                            () -> {
+                                probes.incrementAndGet();
+                                return null;
+                            },
+                            true, POS));
+            assertSame(winner, surfaced);
+            assertEquals(0, probes.get(),
+                    "W must stop the accepted wait before another chunk probe body");
+        } finally {
+            poolField.set(null, previousPool);
+            fatalField.set(null, previousFatal);
         }
-        assertTrue(resubmits.get() >= 1, "load=true must re-submit after the interval");
-        fresh.complete("healed");
-        t.join(10_000);
-        assertTrue(!t.isAlive(), "fresh completion must release the waiter");
-        if (thrown.get() != null) throw new AssertionError(thrown.get());
-        assertInstanceOf(ChunkBridgeWait.Result.Done.class, outcome.get());
-        assertEquals("healed",
-                ((ChunkBridgeWait.Result.Done<Object, Object>) outcome.get()).future().join());
     }
 }

@@ -24,8 +24,8 @@ import net.minecraft.world.phys.Vec3;
  * {@code IslandRegistry.PIsland}: "only real overruns open a gap").
  *
  * <p>Consequence, exactly the operator's field report: a PLAYER event emitted
- * on main (playerticks off: all of them — movement STEP from
- * {@code handleMovePlayer}, every doTick event) carries a WALL stamp W into a
+ * on main (movement STEP from {@code handleMovePlayer}, every doTick event)
+ * carries a WALL stamp W into a
  * sensor whose island trails at L &lt; W. {@code W < L} stays false for W−L
  * ticks — seconds on a fresh local server (the observed delay + stutter),
  * effectively forever on a long-lived multiplayer world (the observed total

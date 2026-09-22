@@ -26,4 +26,24 @@ public class ServerLevelEntityCallbacksMixin {
             original.call(entity);
         }
     }
+
+    @org.spongepowered.asm.mixin.injection.Inject(
+            method = "onTrackingStart(Lnet/minecraft/world/entity/Entity;)V",
+            at = @org.spongepowered.asm.mixin.injection.At("RETURN"))
+    private void fabrolia$publishCameraMembership(Entity entity,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (entity instanceof net.minecraft.server.level.ServerPlayer player) {
+            com.axalotl.fabrolia.common.regions.NetherPortalPlayerAccess.publishTrackedCamera(player);
+        }
+    }
+
+    @org.spongepowered.asm.mixin.injection.Inject(
+            method = "onTrackingEnd(Lnet/minecraft/world/entity/Entity;)V",
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"))
+    private void fabrolia$retireCameraMembership(Entity entity,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (entity instanceof net.minecraft.server.level.ServerPlayer player) {
+            com.axalotl.fabrolia.common.regions.NetherPortalPlayerAccess.forgetCamera(player);
+        }
+    }
 }

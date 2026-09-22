@@ -6,6 +6,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -68,21 +70,21 @@ class CrossDimArrivalsPublishingScopeTest {
         assertFalse(CrossDimArrivals.PUBLISHING.get());
     }
 
-    /** runPublished contains a throwing op (logged, never propagated) — the
-     *  restore must run regardless, at every nesting level. */
+    /** A throwing arrival body propagates the exact failure and still restores
+     * the publication flag at every exited nesting level. */
     @Test
-    void aThrowingNestedOpStillRestoresTheCallersFlag() {
-        AtomicBoolean outerSawFlagAfterThrow = new AtomicBoolean(false);
+    void aThrowingNestedOpPropagatesExactlyAndRestoresEveryFlag() {
+        IllegalStateException primary = new IllegalStateException("nested arrival op failed");
 
-        CrossDimArrivals.runPublished(() -> {
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () ->
+                CrossDimArrivals.runPublished(() -> {
             CrossDimArrivals.runPublished(() -> {
-                throw new IllegalStateException("nested arrival op failed");
+                throw primary;
             });
-            outerSawFlagAfterThrow.set(CrossDimArrivals.PUBLISHING.get());
-        });
+            throw new AssertionError("failed nested body must abort its outer successor");
+        }));
 
-        assertTrue(outerSawFlagAfterThrow.get(),
-                "a throwing nested op must not strip the caller's flag either");
+        assertSame(primary, thrown, "the arrival boundary must preserve object identity");
         assertFalse(CrossDimArrivals.PUBLISHING.get());
     }
 }

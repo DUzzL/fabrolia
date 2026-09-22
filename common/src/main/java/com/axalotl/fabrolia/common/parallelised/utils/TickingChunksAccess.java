@@ -15,4 +15,8 @@ public interface TickingChunksAccess {
     /** Raw section storage — census-side authoritative membership checks
      *  (SpawnIndex phantom purge). */
     net.minecraft.world.level.entity.EntitySectionStorage<net.minecraft.world.level.entity.EntityAccess> fabrolia$sectionStorage();
+
+    /** Finish accepted visibility/callback work after scheduler quiescence.
+     * Failed generations discard unentered successors instead of running them. */
+    void fabrolia$finishStatusTransitions(boolean healthy);
 }

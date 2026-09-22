@@ -82,7 +82,11 @@ public abstract class CollectingNeighborUpdaterMixin implements NeighborUpdater 
         // bit-for-bit against per-thread state.
         Frame f = this.fabrolia$frame.get();
         boolean wasEmpty = f.stack.isEmpty() && f.addedThisLayer.isEmpty();
-        boolean overCap = f.count >= this.maxChainedNeighborUpdates;
+        // Vanilla treats a negative cap as unlimited.  Without the explicit
+        // guard, -1 made every update look over-cap and silently discarded the
+        // complete neighbour chain.
+        boolean overCap = this.maxChainedNeighborUpdates >= 0
+                && f.count >= this.maxChainedNeighborUpdates;
         f.count++;
         if (!overCap) {
             f.addedThisLayer.add(update);

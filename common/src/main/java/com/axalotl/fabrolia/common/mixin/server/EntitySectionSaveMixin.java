@@ -2,6 +2,8 @@ package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.IslandRegistry;
+import com.axalotl.fabrolia.common.regions.IslandUnitAdmission;
+import com.axalotl.fabrolia.common.regions.NetherPortalPlayerAccess;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
@@ -9,7 +11,6 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.world.level.entity.PersistentEntitySectionManager;
 import org.spongepowered.asm.mixin.Mixin;
 
-import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
 /**
@@ -27,6 +28,11 @@ import java.util.function.Consumer;
 @Mixin(PersistentEntitySectionManager.class)
 public abstract class EntitySectionSaveMixin {
 
+    @WrapMethod(method = "saveAll")
+    private void fabrolia$fullEntitySave(Operation<Void> original) {
+        IslandUnitAdmission.runFullEntitySave(this, () -> original.call());
+    }
+
     @WrapMethod(method = "storeChunkSections")
     private boolean fabrolia$ownerSafeEntitySave(long chunkPos, Consumer<?> onRemove,
                                                  Operation<Boolean> original) {
@@ -37,15 +43,15 @@ public abstract class EntitySectionSaveMixin {
             if (((Object) this) != rs.entityManagerHandle()) {
                 continue;
             }
-            if (rs.mainHoldsAllClaims()) {
-                break; // save-all/rebuild window already exclusive
+            if (rs.currentThreadHoldsAllClaims()) {
+                return fabrolia$runEntitySaveBody(chunkPos, onRemove, original);
             }
             IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(chunkPos);
             if (owner == null) {
                 break;
             }
             if (IslandCommands.mainHolds(owner)) {
-                return original.call(chunkPos, onRemove); // already exclusive
+                return fabrolia$runOptionalEntitySave(chunkPos, onRemove, original);
             }
             // TRY-OR-DEFER (2026-07-14 harness NPE + production wedge class):
             // this runs inside processUnloads' chunksToUnload.removeIf. The
@@ -56,18 +62,97 @@ public abstract class EntitySectionSaveMixin {
             // claim (the frontier-walk watchdog on the production jar).
             // One-shot CAS instead: if the owner is mid-unit, report "not
             // stored" — vanilla keeps the chunk queued and retries next
-            // tick. Main never blocks and never re-enters the iterator.
-            if (!owner.unitClaim.compareAndSet(false, true)) {
+            // tick. A queued-but-not-yet-claimed unit normally has the same
+            // priority: this opportunistic serializer must not steal its
+            // queue→claim window (2026-08-22 c2me incremental-save race).
+            // PersistentEntityUnloadRetryMixin may attach one bounded, aged,
+            // exact-manager+chunk lease after repeated ownership yields. That
+            // lease only permits this CAS contention; the vanilla body still
+            // cannot run without unitClaim. Main never blocks or re-enters the
+            // iterator.
+            if (!IslandUnitAdmission.entityUnloadSaveMayClaim(
+                    this, chunkPos, owner.submitQueued.get())) {
+                IslandUnitAdmission.noteEntityUnloadOwnershipYield(this, chunkPos);
                 return false;
             }
-            owner.noteClaim("entitySave");
-            try {
-                return original.call(chunkPos, onRemove);
-            } finally {
-                owner.clearClaim();
+            if (!owner.tryClaimAutonomousWork()) {
+                IslandUnitAdmission.noteEntityUnloadOwnershipYield(this, chunkPos);
+                return false;
+            }
+            if (!IslandUnitAdmission.entityUnloadSaveMayClaim(
+                    this, chunkPos, owner.submitQueued.get())) {
                 owner.unitClaim.set(false);
+                IslandUnitAdmission.noteEntityUnloadOwnershipYield(this, chunkPos);
+                return false;
+            }
+            boolean saved = false;
+            Throwable failure = null;
+            try {
+                owner.noteClaim("entitySave");
+                saved = fabrolia$runOptionalEntitySave(chunkPos, onRemove, original);
+            } catch (Throwable thrown) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+            }
+            try {
+                owner.clearClaim();
+            } catch (Throwable cleanup) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        fabrolia$mergeFailure(failure, cleanup));
+            }
+            try {
+                owner.unitClaim.set(false);
+            } catch (Throwable cleanup) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        fabrolia$mergeFailure(failure, cleanup));
+            }
+            if (failure == null) {
+                try {
+                    RegionScheduler.commitSuccessIfHealthy(() -> {});
+                } catch (Throwable peerFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
+                }
+            }
+            if (failure != null) IslandCommands.publishAndPropagate(failure);
+            return saved;
+        }
+        return fabrolia$runOptionalEntitySave(chunkPos, onRemove, original);
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private boolean fabrolia$runOptionalEntitySave(
+            long chunkPos, Consumer<?> onRemove, Operation<Boolean> original) {
+        try (var admission = NetherPortalPlayerAccess.tryBeginEntitySave(this, chunkPos)) {
+            if (admission == null) return false;
+            return fabrolia$runEntitySaveBody(chunkPos, onRemove, original);
+        } catch (Throwable failure) {
+            IslandCommands.publishAndPropagate(failure);
+            return false; // unreachable
+        }
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private static boolean fabrolia$runEntitySaveBody(
+            long chunkPos, Consumer<?> onRemove, Operation<Boolean> original) {
+        try {
+            return RegionScheduler.callSuccessBooleanIfHealthy(
+                    () -> original.call(chunkPos, onRemove));
+        } catch (Throwable failure) {
+            IslandCommands.publishAndPropagate(failure);
+            return false; // unreachable: publishAndPropagate always exact-rethrows
+        }
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private static Throwable fabrolia$mergeFailure(
+            Throwable primary, Throwable secondary) {
+        if (primary == null) return secondary;
+        if (secondary != null && secondary != primary) {
+            try {
+                primary.addSuppressed(secondary);
+            } catch (Throwable ignored) {
+                // Claim cleanup diagnostics cannot replace the save primary.
             }
         }
-        return original.call(chunkPos, onRemove);
+        return primary;
     }
 }

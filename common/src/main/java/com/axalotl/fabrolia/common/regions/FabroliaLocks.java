@@ -49,31 +49,34 @@ public final class FabroliaLocks {
     }
 
     /**
-     * Monitor for item-sync sites ({@code SyncItemPickup.wrap}), keyed by the ITEM's region —
-     * NOT by the current thread. Thread-keyed resolution ({@link #tickLockOr}) breaks for item
-     * exclusion the moment the same region's entity work runs on a non-RegionWorkerThread:
-     * the main-thread barrier pump executes stolen dense-region help batches
-     * ({@code RegionWorkerPool.stealOne}) and main-sync-lane entities tick on main WHILE the
-     * region's workers run — thread-keyed, those two touchers of one ItemEntity would hold
-     * DIFFERENT monitors (fallback vs region.lock) and both pass the isRemoved gate → dupe.
-     * Item-keyed, they always contend on the same region.lock.
-     *
-     * <p>Identity stability: the item's own region holds the item in its entity index
-     * (entityCount &gt; 0), so {@code evictIdle} never reclaims it while the item lives —
-     * every resolver gets the same Region instance, hence the same monitor. Create-if-absent
-     * from workers is the established {@code executeAt} path (regionForGridKey.compute is
-     * atomic and race-safe vs eviction).
-     *
-     * <p>Deadlock-freedom vs the thread-scoped sibling monitors: worker nesting is
-     * region.lock → same-or-adjacent region.lock, and ColorGate forbids adjacent regions
-     * running concurrently, so opposite-order pairs cannot be held at once; main resolves the
-     * fallback only via {@link #tickLockOr} and is a single thread — no cycle through it.
+     * Legacy item-monitor surface. The exact ItemEntity identity is now the
+     * synchronization authority; resolving through a mutable chunk/region can
+     * select a different monitor while the item crosses a grid boundary.
      */
+    @Deprecated
     public static Object itemLockOr(net.minecraft.server.level.ServerLevel level,
                                     net.minecraft.world.entity.item.ItemEntity entity,
                                     Object fallback) {
+        return entity == null ? fallback : entity;
+    }
+
+    /**
+     * Outer serial lane for consumable ticks and native merges. Acquire before
+     * either endpoint's stable guard. Gap/synchronous work shares the fallback;
+     * autonomous islands have independent lanes separated beyond merge reach.
+     */
+    public static Object itemTickLaneOr(net.minecraft.server.level.ServerLevel level,
+                                        net.minecraft.world.entity.Entity entity,
+                                        Object fallback) {
+        return entity == null ? fallback : itemTickLaneOr(level, entity.chunkPosition().pack(), fallback);
+    }
+
+    /** Static XP award resolves its lane before native selection of an orb. */
+    public static Object itemTickLaneOr(net.minecraft.server.level.ServerLevel level,
+                                        long packedChunk, Object fallback) {
         RegionizedServer rs = RegionScheduler.forLevel(level);
-        if (rs == null) return fallback;   // scheduler inactive → original global serialization
-        return rs.itemMonitor(entity.chunkPosition().pack());
+        if (rs == null || !rs.asyncActive) return fallback;
+        IslandRegistry.PIsland island = rs.islandOwnerOfChunk(packedChunk);
+        return island == null || island.retired ? fallback : island.itemTickLane;
     }
 }

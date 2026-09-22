@@ -8,19 +8,15 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.TickingBlockEntity;
 
 import java.util.ArrayList;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.LockSupport;
 
 /**
- * F2 (Stage C) — island-partitioned block-entity ticks.
+ * Island-owned block-entity ticks with a globally owned Main complement.
  *
- * <p>Replaces {@link Level#tickBlockEntities()}'s flat-list iteration with a
- * per-island parallel pass. Within an island all cells belong to the same
- * slice — there is no intra-island parallelism (a piston in chunk A pushing
- * into chunk B, both in the same island, is serial under that island's
- * worker). Across islands the separation invariant (≥16-chunk unloaded gap)
- * rules out any side effect from reaching a chunk owned by a different slice.
+ * <p>Autonomous units execute their own cells serially on the claim-holding
+ * coordinator. Classified nonlocal native producers rendezvous with globally
+ * owned Main at that same unit ordinal and clock; Main's residual never ticks
+ * them again. Synchronous mode and the async residual enter a global envelope
+ * before observing any live ticker or invoking its body.
  *
  * <p>F2b (2026-07-12): the per-tick partition no longer walks
  * {@code Level.blockEntityTickers} at all. Block entities never change chunk,
@@ -31,12 +27,9 @@ import java.util.concurrent.locks.LockSupport;
  * (~5.6 ms at ~20k tickers, 2026-07-11 profiles) to O(populated cells)
  * (a few hundred ordered-map reads).
  *
- * <p>Ordering: per-cell lists append in registration order under the same
- * lock as the vanilla list, so within a cell (8×8 chunks) the order is
- * exactly vanilla's. Cells are iterated ascending by grid key, so the
- * cross-cell order within an island is deterministic and stable across
- * island rebuilds and restarts — vanilla itself only guarantees chunk-load
- * order here, which varies per session; this is the same variation class.
+ * <p>Ordering: immutable per-cell snapshots carry registration sequences next
+ * to their wrappers. Each slice merges these ordered lists to restore vanilla's
+ * global registration order, including moving pistons on opposite cell edges.
  *
  * <p>{@code Level.blockEntityTickers} stays authoritatively maintained
  * (pending flush + order-preserving sweep) for mod compat and as the bulk
@@ -47,37 +40,73 @@ public final class IslandBlockEntityTicks {
 
     private IslandBlockEntityTicks() {}
 
-    /** A slice = one island's cells (or the isolated lane), executed serially. */
-    private record Slice(ArrayList<ArrayList<TickingBlockEntity>> cells, int size) {}
+    private static Object registryLock(Level level) {
+        return ((BlockEntityTickerAccess) level).fabrolia$blockEntityTickerLock();
+    }
 
-    /** Vanilla-fallback bookkeeping: fold stashed registrations into the cell
-     *  index (cells aren't consumed by the fallback, but keeping them fresh
-     *  bounds the stash and confines the bulk rebuild to true cold starts —
-     *  the only moment no ticker can be Lithium-sleeping). Main thread. */
+    /** Registration and its derived-index receipt are one ordered transaction. */
+    public static void registerTicker(Level level, TickingBlockEntity ticker, Runnable registration) {
+        synchronized (registryLock(level)) {
+            registration.run();
+            RegionScheduler.onBlockEntityTickerAdded(level, ticker);
+        }
+    }
+
+    public static void setTickingBlockEntities(Level level, boolean ticking) {
+        synchronized (registryLock(level)) {
+            level.tickingBlockEntities = ticking;
+        }
+    }
+
+    /** Also used by vanilla's addAll/clear replacement; no ticker body runs here. */
+    public static boolean flushPendingTickers(Level level) {
+        synchronized (registryLock(level)) {
+            if (level.pendingBlockEntityTickers.isEmpty()) return false;
+            level.blockEntityTickers.addAll(level.pendingBlockEntityTickers);
+            level.pendingBlockEntityTickers.clear();
+            return true;
+        }
+    }
+
+
+    /** Vanilla-fallback lifecycle cleanup, called after vanilla completed.
+     *  A synchronous fallback has no consumer for the derived cell index, so
+     *  keeping it warm only retains wrappers that vanilla has already removed.
+     *  Frozen async is different: an older unit may still hold/read the map;
+     *  no vanilla removals happen while frozen, so only its bounded add stash
+     *  is discarded. Main thread. */
     public static void maintainIndexOnly(Level level) {
         if (!(level instanceof ServerLevel sl)) return;
         RegionizedServer rs = RegionScheduler.forLevel(sl);
-        if (rs == null || !rs.beCellsValid) return; // cold: next partitioned pass bulk-builds
-        rs.drainPendingBeAdds();
+        if (rs == null) return;
+        boolean frozenAsync = rs.asyncActive && RegionScheduler.isActive()
+                && !level.tickRateManager().runsNormally();
+        synchronized (registryLock(level)) {
+            if (frozenAsync) {
+                if (rs.beCellsValid) {
+                    rs.drainPendingBeAdds();
+                } else {
+                    rs.discardPendingBeAdds();
+                }
+                return;
+            }
+            rs.releaseBeIndexForVanillaFallback();
+        }
     }
 
     /**
-     * A2 pre-unit maintenance (main, entity slot, BEFORE units dispatch):
-     * vanilla pending flush + persistent-index fold, so this tick's island
-     * units see every BE registered up to the entity slot — the same
-     * visibility vanilla's BE-phase flush would have given them. Main is
-     * quiescent here (no units in flight yet), the only legal window for
-     * beCells mutations outside the BE slot.
+     * Main maintenance overlaps autonomous units. Fold the authoritative
+     * pending list and publish its derived index under registration's gate;
+     * readers retain immutable cell lists and never take this gate to tick.
      */
     public static void preUnitMaintenance(ServerLevel level, RegionizedServer rs) {
-        if (!level.pendingBlockEntityTickers.isEmpty()) {
-            level.blockEntityTickers.addAll(level.pendingBlockEntityTickers);
-            level.pendingBlockEntityTickers.clear();
-        }
-        if (!rs.beCellsValid) {
-            rs.rebuildBeCells(level.blockEntityTickers);
-        } else {
-            rs.drainPendingBeAdds();
+        synchronized (registryLock(level)) {
+            flushPendingTickers(level);
+            if (!rs.beCellsValid) {
+                rs.rebuildBeCells(level.blockEntityTickers);
+            } else {
+                rs.drainPendingBeAdds();
+            }
         }
     }
 
@@ -87,9 +116,8 @@ public final class IslandBlockEntityTicks {
      * order (the same order the AVL-map walk gives the sync path), then the
      * BEs registered mid-unit (vanilla ticks those the same tick via its
      * direct-list add; the persistent index only adopts them at the next
-     * maintenance pass). beCells is read-only during the entity slot
-     * (mutations happen on main pre-dispatch and in the BE slot, after every
-     * unit future completed), so concurrent unit reads are safe. Removed
+     * maintenance pass). Main may publish a replacement index or cell list
+     * during the unit; each pass retains its captured immutable lists. Removed
      * wrappers land in {@code rs.unitRemovedBes} for main's post-slot sweep.
      */
     public static void tickIslandCells(ServerLevel level, RegionizedServer rs,
@@ -145,9 +173,10 @@ public final class IslandBlockEntityTicks {
             pendingSet.addAll(pendingTail);
             seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         }
-        ArrayList<ArrayList<TickingBlockEntity>> unitLists = new ArrayList<>(keys.length);
+        ArrayList<BlockEntityTickerList> unitLists = new ArrayList<>(keys.length);
+        var cells = rs.beCells;
         for (long key : keys) {
-            ArrayList<TickingBlockEntity> cell = rs.beCells.get(key);
+            BlockEntityTickerList cell = cells.get(key);
             if (cell != null && !cell.isEmpty()) {
                 unitLists.add(cell);
             }
@@ -170,7 +199,7 @@ public final class IslandBlockEntityTicks {
                 return rs.islandOwnerOfChunk(ChunkPos.pack(tp)) != island;
             });
             if (!pendingTail.isEmpty()) {
-                tickSlice(level, pendingTail, rs.unitRemovedBes, tickable, null, null);
+                tickSlice(level, rs, pendingTail, rs.unitRemovedBes, tickable, null, null);
             }
             // retire carried entries the fold has delivered (seen in a cell
             // list this unit) or that finalized/died — the rest keep ticking
@@ -205,190 +234,44 @@ public final class IslandBlockEntityTicks {
             // routed command this tick has parked — completing them HERE lets
             // the coordinator release its claim long before the next drive's
             // submit phase (the resume-vs-submit race halved cadence).
-            IslandCommands.drainRoutedBatch(2_000_000L);
+            IslandCommands.drainRoutedBatch();
         }
         if (!level.tickRateManager().runsNormally()) return false;
 
-        level.tickingBlockEntities = true;
+        setTickingBlockEntities(level, true);
         try {
-            // Vanilla pending-flush: adds queued during the previous tick join the main list.
-            if (!level.pendingBlockEntityTickers.isEmpty()) {
-                level.blockEntityTickers.addAll(level.pendingBlockEntityTickers);
-                level.pendingBlockEntityTickers.clear();
-            }
+            preUnitMaintenance(sl, rs);
 
-            // F2b index maintenance: bulk (re)build after cold start / missed adds,
-            // else fold in the registrations stashed since the last pass. Runs after
-            // the pending flush so a bulk rebuild sees the complete vanilla list.
-            if (!rs.beCellsValid) {
-                rs.rebuildBeCells(level.blockEntityTickers);
-            } else {
-                rs.drainPendingBeAdds();
-            }
-
-            final int islandCount = rs.islands().size();
-            @SuppressWarnings("unchecked")
-            final ArrayList<ArrayList<TickingBlockEntity>>[] perIsland =
-                    (ArrayList<ArrayList<TickingBlockEntity>>[]) new ArrayList[islandCount];
-            final int[] perIslandSize = new int[islandCount];
-            ArrayList<ArrayList<TickingBlockEntity>> isolatedCells = null;
-            int isolatedSize = 0;
-            final java.util.concurrent.ConcurrentLinkedQueue<TickingBlockEntity> removed =
-                    new java.util.concurrent.ConcurrentLinkedQueue<>();
-
-            // Route CELLS (not tickers) to island slices. Ascending-key iteration of
-            // the AVL map keeps per-island cell order deterministic. Removed wrappers
-            // still sit in their cell until the amortized sweep — tickSlice's
-            // isRemoved re-check skips them, exactly like vanilla's inline removal
-            // would have (they are behaviorally invisible meanwhile).
-            ArrayList<TickingBlockEntity> posless = null;
-            // Concurrent map: no key order — sort explicitly (same ascending
-            // order the old AVL walk gave, deterministic across sessions).
-            long[] cellKeys = rs.beCells.keySet().toLongArray();
+            ArrayList<BlockEntityTickerList> residual = new ArrayList<>();
+            var cells = rs.beCells;
+            long[] cellKeys = cells.keySet().toLongArray();
             java.util.Arrays.sort(cellKeys);
             for (long cellKey : cellKeys) {
-                ArrayList<TickingBlockEntity> cell = rs.beCells.get(cellKey);
+                BlockEntityTickerList cell = cells.get(cellKey);
                 if (cell == null || cell.isEmpty()) continue;
-                if (cellKey == Long.MIN_VALUE) {
-                    // No position, no locality: cannot be assigned to any island's
-                    // isolation domain. Ticked on main AFTER the slice barrier, when
-                    // every island is quiescent — a woken sleeper or a posless modded
-                    // ticker can then touch anything without racing a slice.
-                    posless = cell;
-                    continue;
-                }
-                if (rs.asyncActive) {
-                    // A2: unit-owned cells already ticked inside their island's
-                    // unit this tick (exact complement: units cover regions on
-                    // their domain; everything else — gap cells, regionless
-                    // leftovers — stays on this path).
+                if (rs.asyncActive && cellKey != Long.MIN_VALUE) {
+                    // Exact complement of tickIslandCells: units own both their
+                    // member cells and halo, never the global/positionless lane.
                     Region cellRegion = rs.regionizer().peekByGridKey(cellKey);
                     if (cellRegion != null && cellRegion.domain != null
                             && cellRegion.domain != rs.globalDomain) {
                         continue;
                     }
                 }
-                int island = rs.islandForCell(cellKey);
-                if (island < 0 || island >= islandCount) {
-                    if (isolatedCells == null) isolatedCells = new ArrayList<>(4);
-                    isolatedCells.add(cell);
-                    isolatedSize += cell.size();
-                } else {
-                    ArrayList<ArrayList<TickingBlockEntity>> lists = perIsland[island];
-                    if (lists == null) perIsland[island] = lists = new ArrayList<>(4);
-                    lists.add(cell);
-                    perIslandSize[island] += cell.size();
-                }
+                residual.add(cell);
             }
-
-            ArrayList<Slice> slices = new ArrayList<>(islandCount);
-            for (int i = 0; i < islandCount; i++) {
-                if (perIsland[i] != null) slices.add(new Slice(perIsland[i], perIslandSize[i]));
+            final java.util.Queue<TickingBlockEntity> removed = new java.util.ArrayDeque<>();
+            if (!residual.isEmpty()) {
+                // No registry monitor survives into acquisition. One merge restores
+                // native registration order across every Main-owned cell, including
+                // explicit global tickers. Empty complements need no global barrier.
+                RegionScheduler.runGlobalMainBody(sl.getServer(),
+                        () -> tickCells(level, rs, residual, removed));
             }
-
-            if (slices.isEmpty()) {
-                if (isolatedCells != null) {
-                    tickCells(level, rs, isolatedCells, removed);
-                }
-                if (posless != null) {
-                    tickSlice(level, posless, removed,
-                            new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(4));
-                }
-                sweepRemoved(level, rs, removed);
-                return true;
-            }
-
-            // Heaviest island first for the work-stealing pool (free worker grabs the long pole).
-            slices.sort((a, b) -> Integer.compare(b.size(), a.size()));
-
-            // Singleton-merge: fold tiny tail slices into the main (isolated) lane to save
-            // dispatch+barrier overhead.
-            final int SMALL_SLICE_THRESHOLD = 3;
-            if (slices.size() > 2) {
-                ArrayList<ArrayList<TickingBlockEntity>> tinyMerged = null;
-                int tinySize = 0;
-                int writeIdx = 0;
-                for (int readIdx = 0; readIdx < slices.size(); readIdx++) {
-                    Slice s = slices.get(readIdx);
-                    if (s.size() < SMALL_SLICE_THRESHOLD && readIdx > 0) {
-                        if (tinyMerged == null) tinyMerged = new ArrayList<>();
-                        tinyMerged.addAll(s.cells());
-                        tinySize += s.size();
-                    } else {
-                        slices.set(writeIdx++, s);
-                    }
-                }
-                while (slices.size() > writeIdx) slices.remove(slices.size() - 1);
-                if (tinyMerged != null && !tinyMerged.isEmpty()) {
-                    if (isolatedCells == null) {
-                        isolatedCells = tinyMerged;
-                    } else {
-                        isolatedCells.addAll(tinyMerged);
-                    }
-                    isolatedSize += tinySize;
-                }
-            }
-
-            RegionScheduler.drainMainSafeNow();
-
-            final ArrayList<ArrayList<TickingBlockEntity>> isolatedFinal = isolatedCells;
-            final AtomicInteger nextSlice = new AtomicInteger(0);
-            final AtomicInteger remaining = new AtomicInteger(slices.size());
-            final AtomicReference<Throwable> failure = new AtomicReference<>();
-
-            Runnable runner = () -> {
-                int idx;
-                while ((idx = nextSlice.getAndIncrement()) < slices.size()) {
-                    try {
-                        tickCells(level, rs, slices.get(idx).cells(), removed);
-                    } catch (Throwable th) {
-                        failure.compareAndSet(null, th);
-                    } finally {
-                        remaining.decrementAndGet();
-                    }
-                }
-            };
-            int workerRunners = Math.min(slices.size(), Math.max(1, RegionScheduler.workerCount()));
-            for (int i = 0; i < workerRunners; i++) {
-                RegionScheduler.enqueueGlobal(runner);
-            }
-            if (workerRunners > 0) RegionScheduler.wakeWorkers();
-
-            // Main: the light isolated lane, then opportunistic steal, then the barrier-pump.
-            if (isolatedFinal != null) {
-                try {
-                    tickCells(level, rs, isolatedFinal, removed);
-                } catch (Throwable th) {
-                    failure.compareAndSet(null, th);
-                }
-            }
-            runner.run();
-            while (remaining.get() > 0) {
-                boolean drained = sl.getChunkSource().mainThreadProcessor.pollTask();
-                if (!drained) LockSupport.parkNanos(20_000L);
-            }
-
-            // Post-barrier: all islands quiescent — safe for position-less tickers.
-            if (posless != null) {
-                try {
-                    tickSlice(level, posless, removed,
-                            new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(4));
-                } catch (Throwable th) {
-                    failure.compareAndSet(null, th);
-                }
-            }
-
             sweepRemoved(level, rs, removed);
-
-            Throwable th = failure.get();
-            if (th != null) {
-                if (th instanceof RuntimeException re) throw re;
-                if (th instanceof Error err) throw err;
-                throw new RuntimeException("island BE-tick slice failed", th);
-            }
             return true;
         } finally {
-            level.tickingBlockEntities = false;
+            setTickingBlockEntities(level, false);
         }
     }
 
@@ -397,18 +280,15 @@ public final class IslandBlockEntityTicks {
      *  moving-piston pairs straddling a cell seam that mutual order is
      *  load-bearing. Each cell list is already seq-ascending (appends), so a
      *  k-way heap merge restores the exact vanilla order at O(n log cells);
-     *  one shared per-chunk gate memo, exactly as before. Wrappers missing a
-     *  seq (registered before this build / foreign adds) sort first among
-     *  themselves in cell order — transient, one session boundary at most. */
+     *  one shared per-chunk gate memo, exactly as before. Generic lists retain
+     *  the missing-sequence MIN_VALUE rule and original heap tie behavior. */
     private static void tickCells(Level level, RegionizedServer rs,
-                                  ArrayList<ArrayList<TickingBlockEntity>> cells,
+                                  ArrayList<BlockEntityTickerList> cells,
                                   java.util.Queue<TickingBlockEntity> removed) {
         final it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable =
                 new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(64);
         tickMerged(level, rs, cells, removed, tickable, null, null);
     }
-
-    private record MergeHead(java.util.List<TickingBlockEntity> list, int idx, long seq) {}
 
     static void tickMerged(Level level, RegionizedServer rs,
                            java.util.List<? extends java.util.List<TickingBlockEntity>> lists,
@@ -427,33 +307,13 @@ public final class IslandBlockEntityTicks {
         }
         if (live == 0) return;
         if (live == 1) {
-            tickSlice(level, only, removed, tickable, skip, seen);
+            tickSlice(level, rs, only, removed, tickable, skip, seen);
             return;
         }
-        java.util.PriorityQueue<MergeHead> heap = new java.util.PriorityQueue<>(
-                live, java.util.Comparator.comparingLong(MergeHead::seq));
-        for (int i = 0, n = lists.size(); i < n; i++) {
-            java.util.List<TickingBlockEntity> l = lists.get(i);
-            if (l != null && !l.isEmpty()) {
-                heap.add(new MergeHead(l, 0, seqOf(rs, l.get(0))));
-            }
+        BlockEntityTickerList.Merge merge = new BlockEntityTickerList.Merge(lists, rs.beSeqOf);
+        if (merge.advance()) {
+            tickCursor(level, rs, merge, removed, tickable, skip, seen);
         }
-        ArrayList<TickingBlockEntity> one = new ArrayList<>(1);
-        one.add(null);
-        while (!heap.isEmpty()) {
-            MergeHead h = heap.poll();
-            one.set(0, h.list().get(h.idx()));
-            tickSlice(level, one, removed, tickable, skip, seen);
-            int next = h.idx() + 1;
-            if (next < h.list().size()) {
-                heap.add(new MergeHead(h.list(), next, seqOf(rs, h.list().get(next))));
-            }
-        }
-    }
-
-    private static long seqOf(RegionizedServer rs, TickingBlockEntity t) {
-        Long s = rs.beSeqOf.get(t);
-        return s == null ? Long.MIN_VALUE : s;
     }
 
     /**
@@ -467,13 +327,8 @@ public final class IslandBlockEntityTicks {
      * with pos=BlockPos.ZERO, so genuine removals always take the isRemoved
      * branch.
      */
-    private static void tickSlice(Level level, java.util.List<TickingBlockEntity> slice,
-                                  java.util.Queue<TickingBlockEntity> removed,
-                                  it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable) {
-        tickSlice(level, slice, removed, tickable, null, null);
-    }
 
-    private static void tickSlice(Level level, java.util.List<TickingBlockEntity> slice,
+    private static void tickSlice(Level level, RegionizedServer rs, java.util.List<TickingBlockEntity> slice,
                                   java.util.Queue<TickingBlockEntity> removed,
                                   it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable,
                                   java.util.Set<TickingBlockEntity> skip,
@@ -487,32 +342,125 @@ public final class IslandBlockEntityTicks {
         // advanced = flying machines breaking at one chunk's entry/exit (bomber fleet
         // report, 2026-07-06). The memo restores vanilla's whole-phase coherence per
         // chunk — and drops N map lookups per chunk to one as a bonus.
+        RegionWorkerThread worker = Thread.currentThread() instanceof RegionWorkerThread current
+                ? current : null;
         for (int i = 0, m = slice.size(); i < m; i++) {
-            TickingBlockEntity t = slice.get(i);
-            if (skip != null && skip.contains(t)) {
-                if (seen != null) {
-                    seen.add(t); // fold delivered this wrapper: carry retires it
-                }
-                continue; // pending/carried: ticked once in the tail pass
+            TickingBlockEntity ticker = slice.get(i);
+            if (skipTicker(ticker, skip, seen)) continue;
+            if (worker != null && rs.beMainBodyTickers.contains(ticker)) {
+                tickCursor(level, rs, new SliceCursor(slice, i, m, ticker),
+                        removed, tickable, skip, seen);
+                return;
             }
-            if (t.isRemoved()) { removed.add(t); continue; }
+            tickOne(level, ticker, removed, tickable);
+        }
+    }
+
+    /** Borrow the source cursor for a contiguous, already-declared global run.
+     *  No successor metadata is read before its predecessor's original body.
+     *  The first local/skipped wrapper remains current for the worker; per-source
+     *  order is preserved, not a total order between independent islands. */
+    private static void tickCursor(Level level, RegionizedServer rs, BlockEntityTickerList.Cursor cursor,
+                                   java.util.Queue<TickingBlockEntity> removed,
+                                   it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable,
+                                   java.util.Set<TickingBlockEntity> skip,
+                                   java.util.Set<TickingBlockEntity> seen) {
+        RegionWorkerThread worker = Thread.currentThread() instanceof RegionWorkerThread current
+                ? current : null;
+        while (cursor.hasCurrent()) {
+            TickingBlockEntity ticker = cursor.ticker();
+            if (skipTicker(ticker, skip, seen)) {
+                cursor.advance();
+                continue;
+            }
+            if (worker == null || !rs.beMainBodyTickers.contains(ticker)) {
+                tickOne(level, ticker, removed, tickable);
+                cursor.advance();
+                continue;
+            }
+            EpochDomain domain = worker.currentDomain;
+            if (domain == null || domain.owner == null) {
+                throw new IllegalStateException("global block ticker lost its source island unit");
+            }
+            IslandRegistry.PIsland source = domain.owner;
+            // Queue publication and terminal rendezvous transfer exclusive use
+            // of this cursor; the coordinator never advances it concurrently.
+            IslandCommands.runBlockEntityTickOnMain(rs, source, () -> {
+                do {
+                    tickOne(level, cursor.ticker(), removed, tickable);
+                    // Preserve the former per-ticker post-body source check.
+                    // A normal callback may invalidate topology or the generation;
+                    // it must not lend its old source identity to the suffix.
+                    if (IslandCommands.routedUnitSourceOnMain(rs) != source) {
+                        throw new IllegalStateException("block ticker lost its exact source unit");
+                    }
+                } while (cursor.advance()
+                        && (skip == null || !skip.contains(cursor.ticker()))
+                        && rs.beMainBodyTickers.contains(cursor.ticker()));
+            });
+        }
+    }
+
+    private static boolean skipTicker(TickingBlockEntity ticker,
+                                      java.util.Set<TickingBlockEntity> skip,
+                                      java.util.Set<TickingBlockEntity> seen) {
+        if (skip == null || !skip.contains(ticker)) return false;
+        if (seen != null) seen.add(ticker); // fold delivered it: carry retires it
+        return true; // pending/carried: ticked once in the tail pass
+    }
+
+    /** Allocated only when a single-list pass first needs a Main rendezvous. */
+    private static final class SliceCursor implements BlockEntityTickerList.Cursor {
+        private final java.util.List<TickingBlockEntity> slice;
+        private final int end;
+        private int index;
+        private TickingBlockEntity ticker;
+
+        SliceCursor(java.util.List<TickingBlockEntity> slice, int index, int end,
+                    TickingBlockEntity ticker) {
+            this.slice = slice;
+            this.index = index;
+            this.end = end;
+            this.ticker = ticker;
+        }
+
+        @Override public boolean advance() {
+            if (++index < end) {
+                ticker = slice.get(index);
+                return true;
+            }
+            ticker = null;
+            return false;
+        }
+
+        @Override public boolean hasCurrent() {
+            return index < end;
+        }
+
+        @Override public TickingBlockEntity ticker() {
+            return ticker;
+        }
+    }
+
+    private static void tickOne(Level level, TickingBlockEntity t,
+                                java.util.Queue<TickingBlockEntity> removed,
+                                it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable) {
+        // Predicate observations and the body share one first-W entry cut.
+        // Spatial/global ownership was established by the producer, never here.
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            if (t.isRemoved()) { removed.add(t); return; }
             BlockPos pos = t.getPos();
-            if (pos == null) continue; // Lithium sleeping stub — keep it, it wakes later
+            if (pos == null) return; // Lithium sleeping stub — keep it, it wakes later
             long chunkKey = ChunkPos.pack(pos);
-            byte gate = tickable.get(chunkKey);   // 0 = unknown, 1 = tick, 2 = skip
+            byte gate = tickable.get(chunkKey); // 0 = unknown, 1 = tick, 2 = skip
             if (gate == 0) {
                 gate = level.shouldTickBlocksAt(pos) ? (byte) 1 : (byte) 2;
                 tickable.put(chunkKey, gate);
             }
-            if (gate == 1) {
-                try {
-                    t.tick();
-                } catch (Throwable err) {
-                    throw new RuntimeException("BE tick failed @ " + pos + " type=" + t.getType(), err);
-                }
-            }
-        }
+            if (gate == 1) t.tick();
+        });
     }
+
 
     /** Post-barrier (main, single-threaded): drop dead tickers from the vanilla list
      *  AND the per-cell index. Amortized exactly as before (<256 wrappers / ≤64 ticks
@@ -534,11 +482,13 @@ public final class IslandBlockEntityTicks {
         }
         if (pending.isEmpty()) return;
         if (pending.size() < 256 && (level.getGameTime() & 63) != 0) return;
+        synchronized (registryLock(level)) {
         level.blockEntityTickers.removeIf(pending::contains);
         it.unimi.dsi.fastutil.longs.LongOpenHashSet touched =
                 new it.unimi.dsi.fastutil.longs.LongOpenHashSet(Math.min(64, pending.size()));
         for (TickingBlockEntity dead : pending) {
             rs.beSeqOf.remove(dead);
+            rs.beMainBodyTickers.remove(dead);
             long cell = rs.beCellOf.removeLong(dead);
             if (cell != Long.MAX_VALUE) {
                 touched.add(cell);
@@ -546,19 +496,19 @@ public final class IslandBlockEntityTicks {
         }
         for (it.unimi.dsi.fastutil.longs.LongIterator it = touched.iterator(); it.hasNext(); ) {
             long cell = it.nextLong();
-            ArrayList<TickingBlockEntity> list = rs.beCells.get(cell);
+            BlockEntityTickerList list = rs.beCells.get(cell);
             if (list != null) {
                 // Copy-on-write: a unit mid-pass may still iterate the old
                 // list; it skips these wrappers via isRemoved exactly like
                 // vanilla's inline removal would have.
-                ArrayList<TickingBlockEntity> next = new ArrayList<>(list);
-                next.removeIf(pending::contains);
+                BlockEntityTickerList next = list.without(pending);
                 if (next.isEmpty()) {
                     rs.beCells.remove(cell);
                 } else {
                     rs.beCells.put(cell, next);
                 }
             }
+        }
         }
         pending.clear();
     }

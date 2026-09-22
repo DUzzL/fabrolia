@@ -195,7 +195,7 @@ class NavRecomputeDeadlockGraphTest {
     void mainWithClaimRunsInlineMainWithoutClaimDefers() throws Exception {
         // Fake "this thread is the server thread".
         net.minecraft.server.MinecraftServer srv = (net.minecraft.server.MinecraftServer)
-                UNSAFE.allocateInstance(net.minecraft.server.dedicated.DedicatedServer.class);
+                UNSAFE.allocateInstance(com.axalotl.fabrolia.common.regions.TestDedicatedServer.class);
         Field st = net.minecraft.server.MinecraftServer.class.getDeclaredField("serverThread");
         st.setAccessible(true);
         st.set(srv, Thread.currentThread());

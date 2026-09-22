@@ -89,8 +89,7 @@ public class FabroliaNeoForge extends FabroliaCommon {
 
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
-        RegionScheduler.stop();
-        ParallelProcessor.stop();
+        ParallelProcessor.stopServerRuntime();
     }
 
     @SubscribeEvent

@@ -13,7 +13,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -33,9 +36,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>{@link Tagged} — the {@code FabroliaTickDomain} tag fields
  *       LevelChunkTicksMixin adds to every container;</li>
  *   <li>{@link Clocks} — {@code TickDomains.resolveNow}'s resolution order
- *       (live island → retired last-L snapshot → MIN_VALUE);</li>
+ *       (live island → retired last-L snapshot → fail-stop);</li>
  *   <li>{@link #rebaseTo} — {@code TickDomains.rebaseTo} (same-id shortcut,
- *       unresolvable-tag adopt, delta shift via the production shiftAll);</li>
+ *       unresolvable-tag fail-stop, delta shift via the production shiftAll);</li>
  *   <li>{@link #rebaseSchedule} — {@code IslandCommands.rebaseScheduledTick}'s
  *       delta math with the audited ctx-identity resolution;</li>
  *   <li>{@link #unpackBasis} — {@code TickDomains.unpackBasis}, the fix that
@@ -94,7 +97,8 @@ class ScheduledTickClockDomainTest {
             long[] l = live.get(id);
             if (l != null) return l[0];
             Long last = lastL.get(id);
-            return last != null ? last : Long.MIN_VALUE;
+            if (last != null) return last;
+            throw new IllegalStateException("unresolved clock domain " + id);
         }
 
         void retire(long id) {
@@ -110,11 +114,6 @@ class ScheduledTickClockDomainTest {
             return 0;
         }
         long tagNow = c.resolve(t.tagId);
-        if (tagNow == Long.MIN_VALUE) {
-            t.tagId = targetId;
-            t.tagGen = targetGen;
-            return 0;
-        }
         long delta = targetNow - tagNow;
         int moved = 0;
         if (delta != 0 && t.ticks.count() > 0) {
@@ -136,7 +135,6 @@ class ScheduledTickClockDomainTest {
     private static <T> ScheduledTick<T> rebaseSchedule(Clocks c, Tagged<T> tc, long ctxId, ScheduledTick<T> tick) {
         if (tc.tagId == ctxId) return tick;
         long tagNow = c.resolve(tc.tagId);
-        if (tagNow == Long.MIN_VALUE) return tick;
         long ctxNow = c.resolve(ctxId);
         long delta = tagNow - ctxNow;
         if (delta == 0) return tick;
@@ -159,15 +157,13 @@ class ScheduledTickClockDomainTest {
     /** Mirror of TickDomains.unpackBasis (the load-anchor fix). */
     private static long unpackBasis(Clocks c, Tagged<?> tc, long callerNow) {
         if (tc.tagId == WALL) return c.wall;
-        long now = c.resolve(tc.tagId);
-        return now == Long.MIN_VALUE ? callerNow : now;
+        return c.resolve(tc.tagId);
     }
 
     /** Mirror of the save seam: pack against the TAGGED domain's now
      *  (SerializableChunkDataMixin -> TickDomains.saveBasis). */
     private static <T> List<SavedTick<T>> saveTicks(Clocks c, Tagged<T> tc) {
         long basis = c.resolve(tc.tagId);
-        if (basis == Long.MIN_VALUE) basis = c.wall;
         return tc.ticks.pack(basis);
     }
 
@@ -628,6 +624,7 @@ class ScheduledTickClockDomainTest {
         for (ScheduledTick<String> t; (t = reloaded.poll()) != null; ) drained.add(t.type());
         assertEquals(List.of("h1", "n0", "n3", "l2"), drained, "drain order preserved across save/load");
     }
+
 
     // ------------------------------------------------------------------
     // 16–21: arbitrary long VALID delays — preserved EXACTLY, never rewritten

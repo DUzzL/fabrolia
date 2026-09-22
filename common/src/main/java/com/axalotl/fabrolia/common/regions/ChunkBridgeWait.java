@@ -5,7 +5,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.LockSupport;
-import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -33,12 +32,10 @@ import java.util.function.Supplier;
  *       ({@link #SOFT_NULL_BUDGET_NS}, generous for any legitimate visibility
  *       promotion). A stranded future costs one bounded stall, never a
  *       watchdog.</li>
- *   <li><b>load=true</b> must produce a chunk — the wait stays unbounded but
- *       SELF-HEALS: every {@link #RESUBMIT_INTERVAL_NS} the request is
- *       re-submitted to the main thread ({@code getChunkFutureMainThread}
- *       re-adds the ticket and re-schedules the generation task), so a load
- *       the chunk system dropped is re-armed instead of waited on forever.
- *       Forensics log each resubmission.</li>
+ *   <li><b>load=true</b> must produce a chunk — the wait remains on the exact
+ *       original future. A slow or wedged upgrade is reported periodically,
+ *       but never answered by entering a second ticket/schedule body while the
+ *       first may still be live.</li>
  * </ul>
  */
 public final class ChunkBridgeWait {
@@ -50,10 +47,8 @@ public final class ChunkBridgeWait {
      *  within this; only a stranded future ever exhausts it. */
     static final long SOFT_NULL_BUDGET_NS = 200_000_000L;
 
-    /** load=true: re-submit the main-thread request after this long without a
-     *  completion — re-arms loads the chunk system dropped (a fresh ticket +
-     *  fresh schedule is harmless when the original was healthy). */
-    static final long RESUBMIT_INTERVAL_NS = 5_000_000_000L;
+    /** load=true forensic cadence; observation only, never a retry timer. */
+    static final long STALL_REPORT_INTERVAL_NS = 5_000_000_000L;
 
     private static final long INITIAL_PARK_NS = 50_000L;
     private static final long MAX_PARK_NS = 1_000_000L;
@@ -113,39 +108,24 @@ public final class ChunkBridgeWait {
     /**
      * The production wait loop.
      *
-     * @param initial the future produced by the caller's first submission
-     * @param submit  re-submits {@code getChunkFutureMainThread} onto the
-     *                main-thread processor (load=true self-heal only)
+     * @param initial the future produced by the caller's one submission
      * @param probe   lock-free ready-chunk probe, re-run every iteration;
      *                a non-null result wins immediately
      */
     public static <T, C> Result<T, C> await(CompletableFuture<T> initial,
-                                            Supplier<CompletableFuture<T>> submit,
                                             Supplier<C> probe,
                                             boolean loadOrGenerate,
                                             Supplier<String> posDescription) {
-        return await(initial, submit, probe, loadOrGenerate, posDescription, () -> {});
-    }
-
-    /**
-     * @param onStall fired before each load=true resubmission (task #35: the
-     *                bridge's only view of a NEVER-completing future — the
-     *                c2me FLAG_BROKEN latch probe/heal hooks here, because a
-     *                plain resubmission against a latched holder re-reads the
-     *                same dead future forever)
-     */
-    public static <T, C> Result<T, C> await(CompletableFuture<T> initial,
-                                            Supplier<CompletableFuture<T>> submit,
-                                            Supplier<C> probe,
-                                            boolean loadOrGenerate,
-                                            Supplier<String> posDescription,
-                                            Runnable onStall) {
-        CompletableFuture<T> future = initial;
         long sleepNs = INITIAL_PARK_NS;
         final long start = System.nanoTime();
-        long lastSubmit = start;
-        int resubmits = 0;
-        while (!future.isDone()) {
+        long lastReport = start;
+        int reports = 0;
+        while (!initial.isDone()) {
+            // A peer W closes the already-entered caller body. In particular,
+            // a trial-LOS ray parked on its causal chunk request must unwind so
+            // Main can quiesce RUNNING rays without executing the level-wide
+            // mainThreadProcessor after failure.
+            RegionScheduler.throwWorkerFailureIfAny();
             C ready = probe.get();
             if (ready != null) {
                 return new Result.Ready<>(ready);
@@ -158,43 +138,29 @@ public final class ChunkBridgeWait {
                 logGiveUp(now - start, posDescription.get());
                 return new Result.GiveUpNull<>();
             }
-            if (loadOrGenerate && now - lastSubmit > RESUBMIT_INTERVAL_NS) {
-                lastSubmit = now;
-                resubmits++;
-                // Severity tracks actual danger (2026-07-28 field feedback):
-                // attempt 1 is the EXPECTED shape under mass worldgen (slow
-                // generation resolves on its own) — WARN, stack at most once
-                // per minute globally. Attempt 2+ means the re-armed load
-                // ALSO went nowhere — that is the real strand signature and
-                // earns ERROR with the call-site stack every time.
+            if (loadOrGenerate && now - lastReport > STALL_REPORT_INTERVAL_NS) {
+                lastReport = now;
+                reports++;
                 long stackAt = LAST_STALL_STACK_AT.get();
-                boolean withStack = resubmits > 1
+                boolean withStack = reports > 1
                         || (now - stackAt > STALL_STACK_INTERVAL_NS
                                 && LAST_STALL_STACK_AT.compareAndSet(stackAt, now));
                 String msg = "[fabrolia] load=true chunk bridge stalled {}s at {} — "
-                        + "re-submitting main-thread request (attempt {}); slow "
-                        + "worldgen resolves on its own, a dropped load is re-armed "
-                        + "by the fresh ticket+schedule";
-                Object[] args = {(now - start) / 1_000_000_000, posDescription.get(), resubmits,
+                        + "still waiting for the original request (report {}); "
+                        + "no successor ticket/schedule submitted";
+                Object[] args = {(now - start) / 1_000_000_000, posDescription.get(), reports,
                         withStack ? new Throwable("chunk bridge wait site") : null};
-                if (resubmits > 1) {
+                if (reports > 1) {
                     LOGGER.error(msg + " — REPEATED stall: likely a chunk-system strand", args);
                 } else {
                     LOGGER.warn(msg, args);
                 }
-                try {
-                    onStall.run();
-                } catch (Throwable t) {
-                    LOGGER.warn("[fabrolia] onStall hook failed: {}", t.toString());
-                }
-                // Race the fresh request against the old future: whichever
-                // completes first wins; a permanently stranded original can
-                // no longer pin this thread.
-                future = future.applyToEither(submit.get(), Function.identity());
             }
-            LockSupport.parkNanos(sleepNs);
+            if (!RegionScheduler.parkExclusiveWorkerForMainService()) {
+                LockSupport.parkNanos(sleepNs);
+            }
             sleepNs = Math.min(sleepNs << 1, MAX_PARK_NS);
         }
-        return new Result.Done<>(future);
+        return new Result.Done<>(initial);
     }
 }

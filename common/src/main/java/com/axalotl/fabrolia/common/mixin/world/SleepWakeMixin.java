@@ -25,13 +25,36 @@ public abstract class SleepWakeMixin {
         RegionizedServer rs = RegionScheduler.forLevel(self);
         if (rs != null && rs.asyncActive) {
             boolean took = rs.quiesceAllIslands();
+            Throwable failure = null;
             try {
-                original.call();
-            } finally {
-                if (took) rs.releaseAllIslands();
+                RegionScheduler.runSuccessBodyIfHealthy(original::call);
+            } catch (Throwable primary) {
+                // Close the global start gate at the catch edge, before the
+                // all-island claim fence is reopened.
+                failure = RegionScheduler.publishFatalAndSelectWinner(primary);
+            }
+            // Claim release is mandatory failure cleanup. releaseAllIslands
+            // exhausts every recorded claim and preserves the exact primary.
+            if (took) failure = rs.releaseAllIslands(failure);
+            if (failure == null) {
+                try {
+                    // Releasing the fence is cleanup, not a success edge. A
+                    // peer W selected during release still forbids normal return.
+                    RegionScheduler.commitSuccessIfHealthy(() -> {});
+                } catch (Throwable peerFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
+                }
+            }
+            if (failure != null) {
+                SleepWakeMixin.<RuntimeException>rethrow(failure);
             }
         } else {
-            original.call();
+            RegionScheduler.runSuccessBodyIfHealthy(original::call);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 }

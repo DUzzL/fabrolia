@@ -17,11 +17,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * <ul>
  *   <li>Maintains an {@link AtomicLong} modCount, bumped on every mutation.</li>
  *   <li>Caches the last snapshot together with the modCount at which it was built.</li>
- *   <li>{@code toLongArray()} returns the cache when modCount is unchanged — the common
+ *   <li>{@code toLongArray()} copies the cache when modCount is unchanged — the common
  *       case when many call sites snapshot in the same tick without intervening adds/removes.</li>
  *   <li>Cache-miss path iterates the skip list directly into a fastutil {@code LongArrayList}
  *       (no boxing in the result, amortized growth).</li>
  * </ul>
+ * <p>Range sets are live bounded views. Their snapshot caches are separate, but
+ * mutations through any view invalidate the caches of every alias.
  *
  * <p>Snapshot semantics intentionally relaxed: a concurrent add/remove that races with
  * {@code toLongArray} may see either the pre- or post-mod state. Vanilla's original
@@ -31,15 +33,22 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class ConcurrentLongSortedSet implements LongSortedSet {
 
-    private final ConcurrentSkipListSet<Long> backing;
+    private final NavigableSet<Long> backing;
 
-    private final AtomicLong modCount = new AtomicLong();
+    private final AtomicLong modCount;
 
     private volatile Snapshot cached;
 
     private record Snapshot(long version, long[] data) {}
 
-    public ConcurrentLongSortedSet() { this.backing = new ConcurrentSkipListSet<>(); }
+    public ConcurrentLongSortedSet() {
+        this(new ConcurrentSkipListSet<>(), new AtomicLong());
+    }
+
+    private ConcurrentLongSortedSet(NavigableSet<Long> backing, AtomicLong modCount) {
+        this.backing = backing;
+        this.modCount = modCount;
+    }
 
     public ConcurrentLongSortedSet(Collection<Long> collection) {
         this();
@@ -47,7 +56,8 @@ public final class ConcurrentLongSortedSet implements LongSortedSet {
     }
 
     @Override public LongBidirectionalIterator iterator(long fromElement) {
-        return wrap(backing.tailSet(fromElement).iterator());
+        Long first = backing.ceiling(fromElement);
+        return wrap(first == null ? Collections.emptyIterator() : backing.tailSet(first, true).iterator());
     }
 
     @Override public LongBidirectionalIterator iterator() { return wrap(backing.iterator()); }
@@ -58,21 +68,18 @@ public final class ConcurrentLongSortedSet implements LongSortedSet {
     @Override public boolean containsAll(Collection<?> c) { return backing.containsAll(c); }
 
     @Override public boolean addAll(Collection<? extends Long> c) {
-        boolean mod = backing.addAll(c);
-        if (mod) modCount.incrementAndGet();
-        return mod;
+        try { return backing.addAll(c); }
+        finally { modCount.incrementAndGet(); }
     }
 
     @Override public boolean removeAll(Collection<?> c) {
-        boolean mod = backing.removeAll(c);
-        if (mod) modCount.incrementAndGet();
-        return mod;
+        try { return backing.removeAll(c); }
+        finally { modCount.incrementAndGet(); }
     }
 
     @Override public boolean retainAll(Collection<?> c) {
-        boolean mod = backing.retainAll(c);
-        if (mod) modCount.incrementAndGet();
-        return mod;
+        try { return backing.retainAll(c); }
+        finally { modCount.incrementAndGet(); }
     }
 
     @Override public void clear() {
@@ -100,7 +107,7 @@ public final class ConcurrentLongSortedSet implements LongSortedSet {
         long version = modCount.get();
         Snapshot snap = cached;
         if (snap != null && snap.version == version) {
-            return snap.data;
+            return snap.data.clone();
         }
 
         LongArrayList list = new LongArrayList(Math.max(16, snap == null ? 16 : snap.data.length));
@@ -110,24 +117,24 @@ public final class ConcurrentLongSortedSet implements LongSortedSet {
         // Only publish if no mutation happened between the version read and now;
         // otherwise the in-flight mutator's call will publish a fresher snapshot.
         if (modCount.get() == version) {
-            cached = new Snapshot(version, data);
+            cached = new Snapshot(version, data.clone());
         }
         return data;
     }
 
     @Override public long[] toArray(long[] a) {
         long[] result = toLongArray();
-        if (a.length < result.length) return result;
+        if (a == null || a.length < result.length) return result;
         System.arraycopy(result, 0, a, 0, result.length);
-        if (a.length > result.length) a[result.length] = 0L;
         return a;
     }
 
     @Override public boolean addAll(LongCollection c) {
         boolean mod = false;
-        for (LongIterator it = c.iterator(); it.hasNext(); ) if (backing.add(it.nextLong())) mod = true;
-        if (mod) modCount.incrementAndGet();
-        return mod;
+        try {
+            for (LongIterator it = c.iterator(); it.hasNext(); ) if (backing.add(it.nextLong())) mod = true;
+            return mod;
+        } finally { modCount.incrementAndGet(); }
     }
     @Override public boolean containsAll(LongCollection c) {
         for (LongIterator it = c.iterator(); it.hasNext(); ) if (!backing.contains(it.nextLong())) return false;
@@ -135,21 +142,25 @@ public final class ConcurrentLongSortedSet implements LongSortedSet {
     }
     @Override public boolean removeAll(LongCollection c) {
         boolean mod = false;
-        for (LongIterator it = c.iterator(); it.hasNext(); ) if (backing.remove(it.nextLong())) mod = true;
-        if (mod) modCount.incrementAndGet();
-        return mod;
+        try {
+            for (LongIterator it = c.iterator(); it.hasNext(); ) if (backing.remove(it.nextLong())) mod = true;
+            return mod;
+        } finally { modCount.incrementAndGet(); }
     }
     @Override public boolean retainAll(LongCollection c) {
-        boolean mod = backing.retainAll(c);
-        if (mod) modCount.incrementAndGet();
-        return mod;
+        try { return backing.retainAll(c); }
+        finally { modCount.incrementAndGet(); }
     }
 
     @Override public LongSortedSet subSet(long from, long to) {
-        return new ConcurrentLongSortedSet(backing.subSet(Math.min(from, to), Math.max(from, to)));
+        return new ConcurrentLongSortedSet(backing.subSet(from, true, to, false), modCount);
     }
-    @Override public LongSortedSet headSet(long to) { return new ConcurrentLongSortedSet(backing.headSet(to)); }
-    @Override public LongSortedSet tailSet(long from) { return new ConcurrentLongSortedSet(backing.tailSet(from)); }
+    @Override public LongSortedSet headSet(long to) {
+        return new ConcurrentLongSortedSet(backing.headSet(to, false), modCount);
+    }
+    @Override public LongSortedSet tailSet(long from) {
+        return new ConcurrentLongSortedSet(backing.tailSet(from, true), modCount);
+    }
     @Override public LongComparator comparator() { return null; }
     @Override public long firstLong() { return backing.first(); }
     @Override public long lastLong() { return backing.last(); }
@@ -170,13 +181,13 @@ public final class ConcurrentLongSortedSet implements LongSortedSet {
 
     @Override public String toString() { return backing.toString(); }
 
-    private static LongBidirectionalIterator wrap(Iterator<Long> it) {
+    private LongBidirectionalIterator wrap(Iterator<Long> it) {
         return new LongBidirectionalIterator() {
             @Override public long previousLong() { throw new UnsupportedOperationException(); }
             @Override public boolean hasPrevious() { throw new UnsupportedOperationException(); }
             @Override public long nextLong() { return it.next(); }
             @Override public boolean hasNext() { return it.hasNext(); }
-            @Override public void remove() { it.remove(); }
+            @Override public void remove() { it.remove(); modCount.incrementAndGet(); }
         };
     }
 }

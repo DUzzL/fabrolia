@@ -45,7 +45,7 @@ public final class VectorOpsBootstrap {
         try {
             Class.forName("jdk.incubator.vector.DoubleVector", false, VectorOpsBootstrap.class.getClassLoader());
             return true;
-        } catch (Throwable t) {
+        } catch (ClassNotFoundException | LinkageError unavailable) {
             return false;
         }
     }

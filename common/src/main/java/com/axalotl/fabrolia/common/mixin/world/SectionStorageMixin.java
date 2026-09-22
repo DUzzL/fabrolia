@@ -63,15 +63,18 @@ import java.util.function.BooleanSupplier;
  *       completes only after the fan-out; main's {@code unpackPendingLoads}
  *       skips chunks a winner owns (otherwise the double fan-out would replace
  *       live sections with fresh disk copies — lost tickets, orphaned
- *       records). A bounded {@code getOrLoad} retry mops up the residual
- *       unload-after-complete window.</li>
+ *       records). There is deliberately no post-entry {@code getOrLoad}
+ *       retry: once a storage body has started, its exact failure propagates
+ *       instead of replaying a potentially partial load. A column lease spans
+ *       the subsequent required getter, so completing unpack does not admit
+ *       unload before the result has been captured.</li>
  *   <li><b>{@code flushAll}/{@code tick} dirty-set (D8):</b> drain-loop
  *       semantics via {@code removeFirstLong()}; the vanilla
  *       {@code forEach + clear} silently discarded any {@code setDirty} that
  *       landed between the two once the monitor was gone.</li>
- *   <li><b>{@code getOrCreate}'s check-then-put:</b> already serialised — all
- *       callers for a given section ({@code PoiManager.add},
- *       {@code checkConsistencyWithBlocks}) hold the same chunk stripe.</li>
+ *   <li><b>{@code getOrCreate}'s check-then-put:</b> same-section callers use
+ *       a chunk stripe; the outer column lease additionally excludes unload
+ *       until an absent section has been created and published.</li>
  *   <li><b>Lithium's {@code columns} + C2ME's {@code c2me$unloadPoi}:</b>
  *       {@code mixin/lithium/FabroliaLithiumPoiStorageMixin} and
  *       {@code mixin/c2me/PoiUnloadGuardMixin}.</li>
@@ -97,7 +100,9 @@ import java.util.function.BooleanSupplier;
  *       <b>storageRW.read</b>. So "PS/record → storageRW.read" is an upward
  *       edge, and the only reason it cannot cycle is that {@code writeChunk}'s
  *       packer ({@code PoiSection::pack}) and all section reads stay
- *       monitor-free forever. One {@code synchronized pack} would rebuild the
+ *       monitor-free forever. They read the immutable volatile view published
+ *       by {@code PoiSectionMixin}; only structural writers briefly take PS to
+ *       rebuild it. One {@code synchronized pack} would rebuild the
  *       flushAll-vs-release deadlock in RW-lock clothing. The design's "no
  *       upward lock" claim was false; this invariant is what actually bears
  *       the load.</li>
@@ -149,6 +154,15 @@ public abstract class SectionStorageMixin<R, P> implements AutoCloseable, Fabrol
     @Shadow
     protected abstract void unpackPendingLoads();
 
+    @Shadow
+    protected abstract void unpackChunk(ChunkPos chunkPos);
+
+    @Shadow
+    protected abstract boolean outsideStoredRange(long sectionKey);
+
+
+    @Shadow
+    protected abstract Optional<R> getOrLoad(long sectionKey);
     @Unique
     private final PoiChunkLoadFence fabrolia$loadFence = new PoiChunkLoadFence();
 
@@ -165,9 +179,79 @@ public abstract class SectionStorageMixin<R, P> implements AutoCloseable, Fabrol
         }
     }
 
+
     @Override
-    public boolean fabrolia$poiLoadInFlight(long chunkKey) {
-        return this.fabrolia$loadFence.isInFlight(chunkKey);
+    public <T> T fabrolia$acquirePoiColumn(long chunkKey, java.util.function.Supplier<T> body) {
+        return this.fabrolia$loadFence.acquire(this.loadLock, chunkKey, body);
+    }
+
+    @WrapMethod(method = "close")
+    private void fabrolia$closePoiStorage(Operation<Void> original) {
+        try {
+            original.call();
+        } finally {
+            // Vanilla shutdown has already flushed storage and quiesced its
+            // users. No delayed callback may retain or re-enter closed IO.
+            this.fabrolia$loadFence.discardUnloads(this.loadLock);
+        }
+    }
+
+    @WrapMethod(method = "getOrCreate")
+    private R fabrolia$acquireCreatedSection(long sectionKey, Operation<R> original) {
+        if (this.outsideStoredRange(sectionKey)) return original.call(sectionKey);
+        long chunkKey = ChunkPos.pack(net.minecraft.core.SectionPos.x(sectionKey),
+                net.minecraft.core.SectionPos.z(sectionKey));
+        return this.fabrolia$acquirePoiColumn(chunkKey, () -> original.call(sectionKey));
+    }
+
+    @Override
+    public void fabrolia$unloadPoiColumn(long chunkKey, Runnable body) {
+        this.fabrolia$loadFence.unload(this.loadLock, chunkKey, this::fabrolia$pendingPoiRead, body);
+    }
+
+    @Override
+    public void fabrolia$beginPoiResidency(long chunkKey) {
+        this.fabrolia$loadFence.cancelUnload(this.loadLock, chunkKey);
+    }
+
+    @Unique
+    private boolean fabrolia$pendingPoiRead(long chunkKey) {
+        CompletableFuture<?> pending = this.pendingLoads.get(chunkKey);
+        return pending != null && !pending.isDone();
+    }
+
+    @WrapMethod(method = "getOrLoad")
+    private Optional<R> fabrolia$acquireSectionResult(long sectionKey, Operation<Optional<R>> original) {
+        if (this.outsideStoredRange(sectionKey)) return original.call(sectionKey);
+        long chunkKey = ChunkPos.pack(net.minecraft.core.SectionPos.x(sectionKey),
+                net.minecraft.core.SectionPos.z(sectionKey));
+        return this.fabrolia$acquirePoiColumn(chunkKey, () -> {
+            // A hot first getter can otherwise observe a concurrent unpack's
+            // first published section before that unpack has completed.
+            this.unpackChunk(ChunkPos.unpack(chunkKey));
+            return original.call(sectionKey);
+        });
+    }
+
+
+    @Override
+    public Optional<com.axalotl.fabrolia.common.utils.PoiSectionReadSnapshot>
+            fabrolia$portalSectionSnapshot(long sectionKey) {
+        long chunkKey = net.minecraft.core.SectionPos.of(sectionKey).chunk().pack();
+        synchronized (this.loadLock) {
+            if (this.fabrolia$loadFence.isInFlight(chunkKey)) return null;
+            Optional<R> section = this.storage.get(sectionKey);
+            if (section == null) return null;
+            return section.map(value ->
+                    ((com.axalotl.fabrolia.common.utils.FabroliaPoiSectionReadAccess) value)
+                            .fabrolia$poiReadSnapshot());
+        }
+    }
+
+    @Override
+    public void fabrolia$materializePortalColumn(ChunkPos chunk, int sectionY) {
+        // The caller has observed prefetch completion and owns Main exclusion.
+        this.getOrLoad(net.minecraft.core.SectionPos.of(chunk, sectionY).asLong());
     }
 
     /**
@@ -210,27 +294,6 @@ public abstract class SectionStorageMixin<R, P> implements AutoCloseable, Fabrol
     }
 
     /**
-     * Residual unload race: C2ME's (guarded) {@code c2me$unloadPoi} can run
-     * between a completed unpack and this caller's {@code get}, leaving
-     * sections absent again — vanilla then throws its ISE even though a fresh
-     * unpack would succeed (the unload also cleared {@code loadedChunks}, so a
-     * retry re-reads disk). Bounded retry; a persistent failure still
-     * surfaces as vanilla's own exception.
-     */
-    @WrapMethod(method = "getOrLoad")
-    private Optional<R> fabrolia$retryUnloadRace(long sectionPos, Operation<Optional<R>> original) {
-        IllegalStateException last = null;
-        for (int attempt = 0; attempt < 3; attempt++) {
-            try {
-                return original.call(sectionPos);
-            } catch (IllegalStateException e) {
-                last = e;
-            }
-        }
-        throw last;
-    }
-
-    /**
      * D8: {@code flushAll} is {@code forEach(...); clear()} — with the blanket
      * monitor gone, a worker's {@code setDirty} landing between the two was
      * silently discarded (unsaved POI mutation on autosave/shutdown). Drain
@@ -269,6 +332,7 @@ public abstract class SectionStorageMixin<R, P> implements AutoCloseable, Fabrol
             this.writeChunk(ChunkPos.unpack(pos));
         }
         this.unpackPendingLoads();
+        this.fabrolia$loadFence.drainUnloads(this.loadLock, this::fabrolia$pendingPoiRead);
     }
 
     /**
@@ -295,11 +359,12 @@ public abstract class SectionStorageMixin<R, P> implements AutoCloseable, Fabrol
                     storageDesc, this.dirtyChunks.getClass().getSimpleName(),
                     this.pendingLoads.getClass().getSimpleName(), this.loadedChunks.getClass().getSimpleName());
         } else {
-            fabrolia$LOGGER.error("POI storage concurrency structures DEFEATED — another mod's injector won a field it must not win. "
-                            + "storage={}, dirtyChunks={}, pendingLoads={}, loadedChunks={}. "
-                            + "Expect Long2ObjectOpenHashMap.rehash AIOOBEs under load; fix the injector ordering before shipping.",
-                    storageDesc, this.dirtyChunks.getClass().getName(),
-                    this.pendingLoads.getClass().getName(), this.loadedChunks.getClass().getName());
+            IllegalStateException failure = new IllegalStateException(
+                    "POI storage concurrency structures defeated: storage=" + storageDesc
+                            + ", dirtyChunks=" + this.dirtyChunks.getClass().getName()
+                            + ", pendingLoads=" + this.pendingLoads.getClass().getName()
+                            + ", loadedChunks=" + this.loadedChunks.getClass().getName());
+            com.axalotl.fabrolia.common.regions.IslandCommands.publishAndPropagate(failure);
         }
     }
 }

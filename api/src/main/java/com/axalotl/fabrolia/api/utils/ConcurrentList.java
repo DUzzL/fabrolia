@@ -5,6 +5,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.IdentityHashMap;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.concurrent.locks.StampedLock;
@@ -32,13 +33,17 @@ import java.util.function.Predicate;
  * a {@link java.util.List} has a <b>global index ordering</b> — element at index 5
  * depends on elements 0–4 existing. This makes truly lock-free concurrent append
  * impossible without sequential commit ordering (which causes convoy effects and
- * priority inversion under contention). Our write lock approach is simpler, correct,
- * and still significantly outperforms {@code synchronizedList(ArrayList)} because
- * <b>reads never block</b>.
+ * priority inversion under contention). A write lock keeps each mutation atomic,
+ * while read locks allow concurrent scans and optimistic reads avoid locking
+ * uncontended indexed access.
  * <p>
  * Thread safety: all operations are thread-safe. Reads use optimistic/read locks
  * (multiple concurrent readers). Writes use exclusive write locks.
  * Iteration is snapshot-based (weakly consistent).
+ * Bulk filters evaluate callbacks against a snapshot without holding a list lock,
+ * then remove up to the captured number of matching object identities. Concurrent
+ * equal-but-distinct replacements are retained, and predicate failures leave the
+ * list unchanged by that filtering operation.
  *
  * @param <E> element type (nulls not permitted)
  */
@@ -227,19 +232,33 @@ public final class ConcurrentList<E> extends AbstractList<E> {
     @Override
     public boolean removeIf(Predicate<? super E> filter) {
         Objects.requireNonNull(filter);
+        // Evaluate foreign callbacks without holding our non-reentrant lock.
+        // Count captured identities so a concurrent equal-but-distinct replacement
+        // is never removed on the strength of a predicate applied to the old value.
+        IdentityHashMap<Object, Integer> removals = new IdentityHashMap<>();
+        for (Object value : toArray()) {
+            @SuppressWarnings("unchecked") E e = (E) value;
+            if (filter.test(e)) removals.merge(value, 1, Integer::sum);
+        }
+        if (removals.isEmpty()) return false;
         long stamp = lock.writeLock();
         try {
             Object[] a = array;
             int s = size;
             int newSize = 0;
             for (int i = 0; i < s; i++) {
-                @SuppressWarnings("unchecked") E e = (E) a[i];
-                if (!filter.test(e)) {
-                    a[newSize++] = e;
+                Object value = a[i];
+                Integer remaining = removals.get(value);
+                if (remaining == null) {
+                    a[newSize++] = value;
+                } else if (remaining == 1) {
+                    removals.remove(value);
+                } else {
+                    removals.put(value, remaining - 1);
                 }
             }
             if (newSize == s) return false;
-            for (int i = newSize; i < s; i++) a[i] = null;
+            Arrays.fill(a, newSize, s, null);
             size = newSize;
             return true;
         } finally {
@@ -276,11 +295,12 @@ public final class ConcurrentList<E> extends AbstractList<E> {
 
     @Override
     public boolean addAll(Collection<? extends E> c) {
-        if (c.isEmpty()) return false;
+        Object[] elements = c.toArray();
+        if (elements.length == 0) return false;
         long stamp = lock.writeLock();
         try {
             int oldSize = size;
-            for (E e : c) {
+            for (Object e : elements) {
                 if (e != null) {
                     if (size == array.length) grow();
                     array[size++] = e;
@@ -294,11 +314,11 @@ public final class ConcurrentList<E> extends AbstractList<E> {
 
     @Override
     public boolean addAll(int index, Collection<? extends E> c) {
+        Object[] elements = c.toArray();
         long stamp = lock.writeLock();
         try {
             if (index < 0 || index > size)
                 throw new IndexOutOfBoundsException("Index: " + index + ", Size: " + size);
-            Object[] elements = c.toArray();
             int numNew = elements.length;
             if (numNew == 0) return false;
             ensureCapacity(size + numNew);
@@ -315,18 +335,25 @@ public final class ConcurrentList<E> extends AbstractList<E> {
     }
 
     @Override
-    public boolean removeAll(Collection<?> c) { return removeIf(c::contains); }
+    public boolean removeAll(Collection<?> c) {
+        Objects.requireNonNull(c);
+        return removeIf(c::contains);
+    }
 
     @Override
-    public boolean retainAll(Collection<?> c) { return removeIf(e -> !c.contains(e)); }
+    public boolean retainAll(Collection<?> c) {
+        Objects.requireNonNull(c);
+        return removeIf(e -> !c.contains(e));
+    }
 
     @Override
     public boolean containsAll(Collection<?> c) {
+        Object[] elements = c.toArray();
         long stamp = lock.readLock();
         try {
             Object[] a = array;
             int s = size;
-            for (Object e : c) {
+            for (Object e : elements) {
                 if (!containsIn(a, s, e)) return false;
             }
             return true;

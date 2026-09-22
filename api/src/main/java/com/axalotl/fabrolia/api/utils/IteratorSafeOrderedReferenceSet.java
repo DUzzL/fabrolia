@@ -99,7 +99,7 @@ public final class IteratorSafeOrderedReferenceSet<E> {
         }
 
         if (listSize >= this.listElements.length) {
-            this.listElements = Arrays.copyOf(this.listElements, listSize * 2);
+            this.listElements = Arrays.copyOf(this.listElements, Math.max(1, listSize * 2));
         }
 
         this.listElements[listSize] = element;
@@ -257,21 +257,20 @@ public final class IteratorSafeOrderedReferenceSet<E> {
                 return true;
             }
 
-            final E[] elements = this.set.listElements;
-
-            int index, len;
-            for (index = this.nextIndex, len = Math.min(this.maxIndex, this.set.listSize);
-                 index < len; ++index) {
-
-                final E element = elements[index];
-                if (element != null) {
-                    this.pendingValue = element;
-                    this.nextIndex = index + 1;
-                    return true;
+            synchronized (this.set) {
+                final E[] elements = this.set.listElements;
+                int index, len;
+                for (index = this.nextIndex, len = Math.min(this.maxIndex, this.set.listSize);
+                     index < len; ++index) {
+                    final E element = elements[index];
+                    if (element != null) {
+                        this.pendingValue = element;
+                        this.nextIndex = index + 1;
+                        return true;
+                    }
                 }
+                this.nextIndex = index;
             }
-
-            this.nextIndex = index;
             return false;
         }
 

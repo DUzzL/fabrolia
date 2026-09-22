@@ -7,7 +7,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
@@ -21,8 +20,9 @@ import java.util.stream.Collectors;
  *   <li>{@link #resolveNow} — what "now" is in a container's tagged domain.
  *       Resolution order: live island by id (registry) → retired-island final-L
  *       snapshot ({@code rs.islandLastL}, recorded at every rebuild and at
- *       retirement) → ERROR + wall + counter (structurally unreachable: every
- *       transition that could orphan a tag rebases first).</li>
+ *       retirement) → ERROR + counter + fail-stop (structurally unreachable:
+ *       every transition that could orphan a tag rebases first). No operational
+ *       caller adopts another clock after an unresolved tag.</li>
  *   <li>{@link #rebaseTo} — shift every trigger by (targetNow − tagNow),
  *       preserving type, position, priority and sub-tick order bit-for-bit,
  *       then retag. Delay is clock-invariant: a tick due in N ticks stays due
@@ -89,8 +89,8 @@ public final class TickDomains {
         FINAL_CLOCKS.clear();
     }
 
-    /** "Now" in {@code c}'s tagged domain, or {@code Long.MIN_VALUE} if the
-     *  tag names an island this server has never recorded (bug — counted). */
+    /** "Now" in {@code c}'s tagged domain. An unresolvable operational tag is
+     *  an invariant failure and throws after publishing its forensic line. */
     public static long resolveNow(ServerLevel level, LevelChunkTicks<?> c) {
         return resolveNow(level, c, Long.MIN_VALUE, null);
     }
@@ -103,9 +103,11 @@ public final class TickDomains {
             return now;
         }
         UNRESOLVED_TAGS.incrementAndGet();
-        LOGGER.error(fabrolia$unresolvedReport(level, c, (FabroliaTickDomain) (Object) c,
-                chunkKey, lane, RegionScheduler.forLevel(level)));
-        return Long.MIN_VALUE;
+        String report = fabrolia$unresolvedReport(level, c,
+                (FabroliaTickDomain) (Object) c, chunkKey, lane,
+                RegionScheduler.forLevel(level));
+        LOGGER.error(report);
+        throw new IllegalStateException(report);
     }
 
     /**
@@ -113,14 +115,25 @@ public final class TickDomains {
      * #3a): identical resolution order to {@link #resolveNow} (WALL → live
      * registry → islandLastL → retained FINAL_CLOCKS), but a failure returns
      * {@code Long.MIN_VALUE} silently. For pure classification/diagnostic
-     * passes (the bulk {@code TickRepair} scan) that perform NO recovery: the
-     * counter and the "recovery=ADOPT-TAG-WITHOUT-SHIFT" ERROR are the
-     * operational path's bug signal and must not be inflated by a read-only
-     * dry run that adopts nothing.
+     * passes (the bulk {@code TickRepair} scan): the counter and fail-stop
+     * forensic line are the operational path's bug signal and must not be
+     * inflated by a read-only dry run.
      */
     public static long probeNow(ServerLevel level, LevelChunkTicks<?> c) {
         FabroliaTickDomain tag = (FabroliaTickDomain) (Object) c;
-        long id = tag.fabrolia$domainIsland();
+        return probeNow(level, tag.fabrolia$domainIsland());
+    }
+
+    /** Same retained-clock resolution for detached slices, which have a tag
+     * but no container after collection. */
+    public static long resolveNow(ServerLevel level, long island) {
+        long now = probeNow(level, island);
+        if (now != Long.MIN_VALUE) return now;
+        UNRESOLVED_TAGS.incrementAndGet();
+        throw new IllegalStateException("unresolved scheduled-tick slice clock island#" + island);
+    }
+
+    private static long probeNow(ServerLevel level, long id) {
         if (id == FabroliaTickDomain.WALL) {
             return wallNow(level);
         }
@@ -151,7 +164,7 @@ public final class TickDomains {
     }
 
     /** Full forensic line for a resolution failure: dimension, chunk, lane,
-     *  tag identity, current owner, trigger range, and the recovery taken. */
+     *  tag identity, current owner, trigger range, and the fail-stop action. */
     private static String fabrolia$unresolvedReport(ServerLevel level, LevelChunkTicks<?> c,
             FabroliaTickDomain tag, long chunkKey, String lane, RegionizedServer rs) {
         StringBuilder sb = new StringBuilder(256);
@@ -185,9 +198,9 @@ public final class TickDomains {
             sb.append(" range=[").append(min).append("..").append(max).append(']')
               .append(" wallNow=").append(wallNow(level));
         }
-        sb.append(" recovery=ADOPT-TAG-WITHOUT-SHIFT (triggers keep absolute values; run "
-                + "/fabrolia regions ticks scan|inspect|clear-stale|reschedule to audit/repair). "
-                + "This path is designed unreachable — report with logs.");
+        sb.append(" action=FAIL-STOP (no retag, trigger shift, save, unpack, or successor tick). "
+                + "This path is designed unreachable — report with logs; use "
+                + "/fabrolia regions ticks scan|inspect|clear-stale|reschedule only after diagnosis.");
         return sb.toString();
     }
 
@@ -213,29 +226,36 @@ public final class TickDomains {
             tag.fabrolia$setDomain(targetId, targetGen);
             return 0;
         }
-        long tagNow = resolveNow(level, c, chunkKey, lane);
-        if (tagNow == Long.MIN_VALUE) {
-            // unresolvable source tag: adopt the target tag WITHOUT shifting —
-            // triggers keep their absolute values (already logged as a bug).
+        // ATOMICITY (2026-08-06 save-race fix): tag resolution, the trigger
+        // shift and the retag are ONE step under the container monitor. The
+        // chunk-save path (packTicksConsistent) holds this same monitor across
+        // basis resolution + pack, so a rebase can no longer interleave
+        // between them — previously a shift landing between saveBasis's
+        // resolveNow and pack() wrote delay = (targetNow + d) − sourceNow
+        // (± the full wall↔island divergence) to disk, and the retag landing
+        // between the shift and a concurrent basis read produced the same
+        // mistranslation. Reentrancy is safe: peek()/shiftAll re-take this
+        // same monitor, and no path ever acquires a lane lock while holding a
+        // container monitor.
+        synchronized (c) {
+            long tagNow = resolveNow(level, c, chunkKey, lane);
+            long delta = targetNow - tagNow;
+            int moved = 0;
+            // LIVENESS GATE, NOT count() (task #41, Lithium audit §4.7): vanilla's
+            // count() is queue.size() + pendingTicks.size(); Lithium's is
+            // allTicks.size() — the (pos,type) DEDUP-SET cardinality. The two
+            // diverge the moment a queue holds duplicates, which unpack() can
+            // create in BOTH implementations (it schedules unchecked, bypassing the
+            // dedup set), so a container can legitimately report count()==0 with a
+            // live tick still queued. Gating the shift on it would silently skip
+            // the rebase for exactly those containers. peek() is the only
+            // implementation-agnostic liveness answer, and it is null-safe in both.
+            if (delta != 0 && c.peek() != null) {
+                moved = shiftAllErased(c, delta);
+            }
             tag.fabrolia$setDomain(targetId, targetGen);
-            return 0;
+            return moved;
         }
-        long delta = targetNow - tagNow;
-        int moved = 0;
-        // LIVENESS GATE, NOT count() (task #41, Lithium audit §4.7): vanilla's
-        // count() is queue.size() + pendingTicks.size(); Lithium's is
-        // allTicks.size() — the (pos,type) DEDUP-SET cardinality. The two
-        // diverge the moment a queue holds duplicates, which unpack() can
-        // create in BOTH implementations (it schedules unchecked, bypassing the
-        // dedup set), so a container can legitimately report count()==0 with a
-        // live tick still queued. Gating the shift on it would silently skip
-        // the rebase for exactly those containers. peek() is the only
-        // implementation-agnostic liveness answer, and it is null-safe in both.
-        if (delta != 0 && c.peek() != null) {
-            moved = shiftAllErased(c, delta);
-        }
-        tag.fabrolia$setDomain(targetId, targetGen);
-        return moved;
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -283,7 +303,7 @@ public final class TickDomains {
             }
             if (keep != null) {
                 for (ScheduledTick<T> t : keep) {
-                    c.schedule(t);
+                    restoreAccepted(c, t);
                 }
             }
             return removed;
@@ -296,11 +316,8 @@ public final class TickDomains {
         return drainRemoveIf((LevelChunkTicks) c, (java.util.function.Predicate) remove);
     }
 
-    /** Exact-order-preserving trigger shift (the proven assignDomain algorithm,
-     *  now shared): original (triggerTick, subTickOrder) pairs kept, all
-     *  shifted by one delta — never executed, never duplicated, dedup set
-     *  rebuilt consistently by re-scheduling into the drained container.
-     *  Task #37: drained via poll (impl-agnostic), never removeIf. */
+    /** Exact-order-preserving trigger shift. Already accepted same-key
+     * obligations (including vanilla unpack duplicates) remain distinct. */
     public static <T> int shiftAll(LevelChunkTicks<T> c, long delta) {
         synchronized (c) {
             List<ScheduledTick<T>> all = new ArrayList<>();
@@ -309,13 +326,28 @@ public final class TickDomains {
             for (ScheduledTick<T> t; c.peek() != null && (t = c.poll()) != null; ) {
                 all.add(t);
             }
-            all.sort(Comparator.<ScheduledTick<T>>comparingLong(ScheduledTick::triggerTick)
-                    .thenComparingLong(ScheduledTick::subTickOrder));
+            // Canonical drain order preserves priority and relative sub-order.
+            all.sort(ScheduledTick.DRAIN_ORDER);
             for (ScheduledTick<T> t : all) {
-                c.schedule(new ScheduledTick<>(t.type(), t.pos(), t.triggerTick() + delta,
+                restoreAccepted(c, new ScheduledTick<>(t.type(), t.pos(), t.triggerTick() + delta,
                         t.priority(), t.subTickOrder()));
             }
             return all.size();
+        }
+    }
+
+    /** Lossless inverse of collection, unlike schedule's new-request dedup.
+     * Both implementations already support duplicates in pack/unpack. Keep
+     * them in that canonical queue so save, peek/poll, copy and clear see them.
+     * Caller owns the lane lock when onTickAdded updates its next-tick index. */
+    @SuppressWarnings("unchecked")
+    public static <T> void restoreAccepted(LevelChunkTicks<T> container, ScheduledTick<T> tick) {
+        synchronized (container) {
+            if (container.hasScheduledTick(tick.pos(), tick.type())) {
+                ((AcceptedTickAccess<T>) container).fabrolia$restoreAccepted(tick);
+            } else {
+                container.schedule(tick);
+            }
         }
     }
 
@@ -344,19 +376,9 @@ public final class TickDomains {
     // (SynchronisePlugin's own javadoc says so, naming this very class).
     // ------------------------------------------------------------------
 
-    /** Lithium bucket-invariant violations contained by {@link #pollGuarded}.
-     *  Designed unreachable while the blanket monitor stands — any nonzero
-     *  value is a bug report, with a chunk's worth of scheduled ticks lost. */
-    public static final AtomicLong BUCKET_INVARIANT_VIOLATIONS = new AtomicLong();
-
-    /** Containers un-wedged by {@link #compact} on the recovery path. */
+    /** Explicit no-op compactions requested through {@link #compact}; never a
+     *  live {@code poll()} failure recovery counter. */
     public static final AtomicLong CONTAINER_COMPACTIONS = new AtomicLong();
-
-    /** Lithium's own message from {@code updateNextTickQueue}. Matching on it
-     *  is deliberate and deliberately narrow: any OTHER IllegalStateException
-     *  out of poll() is not ours to swallow and is rethrown unchanged. */
-    private static final String LITHIUM_BUCKET_INVARIANT_MESSAGE =
-            "Next tick queue doesn't have the lowest key!";
 
     /**
      * IDENTITY-COMPARED sentinel predicate. {@code LevelChunkTicksMixin}'s
@@ -450,110 +472,6 @@ public final class TickDomains {
         }
     }
 
-    /**
-     * HAZARD B (Lithium audit §4.5) — {@code updateNextTickQueue(true)} removes
-     * the map entry BEFORE it validates that it removed the right one:
-     *
-     * <pre>{@code
-     * OrderedTickQueue<T> removed = this.tickQueuesByTimeAndPriority.remove(
-     *         this.tickQueuesByTimeAndPriority.firstLongKey());
-     * if (removed != this.nextTickQueue) {
-     *     throw new IllegalStateException("Next tick queue doesn't have the lowest key!");
-     * }
-     * }</pre>
-     *
-     * By the time the guard fires the bucket is gone, and it is the bucket with
-     * the LOWEST key — the one a racing {@code schedule()} just created, which
-     * may hold live ticks. Their {@code allTicks} keys survive, so
-     * {@code hasScheduledTick} stays true at those positions forever and the
-     * blocks that gate on it (repeater, comparator, observer, fluid) never
-     * reschedule. The exception then unwinds out of {@code LevelTicks.tick}.
-     *
-     * <p>PREVENTION is the real fix and it is structural, not a catch: the
-     * violation needs {@code nextTickQueue} to stop being the minimum-key
-     * bucket, which single-threaded Lithium never produces — every path that
-     * creates a lower bucket ({@code queueTick}) re-points the head in the same
-     * breath. It becomes reachable only when a {@code schedule()} from another
-     * worker interleaves a drain's {@code poll()}, and the container monitor
-     * (see the block comment above) is what forbids that interleaving. The
-     * upstream fix — compare {@code firstLongKey()} against
-     * {@code nextTickQueue} before removing — is not reproducible from here:
-     * it needs {@code @Shadow} access to two Lithium-added private fields, and
-     * a {@code @Shadow} cannot be made conditional, so the mixin would fail to
-     * apply on a vanilla-without-Lithium install.
-     *
-     * <p>What this method adds is CONTAINMENT for the case where prevention is
-     * defeated anyway (a future mod calling {@code schedule} off-monitor, or a
-     * Lithium change). Three decisions, all deliberate:
-     *
-     * <ul>
-     *   <li><b>Recover, do not propagate.</b> Letting the ISE out of
-     *       {@code poll()} aborts the entire level's tick phase — under
-     *       Fabrolia, a region worker's whole slice — turning one chunk's
-     *       damage into every chunk's. The damage is already done when the
-     *       exception is constructed; re-throwing adds harm and repairs
-     *       nothing.</li>
-     *   <li><b>Fail loudly anyway.</b> {@link #BUCKET_INVARIANT_VIOLATIONS}
-     *       and an ERROR line with the surviving-tick count. This path is
-     *       designed unreachable; a nonzero counter is a bug report.</li>
-     *   <li><b>Un-wedge before returning.</b> Lithium leaves the emptied head
-     *       bucket wired as both {@code nextTickQueue} and the map's first key.
-     *       {@code queueTick}'s {@code updateNextTickQueue(false)} re-selects it
-     *       by {@code firstLongKey()} from then on, so {@code peek()} and
-     *       {@code poll()} answer null forever while {@code schedule()} keeps
-     *       filling {@code allTicks} — the chunk's scheduled ticks stop,
-     *       silently, until it reloads (audit §4.4). {@link #compact} evicts
-     *       the stale bucket and re-derives the head, then the poll is retried
-     *       once so the caller gets a real tick rather than a null vanilla's
-     *       {@code LevelTicks.collectTicks} would go on to dereference.</li>
-     * </ul>
-     *
-     * <p>NOT recoverable, and not pretended to be: the ticks in the destroyed
-     * bucket are gone, and their {@code allTicks} keys are unreachable through
-     * any public API (there is no enumeration of that set). Those positions
-     * stop rescheduling until the chunk reloads. The ERROR line says so and
-     * points at {@code /fabrolia regions ticks scan}.
-     *
-     * <p>CALLING SHAPE — this is the CATCH BLOCK, not the whole guard, and
-     * that is deliberate. {@code poll()} runs thousands of times per tick, so
-     * the wrap in {@code LevelChunkTicksMixin} keeps its {@code try} body bare
-     * ({@code return original.call();}) and constructs the retry supplier only
-     * inside {@code catch}. A {@code try} that never throws is free; a
-     * capturing lambda evaluated on the happy path would not be, and neither
-     * would a second monitor acquisition — the happy path takes the container
-     * monitor exactly once, from the blanket bit, as it always has. The monitor
-     * IS taken here, because the repair is several operations long.
-     */
-    public static <T> ScheduledTick<T> recoverFromBucketInvariantViolation(
-            LevelChunkTicks<T> c, IllegalStateException e,
-            java.util.function.Supplier<ScheduledTick<T>> raw) {
-        if (!LITHIUM_BUCKET_INVARIANT_MESSAGE.equals(e.getMessage())) {
-            throw e;
-        }
-        synchronized (c) {
-            BUCKET_INVARIANT_VIOLATIONS.incrementAndGet();
-            compact(c);
-            ScheduledTick<?> head = c.peek();
-            LOGGER.error("[tick-domains] Lithium bucket invariant violated in LevelChunkTicks.poll() — "
-                    + "the lowest-key bucket was REMOVED before the check failed and its scheduled ticks "
-                    + "are unrecoverable (their dedup keys survive, so those positions stop rescheduling "
-                    + "until the chunk reloads). Container un-wedged and the tick phase continued; "
-                    + "head after repair={}. This requires an off-monitor schedule() racing a drain and "
-                    + "is designed unreachable — report with logs, then run /fabrolia regions ticks scan.",
-                    head, e);
-            if (head == null) {
-                return null;
-            }
-            try {
-                return raw.get();
-            } catch (IllegalStateException again) {
-                LOGGER.error("[tick-domains] repair did not restore LevelChunkTicks.poll(); "
-                        + "container abandoned for this tick", again);
-                return null;
-            }
-        }
-    }
-
     /** Container registration hook (chunk load / promotion): if the chunk's
      *  territory is island-owned, move the container onto the island clock
      *  immediately — a chunk loading into a diverged island (post-sprint
@@ -603,9 +521,9 @@ public final class TickDomains {
 
     /** Collapse a non-WALL-tagged container to the wall clock the moment a
      *  wall-lane consumer would see it. Delay-preserving when the tag's clock
-     *  resolves (live island / islandLastL / FINAL_CLOCKS); unresolvable tags
-     *  take the existing adopt-with-forensics path inside rebaseTo. No-op for
-     *  WALL-tagged containers — the hot path pays one field read. */
+     *  resolves (live island / islandLastL / FINAL_CLOCKS); an unresolvable tag
+     *  fail-stops inside rebaseTo before any shift or retag. No-op for WALL-tagged
+     *  containers — the hot path pays one field read. */
     public static void fabrolia$collapseStaleTag(ServerLevel level, long chunkKey,
                                                  LevelChunkTicks<?> c, String site) {
         if (((FabroliaTickDomain) (Object) c).fabrolia$domainIsland() == FabroliaTickDomain.WALL) {
@@ -666,6 +584,7 @@ public final class TickDomains {
         LevelTicksIslandAccess<?> blockLane = accessIsBlock ? access : sibling;
         LevelTicksIslandAccess<?> fluidLane = accessIsBlock ? sibling : access;
         int moved;
+        long newNext;
         synchronized (blockLane.fabrolia$tickLock()) {
             synchronized (fluidLane.fabrolia$tickLock()) {
                 moved = rebaseTo(level, c, laneIslandId, laneGen, laneNow, chunkKey, "consume");
@@ -675,14 +594,24 @@ public final class TickDomains {
                     ScheduledTick<?> sh = sc.peek();
                     if (sh != null) {
                         sibling.fabrolia$nextTickForContainer().put(chunkKey, sh.triggerTick());
+                    } else {
+                        sibling.fabrolia$nextTickForContainer().remove(chunkKey);
                     }
+                } else {
+                    sibling.fabrolia$nextTickForContainer().remove(chunkKey);
+                }
+                // Keep the canonical head and its index publication in the
+                // same structural transaction as the rebase. schedule() owns
+                // this lane lock too; publishing outside allowed an earlier
+                // concurrent insertion to be overwritten by this stale head.
+                ScheduledTick<?> head = c.peek();
+                newNext = head == null ? Long.MAX_VALUE : head.triggerTick();
+                if (newNext == Long.MAX_VALUE) {
+                    access.fabrolia$nextTickForContainer().remove(chunkKey);
+                } else {
+                    access.fabrolia$nextTickForContainer().put(chunkKey, newNext);
                 }
             }
-        }
-        ScheduledTick<?> head = c.peek();
-        long newNext = head == null ? Long.MAX_VALUE : head.triggerTick();
-        if (newNext != Long.MAX_VALUE) {
-            access.fabrolia$nextTickForContainer().put(chunkKey, newNext);
         }
         if (moved > 0) {
             CONSUMER_HEALS.incrementAndGet();
@@ -795,19 +724,17 @@ public final class TickDomains {
                 // block lane's domain (delay-preserving) so both lists pack
                 // against one true clock — never mistranslate one lane.
                 long bNow = resolveNow(level, c, saveChunkKey, "block");
-                if (bNow != Long.MIN_VALUE) {
-                    LevelTicksIslandAccess<?> fa = (LevelTicksIslandAccess<?>) level.getFluidTicks();
-                    synchronized (fa.fabrolia$tickLock()) {
-                        rebaseTo(level, fc, b, ((FabroliaTickDomain) (Object) c).fabrolia$domainGen(), bNow);
-                    }
-                    LOGGER.warn("block/fluid tick containers of chunk {} were tagged differently "
-                            + "(block island#{} vs fluid island#{}) — fluid lane rebased to block's domain at save",
-                            chunk.getPos(), b, f);
+                LevelTicksIslandAccess<?> fa = (LevelTicksIslandAccess<?>) level.getFluidTicks();
+                synchronized (fa.fabrolia$tickLock()) {
+                    rebaseTo(level, fc, b, ((FabroliaTickDomain) (Object) c).fabrolia$domainGen(), bNow);
                 }
+                LOGGER.warn("block/fluid tick containers of chunk {} were tagged differently "
+                        + "(block island#{} vs fluid island#{}) — fluid lane rebased to block's domain at save",
+                        chunk.getPos(), b, f);
             }
         }
         long now = resolveNow(level, c, saveChunkKey, "block");
-        long basis = now == Long.MIN_VALUE ? wall : now;
+        long basis = now;
         // OBSERVABILITY ONLY (2026-07-27 review): vanilla persists delays as
         // int (SavedTick.delay, Codec.INT; ScheduledTick.toSavedTick casts
         // trigger − basis) — a remaining delay outside the int range wraps
@@ -819,6 +746,60 @@ public final class TickDomains {
             fabrolia$warnDelayOverflow(level, fscan, basis, "fluid");
         }
         return basis;
+    }
+
+    /**
+     * Atomic save-time pack (2026-08-06 save-race fix): resolve the basis AND
+     * pack both lanes as ONE step with respect to every retag path. Under c2me
+     * chunk serialization runs on IO threads; a concurrent rebase
+     * (assignDomain at rebuild, region on/off collapse, consumption heal)
+     * landing between {@link #saveBasis}'s resolution and {@code pack()} wrote
+     * {@code delay = (targetNow + d) − sourceNow} — ± the full wall↔island
+     * divergence — to disk as a self-consistent record no load-side heal can
+     * classify ({@code /fabrolia regions ticks clear-stale} was the only way
+     * back). The reverse interleaving (basis read between a rebase's shift
+     * and its retag) produced the same corruption, which is why
+     * {@link #rebaseTo} now shifts and retags under the container monitor.
+     *
+     * <p>Lock discipline, block-first everywhere — the same fixed total order
+     * as {@code enforceConsumerDomain} and {@code TickRepair}: block lane lock
+     * → fluid lane lock → block container monitor → fluid container monitor.
+     * Every other writer follows lane → container ({@code LevelTicksMixin}
+     * schedule, addContainer install, the unpack anchor), and no path takes a
+     * lane lock while holding a container monitor, so the order cannot AB-BA.
+     * All four acquisitions are reentrant for the nested calls inside
+     * {@link #saveBasis} (its sibling-heal re-takes the fluid lane lock) and
+     * inside {@code pack} ({@link #packUnderMonitor} re-takes each container
+     * monitor). A rebase that does NOT take lane locks (assignDomain,
+     * collapseLane) still serializes correctly: it cannot pass the container
+     * monitors, and its own shift+retag is atomic under them.
+     *
+     * @param wall the vanilla value {@code copyOf} computed
+     *             ({@code level.getGameTime()}) — used only for a proto/worldgen
+     *             chunk whose tick containers have no Fabrolia domain tag.
+     * @param raw  {@code basis -> getTicksForSerialization(basis)}.
+     */
+    public static net.minecraft.world.level.chunk.ChunkAccess.PackedTicks packTicksConsistent(
+            ServerLevel level, net.minecraft.world.level.chunk.ChunkAccess chunk, long wall,
+            java.util.function.LongFunction<net.minecraft.world.level.chunk.ChunkAccess.PackedTicks> raw) {
+        var blockTicks = chunk.getBlockTicks();
+        var fluidTicks = chunk.getFluidTicks();
+        if (!(blockTicks instanceof LevelChunkTicks<?> bc) || !(fluidTicks instanceof LevelChunkTicks<?> fc)) {
+            // proto/worldgen chunks: vanilla wall semantics (same rule as saveBasis).
+            return raw.apply(wall);
+        }
+        LevelTicksIslandAccess<?> blockLane = (LevelTicksIslandAccess<?>) level.getBlockTicks();
+        LevelTicksIslandAccess<?> fluidLane = (LevelTicksIslandAccess<?>) level.getFluidTicks();
+        synchronized (blockLane.fabrolia$tickLock()) {
+            synchronized (fluidLane.fabrolia$tickLock()) {
+                synchronized (bc) {
+                    synchronized (fc) {
+                        long basis = saveBasis(level, chunk, wall);
+                        return raw.apply(basis);
+                    }
+                }
+            }
+        }
     }
 
     /** Warn (throttled) for every pending tick whose remaining delay against
@@ -883,18 +864,16 @@ public final class TickDomains {
      * never the calling thread's clock: WALL tag → the raw wall counter (also
      * correct when a worker context pumped the promotion task and
      * {@code getGameTime()} answered some island's L); island tag → the tag's
-     * resolved clock. Unresolvable tags (designed unreachable, already
-     * ERROR-logged by {@link #resolveNow}) fall back to the caller's value —
-     * identical to vanilla.
+     * resolved clock. An unresolvable tag is an invariant failure: it is
+     * ERROR-logged by {@link #resolveNow} and stops before unpacking against an
+     * invented caller basis.
      */
     public static long unpackBasis(ServerLevel level, LevelChunkTicks<?> c, long callerNow) {
+        // callerNow is retained for the injection ABI only. It is deliberately
+        // never used to recover an unresolved tagged clock.
         if (((FabroliaTickDomain) (Object) c).fabrolia$domainIsland() == FabroliaTickDomain.WALL) {
             return IslandClock.wallTime(level);
         }
-        long now = resolveNow(level, c);
-        if (now == Long.MIN_VALUE) {
-            return callerNow;
-        }
-        return now;
+        return resolveNow(level, c);
     }
 }

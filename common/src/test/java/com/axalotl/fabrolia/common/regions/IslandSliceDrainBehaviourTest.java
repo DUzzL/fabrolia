@@ -13,6 +13,7 @@ import net.minecraft.world.ticks.TickPriority;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -136,7 +137,9 @@ class IslandSliceDrainBehaviourTest {
 
     private record Access(Long2ObjectMap<LevelChunkTicks<String>> containers,
                           Long2LongMap nextTick,
-                          Object lock) implements LevelTicksIslandAccess<String> {
+                          Object lock,
+                          IslandScheduledTicks.SliceRegistry sliceRegistry)
+            implements LevelTicksIslandAccess<String> {
         @Override
         public Long2ObjectMap<LevelChunkTicks<String>> fabrolia$allContainers() {
             return this.containers;
@@ -155,6 +158,21 @@ class IslandSliceDrainBehaviourTest {
         @Override
         public Object fabrolia$tickLock() {
             return this.lock;
+        }
+
+        @Override
+        public IslandScheduledTicks.SliceRegistry fabrolia$sliceRegistry() {
+            return this.sliceRegistry;
+        }
+
+        @Override
+        public java.util.Queue<ScheduledTick<String>> fabrolia$vanillaToRunThisTick() {
+            return new ArrayDeque<>();
+        }
+
+        @Override
+        public java.util.List<ScheduledTick<String>> fabrolia$vanillaAlreadyRunThisTick() {
+            return new ArrayList<>();
         }
     }
 
@@ -179,7 +197,8 @@ class IslandSliceDrainBehaviourTest {
         for (int i = 0; i < containers.length; i++) {
             map.put(ChunkPos.pack(i, 0), containers[i]);
         }
-        return new Access(map, nextTick, new Object());
+        return new Access(map, nextTick, new Object(),
+                new IslandScheduledTicks.SliceRegistry());
     }
 
     // ------------------------------------------------------------------ tests
@@ -284,7 +303,8 @@ class IslandSliceDrainBehaviourTest {
         Long2ObjectMap<LevelChunkTicks<String>> map = new Long2ObjectOpenHashMap<>();
         map.put(ChunkPos.pack(0, 0), emptied);
         map.put(ChunkPos.pack(1, 0), live);
-        Access access = new Access(map, new Long2LongOpenHashMap(), new Object());
+        Access access = new Access(map, new Long2LongOpenHashMap(), new Object(),
+                new IslandScheduledTicks.SliceRegistry());
 
         List<String> ran = new ArrayList<>();
         runSlice(access, LongArrayList.of(ChunkPos.pack(0, 0), ChunkPos.pack(1, 0)),

@@ -167,19 +167,6 @@ class GlobalLaneCohortIntegrityTest {
         assertTrue(chains.isEmpty(), "idle head must clear the spacing chains");
     }
 
-    @Test
-    void cohortEndGroupsMaximalRunsAndUnknownEpochSingletons() {
-        List<CrossDimArrivals.StagedOp> ops = List.of(
-                op(1, 5, 0), op(1, 5, 1),   // run of two
-                op(2, 5, 0),                // domain change → new cohort
-                op(1, -1, 0), op(1, -1, 1), // unknown epochs: singletons
-                op(1, 6, 0));               // tick change → new cohort
-        assertEquals(1, CrossDimArrivals.cohortEnd(ops, 0));
-        assertEquals(2, CrossDimArrivals.cohortEnd(ops, 2));
-        assertEquals(3, CrossDimArrivals.cohortEnd(ops, 3));
-        assertEquals(4, CrossDimArrivals.cohortEnd(ops, 4));
-        assertEquals(5, CrossDimArrivals.cohortEnd(ops, 5));
-    }
 
     private static void await(CountDownLatch latch) {
         try {

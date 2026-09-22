@@ -147,17 +147,37 @@ public final class NavRecompute {
         if (owner == null) {
             var srv = RegionScheduler.getServer();
             if (srv == null || srv.isSameThread()) {
-                inlineRecompute.run();
+                // Physical Main is a distinct success venue. A plain health
+                // read followed by the vanilla navigation body leaves a
+                // W-vs-entry window; admit the body at the shared cut.
+                RegionScheduler.runSuccessBodyIfHealthy(inlineRecompute);
             } else {
-                srv.execute(redispatch);
+                // Publication is itself success-only. If execute() enqueues
+                // and then throws, the queued wrapper observes the selected W
+                // and refuses its body.
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        () -> srv.execute(() -> runFailStopMainTask(redispatch)));
             }
             return;
         }
         if (currentThreadOwns(rs, owner)) {
-            inlineRecompute.run();
+            RegionScheduler.runSuccessBodyIfHealthy(inlineRecompute);
             return;
         }
         CommandShards.enqueueIslandTask(owner, coalesceKey, redispatch);
+    }
+
+    /** A MinecraftServer task exception is otherwise only an executor event-loop
+     *  failure. Publish it into the simulation generation before it can be caught
+     *  by that outer loop, and never start a later navigation successor. */
+    private static void runFailStopMainTask(Runnable body) {
+        try {
+            // A load-then-call pair is not a W-vs-entry cut: a worker can select
+            // W after the load and before redispatch reaches the vanilla nav body.
+            RegionScheduler.runSuccessBodyIfHealthy(body);
+        } catch (Throwable failure) {
+            IslandCommands.publishAndPropagate(failure);
+        }
     }
 
     /** True when the calling thread is the owner island's execution context:
@@ -173,7 +193,7 @@ public final class NavRecompute {
         }
         var srv = RegionScheduler.getServer();
         if (srv != null && srv.isSameThread()) {
-            return rs.mainHoldsAllClaims() || IslandCommands.mainHolds(owner);
+            return rs.currentThreadHoldsAllClaims() || IslandCommands.mainHolds(owner);
         }
         return false;
     }

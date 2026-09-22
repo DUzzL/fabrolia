@@ -14,7 +14,6 @@ public class NeoForgeModPlatform implements ModPlatform {
     @Override
     public void reloadConfig() {
         FabroliaConfig.loadConfig();
-        com.axalotl.fabrolia.common.config.FabroliaConfig.onConfigLoaded();
     }
 
     @Override

@@ -1,6 +1,5 @@
 package com.axalotl.fabrolia.common.mixin.entity.movement;
 
-import com.axalotl.fabrolia.api.fastutil.ConcurrentLongLinkedOpenHashSet;
 import com.axalotl.fabrolia.common.utils.FabroliaPoiTracker;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import net.minecraft.server.level.SectionTracker;
@@ -47,22 +46,25 @@ import org.spongepowered.asm.mixin.Unique;
  * preempted between its truth-read and its {@code update} overwrites a newer
  * converged value with a stale one, and because no pending entry remains, the
  * village stays erased (or a phantom one stays planted) until some unrelated
- * mutation happens to touch that section. Snapshot, recompute and update
- * therefore all happen inside one {@code synchronized (this)}: a mutation racing
- * the drain either lands before the clear, or re-queues for the next drain.
+ * mutation happens to touch that section. Recompute and update therefore happen
+ * inside one {@code synchronized (this)}. A separate pending-set monitor makes
+ * snapshot-and-clear atomic against enqueue, and is released before any source
+ * read. Producers take only that leaf monitor, never the graph monitor: a
+ * mutation after detachment re-queues for the next drain without restoring the
+ * section-to-graph lock edge.
  */
 @Mixin(targets = "net.minecraft.world.entity.ai.village.poi.PoiManager$DistanceTracker")
 public abstract class PoiDistanceTrackerMixin extends SectionTracker implements FabroliaPoiTracker {
 
     /**
-     * Never invoked — Mixin does not merge mixin constructors. It exists only so
+     * Never invoked by Minecraft — Mixin does not merge mixin constructors. It exists so
      * javac accepts extending {@link SectionTracker}, which is what makes
      * {@code update} and {@code getLevelFromSource} reachable. {@code @Shadow}
      * cannot be used for them: both are declared on the SUPERCLASS, and Mixin
      * resolves shadow methods against the target class only ("was not located in
      * the target class", verified at load time).
      */
-    private PoiDistanceTrackerMixin(int levelCount, int expectedUpdates, int expectedLevels) {
+    protected PoiDistanceTrackerMixin(int levelCount, int expectedUpdates, int expectedLevels) {
         super(levelCount, expectedUpdates, expectedLevels);
     }
 
@@ -78,24 +80,28 @@ public abstract class PoiDistanceTrackerMixin extends SectionTracker implements 
      * order vanilla would have called {@code update} in.
      */
     @Unique
-    private final LongLinkedOpenHashSet fabrolia$pending = new ConcurrentLongLinkedOpenHashSet();
+    private final LongLinkedOpenHashSet fabrolia$pending = new LongLinkedOpenHashSet();
 
     @Override
     public void fabrolia$enqueueTrackerUpdate(long sectionPos) {
-        this.fabrolia$pending.add(sectionPos);
+        synchronized (this.fabrolia$pending) {
+            this.fabrolia$pending.add(sectionPos);
+        }
     }
 
     @Override
     public void fabrolia$drainTrackerUpdates() {
-        if (this.fabrolia$pending.isEmpty()) {
-            return;
-        }
         synchronized (this) {
-            // Snapshot-and-clear INSIDE the monitor — see the class javadoc for
-            // why doing this outside corrupts the graph permanently. Array
-            // snapshot rather than an iterator: we clear the set we are walking.
-            long[] batch = this.fabrolia$pending.toLongArray();
-            this.fabrolia$pending.clear();
+            final long[] batch;
+            synchronized (this.fabrolia$pending) {
+                if (this.fabrolia$pending.isEmpty()) {
+                    return;
+                }
+                batch = this.fabrolia$pending.toLongArray();
+                this.fabrolia$pending.clear();
+            }
+            // No pending-set lock may survive into a source read: a POI section
+            // can enqueue while holding its own monitor.
             for (long sectionPos : batch) {
                 this.update(sectionPos, this.getLevelFromSource(sectionPos), false);
             }

@@ -127,6 +127,14 @@ public abstract class SimulationChunkTrackerMixin implements RegionTickingTracke
             ticking.onBecameTicking(pos, h);
         } else {
             ticking.onStoppedTicking(pos);
+            if (com.axalotl.fabrolia.common.utils.FabroliaDebug.PEARL_TRACE
+                    && cm instanceof com.axalotl.fabrolia.common.regions.LevelAccess la) {
+                // Pearl-freeze trace (2026-08-18 ender-pearl incident): a chunk
+                // leaving entity-ticking with a live pearl inside freezes the
+                // pearl (no ticks, no renewals). Anomaly-filtered and
+                // rate-limited inside PearlTrace — silent for plain unloads.
+                com.axalotl.fabrolia.common.utils.PearlTrace.frozen(la.fabrolia$level(), pos);
+            }
         }
     }
 }

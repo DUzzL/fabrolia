@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.parallelised.utils;
 
+import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
@@ -36,8 +37,8 @@ public final class HardColliderIndex {
      *  unloaded ServerLevels forever with dynamic-dimension mods. */
     public static void onLevelUnload(ServerLevel level) {
         BY_LEVEL.remove(level);
-        try { CELLS_BY_LEVEL.remove(level); } catch (Throwable ignored) {}
-        try { RECENT_ADDS.remove(level); } catch (Throwable ignored) {}
+        CELLS_BY_LEVEL.remove(level);
+        RECENT_ADDS.remove(level);
     }
 
     private HardColliderIndex() {}
@@ -61,7 +62,7 @@ public final class HardColliderIndex {
         protected Boolean computeValue(Class<?> cls) {
             try {
                 return cls.getMethod("canBeCollidedWith", Entity.class).getDeclaringClass() != Entity.class;
-            } catch (Throwable t) {
+            } catch (ReflectiveOperationException | SecurityException unavailable) {
                 return Boolean.TRUE; // can't prove the default — index conservatively
             }
         }
@@ -76,8 +77,11 @@ public final class HardColliderIndex {
             // can't see those); state-dependent cases of that shape remain unindexed,
             // same blindness the pre-2026-07-10 instance snapshot had for everything.
             return e.canBeCollidedWith(null);
-        } catch (Throwable t) {
-            return false;
+        } catch (RuntimeException probeFailure) {
+            // This null-argument capability probe is not the vanilla collision
+            // body.  Route the entity through vanilla's exact collider query when
+            // it cannot be classified; VM errors remain fatal.
+            return true;
         }
     }
 
@@ -132,9 +136,21 @@ public final class HardColliderIndex {
         return (cx & 0xFFFFFFFFL) | ((long) cz << 32);
     }
 
-    /** Main thread, level tick head: rebuild the cell snapshot from tick-head
-     *  positions. O(collider count) — the set is a handful per dimension. */
+    /** Main level-head maintenance; only live snapshot construction needs global ownership. */
     public static void rebuildCells(ServerLevel level) {
+        Set<Entity> set = BY_LEVEL.get(level);
+        if (set == null || set.isEmpty()) {
+            // Eviction reads no Entity. A concurrent add remains visible through
+            // the flat-scan fallback; do not clear its recent-add notification.
+            CELLS_BY_LEVEL.remove(level);
+            RegionScheduler.throwWorkerFailureIfAny();
+            return;
+        }
+        RegionScheduler.runGlobalMainBody(level.getServer(), () -> rebuildOwnedCells(level));
+    }
+
+    private static void rebuildOwnedCells(ServerLevel level) {
+        // The level/membership may have changed while ownership was acquired.
         Set<Entity> set = BY_LEVEL.get(level);
         if (set == null || set.isEmpty()) {
             CELLS_BY_LEVEL.remove(level);

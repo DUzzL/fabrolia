@@ -1,8 +1,5 @@
 package com.axalotl.fabrolia.common.regions;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -16,8 +13,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * dispatcher skip empty regions without polling head.
  */
 public final class RegionizedTaskQueue {
-    private static final Logger LOGGER = LoggerFactory.getLogger(RegionizedTaskQueue.class);
-
     private final ConcurrentLinkedDeque<Runnable> tasks = new ConcurrentLinkedDeque<>();
     private final AtomicInteger size = new AtomicInteger();
 
@@ -34,9 +29,9 @@ public final class RegionizedTaskQueue {
 
     /**
      * Drain up to {@code maxTasks} from the head, running each on the caller thread.
-     * Per-task throwables are logged and swallowed so one bad task doesn't strand
-     * the rest of the queue — the caller is the bound region worker, killing it
-     * would orphan an entire region.
+     * The first task failure propagates unchanged.  Later tasks remain queued: a
+     * failed vanilla mutation is a failed server tick, not permission to skip that
+     * mutation and continue the region against partially-applied state.
      *
      * @return number of tasks actually executed
      */
@@ -45,11 +40,7 @@ public final class RegionizedTaskQueue {
         for (; n < maxTasks; n++) {
             Runnable r = poll();
             if (r == null) return n;
-            try {
-                r.run();
-            } catch (Throwable t) {
-                LOGGER.error("Region task threw", t);
-            }
+            r.run();
         }
         return n;
     }

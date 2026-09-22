@@ -1,12 +1,14 @@
 package com.axalotl.fabrolia.common.regions;
 
-/** Per-chunk write witness (delivery fence): bumped on every block/BE write
- *  through LevelChunk. A sealed packet is enqueued only if the chunk's gen
- *  still equals the gen captured under the owner's claim at seal time —
- *  catching exactly the writes whose dirty flags a pending player would have
- *  missed, with zero false failures for quiet chunks. */
+/** Per-chunk write witness and final full-snapshot enqueue commit gate. */
 public interface FabroliaWriteGen {
     long fabrolia$writeGen();
 
     void fabrolia$bumpWriteGen();
+
+    /** Non-blocking generation reservation immediately before transport enqueue. */
+    boolean fabrolia$tryReserveFullChunkEnqueue(long expectedGeneration);
+
+    /** Releases the exact reservation after its ordered send task was accepted. */
+    void fabrolia$releaseFullChunkEnqueue(long expectedGeneration);
 }

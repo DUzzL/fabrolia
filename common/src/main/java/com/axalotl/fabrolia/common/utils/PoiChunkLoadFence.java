@@ -1,9 +1,12 @@
 package com.axalotl.fabrolia.common.utils;
 
+import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.function.LongPredicate;
+import java.util.function.Supplier;
 
 /**
  * Per-chunk completion handshake for {@code SectionStorage.unpackChunk} (task
@@ -37,7 +40,111 @@ import java.util.function.LongPredicate;
 public final class PoiChunkLoadFence {
 
     /** Guarded by the storage {@code loadLock}; never accessed without it. */
-    private final Long2ObjectOpenHashMap<CompletableFuture<Void>> inFlight = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<LoadAttempt> inFlight = new Long2ObjectOpenHashMap<>();
+    private final Long2IntOpenHashMap readers = new Long2IntOpenHashMap();
+    private final Long2ObjectOpenHashMap<Runnable> deferredUnloads = new Long2ObjectOpenHashMap<>();
+
+    /**
+     * Pin a column until its result has been acquired, not merely unpacked.
+     * No monitor or storage read lock is held through the body or disk join.
+     * A hot lookup must also join an existing unpack: its first section can
+     * become visible before the rest of the column has been published.
+     */
+    public <T> T acquire(Object loadLock, long chunkKey, Supplier<T> body) {
+        LoadAttempt loading;
+        synchronized (loadLock) {
+            readers.addTo(chunkKey, 1);
+            loading = inFlight.get(chunkKey);
+        }
+        try {
+            if (loading != null) awaitCompletion(loading);
+            return body.get();
+        } finally {
+            synchronized (loadLock) {
+                int remaining = readers.get(chunkKey) - 1;
+                if (remaining == 0) readers.remove(chunkKey);
+                else readers.put(chunkKey, remaining);
+            }
+        }
+    }
+
+    /** Main-only. Keep the request: C2ME's downgrade does not retry this call. */
+    public void unload(Object loadLock, long chunkKey, LongPredicate pending, Runnable body) {
+        synchronized (loadLock) {
+            deferredUnloads.remove(chunkKey);
+            if (blocksUnload(chunkKey, pending)) {
+                deferredUnloads.put(chunkKey, body);
+            } else {
+                runUnload(body);
+            }
+        }
+    }
+
+    /** A newer C2ME disk residency supersedes the old residency's deferred unload. */
+    public void cancelUnload(Object loadLock, long chunkKey) {
+        synchronized (loadLock) {
+            deferredUnloads.remove(chunkKey);
+        }
+    }
+
+    /** Storage close terminalizes requests without touching closed storage. */
+    public void discardUnloads(Object loadLock) {
+        synchronized (loadLock) {
+            deferredUnloads.clear();
+        }
+    }
+
+    /** Main-only, after pending loads have been unpacked by the normal tick. */
+    public void drainUnloads(Object loadLock, LongPredicate pending) {
+        synchronized (loadLock) {
+            var entries = deferredUnloads.long2ObjectEntrySet().iterator();
+            while (entries.hasNext()) {
+                var entry = entries.next();
+                try {
+                    if (blocksUnload(entry.getLongKey(), pending)) continue;
+                } catch (Throwable failure) {
+                    entries.remove();
+                    rethrow(failure);
+                }
+                Runnable body = entry.getValue();
+                entries.remove();
+                runUnload(body);
+            }
+        }
+    }
+
+    private boolean blocksUnload(long chunkKey, LongPredicate pending) {
+        LoadAttempt loading = inFlight.get(chunkKey);
+        if (loading != null) rethrow(loading.failure);
+        return readers.containsKey(chunkKey)
+                || (loading != null && !loading.completion.isDone())
+                || pending.test(chunkKey);
+    }
+
+    private static void runUnload(Runnable body) {
+        try {
+            if (RegionScheduler.isActive()) RegionScheduler.runSuccessBodyIfHealthy(body);
+            else body.run();
+        } catch (Throwable failure) {
+            rethrow(selectFailure(failure));
+        }
+    }
+
+    private static void awaitCompletion(LoadAttempt attempt) {
+        try {
+            attempt.completion.join();
+        } catch (Throwable completionSignal) {
+            Throwable failure = attempt.failure;
+            rethrow(failure != null ? failure : selectFailure(completionSignal));
+        }
+    }
+
+    private static final class LoadAttempt {
+        private final CompletableFuture<Void> completion = new CompletableFuture<>();
+        private volatile Throwable failure;
+        /** Set only in the scheduler's success-vs-W linearization cut. */
+        private volatile boolean successCommitted;
+    }
 
     /**
      * Is a winner currently between "claimed the chunk" and "fan-out complete"?
@@ -57,27 +164,26 @@ public final class PoiChunkLoadFence {
      *   <li>else become the winner: register the completion future, run
      *       {@code original} (the vanilla unpack: loadLock-gated bookkeeping,
      *       disk join OUTSIDE any lock we hold, fan-out), then — even on
-     *       exception — deregister under {@code loadLock} and complete the
-     *       future so losers never hang.</li>
+     *       exception — publish one authoritative failure and complete the
+     *       future exceptionally so losers never hang.</li>
      * </ol>
      *
-     * <p>On winner failure losers complete normally and re-observe a null
-     * section; {@code getOrLoad}'s bounded retry (same commit) turns the
-     * unload-after-complete flavour of that into a fresh disk read, and a
-     * persistent failure surfaces as vanilla's own ISE — unchanged semantics.
+     * <p>A failed attempt remains as a poisoned terminal entry. Every waiter and
+     * later caller rethrows the exact same first-wins failure; nobody retries a
+     * vanilla body which has already been entered and failed.
      *
      * @return {@code true} if this thread was the winner and ran {@code original}.
      */
     public boolean runExclusively(Object loadLock, long chunkKey, LongPredicate alreadyLoaded, Runnable original) {
-        CompletableFuture<Void> waitFor;
-        CompletableFuture<Void> mine = null;
+        LoadAttempt waitFor;
+        LoadAttempt mine = null;
         synchronized (loadLock) {
             waitFor = this.inFlight.get(chunkKey);
             if (waitFor == null) {
                 if (alreadyLoaded.test(chunkKey)) {
                     return false;
                 }
-                mine = new CompletableFuture<>();
+                mine = new LoadAttempt();
                 this.inFlight.put(chunkKey, mine);
             }
         }
@@ -86,17 +192,98 @@ public final class PoiChunkLoadFence {
             // storage. Deliberately join() and not a timed wait — the winner's
             // finally-block completion makes an unbounded hang structurally
             // impossible, and a timeout would just re-open the ISE window.
-            waitFor.join();
+            awaitCompletion(waitFor);
             return false;
         }
+        Throwable failure = null;
         try {
-            original.run();
-        } finally {
-            synchronized (loadLock) {
-                this.inFlight.remove(chunkKey);
+            if (RegionScheduler.isActive()) {
+                // The check and the first bytecode of the vanilla unpack must be
+                // one generation cut.  A plain throwIfFailed() here leaves a
+                // W-vs-original.run() window and can enter a fresh POI load after
+                // another island has already failed.
+                RegionScheduler.runSuccessBodyIfHealthy(original);
+            } else {
+                original.run();
             }
-            mine.complete(null);
+        } catch (Throwable thrown) {
+            failure = selectFailure(thrown);
         }
+
+        if (failure == null) {
+            try {
+                LoadAttempt owner = mine;
+                // Keep the established local-gate -> generation-cut order.  In
+                // particular, never hold the scheduler lifecycle monitor while
+                // waiting for loadLock: unpackPendingLoads/C2ME legitimately keep
+                // loadLock across their local POI bookkeeping.
+                synchronized (loadLock) {
+                    RegionScheduler.commitSuccessIfHealthy(() -> {
+                        if (owner.successCommitted || owner.completion.isDone()) {
+                            throw new IllegalStateException(
+                                    "POI load attempt was completed before its owner");
+                        }
+                        if (this.inFlight.remove(chunkKey) != owner) {
+                            throw new IllegalStateException(
+                                    "POI load attempt was replaced before successful completion");
+                        }
+                        owner.successCommitted = true;
+                        if (!owner.completion.complete(null)) {
+                            throw new IllegalStateException(
+                                    "POI load attempt was completed before its owner");
+                        }
+                    });
+                }
+                // Removing the poison token and notifying its waiters are one
+                // success receipt: either they linearize before global W, or W
+                // leaves the token installed and every waiter fails with W.
+            } catch (Throwable cleanup) {
+                // The monitor has been released before exact-W selection and
+                // failure terminalization.
+                failure = selectFailure(cleanup);
+            }
+        }
+
+        if (failure == null && !mine.successCommitted) {
+            failure = selectFailure(new IllegalStateException(
+                    "POI load success was not committed before notification"));
+        }
+        if (failure != null) {
+            // Do not remove the failed token. A removal window would permit a
+            // second vanilla unpack to start before physical Main observes the
+            // generation fatal. The server is fail-stop; retaining the poison is
+            // the terminal state, not a retry cache.
+            mine.failure = failure;
+            try {
+                if (!mine.completion.completeExceptionally(failure)) {
+                    mergeFailure(failure, new IllegalStateException(
+                            "POI load failure reached an already-terminal attempt"));
+                }
+            } catch (Throwable notificationFailure) {
+                mergeFailure(failure, notificationFailure);
+            }
+        }
+        rethrow(failure);
         return true;
+    }
+
+    private static Throwable selectFailure(Throwable candidate) {
+        return RegionScheduler.isActive()
+                ? RegionScheduler.publishFatalAndSelectWinner(candidate)
+                : candidate;
+    }
+
+    private static void mergeFailure(Throwable primary, Throwable cleanup) {
+        if (cleanup == null || cleanup == primary) return;
+        try {
+            primary.addSuppressed(cleanup);
+        } catch (Throwable ignored) {
+            // Cleanup diagnostics cannot replace the exact vanilla/global W.
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        if (failure != null) throw (T) failure;
     }
 }

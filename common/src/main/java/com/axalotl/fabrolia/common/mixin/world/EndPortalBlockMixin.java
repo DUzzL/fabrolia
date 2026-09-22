@@ -1,12 +1,16 @@
 package com.axalotl.fabrolia.common.mixin.world;
 
+import com.axalotl.fabrolia.common.parallelised.utils.PlayerDimensionTransition;
 import com.axalotl.fabrolia.common.regions.CrossDimArrivals;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.sugar.Local;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ServerLevelAccessor;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.EndPortalBlock;
@@ -28,29 +32,20 @@ import org.spongepowered.asm.mixin.Mixin;
 @Mixin(EndPortalBlock.class)
 public abstract class EndPortalBlockMixin {
 
+    @WrapOperation(method = "entityInside",
+            at = @org.spongepowered.asm.mixin.injection.At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/ServerPlayer;showEndCredits()V"))
+    private void fabrolia$deferEndCredits(ServerPlayer player, Operation<Void> original) {
+        if (!PlayerDimensionTransition.deferEndCredits(player, () -> original.call(player))) {
+            original.call(player);
+        }
+    }
+
     /**
-     * audit9: does this End-platform regeneration have to be STAGED onto the
-     * destination island, or may it run inline?
-     *
-     * <p>It must be staged whenever the destination is owned by an async island —
-     * <em>including when the caller is the main Server thread.</em> That case is the
-     * bug this fixes. {@code CrossDimTeleportMixin} already stages main-thread
-     * arrivals into island-owned destinations (its "not-worker-thread-but-staged"
-     * path), but this mixin required {@code instanceof RegionWorkerThread}, so a
-     * player walking into the End had their ARRIVAL staged while their platform
-     * REGEN ran inline on main. The regen then wrote blocks into the End island's
-     * chunks with no claim, concurrently with that island's entity phase on a
-     * region worker.
-     *
-     * <p>The audit8 capture shows exactly that: a regen on {@code thread=Server
-     * thread} with {@code L=-1} (no island clock context) cleared (100,49,0)
-     * microseconds after a falling block had placed there, mid-phase. Every regen
-     * that is correctly staged carries a real {@code L=} and runs on a worker.
-     *
-     * <p>Staging preserves vanilla order: {@code getPortalDestination} runs before
-     * {@code addDuringTeleport}, so the regen enqueues ahead of the arrival it
-     * belongs to and the pair stays atomic, applied at the destination unit head
-     * before the entity phase — which is the vanilla-equivalent boundary.
+     * Non-player platform regeneration shares the staged arrival's destination
+     * cohort, including publication from physical Main. A player's arrival is
+     * synchronous under its full Main lifecycle fence, so its platform must be
+     * regenerated inline before the player is inserted or observes the destination.
      */
     @org.spongepowered.asm.mixin.Unique
     private static boolean fabrolia$shouldStageRegen(ServerLevel dest, BlockPos pos) {
@@ -59,8 +54,8 @@ public abstract class EndPortalBlockMixin {
         }
         com.axalotl.fabrolia.common.regions.RegionizedServer destRs =
                 RegionScheduler.forLevel(dest);
-        if (destRs == null || !destRs.asyncActive) {
-            return false;   // sequential level: main IS the executor, vanilla order holds
+        if (destRs == null) {
+            return false; // no regional runtime owns the destination
         }
         long chunkKey = ChunkPos.pack(pos.getX() >> 4, pos.getZ() >> 4);
         return CrossDimArrivals.islandOwnedDestination(destRs, chunkKey);
@@ -70,8 +65,9 @@ public abstract class EndPortalBlockMixin {
             at = @org.spongepowered.asm.mixin.injection.At(value = "INVOKE",
                     target = "Lnet/minecraft/world/level/levelgen/feature/EndPlatformFeature;createEndPlatform(Lnet/minecraft/world/level/ServerLevelAccessor;Lnet/minecraft/core/BlockPos;Z)V"))
     private void fabrolia$stageRegen(ServerLevelAccessor level, BlockPos pos, boolean dropResources,
-                                     Operation<Void> original) {
+                                     Operation<Void> original, @Local(argsOnly = true) Entity entity) {
         if (!CrossDimArrivals.PUBLISHING.get()
+                && !(entity instanceof ServerPlayer)
                 && RegionScheduler.isActive()
                 && level instanceof ServerLevel sl
                 && fabrolia$shouldStageRegen(sl, pos)) {

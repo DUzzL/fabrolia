@@ -78,6 +78,7 @@ class SprintRoutedCommandPumpTest {
         f.set(target, value);
     }
 
+
     private boolean savedRegionThreading;
 
     @AfterEach
@@ -101,7 +102,7 @@ class SprintRoutedCommandPumpTest {
         // One async level so quiesceAllExcept has a fence to take (empty
         // island registry → the fence is trivially acquired).
         ServerLevel level = (ServerLevel) UNSAFE.allocateInstance(
-                PacketLaneProductionPathTest.LaneLevel.class);
+                ServerLevel.class);
         RegionizedServer rs = (RegionizedServer) UNSAFE.allocateInstance(RegionizedServer.class);
         rs.asyncActive = true;
         setField(rs, RegionizedServer.class, "islandRegistry", new IslandRegistry());
@@ -109,14 +110,12 @@ class SprintRoutedCommandPumpTest {
         SprintRoutedCommandPumpTest.<Map<ServerLevel, RegionizedServer>>getStatic(
                 RegionScheduler.class, "PER_LEVEL").put(level, rs);
 
-        // The routed command a unit's command block produced. Enqueued while
-        // no server is registered so the self-nudge (sv.execute) — the lane
-        // that production main never polls from inside pumpUntilDone — is
-        // skipped, exactly reproducing the wedge's reachable-drain set.
+        // The routed command a unit's command block already published. Its
+        // executor self-nudge is deliberately absent from the reachable-drain
+        // set inside pumpUntilDone.
         CompletableFuture<Boolean> cmdDone = new CompletableFuture<>();
         IslandCommands.enqueueFencedBody(() -> {
             cmdDone.complete(true);
-            return true;
         });
         assertTrue(IslandCommands.hasRoutedPending(), "routed batch must be pending");
 
@@ -144,8 +143,7 @@ class SprintRoutedCommandPumpTest {
                 err.set(t);
             }
         }, "fabrolia-test-main");
-        MinecraftServer srv = (MinecraftServer) UNSAFE.allocateInstance(
-                net.minecraft.server.dedicated.DedicatedServer.class);
+        MinecraftServer srv = (MinecraftServer) UNSAFE.allocateInstance(com.axalotl.fabrolia.common.regions.TestDedicatedServer.class);
         setField(srv, MinecraftServer.class, "serverThread", pumpThread);
         setField(srv, MinecraftServer.class, "levels", Map.of());
         setStatic(ParallelProcessor.class, "server", srv);
