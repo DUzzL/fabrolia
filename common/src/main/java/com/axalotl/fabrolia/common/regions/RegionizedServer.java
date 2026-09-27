@@ -4019,13 +4019,39 @@ public final class RegionizedServer {
      * {@code fabrolia$chunkGate} memo is the ticket-level authority and stays
      * as-is; this only re-establishes the tick-list membership vanilla would
      * have. Deliberately NOT {@code getTickingChunk()} — see the BLOCK_TICKING
-     * flap note on {@code fabrolia$chunkGate}; {@code getChunkIfPresent(FULL)}
-     * is the same read the off-main {@code getChunkNow} path uses.
+     * flap note on {@code fabrolia$chunkGate}. {@code getChunkIfPresent(FULL)}
+     * (c2me: target and actual status both at least SERVER_ACCESSIBLE) is
+     * stricter than the bridge's own read, which still serves a LevelChunk
+     * whose ticket was dropped but whose detach task has not run yet; vanilla
+     * likewise drops the entity at the ticket change, not at the detach.
      */
     static boolean fabrolia$ownChunkFull(ServerChunkCache source, long packed) {
         ChunkHolder h = source.getVisibleChunkIfPresent(packed);
         return h != null && h.getChunkIfPresent(
                 net.minecraft.world.level.chunk.status.ChunkStatus.FULL) != null;
+    }
+
+    private static final long OWN_CHUNK_GATE_LOG_INTERVAL_NANOS = 10_000_000_000L;
+    private static final java.util.concurrent.atomic.AtomicLong OWN_CHUNK_GATE_LOG_NANOS =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong OWN_CHUNK_GATE_REPORTED =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** The ticket view said entity-ticking while the live holder said not FULL:
+     *  the hang signature. Count always, report at most every 10 s so a ticket
+     *  regression near players is visible instead of silently freezing mobs. */
+    private static void noteOwnChunkGateSkip(ServerLevel level, Entity e, long packed) {
+        FlightRecorder.OWN_CHUNK_GATE_SKIPS.increment();
+        long now = System.nanoTime();
+        long last = OWN_CHUNK_GATE_LOG_NANOS.get();
+        if (last != 0L && now - last < OWN_CHUNK_GATE_LOG_INTERVAL_NANOS) return;
+        if (!OWN_CHUNK_GATE_LOG_NANOS.compareAndSet(last, now)) return;
+        long total = FlightRecorder.OWN_CHUNK_GATE_SKIPS.sum();
+        long sinceLast = Math.max(0L, total - OWN_CHUNK_GATE_REPORTED.getAndSet(total));
+        LOGGER.warn("[region-tick] own-chunk gate skipped {} entity tick(s) since last report (total={}); "
+                        + "latest {} #{} in {} chunk [{},{}] whose holder is below FULL while the ticket view says entity-ticking",
+                sinceLast, total, e.getType(), e.getId(), level.dimension().identifier(),
+                ChunkPos.getX(packed), ChunkPos.getZ(packed));
     }
 
     /** One entity through vanilla admission and tick on the region owner.
@@ -4075,6 +4101,7 @@ public final class RegionizedServer {
         // chunk is already detached is not in vanilla's tick list at all — no
         // tick AND no checkDespawn. Live read, after the ticket gate above.
         if (!directPlayer && !fabrolia$ownChunkFull(lvl.getChunkSource(), packed)) {
+            noteOwnChunkGateSkip(lvl, e, packed);
             return;
         }
 

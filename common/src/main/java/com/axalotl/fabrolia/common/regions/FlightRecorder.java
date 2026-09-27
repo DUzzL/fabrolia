@@ -33,6 +33,13 @@ public final class FlightRecorder {
      *  {@link IslandScheduledTicks}. */
     public static final java.util.concurrent.atomic.LongAdder SCHEDULED_HOLDS =
             new java.util.concurrent.atomic.LongAdder();
+    /** Entities admitted by the ticket-level gate but skipped because their own
+     *  holder no longer exposes a FULL chunk (vanilla would have removed them
+     *  from the tick list). A steadily rising count near live players means
+     *  tickets are being dropped under ticking chunks — investigate, never
+     *  accept as normal. Logged rate-limited by {@link RegionizedServer}. */
+    public static final java.util.concurrent.atomic.LongAdder OWN_CHUNK_GATE_SKIPS =
+            new java.util.concurrent.atomic.LongAdder();
     private static final java.util.concurrent.atomic.LongAccumulator DORMANT_MAX_AGE =
             new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
 
@@ -47,6 +54,7 @@ public final class FlightRecorder {
                     + " dormantRefused=" + DORMANT_REFUSED.sum()
                     + " dormantMaxAge=" + DORMANT_MAX_AGE.get()
                     + " scheduledHolds=" + SCHEDULED_HOLDS.sum()
+                    + " ownChunkGateSkips=" + OWN_CHUNK_GATE_SKIPS.sum()
                     + " | " + "delivery: see chunksender status";
         }
     }
@@ -72,6 +80,7 @@ public final class FlightRecorder {
         }
         DORMANT_REFUSED.reset();
         SCHEDULED_HOLDS.reset();
+        OWN_CHUNK_GATE_SKIPS.reset();
         return "cleared " + n + " ring events";
     }
 
