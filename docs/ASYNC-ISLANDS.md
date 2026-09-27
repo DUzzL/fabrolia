@@ -1,12 +1,12 @@
 # Fabrolia async islands — independent per-island ticking
 
 Status: persistent island identity and asynchronous island/player execution are
-implemented. **Independently owned island units may execute concurrently.** Each
-unit retains its real coordinator, island claim, generation and local clock;
-entity ordinals within an island remain serial. Producers that can touch shared
-or foreign gameplay state acquire exclusive ownership before their native body.
-Physical Main controls lifecycle and services Main-only work, but does not hold
-a gameplay permit across the complete server tick or native task loop.
+implemented. An island unit is a coordinator task on a region worker; each unit
+retains its island claim, generation and local clock, and entity ordinals within
+an island remain serial. Independent island roots run concurrently. A producer
+that cannot run on its island owner (MAIN_SYNC entity bodies, routed commands,
+Main-only listener work) retains its source claim while its exact Main fallback
+completes.
 
 Nether transfers retain worker-owned endpoint claims with serialized Main
 preparation (§5, A6). Execution remains configuration-gated; historical stage
@@ -22,125 +22,9 @@ descriptions retain their original design gates only where not superseded here.
 - Region grid, color gate, per-region queues, island-partitioned scheduled/BE
   ticks and the persistent BE cell index retain their ordering and membership
   responsibilities. Async time determines WHEN a unit is eligible; actual claims
-  and its pre-producer dependency contract determine WHO may execute.
+  and its Main-fallback dependencies determine WHO may execute.
 
 ### Current execution and advancement contract
-
-`RegionWorkerPool` admits generation-bound island publications independently.
-Members of one unit do not fan out their entity ordinals. A global producer first
-closes local admission, lets entered work reach its owned terminal boundary and
-acquires the real global fence. An entered producer cannot upgrade after an
-arbitrary predicate has already observed foreign state.
-
-`AdvancementRequirements` prepares conservative producer requirements from the
-native advancement carrier before publication. Declarative registry references
-and tags need not be resolved during preparation; pending lookups retain their
-native owner. Unsupported predicates remain unknown and require global entry.
-Certified owner-local producers keep eager matching on their island; producers
-with global requirements enter exclusively. A policy change is revalidated before
-the body, not compensated by replaying callbacks later.
-
-Ordinary residual exclusive grants rotate across ready notifications, unit roots,
-global roots, Main-safe roots, portal work and Main-gameplay roots. Refused
-notifications advance the rotation; detached notifications keep their normal
-cleanup receipts. Redundant island-ready notifications retire without acquiring
-global gameplay ownership. Neither a notification count nor a causal handoff is
-claim authority.
-
-Native server/chunk polling remains native orchestration. A chunk-service scope
-is a progress venue, not global gameplay ownership, and does not inherit an
-island's L clock. The exact outer native `runAllTasks` drains controls before
-optional gameplay. After its control census releases claim intents, Main resumes
-a finite FIFO publication cut rather than draining an ever-growing queue.
-
-Optional terminal grants yield at `MinecraftServer.getNextTickTime()` in the
-native `Util.getNanos()` clock. One terminal grant is permitted per wait root
-even if already overdue; a ready/portal attempt need not execute an island body.
-The unfinished cut and its owed eligible native-FIFO checkpoint survive later
-waits. New publications cannot borrow old slots, and an unavailable grant returns
-without discarding the cut or spinning. Eligible checkpoints do not add an empty
-native idle wait.
-
-The exact outer `managedBlock` poll obeys the same budget. Its literal callsite
-receipt and actual `blockingCount` distinguish it from predicate/direct polls
-and deeper waits. Required nested dependency, topology and shutdown pumps remain
-uncapped. A deadline never interrupts an entered native producer or skips accepted
-work. No self-requeued whole-tick gameplay driver remains; generation stays on
-its native executors.
-
-An empty hard-collider rebuild at the native level boundary clears the empty
-index and checks failure without taking a global fence. A nonempty rebuild keeps
-its ownership and rereads membership under that ownership. Certified native
-Vanish cache warm reads use the actual published cache fields without the cold
-refresh monitor; dirty refresh/invalidation retain their original private lock.
-Unknown transformed cache graphs retain the original wrappers.
-
-Main timing includes completed-loop work and required waits, excluding only
-native deadline idle. The completed-loop mean and unfinished active work are
-separate values. Island telemetry distinguishes completed cost, completion age
-and queued/claimed/overdue state; a stale cheap completion is not a healthy live
-measurement. Shared W-domain clocks retain their shared clock source.
-
-Tracked Main controls retain pool-generation accounting through a healthy exact
-turn's REQUESTED/PAUSED window; their executor publication resumes afterward.
-That deferral is not a gameplay grant and never masks a fatal generation cut.
-Preparation yields while earlier controls still need native FIFO service.
-Mandatory exact quiescence instead drains accepted controls and their causal
-continuations before entering the exact body.
-
-Native control publication also signals the selected-turn lifecycle monitor:
-the native queue's `unpark` alone cannot wake Main's `Object.wait`. Main checks
-routed readiness under that same monitor before sleeping. Only a request allowed
-by the current selected-source and outer-fence rules suppresses the wait; an
-unrelated queued writer does not authorize busy polling or borrowing the selected
-root. The native control task remains in its FIFO, and notification grants no
-gameplay ownership.
-
-Book-filter completions use this listener-scoped Main-control lifetime, not an
-accepted routed world mutation. Disconnect or listener replacement discards a
-stale callback before it can mutate the captured item stack.
-
-Independent generation may build a private NPC ride while gameplay is paused.
-`WorldGenEntityConstruction` witnesses entities created in the same synchronous
-`generateFeatures` or `generateSpawn` invocation and the same level. Scopes end
-in `finally`, do not propagate through returned futures, and cannot adopt an older
-unindexed entity. Every reachable ride identity must remain nonplayer, unpublished
-and outside lease/arrival/portal custody. Live indexing, callback publication,
-retained transfers and waypoint/deferred-metadata publication revoke the witness
-permanently; a null callback or absent region key alone proves nothing.
-
-Only silent initial mounting without an existing vehicle and private passenger
-link bookkeeping use this path; an empty `removeVehicle` is a native no-op.
-Native half-updated ride links are traversed by identity, not rejected as cycles.
-Removal hooks, ejection and event-producing rides retain ordinary gameplay
-admission. Private construction still checks the authoritative failure before
-and after the body, without retaining the failure-publication monitor across it.
-
-Main-only entity E, block-entity and player L work uses typed rendezvous receipts.
-The coordinator parks before the native body while retaining its source unit,
-member/ordinal where applicable, generation and L clock. Main must receive the
-exact acknowledgement and hold the real all-island fence before entering that
-body. Fence and acknowledgement cleanup finish before the result becomes visible
-to the coordinator; E(N+1), the unit tail and L++ cannot overtake an owed E(N).
-Native failures retain their original identity through cleanup.
-An already-owed player late body survives a soft lifecycle change with the exact
-early permit, listener identity and original source clock. Healthy listener-batch
-publication settles the whole batch before exposing continuations; one player's
-successful finish cannot discard another player's pending late body.
-
-The complete native ender-pearl `onHit` producer runs on globally owned physical
-Main before owner admission, RNG, teleport or effects. An island worker uses the
-typed entity writer rendezvous and retains its source claim and L clock until
-the original native invocation returns. Nested teleport ownership cannot end
-the outer producer's fall reset, damage, sound or discard. No copied continuation
-detaches an admitted owner branch from its current life state: a second impact
-observes any death completed by the first.
-
-A pearl tree without an island owner instead selects a complete globally owned
-MAIN_SYNC entity tick before entry; a claimless worker cannot park for a writer
-ACK it does not own. Fenced MAIN_SYNC bodies, physical-Main commands and native
-disconnect producers keep explicit global authority even with async and the
-player actor OFF. Absence of autonomous claims is not itself ownership.
 
 Topology/save quiescence keeps new-unit admission closed while already-entered
 units finish through routed Main work. Physical claims may be released for that
@@ -149,14 +33,8 @@ new island identities. Prior intents are restored exactly, including on failure.
 
 Live async OFF and shutdown reach terminal quiescence before changing async
 state or collapsing island clocks. Rebase waits may drain already-published
-Main-safe receipts under actual global Main ownership, but not unrelated global
-roots or native controls; chunk-service progress remains available.
-
-Global advancement requirements classify the complete native player tick tree
-as a global producer even when the player is idle. The same preflight governs
-worker admission and Main's publication of future island eligibility. A current
-global owner cannot certify a future local venue under a global resource policy.
-Use-only requirements retain their narrower active-use/Carpet-action fallback.
+global/Main-safe dependencies, but not unrelated ready work; chunk-service
+progress remains available.
 
 No arbitrary entered-producer migration, transfer of JVM monitors/scoped context,
 logical Main alias or foreign-thread world authority is implied.
@@ -164,40 +42,17 @@ logical Main alias or foreign-thread world authority is implied.
 not transferable world access. `executeOnOwner` queues callbacks when a foreign
 caller lacks owner authority.
 
-`AdvancementBuffer` snapshots registered listener entries, then completes matching
-at trigger time outside the listener-map monitor, in native order: each listener's
-trigger/item matcher first, then its player condition if the matcher passes.
-Neither phase is deferred or replayed. Each trigger observes its live producer
-state; native entity NBT fetches are uncached, including between predicates that
-may mutate state. The existing direct-field NBT fast path is retained.
-Only matched criterion keys and their player survive in the buffer, not listener
-predicates or live loot contexts. Awards, rewards and their cascades still use
-the existing monitor-free drains and owned Main batch boundary. Global drain
-fences protect award execution; they no longer define player-predicate timing.
+`AdvancementBuffer` resolves each trigger's matcher at the trigger call under the
+player's advancements monitor; the retained instances, their player condition and
+the awards are evaluated at the surrounding monitor-free Main drain against the
+loot context captured at fire time. Per-drain criterion deduplication is scoped
+to each player/key. The buffer cannot transport an entered callback or acquire a
+global fence while its caller holds arbitrary monitors and claims. Worker triggers
+outside a buffering frame publish directly to the retained Main lane.
 
-Native nearest-player queries traverse the live native player list. Arbitrary
-predicates and rich targeting conditions may observe a candidate before checking
-distance: an index radius is not a callback boundary. `PlayerChunkIndex` supplies
-preflight metadata, not replacement query execution. PlayerSensor's native raw
-spectator/distance filter is a separate contract; its retained targeting state
-is source-owned rather than shared mutable sensor scratch.
-
-Stationary-player contact preflight may exclude a candidate outside the exact
-native contact box only after its index entry proves source ownership. It never
-reads foreign bounding boxes to justify exclusion. Intersecting contacts and
-moving/non-player queries retain their conservative dependency census; native
-query execution itself is unchanged.
-
-Known NPC tick injectors have additional current-state exclusions: Carpet's
-source-owned action map must be empty, and Fabric's custom-fluid registry and
-the entity's retained fluid-contact set must both be empty. Only verified schemas
-are cached; these collections are checked again before each local entry.
-This neither freezes concurrent callback registration nor certifies arbitrary
-transformed bodies.
-
-**Cost:** global producers, unknown dependencies and Main-only native bodies
-still stop conflicting gameplay. Independent clocks and concurrent admission do
-not establish a throughput guarantee; historical benchmarks cannot prove one.
+**Cost:** Main-only native bodies and unknown dependencies still fall back to
+physical Main. Independent clocks and concurrent admission do not establish a
+throughput guarantee; historical benchmarks cannot prove one.
 
 ## 1. Identity and the transaction spine (A1 — SHIPPED)
 
@@ -206,7 +61,7 @@ MERGE/SPLIT/BORN/RETIRE events with deterministic survivor rules (merge: most
 cells, tie → lowest id; split: largest fragment keeps identity, fragments
 inherit the clock); self-check vs the BFS ground truth with reset-on-drift;
 shadow deadline clocks (`logicalTick`, `lagNanos`, cost = Σ member-region
-entity-phase EWMAs) and `/fabrolia regions islands` diagnostics (per-island
+entity-phase EWMAs) and `/fabrolia regions debug islandsummary` diagnostics (per-island
 cells/entities/cost/shadow-TPS/logical tick/offset/lag/age + event log).
 Observable behavior: unchanged — this stage exists so every later stage has an
 identity to hang state on and so the merge/split *frequency and shape* can be
@@ -243,31 +98,19 @@ inventory from the 26.2 sources:
 | crop growth / random ticks | per-tick chance in owner's tick | L | none (a 10 TPS island grows crops at half wall-clock rate — the defined, documented semantic of a slow island; identical to what a globally-lagging vanilla server does today) |
 | daylight/weather checks (`isBrightOutside`, thunder) | read W | W | none |
 | `/schedule` datapack timers, TimerQueue | absolute W ticks | W | global timer queue runs on the W authority; function EXECUTION that targets island-owned state is dispatched to owners (A5) |
-| scoreboards/advancements/bossbars | event-driven | n/a | global updates and deferred advancement awards/rewards use owned Main drains; complete advancement listener matching runs eagerly on the pre-admitted producer owner (§0) |
+| scoreboards/advancements/bossbars | event-driven | n/a | global updates and deferred advancement awards/rewards use owned Main drains; trigger matchers are resolved on the producer at trigger time and the retained instances are evaluated at the Main drain (§0) |
 | portal cooldown (`portalCooldown`) | relative | L | none |
 | active Nether portal charge | relative | L | advances with the entity owner; the accepted source-unit cohort transfers on a worker holding every source/destination owner claim |
 | world border | W-anchored lerp | W | global |
 | raids / Raid Omen | relative raid counters and effect duration | L(owner) | eligible expiry creates/extends the raid under exact island and POI authority; new raids are assigned immediately and tick once per owner unit; foreign ownership retains fenced Main compatibility |
 
 Rule for every future mixin: reading "game time" during island execution
-returns **L(owner)** via its authenticated source context, including routed Main, for relative-mechanic call
+returns **L(owner)** via the worker's region context for relative-mechanic call
 sites that vanilla uses as a monotonic per-tick counter (LevelTicks, hopper
 cooldowns), and **W** for calendar call sites (schedules, daylight). The audit
 that classifies every `getGameTime()` call site in 26.2 (~400) is the bulk of
 A3 and is mechanical but mandatory; misclassification = the "mixed timing
 models" failure the design forbids.
-
-Scheduled-tick copies use the same authenticated clock selection as scheduling,
-including routed Main and native-service context suspension. Copies across
-island and WALL domains preserve the remaining delay.
-
-Block events have one per-level canonical pending key and publication order
-across shared input, borrowed captures and island stashes. Queue transfer preserves
-both; duplicates cannot change eligibility or move an older event behind newer
-input. Dequeue releases the key before tickability checks or callbacks, allowing
-native self-reposts while still deduplicating the pending suffix. Each drain takes
-one eligibility snapshot and does not pull newly published external input into a
-recursive callback wave. Native callbacks run outside the event metadata lock.
 
 ## 3. The merge rule, executed BEFORE interaction is possible
 
@@ -290,10 +133,9 @@ topology layer before any gameplay can cross:
   cells apart, i.e. before either player's simulation can touch the other's.
 - **The one long-range exception: entity tracking + targeted packets** (spyglass
   view distance can exceed the gap). Cross-island *visibility* is read-only for
-  simulation but must not deliver mutations: attack/interact against an entity
-  outside the source player's claimed island is rejected as stale/foreign client
-  input. Same-island interaction remains on the owner lane; cross-island commands
-  and `@e` selectors use their explicit A5 routing.
+  simulation but must not deliver mutations. Same-island interaction remains on
+  the owner lane; interaction with another player owes a whole fenced Main
+  packet; cross-island commands and `@e` selectors use their explicit A5 routing.
 
 Merge transaction (A4), in order, all on the scheduler thread:
 1. **Quiesce**: both islands finish their in-flight tick and are unscheduled
@@ -350,8 +192,8 @@ fails, stay merged; merged-but-idle islands cost nothing extra.
 - **A5 — player & packet ownership**: connection tick and packet application
   move to the owning island (Folia's model); movement/anti-flying validation
   reads the island timeline (fixes itself — the counters are relative).
-  Same-island attack/interact stays on that owner; stale or foreign entity ids
-  are rejected rather than creating a Main boundary. Cross-island commands use
+  Same-island attack/interact stays on that owner; interaction targeting another
+  player takes a fenced Main packet. Cross-island commands use
   the explicit routing lane. Clients experience a slow island exactly as they
   experience today's lagging server (fewer movement updates), with no protocol
   changes. Flip gate: two-client differential (one on a lagged island, one on a fast one)
@@ -367,25 +209,11 @@ fails, stay merged; merged-but-idle islands cost nothing extra.
   Players retain their instances and listener FIFO exclusion through the ordered
   Main-only metadata tail; non-player arrivals use vanilla destination clones.
 
-  Before the metadata tail evaluates native criteria or NBT, global resource
-  requirements or disabled advancement buffering establish a global Main producer
-  envelope. That envelope encloses the original accepted transfer's metadata,
-  including its ordinary footprint/claim lifetime and completion edge.
-
-  Only the transfer worker's own sends enter its metadata FIFO. Unrelated native
-  sends keep their original order: recipient-wide capture can move a source
-  waypoint UPDATE behind UNTRACK and disconnect the client. An arriving entity's
-  tracking publication instead retains its exact schedule token and original
-  TickTask, including pending pairing/bulk obligations. After metadata, source
-  retirement and listener settlement, with cohort claims released, Main enqueues
-  that retained task. Cancellation releases its token without publishing; all
-  completion callbacks run outside reservation and camera-registry monitors.
-  Existing destination trackers also retain ADD/REVALIDATE for an arriving
-  viewer, including bulk and exact pairing commits. One exact tracker/viewer/
-  listener wait returns the still-pending obligation to normal publication after
-  settlement; entity state and ready viewers continue. A withdrawn unseen ADD
-  creates no publication, and canceling a wait cannot erase a newer REMOVE.
-  Already-offered chunk transport stays in the original connection EventLoop FIFO.
+  An arriving entity's tracking publication retains its exact schedule token and
+  original TickTask, including pending pairing/bulk obligations. After metadata,
+  source retirement and listener settlement, with cohort claims released, Main
+  enqueues that retained task. Cancellation releases its token without publishing;
+  all completion callbacks run outside reservation and camera-registry monitors.
   Arrival readiness is separate from source custody and tick ownership. A
   destination clone stays indexed but cannot tick, tick riders, or enter the
   despawn pass until its metadata tail and the previous source UUID reservation
@@ -444,7 +272,7 @@ explicit in IslandRegistry's doc so the migration is additive.
 
 ## 8. Diagnostics (shipped in A1)
 
-`/fabrolia regions islands`: per island — id, cells, entities, cost ms,
+`/fabrolia regions debug islandsummary`: per island — id, cells, entities, cost ms,
 shadow TPS, logical tick, offset vs W, accumulated lag, age; plus the last
 128 merge/split/born/retire events with reasons. The same numbers become the
 real scheduler's telemetry when A2 flips (shadow → actual).
@@ -452,9 +280,7 @@ real scheduler's telemetry when A2 flips (shadow → actual).
 
 ## 9. Worldthreader findings (studied 2026-07-12, full source + history)
 
-These are historical design findings. The current contract is §0: independent
-island admission with conservative global entry before unproven/shared producers,
-not a whole-tick global gameplay lock.
+These are historical design findings; the current contract is §0.
 
 Adopted or adapted:
 - **Explicit transfer boundary** (their `TeleportedEntityInfo` and destination
@@ -469,7 +295,7 @@ Adopted or adapted:
 - **Exclusive-access implementation template**: their semaphore-permit yield/
   reacquire system (adopted after their park/unpark polling missed wakeups —
   commits 19e9373, 5300f4a) informed the originally proposed LAST-resort
-  "temporarily global" tier. Current global entry is a pre-producer boundary (§0).
+  "temporarily global" tier.
 - **Portal-creation race** (their duplicate-nether-portal bug, 03ae1c4):
   portal creation is a cross-domain write. Nether preparation serializes it on
   physical Main under a real pool pause and publishes POIs before the next lookup.
@@ -485,11 +311,10 @@ Explicitly rejected, with their own evidence:
   transfers ownership instead; this is why A5 is scheduled as its own stage
   with a two-client differential gate rather than the "easy" swap.
 - **Global barrier per tick** — the two-Phaser-per-tick clock model remains
-  distinct from Fabrolia's per-island deadlines. Whole-tick global gameplay
-  exclusion is not required for independently admitted island units.
+  distinct from Fabrolia's per-island deadlines.
 - **Exclusive-on-write scoreboards** — global updates and advancement awards
   stay on the owned Main lane. Advancement matching is not wholly W-lane work:
-  it runs eagerly on the admitted producer's timeline (§0).
+  trigger matchers are resolved on the producer's timeline; awards drain on Main (§0).
 
 Failure-derived test additions (all from their TODO/DESIGN/commits, now part
 of the A5/A6 gate suites): leashed mobs following a player through a portal
@@ -555,8 +380,8 @@ construction — one global EpochDomain everywhere):
   one-cell halo for core cells; newly FULL halo cells must also own all eight
   neighboring cells before supplying tick work. Materialized `Region.domain`
   wins over the cold-creation snapshot. Open-frontier fluid ticks stay pending;
-  due pulse-sensitive block ticks hold the complete unit, including the early
-  pre-producer admission. Closed FULL halos can progress without core promotion.
+  due pulse-sensitive block ticks hold the complete unit. Closed FULL halos can
+  progress without core promotion.
 - **Tracking** — native VMP tracking and spawn census traversal remain serial;
   island concurrency does not authorize arbitrary foreign-executor fan-out.
   Accepted external work retains generation obligations through execution or
@@ -624,11 +449,6 @@ state, result). Execution shapes:
   exact. Batch points: drive head (unbounded after repeated bounded-fence
   timeouts, so an overloaded island cannot starve commands) and post-pump
   (2 ms bounded attempt → same-tick results for fast islands).
-  A command originating inside a source unit retains that unit's exact clock,
-  phase and effective handling-tick state only during its acknowledged body.
-  Scheduled/event-phase posts retain the original same-drain event queue;
-  later entity/block-entity posts remain next-unit work. Advancement preludes,
-  native polling and result publication do not borrow this source context.
 - **Main-context commands** (console, players, RCON, dispatched functions,
   command-block minecarts on the sync lane) are fenced per dispatch
   (CommandsMixin) or per function (ServerFunctionManagerMixin, one fence for

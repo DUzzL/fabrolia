@@ -289,11 +289,11 @@ public abstract class PlayerInteractionOwnerMixin {
         }
         // The claim wait can outlive this session (disconnect, respawn, level
         // change, island retire). Revalidate the exact player/listener/venue
-        // binding after the claim before running the body.
+        // binding after the claim before running the body. Mount/dismount of
+        // the same live player is not a session change: the body still runs,
+        // as vanilla would, so sequence acks and container state stay in sync.
         ServerPlayer expected = this.player;
-        long lifecycle = expected instanceof com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp s
-                ? s.fabrolia$playerLifecycleEpoch() : 0L;
-        IslandCommands.mainClaim(owner);
+        boolean release = IslandCommands.mainClaimScoped(owner);
         Throwable failure = null;
         try {
             if (this.player == expected
@@ -301,16 +301,14 @@ public abstract class PlayerInteractionOwnerMixin {
                     && expected.level() == sl
                     && RegionScheduler.forLevel(sl) == runtime
                     && runtime.islandOwnerOfChunk(chunkPos) == owner
-                    && !owner.retired
-                    && (expected instanceof com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp s2
-                    ? s2.fabrolia$playerLifecycleEpoch() : 0L) == lifecycle) {
+                    && !owner.retired) {
                 RegionScheduler.runSuccessBodyIfHealthy(body);
             }
         } catch (Throwable bodyFailure) {
             failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);
         }
         try {
-            IslandCommands.mainRelease(owner);
+            if (release) IslandCommands.mainRelease(owner);
         } catch (Throwable cleanupFailure) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
                     fabrolia$mergeFailure(failure, cleanupFailure));
