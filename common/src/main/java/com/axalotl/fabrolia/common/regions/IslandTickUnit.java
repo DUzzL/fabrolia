@@ -844,6 +844,13 @@ public final class IslandTickUnit {
                         }
                         LockSupport.parkNanos(20_000L);
                     }
+                } else if (island.claimWanted || island.statusClaimWanted) {
+                    // Main announced interest (mainClaim spin or entity-status
+                    // escalation). A back-to-back chaining island would otherwise
+                    // win this claim on every pass; yield with NO_BODY so the
+                    // pacer (CLAIM_RETRY_NANOS) or the sprint/coherent Main drive
+                    // (submits on !unitClaim each wall tick) retries afterwards.
+                    return;
                 } else if (!(claimAcquired = island.tryClaimAutonomousWork())) {
                     // Brief claim contention need not cost the island a tick.
                     // A longer topology/save/Main hold defers to the next drive.
@@ -1626,9 +1633,11 @@ public final class IslandTickUnit {
         }
         long previous = STALE_FOLLOWERS_REPORTED.getAndSet(total);
         LOGGER.warn("[async-islands] discarded stale queued unit: total={} sinceLast={} "
-                        + "island#{}/gen{} submittedL={} currentL={} claimWanted={} deadline={}",
+                        + "island#{}/gen{} submittedL={} currentL={} claimWanted={} "
+                        + "statusClaimWanted={} deadline={}",
                 total, total - previous, island.id, island.gen, submittedAtL,
-                island.logicalTick, island.claimWanted, island.nextDeadlineNanos);
+                island.logicalTick, island.claimWanted, island.statusClaimWanted,
+                island.nextDeadlineNanos);
     }
 
     /**
@@ -1715,7 +1724,7 @@ public final class IslandTickUnit {
         // this point is visible to this read (volatile), so a command's
         // commit-ack fires only after a complete unit ran under (or after)
         // its generation.
-        boolean fenceWaiting = island.claimWanted
+        boolean fenceWaiting = island.claimWanted || island.statusClaimWanted
                 || (rsT != null && rsT.mainClaimsFenceActive())
                 || RegionWorkerPool.currentUnitChainMustYield()
                 || island.retired

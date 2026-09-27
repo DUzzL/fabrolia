@@ -170,7 +170,7 @@ public abstract class PersistentEntityUnloadRetryMixin
     }
 
     /** One pass per level tick: the only pass that counts deferrals and may
-     * raise/clear the owner's {@code claimWanted} (see
+     * raise/clear the owner's {@code statusClaimWanted} (see
      * {@link FabroliaStatusTransitions#drainAtTickHead}). */
     @Inject(method = "tick", at = @At("HEAD"), require = 1)
     private void fabrolia$applyPendingStatusTransitions(CallbackInfo ci) {
@@ -260,14 +260,14 @@ public abstract class PersistentEntityUnloadRetryMixin
      * chains back-to-back wins almost always, so the island's OWN chunks never
      * became entity-loaded and its scheduled ticks held forever. After
      * {@link #ESCALATE_AFTER_PASSES} consecutive tick-head deferrals of a chunk
-     * this queue announces Main's interest ({@code PIsland.claimWanted}), which
-     * makes chaining and the pacer yield exactly as they do for a blocking
-     * mainClaim spin; the flag is dropped once the chunk's deferred status has
-     * been applied. Raising and dropping happen only at the tick-head pass,
-     * which runs at the top level of the server tick: every other writer of
-     * claimWanted saves and restores it around one synchronous spin, so this
-     * pair can never interleave non-LIFO with one of those scopes and strand
-     * the flag true. */
+     * this queue announces Main's interest ({@code PIsland.statusClaimWanted}),
+     * which makes claim admission, chaining and the pacer yield exactly as they
+     * do for a blocking mainClaim spin ({@code claimWanted}); the flag is
+     * dropped once the chunk's deferred status has been applied. The flag is
+     * separate from {@code claimWanted} because every mainClaim writer saves
+     * and restores that one around its spin: an off-main scope overlapping a
+     * tick-head raise/drop could otherwise strand it. Nobody but this queue
+     * writes {@code statusClaimWanted}, and the readers OR both flags. */
     @Unique
     static final class FabroliaStatusTransitions {
         private record Entry(long chunkPos, Runnable body) {}
@@ -278,10 +278,19 @@ public abstract class PersistentEntityUnloadRetryMixin
 
         /** Consecutive tick-head passes ({@link #drainAtTickHead}, one per
          * level tick = 50 ms at 20 TPS) a chunk's head entry may be deferred
-         * before Main announces claim interest on its owner: 20 passes ≈ 1 s,
-         * an order of magnitude beyond a unit's tail yet far below the
-         * multi-minute starvation this exists to end. */
-        static final int ESCALATE_AFTER_PASSES = 20;
+         * before Main announces claim interest on its owner. Units are 50 ms
+         * periodic like the pass, so a deferral is a phase collision, not a
+         * transient: 3 passes rule out a single collision and still end the
+         * starvation within ~150 ms. */
+        static final int ESCALATE_AFTER_PASSES = 3;
+        /** Escalations are logged at most once per 10 s, aggregated. */
+        private static final long ESCALATION_LOG_INTERVAL_NANOS = 10_000_000_000L;
+        private static final java.util.concurrent.atomic.AtomicLong ESCALATION_LOG_NANOS =
+                new java.util.concurrent.atomic.AtomicLong();
+        private static final java.util.concurrent.atomic.AtomicLong ESCALATIONS_TOTAL =
+                new java.util.concurrent.atomic.AtomicLong();
+        private static final java.util.concurrent.atomic.AtomicLong ESCALATIONS_REPORTED =
+                new java.util.concurrent.atomic.AtomicLong();
         private static final org.slf4j.Logger LOGGER =
                 org.slf4j.LoggerFactory.getLogger("Fabrolia-EntityStatus");
 
@@ -299,10 +308,15 @@ public abstract class PersistentEntityUnloadRetryMixin
         private final it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap pendingByChunk =
                 new it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap();
         /** Consecutive tick-head passes that deferred the chunk's head entry;
-         * dropped the moment any entry of the chunk is applied. */
+         * dropped the moment any entry of the chunk is applied and restarted
+         * when the chunk's owner changes (see {@link #deferredOwner}). */
         private final it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap deferredPasses =
                 new it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap();
-        /** Owners whose {@code claimWanted} this queue raised, keyed by the
+        /** Owner observed by the last counted deferral of each chunk. */
+        private final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<
+                com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland> deferredOwner =
+                new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
+        /** Owners whose {@code statusClaimWanted} this queue raised, keyed by the
          * escalated chunk; released by the tick-head pass once the chunk has
          * no unapplied entry left. */
         private final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<
@@ -335,6 +349,7 @@ public abstract class PersistentEntityUnloadRetryMixin
                 pendingByChunk.remove(entry.chunkPos());
             }
             deferredPasses.remove(entry.chunkPos());
+            deferredOwner.remove(entry.chunkPos());
         }
 
         /** The once-per-level-tick pass, entered only at the top level of the
@@ -356,14 +371,37 @@ public abstract class PersistentEntityUnloadRetryMixin
 
         private synchronized void noteDeferredPass(
                 long chunkPos, com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland owner) {
-            int passes = deferredPasses.addTo(chunkPos, 1) + 1;
+            int passes;
+            if (deferredOwner.put(chunkPos, owner) != owner) {
+                // Ownership moved: the streak restarts under the new owner and
+                // the old owner's interest in this chunk ends now.
+                deferredPasses.put(chunkPos, 1);
+                passes = 1;
+                var prior = escalated.remove(chunkPos);
+                if (prior != null) releaseIfUnreferenced(prior);
+            } else {
+                passes = deferredPasses.addTo(chunkPos, 1) + 1;
+            }
             if (owner == null || passes < ESCALATE_AFTER_PASSES) return;
-            var prior = escalated.put(chunkPos, owner);
-            if (prior == owner) return;
-            if (prior != null) releaseIfUnreferenced(prior); // ownership moved mid-escalation
-            owner.claimWanted = true;
-            LOGGER.info("[entity-status] escalating claim for island#{}/gen{} chunk [{},{}] after {} passes",
-                    owner.id, owner.gen, ChunkPos.getX(chunkPos), ChunkPos.getZ(chunkPos), passes);
+            if (escalated.put(chunkPos, owner) == owner) return;
+            owner.statusClaimWanted = true;
+            logEscalation(owner, chunkPos, passes);
+        }
+
+        /** Monitor held. One aggregated INFO line per 10 s at most. */
+        private static void logEscalation(
+                com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland owner,
+                long chunkPos, int passes) {
+            long total = ESCALATIONS_TOTAL.incrementAndGet();
+            long now = System.nanoTime();
+            long last = ESCALATION_LOG_NANOS.get();
+            if (last != 0L && now - last <= ESCALATION_LOG_INTERVAL_NANOS) return;
+            if (!ESCALATION_LOG_NANOS.compareAndSet(last, now)) return;
+            long reported = ESCALATIONS_REPORTED.getAndSet(total);
+            LOGGER.info("[entity-status] escalated claim interest for {} chunk(s) since last report "
+                            + "(total={}); latest island#{}/gen{} chunk [{},{}] after {} passes",
+                    total - reported, total, owner.id, owner.gen,
+                    ChunkPos.getX(chunkPos), ChunkPos.getZ(chunkPos), passes);
         }
 
         private synchronized void releaseSettledEscalations() {
@@ -381,14 +419,15 @@ public abstract class PersistentEntityUnloadRetryMixin
         /** Monitor held. Another escalated chunk of the same owner keeps the flag. */
         private void releaseIfUnreferenced(
                 com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland owner) {
-            if (!escalated.containsValue(owner)) owner.claimWanted = false;
+            if (!escalated.containsValue(owner)) owner.statusClaimWanted = false;
         }
 
         /** Monitor held. No unapplied entry survives, so no interest may either. */
         private void releaseAllEscalations() {
-            for (var owner : escalated.values()) owner.claimWanted = false;
+            for (var owner : escalated.values()) owner.statusClaimWanted = false;
             escalated.clear();
             deferredPasses.clear();
+            deferredOwner.clear();
         }
 
         void drain(Runner runner, boolean flush) {

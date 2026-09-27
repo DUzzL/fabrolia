@@ -721,7 +721,7 @@ public final class TemporalControl {
                 finishAndReseed(e, CONTROL_RETRY_NANOS);
                 return null;
             }
-            if (e.island.claimWanted
+            if (e.island.claimWanted || e.island.statusClaimWanted
                     || e.rs.mainClaimsFenceActive()
                     || e.island.unitClaim.get()
                     || e.island.submitQueued.get()) {

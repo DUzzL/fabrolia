@@ -280,8 +280,16 @@ public final class IslandRegistry {
                 java.util.concurrent.ConcurrentHashMap.newKeySet();
 
         /** Main-side claim spins announce interest here so rate/sprint
-         *  chaining yields (2026-07-14 fence-starvation fix). */
+         *  chaining yields (2026-07-14 fence-starvation fix). Every writer
+         *  saves and restores it around one synchronous spin (LIFO scopes).
+         *  Yield decisions must OR it with {@link #statusClaimWanted}. */
         public volatile boolean claimWanted;
+        /** Second, independent interest flag raised and lowered ONLY by the
+         *  entity-status tick-head drain (escalation after repeated deferrals,
+         *  see PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions).
+         *  Never saved/restored by anyone, so no mainClaim scope can strand
+         *  it; read wherever {@link #claimWanted} decides a yield. */
+        public volatile boolean statusClaimWanted;
         /** Diagnostics: units launched by chaining/pacer since creation. */
         public volatile long chainedUnits;
 
