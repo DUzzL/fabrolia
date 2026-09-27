@@ -56,6 +56,7 @@ public final class FlightRecorder {
                     + " scheduledHolds=" + SCHEDULED_HOLDS.sum()
                     + " ownChunkGateSkips=" + OWN_CHUNK_GATE_SKIPS.sum()
                     + " | " + NetherPortalTransfers.status()
+                    + " | " + IslandCommands.claimStatus()
                     + " | " + "delivery: see chunksender status";
         }
     }

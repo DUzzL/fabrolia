@@ -5,7 +5,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.TickTask;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
@@ -1753,7 +1752,8 @@ public final class IslandEntityTracking {
 
     /** One exact continuation, held by either the scheduler or arrival settlement. */
     private static final class MainTrackingTask
-            implements Runnable, NetherPortalPlayerAccess.ArrivalPublication {
+            implements RegionScheduler.MainTrackingPublication,
+            NetherPortalPlayerAccess.ArrivalPublication {
         private final IslandTrackedEntityAccess tracker;
         private final Entity entity;
         private final ServerLevel scheduledLevel;
@@ -1773,12 +1773,23 @@ public final class IslandEntityTracking {
         }
 
         @Override
+        public Entity trackedEntity() {
+            return entity;
+        }
+
+        @Override
+        public void cancelUnrun() {
+            cancel();
+        }
+
+        @Override
         public void publish() {
             try {
                 MinecraftServer server = scheduledLevel.getServer();
                 // Never execute inline: settlement can still be unwinding the
-                // caller's tracker scope, and entity claims are acquired by run.
-                server.schedule(new TickTask(server.getTickCount(), this));
+                // caller's tracker scope, and entity claims are acquired by the
+                // island-bucketed Main drain (one claim per island per drain).
+                RegionScheduler.publishMainTracking(server, this);
             } catch (Throwable thrown) {
                 Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
                 try {
