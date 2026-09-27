@@ -2,14 +2,11 @@ package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks;
 import com.axalotl.fabrolia.common.regions.AsyncIslandListenerAccess;
-import com.axalotl.fabrolia.common.regions.AsyncIslandMovementListenerAccess;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.network.DisconnectionDetails;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
-import net.minecraft.world.phys.Vec3;
 
 /**
  * Publishes the exact per-listener A5 session binding and owns physical disconnect
@@ -22,33 +19,7 @@ import net.minecraft.world.phys.Vec3;
  * its throttlers.
  */
 @Mixin(ServerGamePacketListenerImpl.class)
-public abstract class ServerGamePacketListenerIslandMixin
-        implements AsyncIslandListenerAccess, AsyncIslandMovementListenerAccess {
-
-    @Shadow private double lastGoodX;
-    @Shadow private double lastGoodY;
-    @Shadow private double lastGoodZ;
-    @Shadow private Vec3 awaitingPositionFromClient;
-
-    @Override
-    public double fabrolia$lastGoodX() {
-        return lastGoodX;
-    }
-
-    @Override
-    public double fabrolia$lastGoodY() {
-        return lastGoodY;
-    }
-
-    @Override
-    public double fabrolia$lastGoodZ() {
-        return lastGoodZ;
-    }
-
-    @Override
-    public boolean fabrolia$hasAwaitingPosition() {
-        return awaitingPositionFromClient != null;
-    }
+public abstract class ServerGamePacketListenerIslandMixin implements AsyncIslandListenerAccess {
 
     @org.spongepowered.asm.mixin.Unique
     private final java.util.concurrent.atomic.AtomicReference<AsyncIslandPlayerTicks.PlayerState>
@@ -69,8 +40,7 @@ public abstract class ServerGamePacketListenerIslandMixin
         ServerGamePacketListenerImpl listener =
                 (ServerGamePacketListenerImpl) (Object) this;
         AsyncIslandPlayerTicks.runPhysicalMainDisconnect(
-                listener, ((com.axalotl.fabrolia.common.mixin.network.ServerCommonPacketListenerAccessor)
-                        this).fabrolia$getServer(),
+                listener, listener.player.level().getServer(),
                 () -> original.call(details));
     }
 

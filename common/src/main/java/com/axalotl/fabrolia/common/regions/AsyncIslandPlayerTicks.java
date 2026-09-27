@@ -25,7 +25,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -1540,7 +1539,7 @@ public final class AsyncIslandPlayerTicks {
                 // and now rethrows the exact global W before another late stage.
                 throwUnchecked(publishFatalFailure(failure));
             }
-            return;
+            return true;
     }
 
     /**
@@ -1835,59 +1834,6 @@ public final class AsyncIslandPlayerTicks {
         return context != null && context.player == entity;
     }
 
-    /** Complete local player proof; coordinates cannot bypass a retained A5 owner. */
-    public static boolean ownsAdvancementObservation(ServerPlayer player) {
-        if (player == null) return false;
-        TurnContext turn = TURN.get();
-        if (turn != null && turn.player == player) {
-            boolean mainLate = turn.late
-                    && IslandCommands.ownsPlayerLateOnMain(player, turn.island);
-            boolean sourceWorker = turn.island.claimHolder == Thread.currentThread()
-                    && turn.island.unitClaim.get()
-                    && Thread.currentThread() instanceof RegionWorkerThread worker
-                    && worker.currentDomain == turn.island.domain;
-            if (turn.island.retired || !mainLate && !sourceWorker
-                    || turn.owner.playerIdentity() != player
-                    || turn.owner.listenerIdentity() != player.connection
-                    || turn.owner.islandIdentity() != turn.island
-                    || turn.owner.islandId() != turn.island.id
-                    || turn.owner.islandGeneration() != turn.island.gen
-                    || turn.owner.domainIdentity() != turn.island.domain) return false;
-            RegionizedServer runtime = RegionScheduler.forLevel(player.level());
-            if (runtime == null || !RegionScheduler.ownsRuntimeGeneration(runtime)
-                    || turn.island.domainLevel() != player.level()) return false;
-            IslandPlayerTurnSession.View view = turn.state.session.view();
-            return view.owner() != null && view.owner().matchesExactly(turn.owner)
-                    && (view.phase() == IslandPlayerTurnSession.Phase.EARLY_RESERVED
-                        || view.phase() == IslandPlayerTurnSession.Phase.EARLY_RUNNING
-                        || view.phase() == IslandPlayerTurnSession.Phase.LATE_RUNNING);
-        }
-        if (player instanceof AsyncIslandPlayerAccess) {
-            IslandPlayerTurnSession.View view = state(player).session.view();
-            if (view.phase() == IslandPlayerTurnSession.Phase.EARLY_RESERVED
-                    || view.phase() == IslandPlayerTurnSession.Phase.EARLY_RUNNING
-                    || view.phase() == IslandPlayerTurnSession.Phase.LATE_RUNNING) return false;
-            if (isIslandListenerOwnedPhase(view.phase())) {
-                var owner = view.owner();
-                RegionizedServer runtime = RegionScheduler.forLevel(player.level());
-                return owner != null && owner.playerIdentity() == player
-                        && owner.listenerIdentity() == player.connection
-                        && owner.islandIdentity() instanceof IslandRegistry.PIsland island
-                        && !island.retired && owner.islandId() == island.id
-                        && owner.islandGeneration() == island.gen
-                        && owner.domainIdentity() == island.domain
-                        && island.domainLevel() == player.level()
-                        && runtime != null && RegionScheduler.ownsRuntimeGeneration(runtime)
-                        && island.unitClaim.get()
-                        && island.claimHolder == Thread.currentThread()
-                        && (IslandCommands.mainHolds(island)
-                            || Thread.currentThread() instanceof RegionWorkerThread worker
-                            && worker.currentDomain == island.domain);
-            }
-        }
-        return RegionScheduler.ownsCurrentContext(player.level(), player.blockPosition());
-    }
-
     public static boolean inOwnerTurn() {
         return TURN.get() != null;
     }
@@ -2077,16 +2023,6 @@ public final class AsyncIslandPlayerTicks {
      */
     public static void runMainListenerTick(ServerGamePacketListenerImpl listener, Runnable body) {
         Objects.requireNonNull(body, "body");
-        TurnContext turn = TURN.get();
-        if (turn != null && turn.late && listener == turn.owner.listenerIdentity()
-                && turn.player.connection == listener
-                && IslandCommands.ownsPlayerLateOnMain(turn.player, turn.island)
-                && ownsAdvancementObservation(turn.player)) {
-            // This is the still-owed island L, not a new physical-Main listener
-            // ordinal. Preserve its original permit and bypass Main FIFO admission.
-            body.run();
-            return;
-        }
         MainExecutionLease lease = beginMainListenerTick(listener, body);
         if (!lease.runOriginal || listener == null || listener.player == null
                 || physicalMain(listener.player) != MinecraftThreadCheck.YES) {
@@ -2099,41 +2035,11 @@ public final class AsyncIslandPlayerTicks {
             ServerPlayer player = listener.player;
             long lifecycle = player instanceof PlayerTickPhaseStamp stamp
                     ? stamp.fabrolia$playerLifecycleEpoch() : 0L;
-            runMainPlayerProducer(player, () -> {
+            RegionScheduler.runWithMainEntityClaim(player, () -> {
                 if (!cancelDirectMainListenerTick(
                         lease.state, listener, player, lifecycle)) body.run();
-            }, () -> cancelDirectMainListenerTick(
-                    lease.state, listener, player, lifecycle));
+            });
         });
-    }
-
-    /** Select the complete E/L footprint while retaining the exact source claim. */
-    public static void runMainPlayerProducer(
-            ServerPlayer player, Runnable body,
-            java.util.function.BooleanSupplier finishWithoutBody) {
-        RegionScheduler.runWithMainEntityClaim(player, () -> {
-            if (finishWithoutBody != null && finishWithoutBody.getAsBoolean()) return;
-            Runnable ownedBody = () -> {
-                if (finishWithoutBody == null || !finishWithoutBody.getAsBoolean()) {
-                    AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(player);
-                    body.run();
-                    publishPlayerProducerEligibility(player);
-                }
-            };
-            if (AdvancementCaptureOwnership.ownsGlobalProducerEnvelope()) {
-                ownedBody.run();
-                return;
-            }
-            RegionizedServer runtime = RegionScheduler.forLevel(player.level());
-            Region region = runtime == null || !(player instanceof RegionKeyed keyed)
-                    ? null : runtime.regionizer().peekByGridKey(keyed.fabrolia$getRegionKey());
-            if (region == null || !supportsIslandPlayerType(player)
-                    || NativeEntityDependencies.requiresFence(runtime, region, player)) {
-                RegionScheduler.runGlobalMainBody(player.level().getServer(), ownedBody);
-            } else {
-                ownedBody.run();
-            }
-        }, finishWithoutBody);
     }
 
     /** A claim wait may pump a lifecycle command before this direct L enters. */
@@ -2302,7 +2208,7 @@ public final class AsyncIslandPlayerTicks {
         }
         // Respawn retains the listener but replaces its player. Claim the current
         // receiver, never the predecessor sampled when this L was enqueued.
-        lease.execute(() -> runMainPlayerProducer(player, () -> {
+        lease.execute(() -> RegionScheduler.runWithMainEntityClaim(player, () -> {
             synchronized (state) {
                 // Main claim waits may pump a routed disconnect. The queue clear
                 // cannot cancel this already-polled, still-unentered L itself.
@@ -2315,7 +2221,7 @@ public final class AsyncIslandPlayerTicks {
                 }
             }
             body.run();
-        }, null));
+        }));
     }
 
     /**
@@ -2332,8 +2238,8 @@ public final class AsyncIslandPlayerTicks {
         if (server == null) return false;
         if (RegionalPlayerEntityTicksV2.inExactPlayerActor()) {
             try {
-                RegionScheduler.scheduleTrackedMainControlTask(server,
-                        () -> runPhysicalMainDisconnect(listener, server, disconnect));
+                server.schedule(new TickTask(server.getTickCount(),
+                        () -> runFailStopMainTask(disconnect)));
             } catch (Throwable publicationFailure) {
                 throwUnchecked(publishFatalFailure(publicationFailure));
             }
@@ -2359,9 +2265,9 @@ public final class AsyncIslandPlayerTicks {
             state.eligible = false;
         }
         try {
-            RegionScheduler.scheduleTrackedMainControlTask(server,
-                    () -> finishDeferredDisconnectOnMain(
-                            state, listener, server, disconnectOwner, disconnect));
+            server.schedule(new TickTask(server.getTickCount(),
+                    () -> runFailStopMainTask(() -> finishDeferredDisconnectOnMain(
+                            state, listener, server, disconnectOwner, disconnect))));
             return true;
         } catch (Throwable publicationFailure) {
             Throwable failure = publishFatalFailure(publicationFailure);
@@ -2394,11 +2300,11 @@ public final class AsyncIslandPlayerTicks {
         if (listener == null || server == null
                 || !RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)
                 || !(listener instanceof AsyncIslandListenerAccess access)) {
-            return new MainDisconnectScope(null, null, null);
+            return new MainDisconnectScope(null, null);
         }
         PlayerState state = access.fabrolia$asyncIslandPlayerState();
-        if (state == null) return new MainDisconnectScope(null, null, server);
-        MainDisconnectScope scope = new MainDisconnectScope(state, listener, server);
+        if (state == null) return new MainDisconnectScope(null, null);
+        MainDisconnectScope scope = new MainDisconnectScope(state, listener);
 
         // Vanilla serializes the complete disconnect body against entity ticking.
         // Establish that same cut before publishing mainDisconnectPending: publishing
@@ -2612,7 +2518,6 @@ public final class AsyncIslandPlayerTicks {
         state.auditedLifecycleMutationPending = false;
         state.hardLifecycleExitPending = false;
         state.deathLateLifecycleEpoch = -1L;
-        state.softLate = null;
         state.lastIslandListenerPlayer = null;
         state.trackingTopologyGap = null;
         clearTrackingPublicationBindingLocked(state);
@@ -3119,7 +3024,6 @@ public final class AsyncIslandPlayerTicks {
                     state.auditedLifecycleMutationPending = false;
                     state.hardLifecycleExitPending = false;
                     state.deathLateLifecycleEpoch = -1L;
-                    state.softLate = null;
                     island.playerStates.remove(state);
                     if (state.listedIsland == island) state.listedIsland = null;
                 }
@@ -3181,9 +3085,36 @@ public final class AsyncIslandPlayerTicks {
                 || !RegionScheduler.ownsRuntimeGeneration(rs)) {
             return false;
         }
-        return worker.currentDomain == island.domain
-                && island.claimHolder == worker && island.unitClaim.get()
-                && RegionScheduler.ownsCurrentContext(level, player.blockPosition());
+        Region current = worker.currentRegion;
+        if (current == null) {
+            return worker.currentDomain == island.domain
+                    && RegionScheduler.ownsCurrentContext(level, player.blockPosition());
+        }
+        if (current.currentWorker() != worker || !rs.ownsRegion(current)
+                || current.domain != island.domain
+                || !(player instanceof RegionKeyed keyed)) {
+            return false;
+        }
+        Region indexed = rs.regionizer().peekByGridKey(keyed.fabrolia$getRegionKey());
+        if (indexed == null || indexed.domain != island.domain
+                || !neighboringLifecycleCell(current.gridKey, indexed.gridKey)
+                || !neighboringLifecycleCell(current.gridKey,
+                        rs.regionizer().grid.keyFor(player.chunkPosition()))) {
+            return false;
+        }
+        EpochDomain domain = island.domain;
+        long epoch = domain.epoch;
+        return FabroliaConfig.useRegionColorGate()
+                && domain.entityDispatchPublication.isAccepted()
+                && domain.entityDispatchCutEpoch == epoch
+                && domain.dispatchedEpoch == epoch
+                && current.groupedEpoch == epoch
+                && ColorGate.eligible(current, rs);
+    }
+
+    private static boolean neighboringLifecycleCell(long source, long target) {
+        return Math.abs((long) (int) source - (int) target) <= 1L
+                && Math.abs((long) (int) (source >>> 32) - (int) (target >>> 32)) <= 1L;
     }
 
 
@@ -3193,77 +3124,7 @@ public final class AsyncIslandPlayerTicks {
             throw new IllegalStateException(
                     "A5 lifecycle body marker requires player state access");
         }
-        return new LifecycleBodyToken(state(player), player);
-    }
-
-    private static void retainSoftLateMutationLocked(PlayerState state, ServerPlayer player) {
-        var permit = state.session.enteredRealLateObligation();
-        if (permit == null) return;
-        LifecycleBodyToken body = state.lifecycleBody;
-        if (!Thread.holdsLock(state) || body == null || !body.armed || body.player != player
-                || permit.owner().playerIdentity() != player
-                || permit.owner().listenerIdentity() != player.connection) {
-            throw new IllegalStateException("A5 soft late mutation lost its audited body/turn");
-        }
-        long epoch = ((PlayerTickPhaseStamp) player).fabrolia$playerLifecycleEpoch();
-        SoftLateContinuation soft = state.softLate;
-        if (soft == null) soft = new SoftLateContinuation(player, permit);
-        if (soft.permit != permit || soft.player != player || soft.listener != player.connection
-                || soft.expectedLifecycleEpoch != epoch || epoch == Long.MAX_VALUE) {
-            throw new IllegalStateException("A5 soft late mutation broke its exact lifecycle chain");
-        }
-        state.softLate = soft;
-        soft.committed = false;
-        if (state.session.isAwaitingRealLate(permit)) {
-            IslandRegistry.PIsland source = (IslandRegistry.PIsland) permit.owner().islandIdentity();
-            for (PendingLate pending : source.pendingPlayerLate) {
-                if (pending.state == state && pending.permit == permit) {
-                    bindSoftLateContinuationLocked(state, pending);
-                    break;
-                }
-            }
-            if (soft.pending == null) {
-                throw new IllegalStateException("A5 soft late mutation lost its original FIFO receipt");
-            }
-        }
-        // The audited bridge performs exactly this bump before the original body.
-        // Nested wrappers extend the same chain; unrelated bumps cannot join it.
-        soft.expectedLifecycleEpoch = epoch + 1L;
-    }
-
-    private static void bindSoftLateContinuationLocked(PlayerState state, PendingLate pending) {
-        SoftLateContinuation soft = state.softLate;
-        if (soft == null) return;
-        if (!Thread.holdsLock(state) || soft.permit != pending.permit
-                || soft.player != pending.player || soft.listener != pending.listener
-                || soft.pending != null && soft.pending != pending) {
-            throw new IllegalStateException("A5 soft continuation crossed its original PendingLate");
-        }
-        soft.pending = pending;
-    }
-
-    /** Every body/fence/token in the enclosing scope has already finished.
-     * No typed late body can enter on the strength of the earlier routing candidate. */
-    private static void commitSoftLateContinuations(
-            List<LifecycleBodyToken> tokens, int markedBodyCount) {
-        for (int index = 0; index < markedBodyCount; index++) {
-            LifecycleBodyToken token = tokens.get(index);
-            SoftLateContinuation soft = token.completedSoftLate;
-            if (soft == null) continue;
-            synchronized (token.state) {
-                if (token.state.softLate != soft || token.state.lifecycleMutationBodyDepth != 0
-                        || token.state.lifecycleBody != null
-                        || token.state.session.enteredRealLateObligation() != soft.permit
-                        || soft.expectedLifecycleEpoch != token.completedSoftLateEpoch
-                        || ((PlayerTickPhaseStamp) soft.player).fabrolia$playerLifecycleEpoch()
-                                != token.completedSoftLateEpoch) {
-                    throw new IllegalStateException("A5 soft late completion lost its exact scope/epoch");
-                }
-                // Retain the exact staged identity until the whole scope succeeds:
-                // a later token or batch acceptance can still fail and must clear it.
-                RegionScheduler.commitSuccessIfHealthy(() -> soft.committed = true);
-            }
-        }
+        return new LifecycleBodyToken(state(player));
     }
 
     /** Arms the wrapper-body completion edge before its handoff can be published. */
@@ -3280,8 +3141,6 @@ public final class AsyncIslandPlayerTicks {
                 throw new IllegalStateException("A5 lifecycle body depth overflow");
             }
             token.armed = true;
-            token.parent = state.lifecycleBody;
-            state.lifecycleBody = token;
             state.lifecycleMutationBodyDepth++;
         }
     }
@@ -3301,8 +3160,7 @@ public final class AsyncIslandPlayerTicks {
         MainHandoffContinuation closer = null;
         Throwable lifecycleFailure = null;
         synchronized (state) {
-            if (!token.armed || state.lifecycleMutationBodyDepth <= 0
-                    || state.lifecycleBody != token) {
+            if (!token.armed || state.lifecycleMutationBodyDepth <= 0) {
                 throw new IllegalStateException("A5 lifecycle body depth underflow");
             }
             if (primary != null) {
@@ -3310,19 +3168,12 @@ public final class AsyncIslandPlayerTicks {
                         state.lifecycleMutationFailure, primary);
             }
             token.armed = false;
-            state.lifecycleBody = token.parent;
-            token.parent = null;
             state.lifecycleMutationBodyDepth--;
             if (state.lifecycleMutationBodyDepth == 0) {
                 closer = state.pendingLifecycleHandoff;
                 state.pendingLifecycleHandoff = null;
                 lifecycleFailure = state.lifecycleMutationFailure;
                 state.lifecycleMutationFailure = null;
-                SoftLateContinuation soft = state.softLate;
-                if (soft != null && !soft.committed) {
-                    token.completedSoftLate = soft;
-                    token.completedSoftLateEpoch = soft.expectedLifecycleEpoch;
-                }
             }
         }
         // lifecycleMutationFailure is already the monitor-ordered first failure;
@@ -3363,7 +3214,6 @@ public final class AsyncIslandPlayerTicks {
                     ready++;
                 }
                 if (ready == 0) {
-                    commitSoftLateContinuations(tokens, markedBodyCount);
                     return null;
                 }
                 batch = new LifecycleHandoffBatch(
@@ -3433,17 +3283,10 @@ public final class AsyncIslandPlayerTicks {
                 state.auditedLifecycleMutationPending = false;
                 state.hardLifecycleExitPending = false;
                 state.deathLateLifecycleEpoch = -1L;
-                state.softLate = null;
                 IslandRegistry.PIsland listed = state.listedIsland;
                 if (listed != null) listed.playerStates.remove(state);
                 if (state.listedIsland == listed) state.listedIsland = null;
                 return;
-            }
-            if (kind == RegionalPlayerEntityTicksV2.LifecycleMutationKind.SOFT_HANDOFF
-                    && !state.hardLifecycleExitPending && !state.mainDisconnectPending) {
-                retainSoftLateMutationLocked(state, player);
-            } else {
-                state.softLate = null;
             }
             state.lifecycleInvalidated = true;
             state.auditedLifecycleMutationPending = true;
@@ -3540,7 +3383,6 @@ public final class AsyncIslandPlayerTicks {
                         throw new IllegalStateException(
                                 "A5 packet body lost its exact reserved claim");
                     }
-                    AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(context.player);
                     if (AsyncIslandPacketPolicy.requiresMainInteraction(
                             inbound.packet, context.player)) {
                         synchronized (context.state) {
@@ -3604,13 +3446,6 @@ public final class AsyncIslandPlayerTicks {
                 throw failIslandReplay(context, packets, index + 1,
                         new IllegalStateException(
                                 "A5 player session changed after an entered packet body"));
-            }
-            if (!eligible(context.player, context.player.level(),
-                    context.owner.kind())) {
-                // This packet completed once; only its untouched suffix and the
-                // still-owed E cross to Main if it changed native producer state.
-                restoreIslandReplaySuffix(context, packets, index + 1, true);
-                return ReplayDisposition.PACKET_HANDOFF;
             }
         }
         return ReplayDisposition.CONTINUE_ENTITY;
@@ -3751,7 +3586,6 @@ public final class AsyncIslandPlayerTicks {
             state.auditedLifecycleMutationPending = false;
             state.hardLifecycleExitPending = false;
             state.deathLateLifecycleEpoch = -1L;
-            state.softLate = null;
         }
         publishListing(state, island);
         state.eligible = true;
@@ -3942,47 +3776,7 @@ public final class AsyncIslandPlayerTicks {
                 : currentLifecycle == ownerLifecycle;
     }
 
-    /**
-     * A claimless Main observer must not inspect active-use, mod action packs or
-     * retained native references. Its decision is advisory only: the real island
-     * admission always replaces this publication while owning the player.
-     */
     private static boolean eligible(ServerPlayer player, ServerLevel level,
-                                    IslandPlayerTurnSession.PlayerKind kind) {
-        PlayerState state = state(player);
-        boolean global = RegionScheduler.ownsExclusiveGameplay();
-        if (!global && physicalMain(player) == MinecraftThreadCheck.YES) {
-            synchronized (state) {
-                // Before the first E, defer to the island ordinal rather than
-                // inventing a Main L that could duplicate its later local L.
-                return state.eligibilityPlayer == null
-                        || state.eligibilityPlayer == player
-                        && state.publishedIslandEligibility;
-            }
-        }
-        if (!global && !ownsAdvancementObservation(player)) return false;
-        RegionizedServer runtime = RegionScheduler.forLevel(level);
-        Region region = runtime == null ? null
-                : runtime.regionizer().peekByGridKey(
-                        ((RegionKeyed) player).fabrolia$getRegionKey());
-        boolean available = region != null
-                && !NativeEntityDependencies.requiresFence(runtime, region, player)
-                && eligibleOwned(player, level, kind)
-                && NativePlayerMotion.certifies(runtime, region.domain.owner, player);
-        synchronized (state) {
-            state.eligibilityPlayer = player;
-            state.publishedIslandEligibility = available;
-        }
-        return available;
-    }
-
-    /** Called only by a completed native producer while its real authority is held. */
-    public static void publishPlayerProducerEligibility(ServerPlayer player) {
-        IslandPlayerTurnSession.PlayerKind kind = classifyPlayer(player);
-        if (kind != null) eligible(player, player.level(), kind);
-    }
-
-    private static boolean eligibleOwned(ServerPlayer player, ServerLevel level,
                                     IslandPlayerTurnSession.PlayerKind kind) {
         PortalProcessor portalProcess = player.portalProcess;
         if (player.level() != level || player.isRemoved() || player.isChangingDimension()
@@ -3991,7 +3785,8 @@ public final class AsyncIslandPlayerTicks {
                 || player.getCamera() != player
                 || (portalProcess != null
                 && !(portalProcess.portal instanceof NetherPortalBlock))
-                || player.connection == null || player.connection.player != player) {
+                || player.connection == null || player.connection.player != player
+                || !PlayerTickKnownModEnvelope.idleForAsync(player, kind)) {
             return false;
         }
         if (player instanceof ParallelProcessor.TickGuard guard && guard.fabrolia$isPortalPending()) {
@@ -4030,16 +3825,6 @@ public final class AsyncIslandPlayerTicks {
                 || inbound == state.mainInteractionPacket || inbound.isRoutedMutation()
                 || hasInvalidBlockAckSequence(inbound.packet)
                 || AsyncIslandPacketPolicy.usesMainFifo(inbound.packet);
-    }
-
-    /** Native preflight classifies; the exact A5 session still owns FIFO/E routing. */
-    static boolean tryRunNativeDependencyFallback(ServerPlayer player) {
-        PlayerState state = state(player);
-        synchronized (state) {
-            state.eligibilityPlayer = player;
-            state.publishedIslandEligibility = false;
-        }
-        return markMainFallback(player, true);
     }
 
     /**
@@ -4289,15 +4074,15 @@ public final class AsyncIslandPlayerTicks {
                     "A5 packet-prefix handoff publication without state lock");
         }
         RegionScheduler.throwWorkerFailureIfAny();
-        // A completed packet can invalidate native local eligibility without a
-        // lifecycle mutation or an unentered interaction. Its exact replay cut
-        // still owes E; the session permit below authenticates that cut.
-        if (state.mainDisconnectPending || !state.fallbackEntityAfterHandoff) {
+        if (state.mainDisconnectPending
+                || !explicitLifecycleMutationPending(state)
+                && state.mainInteractionPacket == null) {
             return false;
         }
         Optional<IslandPlayerTurnSession.MainHandoff<InboundPacket>> prepared =
                 state.session.preparePacketPrefixMainHandoff(permit);
         if (prepared.isEmpty()) return false;
+        state.fallbackEntityAfterHandoff = true;
         return publishPreparedMainHandoffLocked(
                 state, player, prepared.get(), true);
     }
@@ -4410,9 +4195,7 @@ public final class AsyncIslandPlayerTicks {
             publisherThread = Thread.currentThread();
             executionState = OFFERING;
             try {
-                RegionScheduler.scheduleTrackedMainControlTask(server,
-                        RegionScheduler.cancellableRoot(this,
-                                primary -> throwUnchecked(cancelPublication(primary))));
+                server.schedule(new TickTask(server.getTickCount(), this));
             } catch (Throwable publicationFailure) {
                 // Keep the receipt OFFERING until the owner installs this exact
                 // failure as W; only its subsequent cancelPublication may wake an
@@ -4437,8 +4220,7 @@ public final class AsyncIslandPlayerTicks {
 
         /** Failure-path no-body cancellation; preserves the caller's selected W. */
         private synchronized Throwable cancelPublication(Throwable primary) {
-            if (executionState == NEW || executionState == OFFERING
-                    || executionState == ACCEPTED) {
+            if (executionState == NEW || executionState == OFFERING) {
                 cancellationFailure = primary;
                 executionState = CANCELLED;
                 return primary;
@@ -4447,7 +4229,7 @@ public final class AsyncIslandPlayerTicks {
                 return primary;
             }
             return merge(primary, new IllegalStateException(
-                    "A5 terminal handoff cancellation crossed body entry"));
+                    "A5 terminal handoff cancellation crossed accepted body entry"));
         }
 
         private void runInlineIfNeeded() {
@@ -4552,7 +4334,6 @@ public final class AsyncIslandPlayerTicks {
 
         private void publishOnce() {
             preparePublication();
-            commitSoftLateContinuations(tokens, markedBodyCount);
             try {
                 RegionScheduler.commitSuccessIfHealthy(this::acceptPublication);
             } catch (Throwable publicationFailure) {
@@ -4571,9 +4352,7 @@ public final class AsyncIslandPlayerTicks {
             publisherThread = Thread.currentThread();
             executionState = PUBLISHING;
             try {
-                RegionScheduler.scheduleTrackedMainControlTask(server,
-                        RegionScheduler.cancellableRoot(this,
-                                primary -> throwUnchecked(cancelAndAbortAll(primary))));
+                server.schedule(new TickTask(server.getTickCount(), this));
             } catch (Throwable publicationFailure) {
                 Throwable winner = publishFatalFailure(publicationFailure);
                 if (executionState == PUBLISHING) {
@@ -4630,7 +4409,7 @@ public final class AsyncIslandPlayerTicks {
                 try {
                     if (failure == null) {
                         RegionScheduler.throwWorkerFailureIfAny();
-                        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
+                        if (!server.isSameThread()) {
                             throw new IllegalStateException(
                                     "A5 lifecycle handoff batch ran off physical Main");
                         }
@@ -4753,9 +4532,7 @@ public final class AsyncIslandPlayerTicks {
                 }
                 publisherThread = Thread.currentThread();
                 executionState = OFFERING;
-                RegionScheduler.scheduleTrackedMainControlTask(server,
-                        RegionScheduler.cancellableRoot(this,
-                                primary -> throwUnchecked(cancelAndAbortMainHandoff(this, primary))));
+                server.schedule(new TickTask(server.getTickCount(), this));
                 if (inlineAttempt) {
                     throw new IllegalStateException(
                             "A5 Main handoff queue executed inline before acceptance");
@@ -4810,7 +4587,7 @@ public final class AsyncIslandPlayerTicks {
                 try {
                     if (failure == null) {
                         RegionScheduler.throwWorkerFailureIfAny();
-                        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
+                        if (!server.isSameThread()) {
                             throw new IllegalStateException(
                                     "A5 Main handoff continuation ran off physical Main");
                         }
@@ -4891,22 +4668,6 @@ public final class AsyncIslandPlayerTicks {
                 token.completedHandoff = null;
                 if (closer != null) {
                     failure = cancelAndAbortMainHandoff(closer, failure);
-                }
-            } catch (Throwable cleanup) {
-                failure = merge(failure, cleanup);
-            }
-        }
-        // Successful batch completion retires token references, not another
-        // player's accepted and still-owed L. Exhaust closer cleanup first:
-        // a failure there must revoke every staged soft receipt as well.
-        for (int index = markedBodyCount - 1; index >= 0; index--) {
-            try {
-                LifecycleBodyToken token = tokens.get(index);
-                synchronized (token.state) {
-                    if (failure != null && token.state.softLate == token.completedSoftLate) {
-                        token.state.softLate = null;
-                    }
-                    token.completedSoftLate = null;
                 }
             } catch (Throwable cleanup) {
                 failure = merge(failure, cleanup);
@@ -5109,12 +4870,8 @@ public final class AsyncIslandPlayerTicks {
             if (server == null) {
                 throw new IllegalStateException("A5 Main ingress lost its server");
             }
-            // Reserve the original generation's receipt before native visibility.
-            // Stop drains/cancels that exact control carrier before unpublishing
-            // the pool; any MAIN_SYNC child is published before its parent closes.
-            // A completed native wake cannot enter this listener chain again.
-            RegionScheduler.scheduleTrackedMainControlTask(server,
-                    () -> drainMainIngress(state, listener));
+            server.schedule(new TickTask(server.getTickCount(),
+                    () -> runFailStopMainTask(() -> drainMainIngress(state, listener))));
         } catch (Throwable publicationFailure) {
             // This call hands off the sole listener-chain task. A rejected server
             // schedule may never leave the admission marker permanently closed with
@@ -5349,7 +5106,7 @@ public final class AsyncIslandPlayerTicks {
                 return;
             }
         }
-        RegionScheduler.runGlobalMainBody(ParallelProcessor.getServer(), () -> {
+        runFailStopMainTask(() -> {
             handle(packet, listener);
             PACKETS_REPLAYED.increment();
         });
@@ -5667,7 +5424,6 @@ public final class AsyncIslandPlayerTicks {
                     packetBodyEntered[0] = true;
                     if (inbound.listenerTick != null) inbound.listenerTick.run();
                     else handle(inbound.packet, inbound.listener);
-                    publishPlayerProducerEligibility(listener.player);
                 };
                 if (inbound.listenerTick == null
                         && hasInvalidBlockAckSequence(inbound.packet)
@@ -5680,47 +5436,10 @@ public final class AsyncIslandPlayerTicks {
                             new IllegalArgumentException("Expected packet sequence nr >= 0"));
                 } else if (inbound.listenerTick != null) {
                     replayMainListenerTick(state, listener, body);
-                } else if (AsyncIslandPacketPolicy.requiresGlobalMainMovement(inbound.packet)) {
-                    // Main's source-only entity claim does not protect the native
-                    // target/lastGood/swept/rollback footprint, including a player
-                    // moving from an ownerless source into another island's query.
-                    // The island replay certificate is deliberately not reused here.
-                    ServerPlayer player = listener.player;
-                    long lifecycle = ((PlayerTickPhaseStamp) player).fabrolia$playerLifecycleEpoch();
-                    RegionScheduler.runGlobalMainBody(ParallelProcessor.getServer(), () -> {
-                        if (listener.player != player || player.connection != listener
-                                || ((PlayerTickPhaseStamp) player).fabrolia$playerLifecycleEpoch()
-                                != lifecycle) {
-                            throw new IllegalStateException(
-                                    "A5 Main movement changed session during global claim");
-                        }
-                        body.run();
-                    });
                 } else if (state.mainInteractionPacket == inbound) {
                     runFencedMainMutation("ordered interaction packet", body);
-                } else if (AsyncIslandPacketPolicy.usesMainFifo(inbound.packet)) {
-                    RegionScheduler.runGlobalMainBody(ParallelProcessor.getServer(), body);
                 } else {
-                    ServerPlayer player = listener.player;
-                    long lifecycle = ((PlayerTickPhaseStamp) player).fabrolia$playerLifecycleEpoch();
-                    RegionScheduler.runWithMainEntityClaim(player, () -> {
-                        if (listener.player != player || player.connection != listener
-                                || ((PlayerTickPhaseStamp) player).fabrolia$playerLifecycleEpoch()
-                                != lifecycle) {
-                            throw new IllegalStateException(
-                                    "A5 Main packet changed session during target claim");
-                        }
-                        AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(player);
-                        if (AsyncIslandPacketPolicy.requiresGlobalUseProducer(inbound.packet, player)
-                                || !(inbound.packet instanceof ServerboundUseItemPacket)
-                                    && !(inbound.packet instanceof ServerboundUseItemOnPacket)
-                                    && AdvancementCaptureOwnership.requiresGlobalPlayerTickEnvelope(
-                                            player, player.isUsingItem())) {
-                            RegionScheduler.runGlobalMainBody(player.level().getServer(), body);
-                        } else {
-                            body.run();
-                        }
-                    });
+                    RegionScheduler.runSuccessBodyIfHealthy(body);
                 }
                 if (inbound.listenerTick == null) {
                     RegionScheduler.runSuccessBodyIfHealthy(PACKETS_REPLAYED::increment);
@@ -5822,7 +5541,7 @@ public final class AsyncIslandPlayerTicks {
             }
         }
         try {
-            RegionScheduler.queueMainSyncFencedGuardedTick(player,
+            RegionScheduler.queueMainSyncGuardedTick(player,
                     () -> admitMainEntityFallback(state, listener, player),
                     () -> finishMainEntityFallback(state, listener));
         } catch (Throwable publicationFailure) {
@@ -6107,7 +5826,6 @@ public final class AsyncIslandPlayerTicks {
                 state.auditedLifecycleMutationPending = false;
                 state.hardLifecycleExitPending = false;
                 state.deathLateLifecycleEpoch = -1L;
-                state.softLate = null;
                 state.fallbackEntityAfterHandoff = false;
 
                 if (publishedMain && listener != null) {
@@ -6225,8 +5943,11 @@ public final class AsyncIslandPlayerTicks {
     }
 
     private static void runFailStopMainTask(Runnable task) {
-        RegionScheduler.runMainControlBody(
-                ParallelProcessor.getServer(), task);
+        try {
+            RegionScheduler.runSuccessBodyIfHealthy(task);
+        } catch (Throwable failure) {
+            throwUnchecked(publishFatalFailure(failure));
+        }
     }
 
     /**

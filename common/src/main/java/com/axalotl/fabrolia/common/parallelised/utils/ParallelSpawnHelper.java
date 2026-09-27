@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.parallelised.utils;
 
+import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.utils.LocalCapBridge;
@@ -23,9 +24,18 @@ import net.minecraft.world.level.chunk.ChunkAccess;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinTask;
+import java.util.concurrent.RecursiveAction;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.Supplier;
 
 public final class ParallelSpawnHelper {
 
+    private static final int SPAWN_GRAIN = 256;
     private static final MobCategory[] CATEGORIES = MobCategory.values();
     private static final int CATEGORY_COUNT = CATEGORIES.length;
     private static final int MISC_ORDINAL = MobCategory.MISC.ordinal();
@@ -337,30 +347,73 @@ public final class ParallelSpawnHelper {
             this.biomeCache = new Long2ObjectOpenHashMap<>(Math.max(8, sizeHint >> 4));
         }
 
+        void absorb(BatchResult other) {
+            for (int i = 0; i < CATEGORY_COUNT; i++) {
+                this.counts[i] += other.counts[i];
+            }
+            this.charges.addAll(other.charges);
+            this.mobCaps.addAll(other.mobCaps);
+        }
     }
 
     public record ChargeEntry(BlockPos pos, double charge) {}
     public record MobCapEntry(ChunkPos chunkPos, MobCategory category) {}
 
-    /**
-     * Completed tick-head result. Live reads finish on the producer's owner before
-     * publication; only this value survives until consume, replacement, or unload.
-     * Membership changes invalidate it, and the periodic inline audit still wins.
-     */
-    private record Pre(long version, BatchResult result) {}
+    /** Tick-head precompute submitted to the pool; membership changes invalidate it. */
+    private record Pre(long version, PrecomputeTask task) {}
 
     private static final java.util.concurrent.ConcurrentHashMap<ServerLevel, Pre> PRECOMPUTE =
             new java.util.concurrent.ConcurrentHashMap<>();
 
+    static SpawnFanoutGate fabrolia$newSpawnFanoutGate() {
+        return new SpawnFailureGate();
+    }
+
+    private static void fabrolia$awaitPrecomputeQuiescence(PrecomputeTask task) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            while (!task.completion.isDone()) {
+                if (Thread.interrupted()) interrupted = true;
+                try {
+                    RegionScheduler.throwWorkerFailureIfAny();
+                } catch (Throwable fatal) {
+                    task.gate.publishFailure(fatal);
+                    task.cancelBeforeRun();
+                }
+                LockSupport.parkNanos("Fabrolia spawn-precompute quiescence", 25_000L);
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    private static BatchResult fabrolia$awaitPrecompute(PrecomputeTask task) {
+        fabrolia$awaitPrecomputeQuiescence(task);
+        Throwable failure = task.gate.failureOrNull();
+        if (failure != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
+        RegionScheduler.throwWorkerFailureIfAny();
+        return task.result;
+    }
+
+    private static void fabrolia$discardPrecompute(Pre pre) {
+        if (pre != null) {
+            pre.task().cancelBeforeRun();
+            fabrolia$awaitPrecompute(pre.task());
+        }
+    }
+
     public static void precompute(ServerLevel level, NaturalSpawner.ChunkGetter getter) {
         if (level == null) return;
-        RegionScheduler.runSuccessBodyIfHealthy(() -> PRECOMPUTE.remove(level));
-        if (FabroliaConfig.fabroliaIncrementalSpawnCensus || getter == null) return;
+        fabrolia$discardPrecompute(PRECOMPUTE.remove(level));
+        if (FabroliaConfig.fabroliaIncrementalSpawnCensus) return;
+        ExecutorService exec = ParallelProcessor.executor;
+        if (getter == null || exec == null || exec.isShutdown()) return;
 
-        RegionScheduler.runGlobalMainBody(level.getServer(), () -> {
-            Collection<Entity> idx = SpawnIndex.getEntities(level);
-            if (idx.isEmpty()) return;
-            long version = SpawnIndex.version();
+        Collection<Entity> idx = SpawnIndex.getEntities(level);
+        if (idx.isEmpty()) return;
+        long version = SpawnIndex.version();
+        SpawnFailureGate gate = new SpawnFailureGate();
+        PrecomputeTask task = new PrecomputeTask(gate, () -> {
             ArrayList<Entity> live = new ArrayList<>(idx.size() + 64);
             for (Entity e : idx) {
                 RegionScheduler.runSuccessBodyIfHealthy(() -> {
@@ -369,14 +422,30 @@ public final class ParallelSpawnHelper {
                     live.add(e);
                 });
             }
-            Entity[] snapshot = live.toArray(Entity[]::new);
-            BatchResult result = collect(snapshot, snapshot.length, getter);
-            RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                if (PRECOMPUTE.putIfAbsent(level, new Pre(version, result)) != null) {
-                    throw new IllegalStateException("spawn precompute slot changed during publication");
-                }
-            });
+            Entity[][] snapshot = new Entity[1][];
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> snapshot[0] = live.toArray(Entity[]::new));
+            return collect(snapshot[0], snapshot[0].length, getter);
         });
+        Pre pre = new Pre(version, task);
+        Pre displaced = PRECOMPUTE.put(level, pre);
+        if (displaced != null) {
+            PRECOMPUTE.remove(level, pre);
+            task.cancelBeforeRun();
+            fabrolia$discardPrecompute(displaced);
+            throw new IllegalStateException("spawn precompute slot changed during publication");
+        }
+        try {
+            task.gate.runNext(() -> exec.execute(task));
+        } catch (Throwable publicationFailure) {
+            Throwable winner = task.gate.publishFailure(publicationFailure);
+            task.cancelBeforeRun();
+            PRECOMPUTE.remove(level, pre);
+            fabrolia$awaitPrecomputeQuiescence(task);
+            Throwable authoritative = task.gate.failureOrNull();
+            ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(
+                    authoritative == null ? winner : authoritative);
+        }
     }
 
     /** The serial tail shared by both paths: potential charges + per-chunk mob caps. */
@@ -428,8 +497,7 @@ public final class ParallelSpawnHelper {
      *  spawn index, and the native arena — each retained the ServerLevel (and
      *  the arena its off-heap allocation) forever with dynamic dimensions. */
     public static void onLevelUnload(ServerLevel level) {
-        // All precompute reads completed on the producer before the slot was published.
-        PRECOMPUTE.remove(level);
+        fabrolia$discardPrecompute(PRECOMPUTE.remove(level));
         SpawnCensus.clearLevel(level);
         com.axalotl.fabrolia.common.parallelised.utils.SpawnIndex.clearLevel(level);
         com.axalotl.fabrolia.common.parallelised.utils.HardColliderIndex.onLevelUnload(level);
@@ -456,9 +524,11 @@ public final class ParallelSpawnHelper {
         // over event-maintained counts — no entity traversal, no pool submission,
         // no main-thread wait. The scan below remains as the config-gated legacy path.
         if (surfacedLevel != null && FabroliaConfig.fabroliaIncrementalSpawnCensus) {
-            // Discard the completed legacy value after a runtime config flip.
+            // Discard the legacy precompute after a runtime config flip.
+            Pre[] displaced = new Pre[1];
             RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> PRECOMPUTE.remove(surfacedLevel));
+                    () -> displaced[0] = PRECOMPUTE.remove(surfacedLevel));
+            fabrolia$discardPrecompute(displaced[0]);
             return fabrolia$buildStateIncremental(surfacedLevel, spawnableChunkCount, chunkGetter, localMobCap);
         }
 
@@ -478,12 +548,19 @@ public final class ParallelSpawnHelper {
             // the whole session under region mode (precompute serves ~every
             // tick there).
             if (pre != null) {
-                boolean stillCandidate = RegionScheduler.callSuccessBooleanIfHealthy(
+                boolean candidate = RegionScheduler.callSuccessBooleanIfHealthy(
                         () -> (surfacedLevel.getGameTime() & 255) != 0
                                 && pre.version() == SpawnIndex.version());
+                if (!candidate) {
+                    RegionScheduler.runSuccessBodyIfHealthy(pre.task()::cancelBeforeRun);
+                }
+                BatchResult merged = fabrolia$awaitPrecompute(pre.task());
+                boolean stillCandidate = candidate
+                        && RegionScheduler.callSuccessBooleanIfHealthy(
+                        () -> pre.version() == SpawnIndex.version());
                 if (stillCandidate) {
                     NaturalSpawner.SpawnState result = finishState(
-                            surfacedLevel, spawnableChunkCount, pre.result(), localMobCap);
+                            surfacedLevel, spawnableChunkCount, merged, localMobCap);
                     RegionScheduler.commitSuccessIfHealthy(
                             SpawnCensusDiag.CENSUS_PRE::incrementAndGet);
                     return result;
@@ -884,14 +961,101 @@ public final class ParallelSpawnHelper {
 
     private static BatchResult collect(Entity[] entities, int n,
                                        NaturalSpawner.ChunkGetter chunkGetter) {
+        if (n == 0) return new BatchResult(0);
+        if (n > SPAWN_GRAIN && ParallelProcessor.executor instanceof ForkJoinPool fjp) {
+            int poolSize = Math.max(1, ParallelProcessor.getPoolSize());
+            int batchSize = Math.max(64, (n + poolSize - 1) / poolSize);
+            int batchCount = (n + batchSize - 1) / batchSize;
+            BatchResult[] parts = new BatchResult[batchCount];
+            CollectRangeTask[] tasks = new CollectRangeTask[batchCount];
+            SpawnFailureGate gate = new SpawnFailureGate();
+            int b = 0;
+            for (int from = 0; from < n; from += batchSize, b++) {
+                int to = Math.min(from + batchSize, n);
+                parts[b] = new BatchResult(to - from);
+                tasks[b] = new CollectRangeTask(gate, entities, chunkGetter, from, to, parts[b]);
+            }
+            int submitted = 0;
+            try {
+                while (submitted < batchCount) {
+                    CollectRangeTask task = tasks[submitted];
+                    submitted++;
+                    gate.runNext(() -> fjp.execute(task));
+                }
+            } catch (Throwable submissionFailure) {
+                gate.publishFailure(submissionFailure);
+            }
+            fabrolia$awaitCollectFanIn(tasks, submitted, gate);
+            BatchResult[] merged = new BatchResult[1];
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                BatchResult result = new BatchResult(n);
+                for (BatchResult p : parts) result.absorb(p);
+                merged[0] = result;
+            });
+            return merged[0];
+        }
         BatchResult result = new BatchResult(n);
         computeRange(entities, chunkGetter, 0, n, result);
         return result;
     }
 
+    private static void fabrolia$awaitCollectFanIn(CollectRangeTask[] tasks, int count,
+                                                    SpawnFailureGate gate) {
+        if (!ForkJoinTask.inForkJoinPool()) {
+            boolean interrupted = Thread.interrupted();
+            try {
+                while (true) {
+                    try {
+                        RegionScheduler.throwWorkerFailureIfAny();
+                    } catch (Throwable fatal) {
+                        gate.publishFailure(fatal);
+                    }
+                    if (gate.failureOrNull() != null) {
+                        for (int i = 0; i < count; i++) tasks[i].cancelBeforeRun();
+                    }
+                    boolean complete = true;
+                    for (int i = 0; i < count; i++) {
+                        if (!tasks[i].isDone()) {
+                            complete = false;
+                            break;
+                        }
+                    }
+                    if (Thread.interrupted()) interrupted = true;
+                    if (complete) break;
+                    LockSupport.parkNanos("Fabrolia spawn-collect quiescence", 25_000L);
+                }
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        }
+        for (int i = 0; i < count; i++) {
+            if (gate.failureOrNull() != null) {
+                for (int k = 0; k < count; k++) tasks[k].cancelBeforeRun();
+            }
+            try {
+                tasks[i].join();
+            } catch (Throwable encodedFailure) {
+                if (gate.failureOrNull() == null) gate.publishFailure(encodedFailure);
+            }
+        }
+        try {
+            RegionScheduler.throwWorkerFailureIfAny();
+        } catch (Throwable fatal) {
+            gate.publishFailure(fatal);
+        }
+        Throwable failure = gate.failureOrNull();
+        if (failure != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
+    }
+
     private static void computeRange(Entity[] entities, NaturalSpawner.ChunkGetter chunkGetter,
                                      int from, int to, BatchResult out) {
+        computeRange(entities, chunkGetter, from, to, out, null);
+    }
+
+    private static void computeRange(Entity[] entities, NaturalSpawner.ChunkGetter chunkGetter,
+                                     int from, int to, BatchResult out, SpawnFailureGate gate) {
         for (int i = from; i < to; i++) {
+            if (gate != null) gate.admitNext();
             Entity entry = entities[i];
             // This live observation is a multi-entry drain. Atomically cut
             // every entity/query body against the physical generation W; the
@@ -935,5 +1099,180 @@ public final class ParallelSpawnHelper {
         Biome biome = chunk.getNoiseBiome(qx, qy, qz).value();
         out.biomeCache.put(key, biome);
         return biome;
+    }
+
+    private static final class CollectRangeTask extends RecursiveAction {
+        private static final int QUEUED = 0;
+        private static final int RUNNING = 1;
+        private static final int TERMINAL = 2;
+        private static final int CANCELLED = 3;
+
+        private final SpawnFailureGate gate;
+        private final Entity[] entities;
+        private final NaturalSpawner.ChunkGetter chunkGetter;
+        private final int from;
+        private final int to;
+        private final BatchResult out;
+        private final AtomicInteger state = new AtomicInteger(QUEUED);
+
+        private CollectRangeTask(SpawnFailureGate gate, Entity[] entities,
+                                 NaturalSpawner.ChunkGetter chunkGetter,
+                                 int from, int to, BatchResult out) {
+            this.gate = gate;
+            this.entities = entities;
+            this.chunkGetter = chunkGetter;
+            this.from = from;
+            this.to = to;
+            this.out = out;
+        }
+
+        @Override
+        protected void compute() {
+            if (!state.compareAndSet(QUEUED, RUNNING)) return;
+            Throwable failure = null;
+            try {
+                gate.admitNext();
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        () -> computeRange(entities, chunkGetter, from, to, out, gate));
+                gate.admitNext();
+            } catch (Throwable thrown) {
+                failure = gate.publishFailure(thrown);
+            }
+            state.set(TERMINAL);
+            if (failure == null) {
+                try {
+                    RegionScheduler.commitSuccessIfHealthy(() -> {});
+                } catch (Throwable terminalFailure) {
+                    failure = gate.publishFailure(terminalFailure);
+                }
+            }
+            if (failure != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
+        }
+
+        void cancelBeforeRun() {
+            if (state.compareAndSet(QUEUED, CANCELLED)) {
+                Throwable failure = gate.failureOrNull();
+                if (failure == null) {
+                    complete(null);
+                } else {
+                    completeExceptionally(failure);
+                }
+            }
+        }
+    }
+
+    private static final class PrecomputeTask implements Runnable {
+        private static final int QUEUED = 0;
+        private static final int RUNNING = 1;
+        private static final int TERMINAL = 2;
+        private static final int CANCELLED = 3;
+
+        private final SpawnFailureGate gate;
+        private final Supplier<BatchResult> body;
+        private final AtomicInteger state = new AtomicInteger(QUEUED);
+        private final CompletableFuture<BatchResult> completion = new CompletableFuture<>();
+        private volatile BatchResult result;
+
+        private PrecomputeTask(SpawnFailureGate gate, Supplier<BatchResult> body) {
+            this.gate = gate;
+            this.body = body;
+        }
+
+        @Override
+        public void run() {
+            if (!state.compareAndSet(QUEUED, RUNNING)) return;
+            try {
+                gate.admitNext();
+                RegionScheduler.runSuccessBodyIfHealthy(() -> result = body.get());
+                gate.admitNext();
+            } catch (Throwable thrown) {
+                gate.publishFailure(thrown);
+            } finally {
+                state.set(TERMINAL);
+                gate.completeTerminal(completion, result);
+            }
+        }
+
+        void cancelBeforeRun() {
+            if (state.compareAndSet(QUEUED, CANCELLED)) {
+                gate.completeTerminal(completion, null);
+            }
+        }
+    }
+
+    private static final class SpawnFailureGate extends SpawnFanoutGate {
+        private Throwable failure;
+
+        @Override
+        void runNext(Runnable body) {
+            if (body == null) throw new NullPointerException("body");
+            try {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    synchronized (this) {
+                        if (failure != null) {
+                            ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
+                        }
+                    }
+                    body.run();
+                });
+            } catch (Throwable thrown) {
+                ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(publishFailure(thrown));
+            }
+        }
+
+        @Override
+        void admitNext() {
+            Throwable observed = failureOrNull();
+            if (observed != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(observed);
+            try {
+                RegionScheduler.throwWorkerFailureIfAny();
+            } catch (Throwable fatal) {
+                ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(publishFailure(fatal));
+            }
+            observed = failureOrNull();
+            if (observed != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(observed);
+        }
+
+        @Override
+        synchronized Throwable failureOrNull() {
+            return failure;
+        }
+
+        @Override
+        synchronized Throwable publishFailure(Throwable candidate) {
+            if (candidate == null) candidate = new NullPointerException("async spawn failure");
+            if (failure == null) {
+                failure = candidate;
+            } else if (failure != candidate) {
+                fabrolia$mergeFailure(failure, candidate);
+            }
+            failure = RegionScheduler.publishFatalAndSelectWinner(failure);
+            return failure;
+        }
+
+        synchronized <T> void completeTerminal(CompletableFuture<T> completion, T result) {
+            if (failure == null) {
+                try {
+                    RegionScheduler.commitSuccessIfHealthy(() -> {
+                        if (!completion.complete(result)) {
+                            throw new IllegalStateException("async spawn precompute completed more than once");
+                        }
+                    });
+                } catch (Throwable fatal) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(fatal);
+                }
+            }
+            if (failure != null) completion.completeExceptionally(failure);
+        }
+    }
+
+    abstract static class SpawnFanoutGate {
+        abstract void runNext(Runnable body);
+
+        abstract void admitNext();
+
+        abstract Throwable failureOrNull();
+
+        abstract Throwable publishFailure(Throwable candidate);
     }
 }

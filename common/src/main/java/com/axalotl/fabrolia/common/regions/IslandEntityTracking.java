@@ -3,7 +3,8 @@ package com.axalotl.fabrolia.common.regions;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
@@ -54,10 +55,6 @@ public final class IslandEntityTracking {
     /** Exact live ChunkMap tracker for a player's self-recipient publication. */
     private static final ConcurrentHashMap<PlayerIdentity, IslandTrackedEntityAccess>
             PLAYER_TRACKERS = new ConcurrentHashMap<>();
-    /** Tracker -> registry only; release the registry before entering arrival custody. */
-    private static final IdentityHashMap<IslandTrackedEntityAccess,
-            IdentityHashMap<ServerPlayer, ArrivalPairingWait>> ARRIVAL_PAIRINGS =
-            new IdentityHashMap<>();
 
     /** Entity.equals/hashCode use the mutable numeric id; lifecycle keys cannot. */
     private static final class PlayerIdentity {
@@ -107,9 +104,8 @@ public final class IslandEntityTracking {
                 && commit.pending().intent()
                 != IslandPendingPairing.Intent.REMOVE) return Route.DROP;
         if (BULK_PAIRING_COMMIT.get() == tracker) return Route.DROP;
-        if (entity == null || entity.isRemoved()) return Route.DROP;
-        if (deferPendingArrival(tracker, entity)) return Route.DROP;
         if (PUBLISHING.get() == tracker) return Route.MAIN;
+        if (entity == null || entity.isRemoved()) return Route.DROP;
         RegionizedServer runtime = runtime(entity);
         if (runtime != null) runtime.enterTrackingTopologyRouting();
         try {
@@ -212,148 +208,10 @@ public final class IslandEntityTracking {
                 || viewer.connection.player != viewer
                 || viewer.level() != entity.level()) return false;
         RegionizedServer runtime = runtime(entity);
-        if ((runtime == null || !runtime.asyncActive) && !arrivalPending(entity)
+        if (runtime == null || !runtime.asyncActive
                 || !tracker.fabrolia$queueIslandPairing(viewer)) return false;
         routeMembershipObligation(tracker, entity, runtime);
         return true;
-    }
-
-    /**
-     * Retains only this viewer's membership until its arrival metadata settles.
-     * State publication and other recipients remain on their existing cadence.
-     * Caller has validated the viewer and owns the exact tracker monitor.
-     */
-    public static boolean deferArrivalPairing(
-            IslandTrackedEntityAccess tracker, ServerPlayer viewer) {
-        // The ordinary pairing path does not allocate or consult the wait index.
-        if (!arrivalPending(viewer)) return false;
-        if (tracker == null || !Thread.holdsLock(tracker)) {
-            throw new IllegalStateException(
-                    "arrival pairing without exact tracker authority");
-        }
-        ArrivalPairingWait waiting = null;
-        try {
-            RegionScheduler.throwWorkerFailureIfAny();
-            // Bulk/per-viewer commit may already have detached this intent.
-            // A retained wait is not proof that the pending queue still owns it.
-            if (!tracker.fabrolia$queueIslandPairing(viewer)) {
-                throw new IllegalStateException(
-                        "validated arrival viewer lost its pairing obligation");
-            }
-            Entity entity = tracker.fabrolia$trackedEntity();
-            synchronized (ARRIVAL_PAIRINGS) {
-                IdentityHashMap<ServerPlayer, ArrivalPairingWait> viewers =
-                        ARRIVAL_PAIRINGS.get(tracker);
-                ArrivalPairingWait prior = viewers == null ? null : viewers.get(viewer);
-                if (prior != null && prior.listener == viewer.connection) return true;
-                waiting = new ArrivalPairingWait(tracker, entity, viewer);
-                if (viewers == null) {
-                    viewers = new IdentityHashMap<>();
-                    viewers.put(viewer, waiting);
-                    ARRIVAL_PAIRINGS.put(tracker, viewers);
-                } else {
-                    viewers.put(viewer, waiting);
-                }
-            }
-            if (!NetherPortalPlayerAccess.deferArrivalPublication(viewer, waiting)) {
-                // Settlement won the registration race. The queued intent still
-                // owns the attempt; never fall through to an inline native body.
-                waiting.publish();
-            }
-            return true;
-        } catch (Throwable thrown) {
-            Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
-            if (waiting != null) {
-                try {
-                    waiting.cancel();
-                } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
-                }
-            }
-            IslandEntityTracking.<RuntimeException>rethrow(failure);
-            return true;
-        }
-    }
-
-    /** One current exact-session wait, independent of the tracker's publication token. */
-    private static final class ArrivalPairingWait
-            implements NetherPortalPlayerAccess.ArrivalPublication {
-        private final IslandTrackedEntityAccess tracker;
-        private final Entity entity;
-        private final ServerPlayer viewer;
-        private final ServerGamePacketListenerImpl listener;
-
-        private ArrivalPairingWait(
-                IslandTrackedEntityAccess tracker, Entity entity, ServerPlayer viewer) {
-            this.tracker = tracker;
-            this.entity = entity;
-            this.viewer = viewer;
-            this.listener = viewer.connection;
-        }
-
-        @Override
-        public void publish() {
-            try {
-                synchronized (tracker) {
-                    if (!currentLocked()) return;
-                    RegionScheduler.throwWorkerFailureIfAny();
-                    boolean liveTracker = tracker.fabrolia$trackedEntity() == entity
-                            && entity != null && !entity.isRemoved()
-                            && tracker.fabrolia$islandTrackingState()
-                            != IslandTrackedEntityAccess.TRACKING_RETIRED;
-                    if (liveTracker && viewer.connection == listener
-                            && listener != null && listener.player == viewer
-                            && !viewer.isRemoved() && !viewer.hasDisconnected()
-                            && viewer.level() == entity.level()
-                            && arrivalPending(viewer)
-                            && NetherPortalPlayerAccess.deferArrivalPublication(viewer, this)) {
-                        // A newer arrival owns the same handle, not another
-                        // pending intent or a whole-tracker publication token.
-                        return;
-                    }
-                    // Invalid viewers are consumed by ordinary pending-intent
-                    // validation. Never cancel by player: a newer REMOVE may own
-                    // the queue. Keep this wait until scheduling succeeds so an
-                    // offer failure selects W before exact-handle cleanup.
-                    if (liveTracker && tracker.fabrolia$hasPendingIslandPairings())
-                        scheduleMainPublication(tracker);
-                    removeLocked();
-                }
-            } catch (Throwable thrown) {
-                Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
-                try {
-                    cancel();
-                } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
-                }
-                IslandEntityTracking.<RuntimeException>rethrow(failure);
-            }
-        }
-
-        @Override
-        public void cancel() {
-            synchronized (tracker) {
-                removeLocked();
-            }
-        }
-
-        private boolean currentLocked() {
-            synchronized (ARRIVAL_PAIRINGS) {
-                IdentityHashMap<ServerPlayer, ArrivalPairingWait> viewers =
-                        ARRIVAL_PAIRINGS.get(tracker);
-                return viewers != null && viewers.get(viewer) == this;
-            }
-        }
-
-        private void removeLocked() {
-            synchronized (ARRIVAL_PAIRINGS) {
-                IdentityHashMap<ServerPlayer, ArrivalPairingWait> viewers =
-                        ARRIVAL_PAIRINGS.get(tracker);
-                if (viewers == null || viewers.get(viewer) != this) return;
-                viewers.remove(viewer);
-                if (viewers.isEmpty()) ARRIVAL_PAIRINGS.remove(tracker);
-            }
-        }
     }
 
     /**
@@ -378,7 +236,7 @@ public final class IslandEntityTracking {
             Entity entity = tracker.fabrolia$trackedEntity();
             if (entity == null || entity.isRemoved()) return false;
             RegionizedServer runtime = runtime(entity);
-            if ((runtime == null || !runtime.asyncActive) && !arrivalPending(entity)
+            if (runtime == null || !runtime.asyncActive
                     || !tracker.fabrolia$queueIslandBulkPairingRefresh()) return false;
             routeMembershipObligation(tracker, entity, runtime);
             return true;
@@ -424,7 +282,7 @@ public final class IslandEntityTracking {
         Entity entity = tracker.fabrolia$trackedEntity();
         if (entity == null || viewer.connection == null) return false;
         RegionizedServer runtime = runtime(entity);
-        if ((runtime == null || !runtime.asyncActive) && !arrivalPending(entity)
+        if (runtime == null || !runtime.asyncActive
                 || !tracker.fabrolia$queueIslandRemoval(viewer)) return false;
         routeMembershipObligation(tracker, entity, runtime);
         return true;
@@ -440,11 +298,6 @@ public final class IslandEntityTracking {
         // order tracker -> topology-read; no read-holder can wait for this tracker
         // while a queued topology writer waits for that read-holder.
         synchronized (tracker) {
-            if (deferPendingArrival(tracker, entity)) return;
-            if (runtime == null || !runtime.asyncActive) {
-                scheduleMainPublication(tracker);
-                return;
-            }
             runtime.enterTrackingTopologyRouting();
             try {
                 // Preserve staged membership on a live tracker already owned by the

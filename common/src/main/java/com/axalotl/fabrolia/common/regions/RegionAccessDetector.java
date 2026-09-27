@@ -2,8 +2,6 @@ package com.axalotl.fabrolia.common.regions;
 
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import net.minecraft.core.BlockPos;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.level.Level;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,34 +40,19 @@ public final class RegionAccessDetector {
 
     private RegionAccessDetector() {}
 
-    public static void onBlockWrite(Level level, BlockPos pos) {
+    public static void onBlockWrite(BlockPos pos) {
         // Production audit 2026-07-12: the detector is LIVE whenever async
         // islands run (fail-closed depends on it) — one static volatile read
         // per setBlock when everything is off.
         if (!FabroliaConfig.fabroliaDebugRegionAccess && !RegionScheduler.asyncLive()) {
             return;
         }
-        if (!(level instanceof ServerLevel targetLevel)) return;
         Thread t = Thread.currentThread();
         if (!(t instanceof RegionWorkerThread w)) {
             OFF_WORKER.incrementAndGet();   // main / pool / IO — out of scope
             return;
         }
         Region r = w.currentRegion;
-        EpochDomain sourceDomain = r != null && r.domain != null ? r.domain : w.currentDomain;
-        ServerLevel sourceLevel = r != null ? r.level
-                : sourceDomain != null && sourceDomain.owner != null
-                        ? sourceDomain.owner.domainLevel() : null;
-        if (sourceLevel != null && sourceLevel != targetLevel && sourceDomain != null) {
-            if (NetherPortalTransfers.owns(targetLevel, pos)) return;
-            RegionizedServer targetRuntime = RegionScheduler.forLevel(targetLevel);
-            Region target = targetRuntime == null ? null : targetRuntime.regionizer()
-                    .peekByGridKey(targetRuntime.regionizer().grid
-                            .keyFor(pos.getX() >> 4, pos.getZ() >> 4));
-            recordCrossDomain(targetLevel, pos, w, r, target, sourceDomain,
-                    target == null ? null : target.domain);
-            return;
-        }
         if (r == null) {
             // Coordinator-context write (island task / BE phase / deferral
             // replay — currentDomain set, no claim): previously INVISIBLE to
@@ -80,7 +63,7 @@ public final class RegionAccessDetector {
                 OFF_WORKER.incrementAndGet();
                 return;
             }
-            RegionizedServer rsd = RegionScheduler.forLevel(targetLevel);
+            RegionizedServer rsd = RegionScheduler.forLevel(mine.owner.domainLevel());
             if (rsd == null) {
                 OFF_WORKER.incrementAndGet();
                 return;
@@ -89,13 +72,13 @@ public final class RegionAccessDetector {
             Region target = rsd.regionizer().peekByGridKey(wk);
             EpochDomain theirs = target != null ? target.domain : null;
             if (theirs != null && theirs != mine) {
-                recordCrossDomain(targetLevel, pos, w, null, target, mine, theirs);
+                recordCrossDomain(pos, w, null, target, mine, theirs);
             } else {
                 IN_REGION.incrementAndGet();
             }
             return;
         }
-        RegionizedServer rs = RegionScheduler.forLevel(targetLevel);
+        RegionizedServer rs = RegionScheduler.forLevel(r.level);
         if (rs == null) {
             OFF_WORKER.incrementAndGet();
             return;
@@ -117,7 +100,7 @@ public final class RegionAccessDetector {
             EpochDomain mine = r.domain != null ? r.domain : w.currentDomain;
             EpochDomain theirs = target.domain;
             if (mine != null && theirs != null && mine != theirs) {
-                recordCrossDomain(targetLevel, pos, w, r, target, mine, theirs);
+                recordCrossDomain(pos, w, r, target, mine, theirs);
             }
         }
         // Stack-log only the UNSAFE class: a cross write into an idle
@@ -192,7 +175,7 @@ public final class RegionAccessDetector {
         return CrossDomainOrigin.UNKNOWN;
     }
 
-    private static void recordCrossDomain(ServerLevel targetLevel, BlockPos pos, RegionWorkerThread w,
+    private static void recordCrossDomain(BlockPos pos, RegionWorkerThread w,
                                           Region claimed, Region target,
                                           EpochDomain mine, EpochDomain theirs) {
         long n = CROSS_DOMAIN.incrementAndGet();
@@ -215,17 +198,16 @@ public final class RegionAccessDetector {
             String tgt = target != null
                     ? "region " + Long.toHexString(target.gridKey)
                         + " island#" + target.islandId
-                        + (theirs == null ? " domain=<unpublished>"
-                            : theirs.owner != null
-                                ? " domain=island#" + theirs.owner.id + "@e" + theirs.epoch
-                                    + " L" + theirs.owner.logicalTick
-                                    + " unitClaim=" + theirs.owner.unitClaim.get()
-                                : " domain=global@e" + theirs.epoch)
+                        + (theirs.owner != null
+                            ? " domain=island#" + theirs.owner.id + "@e" + theirs.epoch
+                                + " L" + theirs.owner.logicalTick
+                                + " unitClaim=" + theirs.owner.unitClaim.get()
+                            : " domain=global@e" + theirs.epoch)
                     : "region <unmapped>";
-            LOGGER.error("[region-access] CROSS-DOMAIN write in {} @ {} (chunk [{}, {}]) — target {} vs executing {} on {} "
+            LOGGER.error("[region-access] CROSS-DOMAIN write @ {} (chunk [{}, {}]) — target {} vs executing {} on {} "
                     + "(currentRegion={} currentDomain={}) — origin={}{} — the execution timeline does not own "
                     + "the target; report this full block",
-                    targetLevel.dimension().identifier(), pos.toShortString(), pos.getX() >> 4, pos.getZ() >> 4,
+                    pos.toShortString(), pos.getX() >> 4, pos.getZ() >> 4,
                     tgt, exec, w.getName(),
                     w.currentRegion == null ? "-" : Long.toHexString(w.currentRegion.gridKey),
                     w.currentDomain == null ? "-"

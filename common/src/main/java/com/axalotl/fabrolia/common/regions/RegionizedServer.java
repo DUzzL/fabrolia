@@ -1542,9 +1542,8 @@ public final class RegionizedServer {
         pendingBeAdds.clear();
         for (int i = 0, m = src.size(); i < m; i++) {
             net.minecraft.world.level.block.entity.TickingBlockEntity t = src.get(i);
-            if (fabroliaIsMainOnlyTicker(t)) beMainBodyTickers.add(t);
             net.minecraft.core.BlockPos pos = RegionScheduler.resolveBlockEntityTickerPosition(t);
-            long cellKey = pos == null || fabroliaUsesMainTickerCadence(t)
+            long cellKey = pos == null || fabroliaIsMainOnlyTicker(t)
                     ? Long.MIN_VALUE : beCellKeyFor(pos);
             BlockEntityTickerList.Builder cell = builders.get(cellKey);
             if (cell == null) {
@@ -1558,7 +1557,6 @@ public final class RegionizedServer {
             nextCells.put(entry.getLongKey(), entry.getValue().build());
         }
         beSeqOf.keySet().removeIf(t -> !beCellOf.containsKey(t));
-        beMainBodyTickers.removeIf(t -> !beCellOf.containsKey(t));
         beCells = nextCells;
         beCellsValid = true;
     }
@@ -1593,7 +1591,7 @@ public final class RegionizedServer {
                 if (beCellOf.getLong(t) != cellKey) cellOfMismatch++;
                 if (!t.isRemoved() && cellKey == Long.MIN_VALUE
                         && RegionScheduler.resolveBlockEntityTickerPosition(t) != null
-                        && !fabroliaUsesMainTickerCadence(t)) {
+                        && !fabroliaIsMainOnlyTicker(t)) {
                     misroutedPosless++;
                 }
             }
@@ -1651,11 +1649,7 @@ public final class RegionizedServer {
      *  populated set with radius-2 connectivity; ~450 regions × 25 lock-free
      *  peeks — µs-scale, and only on ticket-transition ticks. */
     public void rebuildIslandsIfDirty() {
-        rebuildIslandsIfDirty(false);
-    }
-
-    private boolean rebuildIslandsIfDirty(boolean enclosingModeTransition) {
-        if (!islandsDirty) return false;
+        if (!islandsDirty) return;
         // A2 deadline drive: units may be in flight at any slot — topology
         // work (BFS, unstash, registry diff, domain reassignment) requires
         // every unit quiescent. Sync drive: claims are always free, so this
@@ -1666,10 +1660,6 @@ public final class RegionizedServer {
         // collapse racing them, 2026-07-12).
         boolean collapsingToWall = !asyncActive && domainsIslandized;
         boolean trackingTopologyRequired = asyncActive || domainsIslandized;
-        if (trackingTopologyRequired && mainHoldsAllClaims()
-                && (!enclosingModeTransition || !currentThreadHoldsLocalAllClaims())) {
-            throw new IllegalStateException("topology rebuild requires terminal local ownership");
-        }
         boolean quiesced = trackingTopologyRequired && quiesceAllIslands();
         boolean[] committed = new boolean[1];
         TrackingTopologyTransitionReceipt[] trackingTransition = new
@@ -1721,16 +1711,7 @@ public final class RegionizedServer {
         // visible as released. Failed/partial rebuilds deliberately do not
         // publish pacing authority for an uncommitted shape, and a failed
         // release cannot publish a successor against retained ownership.
-        failure = finishTopologyRebuild(failure, !enclosingModeTransition && committed[0]);
-        if (failure != null) {
-            RegionizedServer.<RuntimeException>rethrow(
-                    RegionScheduler.publishFatalAndSelectWinner(failure));
-        }
-        return committed[0];
-    }
-
-    private Throwable finishTopologyRebuild(Throwable failure, boolean committed) {
-        if (failure == null && committed) {
+        if (failure == null && committed[0]) {
             try {
                 // Claim cleanup is not a healthy-success publication. Pacing
                 // starts only after the scope which actually owned them releases.
@@ -1741,7 +1722,10 @@ public final class RegionizedServer {
                 failure = RegionScheduler.publishFatalAndSelectWinner(completionFailure);
             }
         }
-        return failure;
+        if (failure != null) {
+            RegionizedServer.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
+        }
     }
 
     private void rebuildIslandsBody() {
@@ -2047,6 +2031,7 @@ public final class RegionizedServer {
         // ownerless ones are already covered by the vanilla list + index
         // dual-write.
         if (unstashedEvs != null) {
+            BlockEventQueueAccess acc = (BlockEventQueueAccess) level;
             for (int i = 0, n = unstashedEvs.size(); i < n; i++) {
                 IslandRegistry.PIsland.StampedEvent ev = unstashedEvs.get(i);
                 IslandRegistry.PIsland owner = asyncActive
@@ -2056,7 +2041,9 @@ public final class RegionizedServer {
                     // Carry keeps both the source stamp and canonical pending identity.
                     owner.stashStamped(ev);
                 } else {
-                    IslandBlockEvents.restoreShared(level, ev);
+                    synchronized (acc.fabrolia$blockEventLock()) {
+                        acc.fabrolia$blockEvents().add(ev.ev());
+                    }
                 }
             }
         }
@@ -2097,7 +2084,7 @@ public final class RegionizedServer {
                         RegionScheduler.resolveBlockEntityTickerPosition(tbe);
                 // Registration already dual-wrote the Main/index pending lane.
                 // Unresolved wrappers remain there rather than guessing an owner.
-                if (pos == null || fabroliaUsesMainTickerCadence(tbe)) continue;
+                if (pos == null || fabroliaIsMainOnlyTicker(tbe)) continue;
                 IslandRegistry.PIsland owner =
                         islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(pos));
                 if (owner != null) {
@@ -2339,12 +2326,7 @@ public final class RegionizedServer {
                 try {
                     r.stampAcquire("migrate-cut");
                     migrationStamped = true;
-                    if (RegionScheduler.requiresExclusiveWorkerGrants()) {
-                        RegionScheduler.runGlobalMainBody(r.level.getServer(),
-                                () -> r.queue().drain(Integer.MAX_VALUE));
-                    } else {
-                        r.queue().drain(Integer.MAX_VALUE);
-                    }
+                    r.queue().drain(Integer.MAX_VALUE);
                 } catch (Throwable drainFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(drainFailure);
                 } finally {
@@ -2411,7 +2393,6 @@ public final class RegionizedServer {
         int warnings = 0;
         while (!r.claimTransactionsDrainedForDomainRebase()) {
             RegionScheduler.throwWorkerFailureIfAny();
-            RegionScheduler.drainMainSafeForDomainRebase(r.level);
             IslandCommands.drainMainChunkServices();
             long now = System.nanoTime();
             if (now >= warnAt) {
@@ -2612,9 +2593,7 @@ public final class RegionizedServer {
      *  single-threaded. Island-domain queues are drained by their unit
      *  coordinators (see IslandTickUnit). */
     public void drainDeferredCrossRegion() {
-        if (globalDomain.deferredOps.isEmpty()) return;
-        RegionScheduler.runGlobalMainBody(level.getServer(),
-                () -> drainDeferredOps(globalDomain));
+        drainDeferredOps(globalDomain);
     }
 
     /** Drain one timeline's deferral queue in submission order (single drainer
@@ -2707,7 +2686,6 @@ public final class RegionizedServer {
     void indexAdd(Entity e) {
         long key = regionizer.grid.keyFor(e.chunkPosition().pack());
         Region r = regionizer.regionForGridKey(key);
-        WorldGenEntityConstruction.revoke(e);
         if (r.entities.add(e)) r.entityCount.incrementAndGet();
         ((RegionKeyed) e).fabrolia$setRegionKey(key);
         // VANILLA ADD-DURING-ITERATION DEFERRAL (2026-07-22 duper lifecycle
@@ -3175,22 +3153,6 @@ public final class RegionizedServer {
             int stuckReports = 0;
             while (island.submitQueued.get()) {
                 RegionScheduler.throwWorkerFailureIfAny();
-                if (RegionScheduler.requiresExclusiveUnitGrants()) {
-                    // The server-wide sprint admission fence is already closed.
-                    // Release the actual claims before granting the old unentered
-                    // attempts: they retire their reservations through the normal
-                    // unit admission path, never by forging a completed receipt.
-                    Throwable releaseFailure = releaseAllIslands(null);
-                    if (releaseFailure != null) {
-                        RegionizedServer.<RuntimeException>rethrow(releaseFailure);
-                    }
-                    RegionScheduler.drainQueuedUnitAttempts();
-                    if (!quiesceAllIslands() || !currentThreadHoldsAllClaims()) {
-                        throw new IllegalStateException(
-                                "global sprint lost claims after ordinary unit retirement");
-                    }
-                    continue;
-                }
                 if (!RegionScheduler.poolRunning()) {
                     throw new IllegalStateException(
                             "global sprint lost the unit pool while draining its fence");
@@ -3944,9 +3906,25 @@ public final class RegionizedServer {
         try {
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> RegionTickHooks.firePre(region));
-            var entities = region.entities.iterator();
-            if (entities.hasNext()) {
-                new EntityTickCursor(region, entities).tick();
+            ServerLevel lvl = level;
+            TickRateManager trm = lvl.tickRateManager();
+            ServerChunkCache chunkSource = lvl.getChunkSource();
+            DistanceManager dm = chunkSource.chunkMap.getDistanceManager();
+            var gate = new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(16);
+            Entity prevGap = null;
+            long gapT0 = System.nanoTime();
+            for (Entity e : region.entities) {
+                tickOne(region, e, lvl, trm, dm, gate);
+                long t1 = System.nanoTime();
+                if (t1 - gapT0 > 100_000_000L) {
+                    FlightRecorder.record("PHASE-GAP region=" + Long.toHexString(region.gridKey)
+                            + " ms=" + (t1 - gapT0) / 1_000_000L
+                            + " in=" + e.getType() + "#" + e.getId()
+                            + " after=" + (prevGap == null ? "-" : prevGap.getType() + "#" + prevGap.getId())
+                            + " L=" + (region.domain != null ? region.domain.unitGameTime : -1));
+                }
+                prevGap = e;
+                gapT0 = t1;
             }
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> RegionTickHooks.firePost(region));
@@ -3995,191 +3973,57 @@ public final class RegionizedServer {
         return g;
     }
 
+    private void tickOne(Region region, Entity e, ServerLevel lvl, TickRateManager trm, DistanceManager dm,
+                         it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate) {
+        RegionScheduler.runSuccessBodyIfHealthy(() -> tickOneAdmitted(region, e, lvl, trm, dm, gate));
+    }
+
+    private boolean fabrolia$fishingOwnerIsRemote(Region region, ServerPlayer owner) {
+        if (owner.level() != level) return true;
+        IslandRegistry.PIsland hookIsland = region.domain == null ? null : region.domain.owner;
+        return hookIsland == null || hookIsland.retired
+                || islandOwnerOfChunk(owner.chunkPosition().pack()) != hookIsland;
+    }
+
+    private boolean fabrolia$admitFencedFishingTick(Entity hook, ServerLevel sourceLevel) {
+        ServerChunkCache source = sourceLevel.getChunkSource();
+        long chunkKey = hook.chunkPosition().pack();
+        while (source.mainThreadProcessor.pollTask()) {
+            // drain queued main-thread chunk work before re-checking admission
+        }
+        return hook.level() == sourceLevel && !hook.isRemoved()
+                && source.chunkMap.getDistanceManager().inEntityTickingRange(chunkKey);
+    }
 
     /** One entity through vanilla admission and tick on the region owner.
      *  The per-entity tick token deduplicates same-epoch migration visits. */
-    private final class EntityTickCursor implements Runnable {
-        private final Region region;
-        private final java.util.Iterator<Entity> entities;
-        private final ServerLevel lvl = level;
-        private final TickRateManager trm = lvl.tickRateManager();
-        private final DistanceManager dm = lvl.getChunkSource().chunkMap.getDistanceManager();
-        private final it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate =
-                new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(16);
-        private final Runnable workerOrdinal = this::tickOnWorker;
-        private final Runnable mainOrdinal = this::tickNextOnMain;
-        private Entity current;
-        private Entity previous;
-        private long packed;
-        private long gapStart = System.nanoTime();
-        private boolean pending;
-
-        EntityTickCursor(Region region, java.util.Iterator<Entity> entities) {
-            this.region = region;
-            this.entities = entities;
-        }
-
-        void tick() {
-            while (pending || advance()) {
-                pending = false;
-                // Each ordinal, including its entire native prefix, is admitted
-                // against W before index/token/despawn or routing state changes.
-                RegionScheduler.runSuccessBodyIfHealthy(workerOrdinal);
-            }
-        }
-
-        private boolean advance() {
-            if (!entities.hasNext()) return false;
-            current = entities.next();
-            return true;
-        }
-
-        private void tickOnWorker() {
-            var position = prepareEntityOrdinal(region, current, trm);
-            if (position == null) {
-                completed();
-                return;
-            }
-            packed = position.pack();
-            if (tickPreparedEntity(region, current, lvl, dm, gate, packed)) {
-                completed();
-                return;
-            }
-            if (current instanceof ServerPlayer) {
-                // Direct players retain their original fallback/A5 venue. They
-                // are never part of a streamed NPC run.
-                IslandCommands.runEntityTickOnMain(RegionizedServer.this, region,
-                        () -> tickOneNativeAdmitted(region, current, lvl, dm, gate, packed, true));
-                completed();
-            } else {
-                IslandCommands.runEntityTickOnMain(RegionizedServer.this, region, this);
-            }
-        }
-
-        /** The original worker is parked for this exact source member/clock. */
-        @Override
-        public void run() {
-            IslandRegistry.PIsland source = IslandCommands.routedUnitSourceOnMain(RegionizedServer.this);
-            if (source == null) throw new IllegalStateException("native entity run lost its source");
-            tickOneNativeAdmitted(region, current, lvl, dm, gate, packed, true);
-            completed();
-            // No precollection: predecessor callbacks finish before observing
-            // the next iterator entry. An invalidated source cannot enter it.
-            for (;;) {
-                if (IslandCommands.routedUnitSourceOnMain(RegionizedServer.this) != source) {
-                    throw new IllegalStateException("native entity run lost its source after an ordinal");
-                }
-                if (!advance()) return;
-                RegionScheduler.runSuccessBodyIfHealthy(mainOrdinal);
-                if (pending) return;
-            }
-        }
-
-        private void tickNextOnMain() {
-            if (!NativeEntityDependencies.canContinueMainRun(RegionizedServer.this, region, current)) {
-                // Other requests in this same writer batch may still change
-                // this entity. Leave even its prefix untouched, and let the
-                // worker classify afresh after release-before-result.
-                pending = true;
-                return;
-            }
-            var position = prepareEntityOrdinal(region, current, trm);
-            if (position != null) {
-                packed = position.pack();
-                tickOneNativeAdmitted(region, current, lvl, dm, gate, packed, true);
-            }
-            completed();
-        }
-
-        private void completed() {
-            long now = System.nanoTime();
-            if (now - gapStart > 100_000_000L && current != null) {
-                FlightRecorder.record("PHASE-GAP region=" + Long.toHexString(region.gridKey)
-                        + " ms=" + (now - gapStart) / 1_000_000L
-                        + " in=" + current.getType() + "#" + current.getId()
-                        + " after=" + (previous == null ? "-" : previous.getType() + "#" + previous.getId())
-                        + " L=" + (region.domain != null ? region.domain.unitGameTime : -1));
-            }
-            previous = current;
-            gapStart = now;
-        }
-    }
-
-    /** Return the original cached chunk position only after the whole prefix. */
-    private net.minecraft.world.level.ChunkPos prepareEntityOrdinal(
-            Region region, Entity entity, TickRateManager trm) {
-        if (entity == null) return null;
-        if (entity.isRemoved()) {
+    private void tickOneAdmitted(Region region, Entity e, ServerLevel lvl, TickRateManager trm, DistanceManager dm,
+                                 it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate) {
+        if (e == null) return;
+        if (e.isRemoved()) {
             // Removal callbacks normally pull entities out; repair a stale key.
-            dropFromRegion(region, entity);
-            return null;
+            dropFromRegion(region, e);
+            return;
         }
-        var position = entity.chunkPosition();
-        long curKey = regionizer.grid.keyFor(position.pack());
+        long packed = e.chunkPosition().pack();
+        long curKey = regionizer.grid.keyFor(packed);
         if (curKey != region.gridKey) {
             // Tick where grouped; the token deduplicates a second migration visit.
-            indexMove(entity, region, curKey);
+            indexMove(e, region, curKey);
         }
-        RegionKeyed keyed = (RegionKeyed) entity;
-        if (!keyed.fabrolia$tryMarkRegionTick(region.domain.tickToken())) return null;
-        if (trm.isEntityFrozen(entity)) return null;
-        if (((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return null;
+        RegionKeyed keyed = (RegionKeyed) e;
+        if (!keyed.fabrolia$tryMarkRegionTick(region.domain.tickToken())) return;
+        if (trm.isEntityFrozen(e)) return;
+        if (((ParallelProcessor.TickGuard) e).fabrolia$tickLease().isArrivalPending()) return;
         // A queued portal transfer is already causally gone from this source.
-        if (((ParallelProcessor.TickGuard) entity).fabrolia$isPortalPending()) return null;
-        return position;
-    }
-
-    /** False means the complete native body still needs its Main rendezvous. */
-    private boolean tickPreparedEntity(Region region, Entity entity, ServerLevel lvl, DistanceManager dm,
-            it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate, long packed) {
-        boolean exclusive = RegionScheduler.ownsExclusiveGameplay();
-        boolean islandNpc = !(entity instanceof ServerPlayer)
-                && region.domain != null && region.domain.owner != null;
-        boolean mainOnly = islandNpc && ParallelProcessor.requiresMainThread(entity);
-        try (NativeEntityDependencies.TickAdmission admission =
-                     !exclusive && islandNpc && !mainOnly
-                             ? NativeEntityDependencies.prepareEntityTick(this, region, entity) : null) {
-            boolean needsGlobal = mainOnly || (!exclusive && (admission != null
-                    ? admission.requiresGlobal() : NativeEntityDependencies.requiresFence(this, region, entity)));
-            if (needsGlobal) {
-                return entity instanceof ServerPlayer player
-                        && AsyncIslandPlayerTicks.tryRunNativeDependencyFallback(player);
-            }
-            if (admission != null) admission.enterLocal();
-            tickOneNativeAdmitted(region, entity, lvl, dm, gate, packed, false);
-            return true;
-        }
-    }
-
-    private static boolean containsPearlImpactProducer(Entity entity) {
-        if (entity instanceof net.minecraft.world.entity.projectile
-                .throwableitemprojectile.ThrownEnderpearl) return true;
-        for (Entity passenger : entity.getPassengers()) {
-            if (containsPearlImpactProducer(passenger)) return true;
-        }
-        return false;
-    }
-
-    private void tickOneNativeAdmitted(Region region, Entity e, ServerLevel lvl, DistanceManager dm,
-            it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate, long packed, boolean mainBody) {
-    // A previous Main operation may have terminalized this actor while the exact
-    // source ordinal waited. Do not replay its marker or tick a transferred body.
-    if (mainBody) {
-        if (e.level() != lvl || e.isRemoved()
-                || ((ParallelProcessor.TickGuard) e).fabrolia$isPortalPending()
-                || ((ParallelProcessor.TickGuard) e).fabrolia$tickLease().isArrivalPending()) return;
-        packed = e.chunkPosition().pack();
-    }
-    boolean directPlayer = e instanceof ServerPlayer;
-    boolean containsPlayerTick = !mainBody && ParallelProcessor.containsServerPlayerTick(e);
-    if (!directPlayer) {
+        if (keyed instanceof ParallelProcessor.TickGuard tg && tg.fabrolia$isPortalPending()) return;
+        boolean directPlayer = e instanceof ServerPlayer;
+        boolean containsPlayerTick = ParallelProcessor.containsServerPlayerTick(e);
         // Ticking-readiness gate, ONE coherent answer per chunk per region task (see
         // fabrolia$chunkGate — live per-entity reads raced distance-tracker propagation
         // and missed ticks). The completed DistanceManager view is the exact vanilla
         // authority; a second live holder-future probe is both non-vanilla and racy.
-        boolean ticking = mainBody ? dm.inEntityTickingRange(packed)
-                : fabrolia$chunkGate(packed, gate, dm) == 1;
-        if (!ticking) {
+        if (!directPlayer && fabrolia$chunkGate(packed, gate, dm) != 1) {
             // VANILLA ORDER (26.2 ServerLevel guarded entity loop, bytecode-
             // verified): checkDespawn runs BEFORE the entity-ticking range
             // gate, for every tick-list entity — a mob parked beyond the
@@ -4194,74 +4038,64 @@ public final class RegionizedServer {
             e.checkDespawn();
             return;
         }
-    }
-    
-    Entity vehicle = e.getVehicle();
-    if (vehicle != null) {
-        // PORTAL-HANDOFF (2026-08-06 minecart-passenger despawn): a vehicle
-        // with a queued main-side portal teleport is NOT removed — vanilla
-        // would carry its riders through teleportCrossDimension's
-        // eject→recursive-passenger-teleport→re-seat. But the isRemoved
-        // spoof (EntityMixin.fabrolia$removedWhileDeparted) made this gate
-        // read the staged vehicle as removed and stopRiding() the
-        // passenger on the SOURCE side: the mob then arrived as a separate
-        // unmounted copy, lost requiresCustomPersistence()'s isPassenger
-        // protection, and vanilla checkDespawn discarded it instantly in a
-        // no-players-nearby destination. Skip the passenger exactly like
-        // the vehicle itself (the portalPending early-out above) — main's
-        // deferred teleport re-seats it on the destination copy.
-        if (vehicle instanceof com.axalotl.fabrolia.common.ParallelProcessor.TickGuard vg
-                && vg.fabrolia$isPortalPending()) {
+
+        Entity vehicle = e.getVehicle();
+        if (vehicle != null) {
+            // PORTAL-HANDOFF (2026-08-06 minecart-passenger despawn): a vehicle
+            // with a queued main-side portal teleport is NOT removed — vanilla
+            // would carry its riders through teleportCrossDimension's
+            // eject→recursive-passenger-teleport→re-seat. But the isRemoved
+            // spoof (EntityMixin.fabrolia$removedWhileDeparted) made this gate
+            // read the staged vehicle as removed and stopRiding() the
+            // passenger on the SOURCE side: the mob then arrived as a separate
+            // unmounted copy, lost requiresCustomPersistence()'s isPassenger
+            // protection, and vanilla checkDespawn discarded it instantly in a
+            // no-players-nearby destination. Skip the passenger exactly like
+            // the vehicle itself (the portalPending early-out above) — main's
+            // deferred teleport re-seats it on the destination copy.
+            if (vehicle instanceof com.axalotl.fabrolia.common.ParallelProcessor.TickGuard vg
+                    && vg.fabrolia$isPortalPending()) {
+                return;
+            }
+            if (!vehicle.isRemoved() && vehicle.hasPassenger(e)) return;
+            e.stopRiding();
+        }
+
+        // A5: a direct, supported player is owned by this autonomous island unit.
+        // Preserve vanilla's checkDespawn-before-body order before irreversible A5
+        // admission.  Unsupported subclasses/vehicle trees/session transitions simply
+        // fall through to the established MAIN_SYNC compatibility lane.
+        if (directPlayer) {
+            e.checkDespawn();
+            if (e.isRemoved()) {
+                dropFromRegion(region, e);
+                return;
+            }
+            if (AsyncIslandPlayerTicks.tryRunEarly(region, (ServerPlayer) e)) {
+                return;
+            }
+        }
+
+        if (e instanceof net.minecraft.world.entity.projectile.FishingHook hook
+                && hook.getPlayerOwner() instanceof ServerPlayer serverOwner
+                && fabrolia$fishingOwnerIsRemote(region, serverOwner)) {
+            RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedFishingTick(e, lvl), null);
             return;
         }
-        if (!vehicle.isRemoved() && vehicle.hasPassenger(e)) return;
-        e.stopRiding();
-    }
-    
-    // A5: a direct, supported player is owned by this autonomous island unit.
-    // Preserve vanilla's checkDespawn-before-body order before irreversible A5
-    // admission.  Unsupported subclasses/vehicle trees/session transitions simply
-    // fall through to the established MAIN_SYNC compatibility lane.
-    if (directPlayer) {
+        if (containsPlayerTick || ParallelProcessor.requiresMainThread(e)) {
+            RegionScheduler.queueMainSyncTick(e);
+            return;
+        }
+
         e.checkDespawn();
         if (e.isRemoved()) {
             dropFromRegion(region, e);
             return;
         }
-        if (!mainBody && AsyncIslandPlayerTicks.tryRunEarly(region, (ServerPlayer) e)) {
-            return;
+        if (FabroliaConfig.fabroliaOptimisticBorderMetric) {
+            if (isBorderForMetric(region, e)) METRIC_BORDER.incrementAndGet();
+            else METRIC_INTERIOR.incrementAndGet();
         }
+        ParallelProcessor.tickEntity(lvl, e, true);
     }
-    
-    if (!mainBody && containsPlayerTick) {
-        // A5-disabled/unsupported players and passenger carriers need their
-        // complete native producer envelope before Main takes a source claim.
-        RegionScheduler.queueMainSyncFencedTick(e, () -> true, null);
-        return;
-    }
-    if (!mainBody && (region.domain == null || region.domain.owner == null)
-            && containsPearlImpactProducer(e)) {
-        // Compatibility regions have no source-unit writer ACK. Admit the entire
-        // still-unentered native tick on Main instead of parking an ownerless worker.
-        RegionScheduler.queueMainSyncFencedTick(e, () -> true, null);
-        return;
-    }
-
-    
-    if (!mainBody && ParallelProcessor.requiresMainThread(e)) {
-        // The global-domain compatibility lane has no autonomous source unit.
-        RegionScheduler.queueMainSyncTick(e);
-        return;
-    }
-
-    if (!directPlayer) e.checkDespawn();
-    if (e.isRemoved()) {
-        dropFromRegion(region, e);
-        return;
-    }
-    if (FabroliaConfig.fabroliaOptimisticBorderMetric) {
-        if (isBorderForMetric(region, e)) METRIC_BORDER.incrementAndGet();
-        else METRIC_INTERIOR.incrementAndGet();
-    }
-    ParallelProcessor.tickEntity(lvl, e, !mainBody); }
 }

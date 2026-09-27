@@ -56,23 +56,19 @@ public final class IslandCommands {
 
     private static final AtomicLong NEXT_INVOCATION_ID = new AtomicLong(1);
 
-    /** Poll-only receipt shared by typed routed bodies; not a command invocation. */
-    private static class RequestReceipt {
-        public final long id = NEXT_INVOCATION_ID.getAndIncrement();
-        public volatile byte state;
-        public volatile int result;
-        public volatile Throwable failure;
-    }
-
     /** One logical command invocation. Identity is final; state is volatile.
      *  Exactly one execution is admitted per invocation. */
-    public static final class Invocation extends RequestReceipt {
+    public static final class Invocation {
+        public final long id = NEXT_INVOCATION_ID.getAndIncrement();
         public final String sourceKind;         // "command_block" | "main" | "function"
         public final BlockPos sourcePos;        // may be null (console)
         public final long sourceIslandId;       // -1 = global context
         public final long sourceLogicalTick;    // island L (or gameTime for main)
         public final String command;
         public final long orderingToken;        // island (id<<20|L) — deterministic per source
+        public volatile byte state;
+        public volatile int result;
+        public volatile Throwable failure;
 
         Invocation(String sourceKind, BlockPos sourcePos, long islandId, long logicalTick, String command) {
             this.sourceKind = sourceKind;
@@ -326,23 +322,8 @@ public final class IslandCommands {
         Invocation inv = new Invocation("command_block", sourcePos, owner.id,
                 owner.logicalTick, command);
         RoutedResult fut = new RoutedResult();
-        RegionWorkerThread coordinator = sourceCoordinator();
-        EpochDomain commandDomain = d;
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            RoutedRequest request;
-            if (commandDomain.unitGameTime != 0) {
-                if (coordinator.currentDomain != commandDomain) {
-                    throw new IllegalStateException("command rendezvous lost its source domain");
-                }
-                var source = new SourceCommandRequest(
-                        inv, original, fut, rs, owner, coordinator);
-                source.validateSource();
-                request = source;
-            } else {
-                request = new CommandRequest(
-                        inv, original, fut, null, coordinator);
-            }
-            ROUTED.add(request);
+            ROUTED.add(new RoutedCmd(inv, original, fut, isGlobalNoFence(command), null));
             // Self-nudge: main drains its task queue while idling between slots,
             // so the batch runs within ~ms instead of at the next drive head.
             var sv = RegionScheduler.getServer();
@@ -351,8 +332,7 @@ public final class IslandCommands {
                 // successor is a separate success stage: a peer W selected after
                 // ROUTED.add must cancel the queued receipt, not enqueue new work.
                 RegionScheduler.runSuccessBodyIfHealthy(
-                        () -> RegionScheduler.scheduleMainControlTask(
-                                sv, IslandCommands::drainRoutedBatch));
+                        () -> sv.execute(IslandCommands::drainRoutedBatch));
             }
         });
         RegionScheduler.commitSuccessIfHealthy(ROUTED_GLOBAL::increment);
@@ -363,7 +343,15 @@ public final class IslandCommands {
         owner.waitingOnRoutedCommand = true;
         long w0 = System.nanoTime();
         try {
-            awaitRoutedResult(rs, owner, fut);
+            while (!fut.isDone() && RegionScheduler.poolRunning()) {
+                RegionScheduler.throwWorkerFailureIfAny();
+                if (!parkCommandWaiterForGlobalFence(rs, owner)) {
+                    if (!fut.isDone()) {
+                        LockSupport.parkNanos(50_000L);
+                    }
+                    RegionScheduler.throwWorkerFailureIfAny();
+                }
+            }
         } finally {
             owner.waitingOnRoutedCommand = false;
         }
@@ -371,130 +359,6 @@ public final class IslandCommands {
         RegionScheduler.runSuccessBodyIfHealthy(
                 () -> ROUTE_WAIT_NANOS.add(routedWaitNanos));
         return exactCommandResult(fut, inv, "routed command");
-    }
-
-    /** Keep the original coordinator stack and claim until its exact Main body settles. */
-    static void runPlayerLateOnMain(RegionizedServer runtime, IslandRegistry.PIsland island,
-                                   net.minecraft.server.level.ServerPlayer player, Runnable body) {
-        rendezvous(new PlayerLateRequest(runtime, island, player, sourceCoordinator(), body));
-    }
-
-    /** Preserve the original island BE ordinal and clock while its native body owns Main. */
-    static void runBlockEntityTickOnMain(RegionizedServer runtime, IslandRegistry.PIsland island,
-                                        Runnable body) {
-        rendezvous(new BlockEntityRequest(runtime, island, sourceCoordinator(), body));
-    }
-
-    /** Retain the exact member claim and entity ordinal until its Main body settles. */
-    static void runEntityTickOnMain(RegionizedServer runtime, Region member, Runnable body) {
-        EpochDomain domain = member.domain;
-        if (domain == null || domain.owner == null) {
-            throw new IllegalStateException("entity rendezvous requires its dispatched island");
-        }
-        rendezvous(new EntityRequest(runtime, domain.owner, member, sourceCoordinator(), body));
-    }
-
-    /** Keep the native impact admission and all of its effects in one writer window. */
-    public static void runPearlImpactOnMain(
-            net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEnderpearl source,
-            Runnable producer) {
-        java.util.Objects.requireNonNull(producer, "producer");
-        RegionWorkerThread worker = sourceCoordinator();
-        Region member = worker.currentRegion;
-        if (member == null || member.domain == null || member.domain.owner == null
-                || worker.currentDomain != member.domain
-                || !(source.level() instanceof ServerLevel level) || member.level != level
-                || !(source instanceof com.axalotl.fabrolia.common.ParallelProcessor.TickGuard guard)
-                || !guard.fabrolia$tickLease().isOwnedByCurrentThread()) {
-            throw new IllegalStateException("pearl impact lost its entered native entity stage");
-        }
-        // Published identity outlives async intent while an accepted unit finishes during stop.
-        RegionizedServer runtime = RegionScheduler.publishedForLevel(level);
-        if (runtime == null) {
-            throw new IllegalStateException("pearl impact lost its source runtime");
-        }
-        runEntityTickOnMain(runtime, member, producer);
-    }
-
-    private static RegionWorkerThread sourceCoordinator() {
-        if (!(Thread.currentThread() instanceof RegionWorkerThread worker)) {
-            throw new IllegalStateException("unit rendezvous requires its owning coordinator");
-        }
-        return worker;
-    }
-
-    private static void rendezvous(SourceUnitRequest request) {
-        RegionizedServer runtime = request.runtime;
-        IslandRegistry.PIsland island = request.island;
-        request.validateSource();
-        RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            request.validateSource();
-            ROUTED.add(request);
-            RegionScheduler.scheduleMainControlTask(
-                    RegionScheduler.getServer(), IslandCommands::drainRoutedBatch);
-        });
-        island.waitingOnRoutedCommand = true;
-        try {
-            awaitRoutedResult(runtime, island, request.fut);
-            request.validateSource();
-            RegionScheduler.throwWorkerFailureIfAny();
-            request.fut.joinExact();
-            RegionScheduler.throwWorkerFailureIfAny();
-        } finally {
-            island.waitingOnRoutedCommand = false;
-        }
-    }
-
-    private static SourceRequest activeSourceUnit;
-
-    /** A narrow typed TURN capability, never an arbitrary Main/native-service lease. */
-    static boolean ownsPlayerLateOnMain(net.minecraft.server.level.ServerPlayer player,
-                                       IslandRegistry.PIsland island) {
-        return activeSourceUnit instanceof PlayerLateRequest request
-                && request.player == player && request.island == island
-                && hasSourceWriterWindow(request);
-    }
-
-    private static boolean hasSourceWriterWindow(SourceRequest request) {
-        GlobalFenceFrame frame = ACTIVE_FENCE;
-        return request.inv.state == 1
-                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(RegionScheduler.getServer())
-                && !RegionScheduler.inNativeMainService()
-                && frame != null && frame.owner == Thread.currentThread()
-                && frame.phase == GlobalFencePhase.HELD
-                && request.sourceIntact()
-                && request.runtime.currentThreadHoldsAllClaims()
-                && commandWaiterParkedForGlobalFence(request.runtime, request.island, frame);
-    }
-
-    /** Same-unit registration context, not an authority for arbitrary Main work. */
-    static IslandRegistry.PIsland routedUnitSourceOnMain(RegionizedServer runtime) {
-        SourceRequest request = activeSourceUnit;
-        return request != null && request.runtime == runtime && hasSourceWriterWindow(request)
-                ? request.island : null;
-    }
-
-    /** The original parked coordinator's same-drain queue, never a new capture. */
-    static IslandBlockEvents.OrderedEvents
-            routedUnitEventCaptureOnMain(RegionizedServer runtime) {
-        return activeSourceUnit instanceof SourceCommandRequest request
-                && request.runtime == runtime && hasSourceWriterWindow(request)
-                ? request.eventCapture : null;
-    }
-
-    private static void awaitRoutedResult(RegionizedServer runtime,
-                                          IslandRegistry.PIsland island, RoutedResult result) {
-        for (;;) {
-            // Once acknowledged, only the exact Main frame's completed cleanup
-            // may let this stack unwind, including after terminal publication.
-            if (parkCommandWaiterForGlobalFence(runtime, island, result)) continue;
-            RegionScheduler.throwWorkerFailureIfAny();
-            if (result.isDone()) return;
-            if (!RegionScheduler.poolRunning()) {
-                throw new IllegalStateException("routed body lost completion during worker stop");
-            }
-            LockSupport.parkNanos(50_000L);
-        }
     }
 
     /**
@@ -505,19 +369,10 @@ public final class IslandCommands {
      * coordinator's already-held unit claim.
      */
     private static boolean parkCommandWaiterForGlobalFence(
-            RegionizedServer rs, IslandRegistry.PIsland owner,
-            RoutedResult result) {
+            RegionizedServer rs, IslandRegistry.PIsland owner) {
         Object receipt = rs.globalFenceIntentReceipt();
         if (receipt == null) return false;
-        // Observe intent before completion: Main publishes a later frame only
-        // after completing the previous receipt. A completed wait must drain
-        // its entered continuation, not lend the same source to another writer.
-        if (result.isDone()) return false;
-        if (!(receipt instanceof GlobalFenceFrame frame)) {
-            throw new IllegalStateException("command waiter encountered an unknown fence receipt");
-        }
-        GlobalFenceParkAck ack = new GlobalFenceParkAck(frame);
-        GlobalFenceParkAck previous = GLOBAL_FENCE_PARK_ACKS.putIfAbsent(owner, ack);
+        Object previous = GLOBAL_FENCE_PARK_ACKS.putIfAbsent(owner, receipt);
         if (previous != null) {
             publishAndPropagate(new IllegalStateException(
                     "command waiter already has a global-fence park acknowledgement"));
@@ -525,9 +380,8 @@ public final class IslandCommands {
 
         Throwable failure = null;
         try {
-            while (ACTIVE_FENCE == receipt || rs.globalFenceIntentMatches(receipt)) {
-                // W does not revoke the frame. Retain this exact ACK and source
-                // claim until every physical claim and level intent is released.
+            while (rs.globalFenceIntentMatches(receipt)) {
+                RegionScheduler.throwWorkerFailureIfAny();
                 LockSupport.parkNanos(50_000L);
             }
             RegionScheduler.throwWorkerFailureIfAny();
@@ -535,7 +389,7 @@ public final class IslandCommands {
             failure = publishFatalPreserving(primary);
         }
         try {
-            if (!GLOBAL_FENCE_PARK_ACKS.remove(owner, ack)) {
+            if (!GLOBAL_FENCE_PARK_ACKS.remove(owner, receipt)) {
                 throw new IllegalStateException(
                         "command waiter lost its exact global-fence park acknowledgement");
             }
@@ -551,22 +405,8 @@ public final class IslandCommands {
     private static boolean commandWaiterParkedForGlobalFence(
             RegionizedServer rs, IslandRegistry.PIsland owner,
             GlobalFenceFrame frame) {
-        GlobalFenceParkAck ack = GLOBAL_FENCE_PARK_ACKS.get(owner);
         return rs.globalFenceIntentMatches(frame)
-                && ack != null && ack.frame == frame;
-    }
-
-    /** Logical ownership moves only after this selected command waiter ACKs HELD. */
-    static boolean delegatesGameplayFrom(Thread worker, Thread main) {
-        GlobalFenceFrame frame = ACTIVE_FENCE;
-        if (frame == null || frame.owner != main || frame.phase != GlobalFencePhase.HELD
-                || !(worker instanceof RegionWorkerThread regional)) return false;
-        EpochDomain domain = regional.currentRegion != null
-                ? regional.currentRegion.domain : regional.currentDomain;
-        IslandRegistry.PIsland island = domain == null ? null : domain.owner;
-        GlobalFenceParkAck ack = island == null ? null : GLOBAL_FENCE_PARK_ACKS.get(island);
-        return island != null && island.claimHolder == worker
-                && ack != null && ack.frame == frame;
+                && GLOBAL_FENCE_PARK_ACKS.get(owner) == frame;
     }
 
     /** Poll-only routed result. No completion callback or waiter is invoked from
@@ -620,7 +460,13 @@ public final class IslandCommands {
         // domain (island runner into its own chunk, main into a wall chunk) —
         // the overwhelmingly common case — needs no resolution at all.
         long tagId = ((FabroliaTickDomain) (Object) c).fabrolia$domainIsland();
-        long ctxId = IslandClock.contextId();
+        long ctxId = -1;
+        if (Thread.currentThread() instanceof RegionWorkerThread w) {
+            EpochDomain cd = w.currentRegion != null ? w.currentRegion.domain : w.currentDomain;
+            if (cd != null && cd.owner != null && cd.unitGameTime != 0) {
+                ctxId = cd.owner.id;
+            }
+        }
         if (tagId == ctxId) {
             return tick;
         }
@@ -691,242 +537,25 @@ public final class IslandCommands {
         }
     }
 
-    private abstract static class RoutedRequest {
-        final RequestReceipt inv;
-        final RoutedResult fut;
-        final Runnable trackedBody;
-        // A pending synchronous source permits progress, never body authority.
-        final RegionWorkerThread coordinator;
-
-        RoutedRequest(RequestReceipt inv, RoutedResult fut,
-                      Runnable trackedBody, RegionWorkerThread coordinator) {
-            this.inv = inv;
-            this.fut = fut;
-            this.trackedBody = trackedBody;
-            this.coordinator = coordinator;
-        }
-
-        abstract boolean runBody();
+    private record RoutedCmd(Invocation inv, BooleanSupplier body, RoutedResult fut,
+                             boolean fenceless, Runnable trackedBody) {
     }
 
-    private static final class CommandRequest extends RoutedRequest {
-        private final BooleanSupplier body;
-
-        CommandRequest(Invocation inv, BooleanSupplier body, RoutedResult fut,
-                       Runnable trackedBody, RegionWorkerThread coordinator) {
-            super(inv, fut, trackedBody, coordinator);
-            this.body = body;
-        }
-
-        @Override boolean runBody() {
-            return body.getAsBoolean();
-        }
-    }
-
-    private abstract static class SourceRequest extends RoutedRequest {
-        final RegionizedServer runtime;
-        final IslandRegistry.PIsland island;
-        final RegionWorkerPool sourcePool;
-        final EpochDomain domain;
-        final long generation;
-        final boolean handlingPhase;
-        final IslandClock.MainUnitSource sourceClock;
-
-        SourceRequest(RequestReceipt receipt, RoutedResult result,
-                      RegionizedServer runtime, IslandRegistry.PIsland island,
-                      RegionWorkerThread coordinator, boolean handlingPhase, boolean handlingTick) {
-            super(receipt, result, null, coordinator);
-            this.runtime = java.util.Objects.requireNonNull(runtime);
-            this.island = java.util.Objects.requireNonNull(island);
-            this.sourcePool = RegionWorkerPool.currentThreadCausalOwnerOrNull();
-            this.domain = coordinator.currentDomain;
-            this.generation = island.gen;
-            this.handlingPhase = handlingPhase;
-            this.sourceClock = new IslandClock.MainUnitSource(
-                    runtime.level, domain == null ? 0 : domain.unitGameTime, island.id, handlingTick);
-        }
-
-        boolean sourceIntact() {
-            return RegionScheduler.ownsRuntimeGeneration(runtime, sourcePool)
-                    && !island.retired && island.gen == generation
-                    && island.level == runtime.level && domain != null && domain == island.domain
-                    && coordinator.currentDomain == domain && sourceStageIntact()
-                    && island.unitClaim.get() && island.claimHolder == coordinator
-                    && domain.owner == island && domain.handlingTickPhase == handlingPhase
-                    && domain.unitGameTime == sourceClock.time() && sourceClock.time() != 0;
-        }
-
-        boolean sourceStageIntact() {
-            return coordinator.currentRegion == null;
-        }
-
-        final boolean entityStageIntact(Region member, long epoch) {
-            return coordinator.currentRegion == member && member.currentWorker() == coordinator
-                    && member.domain == domain && domain.epoch == epoch
-                    && member.groupedEpoch == epoch && member.entityEpoch < epoch;
-        }
-
-        final void validateSource() {
-            if (!sourceIntact()) {
-                throw new IllegalStateException("unit rendezvous lost its source unit identity");
-            }
-        }
-
-        final void validateBodyEntry() {
-            validateSource();
-            if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(RegionScheduler.getServer())
-                    || RegionScheduler.inNativeMainService()) {
-                throw new IllegalStateException("unit source body entered outside its Main window");
-            }
-            if (activeSourceUnit != null) {
-                throw new IllegalStateException("nested typed unit rendezvous");
-            }
-        }
-
-        final void enterSourceBody() {
-            validateBodyEntry();
-            activeSourceUnit = this;
-        }
-    }
-
-    /** Only these native continuations may extend an already selected native batch tail. */
-    private abstract static class SourceUnitRequest extends SourceRequest implements Runnable {
-        SourceUnitRequest(RegionizedServer runtime, IslandRegistry.PIsland island,
-                          RegionWorkerThread coordinator) {
-            super(new RequestReceipt(), new RoutedResult(), runtime, island, coordinator, false, false);
-        }
-
-        @Override boolean runBody() {
-            validateBodyEntry();
-            if (!hasSourceWriterWindow(this)) {
-                throw new IllegalStateException("unit body entered without its exact Main fence/ACK");
-            }
-            RegionScheduler.runGlobalMainBody(RegionScheduler.getServer(), this::runClockedBody);
-            validateSource();
-            return true;
-        }
-
-        private void runClockedBody() {
-            enterSourceBody();
-            try {
-                IslandClock.runMainUnitSource(sourceClock, this);
-            } finally {
-                activeSourceUnit = null;
-            }
-        }
-    }
-
-    private static final class SourceCommandRequest extends SourceRequest {
-        final BooleanSupplier body;
-        final Region member;
-        final long epoch;
-        final IslandBlockEvents.OrderedEvents eventCapture;
-
-        SourceCommandRequest(Invocation inv, BooleanSupplier body, RoutedResult result,
-                             RegionizedServer runtime, IslandRegistry.PIsland island,
-                             RegionWorkerThread coordinator) {
-            super(inv, result, runtime, island, coordinator,
-                    coordinator.currentDomain.handlingTickPhase,
-                    Boolean.TRUE.equals(IslandClock.workerHandlingTick(runtime.level)));
-            this.body = body;
-            this.member = coordinator.currentRegion;
-            this.epoch = domain.epoch;
-            if (IslandBlockEvents.CAPTURING.get()) {
-                if (IslandBlockEvents.CAPTURING_ISLAND.get() != island) {
-                    throw new IllegalStateException("command rendezvous crossed unit event captures");
-                }
-                eventCapture = IslandBlockEvents.UNIT_LOCAL.get();
-            } else {
-                eventCapture = null;
-            }
-        }
-
-        @Override boolean sourceStageIntact() {
-            return member != null ? entityStageIntact(member, epoch)
-                    : coordinator.currentRegion == null && domain.epoch == epoch;
-        }
-
-        @Override boolean runBody() {
-            validateBodyEntry();
-            if (!hasSourceWriterWindow(this)) {
-                throw new IllegalStateException("unit command entered without its exact Main fence/ACK");
-            }
-            boolean result = RegionScheduler.callGlobalMainBody(
-                    RegionScheduler.getServer(), this::callClockedBody);
-            validateSource();
-            return result;
-        }
-
-        private boolean callClockedBody() {
-            enterSourceBody();
-            try {
-                return IslandClock.callMainUnitSource(sourceClock, body);
-            } finally {
-                activeSourceUnit = null;
-            }
-        }
-    }
-
-    private static final class PlayerLateRequest extends SourceUnitRequest {
-        final net.minecraft.server.level.ServerPlayer player;
-        final Runnable body;
-
-        PlayerLateRequest(RegionizedServer runtime, IslandRegistry.PIsland island,
-                          net.minecraft.server.level.ServerPlayer player,
-                          RegionWorkerThread coordinator, Runnable body) {
-            super(runtime, island, coordinator);
-            this.player = java.util.Objects.requireNonNull(player);
-            this.body = java.util.Objects.requireNonNull(body);
-        }
-
-        @Override public void run() { body.run(); }
-    }
-
-    private static final class BlockEntityRequest extends SourceUnitRequest {
-        final Runnable body;
-
-        BlockEntityRequest(RegionizedServer runtime, IslandRegistry.PIsland island,
-                           RegionWorkerThread coordinator, Runnable body) {
-            super(runtime, island, coordinator);
-            this.body = java.util.Objects.requireNonNull(body);
-        }
-
-        @Override public void run() { body.run(); }
-    }
-
-    private static final class EntityRequest extends SourceUnitRequest {
-        final Region member;
-        final long epoch;
-        final Runnable body;
-
-        EntityRequest(RegionizedServer runtime, IslandRegistry.PIsland island, Region member,
-                      RegionWorkerThread coordinator, Runnable body) {
-            super(runtime, island, coordinator);
-            this.member = member;
-            this.epoch = member.domain.epoch;
-            this.body = java.util.Objects.requireNonNull(body);
-        }
-
-        @Override boolean sourceStageIntact() { return entityStageIntact(member, epoch); }
-        @Override public void run() { body.run(); }
-    }
-
-    private static final java.util.concurrent.ConcurrentLinkedQueue<RoutedRequest> ROUTED =
+    private static final java.util.concurrent.ConcurrentLinkedQueue<RoutedCmd> ROUTED =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    static boolean isGlobalNoFence(String cmd) {
+        if (cmd.indexOf('@') >= 0) {
+            return false;
+        }
+        String t = cmd.startsWith("/") ? cmd.substring(1) : cmd;
+        int sp = t.indexOf(' ');
+        String root = sp < 0 ? t.trim() : t.substring(0, sp);
+        return "scoreboard".equals(root);
+    }
 
     public static boolean hasRoutedPending() {
         return !ROUTED.isEmpty();
-    }
-
-    /** Main-only readiness, including the selected root's exact source restriction. */
-    static boolean hasActionableRoutedProgress() {
-        return routedProgressWindowOpen() && hasRoutedPending()
-                && (RegionScheduler.allowsRoutedProgress(null)
-                    || pendingSelectedSource(ROUTED) != null);
-    }
-
-    private static boolean routedProgressWindowOpen() {
-        return !RegionScheduler.inNativeMainService() && ACTIVE_FENCE == null && !inBatch;
     }
 
     /**
@@ -937,7 +566,7 @@ public final class IslandCommands {
     static Throwable cancelFailedGeneration(Throwable primary) {
         Throwable failure = primary;
         inBatch = false;
-        RoutedRequest queued;
+        RoutedCmd queued;
         while ((queued = ROUTED.poll()) != null) {
             failure = cancelQueued(queued, failure);
         }
@@ -948,7 +577,7 @@ public final class IslandCommands {
         return ROUTED.isEmpty();
     }
 
-    private static Throwable cancelQueued(RoutedRequest queued, Throwable primary) {
+    private static Throwable cancelQueued(RoutedCmd queued, Throwable primary) {
         Throwable failure = publishFatalPreserving(primary);
         try {
             if (queued.inv.state != 0) {
@@ -976,28 +605,10 @@ public final class IslandCommands {
         // in a second, externally owned gameplay fence.
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
             offMainBelt("drainRoutedBatch");
-            // Polling native chunk callbacks or an outer fence is not this
-            // queue's ownership window. Its ordinary control/progress pumps retry.
-            if (!routedProgressWindowOpen()) return;
-            if (!hasRoutedPending()) return;
-            RoutedRequest selectedSource = null;
-            if (!RegionScheduler.allowsRoutedProgress(null)) {
-                selectedSource = pendingSelectedSource(ROUTED);
-                if (selectedSource == null) return;
+            if (!ROUTED.isEmpty()) {
+                fabrolia$drainRoutedBatchEntered();
             }
-            fabrolia$drainRoutedBatchEntered(selectedSource);
         });
-    }
-
-    private static RoutedRequest pendingSelectedSource(
-            Iterable<? extends RoutedRequest> requests) {
-        for (RoutedRequest request : requests) {
-            if (request.coordinator != null && !request.fut.isDone()
-                    && RegionScheduler.allowsRoutedProgress(request.coordinator)) {
-                return request;
-            }
-        }
-        return null;
     }
 
     /** True while the routed batch executes on Main under its shared writer
@@ -1015,15 +626,15 @@ public final class IslandCommands {
         RoutedResult receipt = new RoutedResult();
         try {
             RegionScheduler.executeTrackedExternal(tracked -> {
-                ROUTED.add(new CommandRequest(inv, () -> {
+                ROUTED.add(new RoutedCmd(inv, () -> {
                     tracked.run();
                     return true;
-                }, receipt, tracked, null));
+                }, receipt, false, tracked));
                 var server = RegionScheduler.getServer();
                 if (server != null) {
-                    RegionScheduler.scheduleMainControlTask(server, () -> {
+                    server.schedule(new net.minecraft.server.TickTask(server.getTickCount(), () -> {
                         if (!receipt.isDone()) drainRoutedBatch();
-                    });
+                    }));
                 }
             }, body);
         } catch (Throwable failure) {
@@ -1032,27 +643,36 @@ public final class IslandCommands {
     }
 
 
-    private static void fabrolia$drainRoutedBatchEntered(RoutedRequest selectedSource) {
+    private static void fabrolia$drainRoutedBatchEntered() {
         // Retain every detached obligation until its exact post-release completion.
-        java.util.ArrayList<RoutedRequest> done = new java.util.ArrayList<>();
-        java.util.ArrayList<RoutedRequest> fenced = new java.util.ArrayList<>();
-        RoutedRequest detached = null;
+        java.util.ArrayList<RoutedCmd> done = new java.util.ArrayList<>();
+        java.util.ArrayList<RoutedCmd> fenced = new java.util.ArrayList<>();
+        RoutedCmd detached = null;
         Throwable batchFailure = null;
         try {
             inBatch = true;
             try {
                 while ((detached = ROUTED.poll()) != null) {
-                    // Publish ledger ownership before entering any body. If
-                    // allocation fails, detached still names the exact receipt.
-                    RoutedRequest owned = detached;
-                    RegionScheduler.commitSuccessIfHealthy(
-                            () -> fenced.add(owned));
-                    detached = null;
+                    if (detached.fenceless) {
+                        RoutedCmd owned = detached;
+                        RegionScheduler.commitSuccessIfHealthy(
+                                () -> done.add(owned));
+                        detached = null;
+                        RegionScheduler.runSuccessBodyIfHealthy(
+                                () -> execute(owned));
+                    } else {
+                        // Publish ledger ownership before entering any body. If
+                        // allocation fails, detached still names the exact receipt.
+                        RoutedCmd owned = detached;
+                        RegionScheduler.commitSuccessIfHealthy(
+                                () -> fenced.add(owned));
+                        detached = null;
+                    }
                 }
             } finally {
                 inBatch = false;
             }
-            if (!fenced.isEmpty() || selectedSource != null) {
+            if (!fenced.isEmpty()) {
                 long q0 = System.nanoTime();
                 boolean took = quiesceAllExcept(null);
                 if (!took && (ACTIVE_FENCE != null
@@ -1075,42 +695,8 @@ public final class IslandCommands {
                         RegionScheduler.commitSuccessIfHealthy(
                                 () -> QUIESCE_NANOS.add(quiesceNanos));
                     }
-                    if (selectedSource != null) {
-                        if (!took || selectedSource.fut.isDone()
-                                || !delegatesGameplayFrom(
-                                        selectedSource.coordinator, Thread.currentThread())) {
-                            throw new IllegalStateException(
-                                    "routed batch lacks its selected actor's writer ACK");
-                        }
-                    }
-                    if (took && ROUTED.peek() instanceof SourceUnitRequest) {
-                        // These coordinators published while acquisition was
-                        // parking them and already ACK this writer. Preserve FIFO:
-                        // extend only a native-only tail, bounded by issuance
-                        // before any body executes.
-                        long issuedBefore = NEXT_INVOCATION_ID.get();
-                        boolean nativeOnly = true;
-                        for (RoutedRequest queued : ROUTED) {
-                            if (!(queued instanceof SourceUnitRequest)) {
-                                nativeOnly = false;
-                                break;
-                            }
-                            if (queued.inv.id >= issuedBefore) break;
-                        }
-                        if (nativeOnly) {
-                            RoutedRequest head;
-                            while ((head = ROUTED.peek()) instanceof SourceUnitRequest
-                                    && head.inv.id < issuedBefore) {
-                                detached = ROUTED.poll();
-                                RoutedRequest owned = detached;
-                                RegionScheduler.commitSuccessIfHealthy(
-                                        () -> fenced.add(owned));
-                                detached = null;
-                            }
-                        }
-                    }
                     for (int i = 0, n = fenced.size(); i < n; i++) {
-                        RoutedRequest command = fenced.get(i);
+                        RoutedCmd command = fenced.get(i);
                         RegionScheduler.commitSuccessIfHealthy(
                                 () -> done.add(command));
                         RegionScheduler.runSuccessBodyIfHealthy(
@@ -1142,7 +728,18 @@ public final class IslandCommands {
             // locally-normal commands may resume a waiter with success.
             if (batchFailure == null && !done.isEmpty()) {
                 try {
-                    for (RoutedRequest completed : done) completeHealthyRouted(completed);
+                    for (int i = 0, n = done.size(); i < n; i++) {
+                        RoutedCmd d = done.get(i);
+                        if (d.inv.failure != null || d.inv.state != 1 || d.fut.isDone()) {
+                            throw new IllegalStateException(
+                                    "routed command lost its healthy completion state for invocation " + d.inv.id);
+                        }
+                        boolean result = d.inv.result != 0;
+                        RegionScheduler.commitSuccessIfHealthy(() -> {
+                            d.inv.state = 2;
+                            d.fut.completeSuccessInHealthyCut(result);
+                        });
+                    }
                 } catch (Throwable completionFailure) {
                     batchFailure = publishFatalPreserving(completionFailure);
                 }
@@ -1152,18 +749,18 @@ public final class IslandCommands {
                     batchFailure = failAcceptedRouted(detached, batchFailure);
                 }
                 for (int i = 0, n = done.size(); i < n; i++) {
-                    RoutedRequest completed = done.get(i);
+                    RoutedCmd completed = done.get(i);
                     if (!completed.fut.isDone()) {
                         batchFailure = failAcceptedRouted(completed, batchFailure);
                     }
                 }
                 for (int i = 0, n = fenced.size(); i < n; i++) {
-                    RoutedRequest pending = fenced.get(i);
+                    RoutedCmd pending = fenced.get(i);
                     if (!pending.fut.isDone()) {
                         batchFailure = failAcceptedRouted(pending, batchFailure);
                     }
                 }
-                RoutedRequest pending;
+                RoutedCmd pending;
                 while ((pending = ROUTED.poll()) != null) {
                     batchFailure = failAcceptedRouted(pending, batchFailure);
                 }
@@ -1176,19 +773,7 @@ public final class IslandCommands {
         }
     }
 
-    private static void completeHealthyRouted(RoutedRequest request) {
-        if (request.inv.failure != null || request.inv.state != 1 || request.fut.isDone()) {
-            throw new IllegalStateException(
-                    "routed body lost its healthy completion state for invocation " + request.inv.id);
-        }
-        boolean result = request.inv.result != 0;
-        RegionScheduler.commitSuccessIfHealthy(() -> {
-            request.inv.state = 2;
-            request.fut.completeSuccessInHealthyCut(result);
-        });
-    }
-
-    private static void execute(RoutedRequest rc) {
+    private static void execute(RoutedCmd rc) {
         if (rc.inv.state != 0) {
             DUPLICATE_EXEC_ATTEMPTS.increment();
             throw new IllegalStateException(
@@ -1197,7 +782,7 @@ public final class IslandCommands {
         }
         rc.inv.state = 1;
         try {
-            rc.inv.result = rc.runBody() ? 1 : 0;
+            rc.inv.result = rc.body.getAsBoolean() ? 1 : 0;
         } catch (Throwable t) {
             Throwable failure = publishFatalPreserving(t);
             rc.inv.failure = failure;
@@ -1207,7 +792,7 @@ public final class IslandCommands {
     }
 
     /** W is already selected; only failure terminalization may wake this waiter. */
-    private static Throwable failAcceptedRouted(RoutedRequest command, Throwable primary) {
+    private static Throwable failAcceptedRouted(RoutedCmd command, Throwable primary) {
         Throwable failure = publishFatalPreserving(primary);
         if (command.trackedBody instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
             try {
@@ -1580,9 +1165,11 @@ public final class IslandCommands {
             RegionScheduler.throwWorkerFailureIfAny();
             java.util.ArrayList<RegionizedServer> levels =
                     new java.util.ArrayList<>(RegionScheduler.publishedLevels());
+            boolean anyAsync = false;
             boolean needsClaims = false;
             for (RegionizedServer rs : levels) {
                 if (!requiresMainFence(rs)) continue;
+                anyAsync = true;
                 if (rs.mainHoldsAllClaims()) {
                     if (!rs.currentThreadHoldsLocalAllClaims()) {
                         throw new IllegalStateException(
@@ -1593,7 +1180,7 @@ public final class IslandCommands {
                     needsClaims = true;
                 }
             }
-            if (!needsClaims) return false;
+            if (!anyAsync || !needsClaims) return false;
 
             frame = new GlobalFenceFrame(Thread.currentThread(), except);
             ACTIVE_FENCE = frame;

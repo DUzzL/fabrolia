@@ -229,18 +229,13 @@ public final class NetherPortalPreparation {
         return request.destination == level ? request.border : null;
     }
 
-    /** Generation callbacks join the native queue behind earlier worldgen POI writes. */
-    public static boolean deferGenerationPublication(ServerLevel level) {
+    public static boolean inlinePublication(ServerLevel level) {
         Request request = GENERATING.get();
-        return request != null && request.destination == level;
-    }
-
-    private static void requireGenerationOwner(ServerLevel level) {
-        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())
-                || !(RegionScheduler.ownsExactExecutionTurn()
-                    || QUIESCENT.get() && !RegionScheduler.isActive())) {
-            throw new IllegalStateException("portal generation requires physical Main ownership");
-        }
+        return request != null
+                && request.destination == level
+                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())
+                && (RegionScheduler.ownsExactExecutionTurn()
+                    || QUIESCENT.get() && !RegionScheduler.isActive());
     }
 
     public static boolean readScopeActive() { return READ.get() != null; }
@@ -314,7 +309,6 @@ public final class NetherPortalPreparation {
         return best;
     }
 
-    /** A native decision is final even while its executor publications remain pending. */
     static boolean generationDecision(PoiPublicationFence publications,
                                       java.util.function.BooleanSupplier freshSearch,
                                       Runnable create) {
@@ -322,9 +316,9 @@ public final class NetherPortalPreparation {
         if (freshSearch.getAsBoolean()) return true;
         if (!publications.isPublished()) return false;
         create.run();
-        // Observe failure without confusing a queued worldgen/portal receipt with
-        // a failed native decision. The request separately gates publication readiness.
-        publications.isPublished();
+        if (!publications.isPublished()) {
+            throw new IllegalStateException("generation returned before its POI publication");
+        }
         return true;
     }
 
@@ -386,7 +380,7 @@ public final class NetherPortalPreparation {
 
         /** Queue precedence hint only; resolve still validates the acquired attempt. */
         public synchronized boolean readyToAttempt() {
-            return !closed && (destination == null || !needsMain && (denied || border != null));
+            return !closed && (destination == null || denied || border != null && !needsMain);
         }
 
         /** Adds an actual vanilla rider/follower arrival dependency before body entry. */
@@ -405,14 +399,13 @@ public final class NetherPortalPreparation {
         public synchronized boolean resolve() {
             if (closed) throw new IllegalStateException("closed portal preparation");
             transition = null;
-            if (destination == null) return true;
-            if (needsMain) return false;
+            if (destination == null || denied) return true;
+            if (BORDERS.get(destination) != border) return false;
+            if (border == null || needsMain) return false;
             if (!published(source) || !published(destination)) {
                 requestMain();
                 return false;
             }
-            if (denied) return true;
-            if (border == null || BORDERS.get(destination) != border) return false;
             transferIdentity = NetherPortalTransfers.currentTransfer();
             READ.set(this);
             try {
@@ -578,14 +571,12 @@ public final class NetherPortalPreparation {
                         () -> closest(freshPositions, center, radius, pos -> border.isWithinBounds(pos)
                                 && destination.getBlockState(pos).hasProperty(BlockStateProperties.HORIZONTAL_AXIS)) != null,
                         () -> {
-                            requireGenerationOwner(destination);
                             Optional<BlockUtil.FoundRectangle> result = destination.getPortalForcer().createPortal(center, sourceAxis);
-                            requireGenerationOwner(destination);
                             created = result.orElse(null);
                             denied = created == null;
                         });
                 generate = !decided;
-                needsMain = !decided || !published(source) || !published(destination);
+                needsMain = !decided;
             } finally {
                 GENERATING.remove();
             }

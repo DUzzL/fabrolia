@@ -1,13 +1,9 @@
 package com.axalotl.fabrolia.common.regions;
 
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
-import com.axalotl.fabrolia.common.mixin.server.ReentrantBlockableEventLoopAccessor;
 import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer;
-import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBatchScope;
-import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
@@ -264,14 +260,6 @@ public final class RegionScheduler {
         }
     }
 
-    /** Accepted synchronous player L retains this exact pool through normal stop. */
-    static boolean ownsRuntimeGeneration(RegionizedServer expected, RegionWorkerPool expectedPool) {
-        synchronized (LIFECYCLE_LOCK) {
-            return expectedPool != null && pool == expectedPool
-                    && expected != null && PER_LEVEL.get(expected.level) == expected;
-        }
-    }
-
     private static boolean acceptsUnitForLocked(RegionizedServer expected) {
         return expected != null
                 && lifecycleState == LifecycleState.RUNNING
@@ -348,12 +336,10 @@ public final class RegionScheduler {
         StartDraft draft = null;
         Throwable failure = null;
         try {
-            com.axalotl.fabrolia.common.utils.SensorCandidateBridge.sealBootstrap();
-            NativeEntityKnownModEnvelope.initialize();
             int n = FabroliaConfig.getRegionWorkerCount();
             StartDraft buildDraft = new StartDraft();
             draft = buildDraft;
-            RegionWorkerPool transitionGate = new RegionWorkerPool(n, mcServer);
+            RegionWorkerPool transitionGate = new RegionWorkerPool(n);
             startedPool = transitionGate;
             synchronized (LIFECYCLE_LOCK) {
                 Throwable failureBeforeTransition = orphanFatalFailure;
@@ -714,7 +700,6 @@ public final class RegionScheduler {
                     // real server thread may enter them. Workers deliberately cannot
                     // consume this lane, so Main services it on every fixed-point pass.
                     stoppingPool.drainMainSafeAll(true);
-                    drainTrackedMainControlTasks(stoppingPool);
                     for (RegionizedServer rs : drainLevels) {
                         // An accepted worker can enqueue more than one cold-chunk bridge
                         // before its active-step publication reaches the pool cut. Drain the
@@ -905,11 +890,6 @@ public final class RegionScheduler {
         }
         Throwable failure = primary;
         try {
-            failure = cancelTrackedMainControlTasks(expectedPool, failure);
-        } catch (Throwable cleanup) {
-            failure = expectedPool.mergeCancellationFailure(failure, cleanup);
-        }
-        try {
             failure = NetherPortalTransfers.cancelFailedGeneration(failure);
         } catch (Throwable cleanup) {
             failure = expectedPool.mergeCancellationFailure(failure, cleanup);
@@ -961,7 +941,6 @@ public final class RegionScheduler {
                     || (pool != expectedPool && transitionPool != expectedPool)) return true;
         }
         try {
-            if (pendingMainControl(expectedPool) != null) return false;
             if (!IslandCommands.failedGenerationQueuesEmpty()) return false;
             if (!MAIN_SYNC.isEmpty()) return false;
             if (NetherPortalTransfers.hasPending()) return false;
@@ -1196,13 +1175,6 @@ public final class RegionScheduler {
             drainMainSyncTicks();
             if (!retainQueuedRegions) {
                 IslandCommands.drainRoutedBatch();
-                // Mandatory V2 turns run outside autonomous mode and enter before
-                // the exact actor acquires its level/connection slot. Finish each
-                // accepted native control through the real FIFO while REQUESTED,
-                // never by pumping predecessors inside the final PAUSED turn.
-                if (!current.ownsPausedExactTurn(Thread.currentThread())) {
-                    drainTrackedMainControlTasks(current);
-                }
             }
         };
         if (retainQueuedRegions) return current.pauseMainPreparationAndAwait(progress);
@@ -1249,7 +1221,6 @@ public final class RegionScheduler {
         if (NetherPortalTransfers.owns(level, pos)) return true;
         Thread caller = Thread.currentThread();
         MinecraftServer physicalServer = level.getServer();
-        if (physicalServer != null && physicalServer == server && ownsExclusiveGameplay()) return true;
         boolean physicalMain = RegionalPlayerEntityTicksV2
                 .isPhysicalServerThread(physicalServer);
         RegionizedServer runtime = PER_LEVEL.get(level);
@@ -1258,25 +1229,21 @@ public final class RegionScheduler {
             Region target = runtime.regionizer().peekRegionForChunk(
                     ChunkPos.pack(pos));
             if (target != null && runtime.ownsRegion(target)) {
-                Thread targetWorker = target.currentWorker();
-                if (targetWorker == caller) return true;
+                if (target.currentWorker() == caller) return true;
                 EpochDomain domain = target.domain;
                 IslandRegistry.PIsland owner = domain != null ? domain.owner : null;
                 if (owner != null && owner.domain == domain
                         && owner.domainLevel() == level && !owner.retired) {
                     if (physicalMain && IslandCommands.mainHolds(owner)) return true;
                     if (caller instanceof RegionWorkerThread worker
+                            && worker.currentRegion == null
                             && worker.currentDomain == domain
                             && owner.unitClaim.get() && owner.claimHolder == caller
-                            && targetWorker == null
-                            && (worker.currentRegion == null
-                                || runtime.ownsRegion(worker.currentRegion)
-                                && worker.currentRegion.domain == domain
-                                && worker.currentRegion.currentWorker() == caller)) {
-                        // Serial member work retains its coordinator's whole-unit
-                        // footprint, but a conflicting claim or foreign active
-                        // region cannot borrow an inherited domain stamp.
-                        return true;
+                            && domain.entityPending.get() == 0
+                            && target.currentWorker() == null) {
+                        CompletableFuture<Void> barrier = domain.entityBarrier;
+                        return barrier == null
+                                || barrier.isDone() && !barrier.isCompletedExceptionally();
                     }
                 }
             }
@@ -1447,12 +1414,6 @@ public final class RegionScheduler {
     static void queueMainSyncGuardedTick(Entity e, BooleanSupplier admission,
                                          Runnable completion) {
         queueMainSyncTick(e, admission, completion, true, false);
-    }
-
-    /** Ordered A5 fallback retaining both its exact body guard and global scope. */
-    static void queueMainSyncFencedGuardedTick(Entity e, BooleanSupplier admission,
-                                               Runnable completion) {
-        queueMainSyncTick(e, admission, completion, true, true);
     }
 
     /**
@@ -1698,10 +1659,9 @@ public final class RegionScheduler {
                 }
                 permitStarted = true;
                 if (task.allIslandsFenced()) {
-                    // Admission and the complete native producer need global Main
-                    // authority even when no autonomous island requires a fence.
-                    runGlobalMainBody(server, () -> runSuccessBodyIfHealthy(
-                            () -> runMainSyncEntityTask(task)));
+                    AsyncIslandPlayerTicks.runFencedMainMutation(
+                            "globally fenced MAIN_SYNC entity tick",
+                            () -> runMainSyncEntityTask(task));
                 } else {
                     runMainSyncEntityTask(task);
                 }
