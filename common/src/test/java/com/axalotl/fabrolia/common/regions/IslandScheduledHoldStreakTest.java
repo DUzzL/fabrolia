@@ -2,50 +2,46 @@ package com.axalotl.fabrolia.common.regions;
 
 import org.junit.jupiter.api.Test;
 
-import static com.axalotl.fabrolia.common.regions.IslandScheduledTicks.SCHEDULED_HOLD_MAX_STREAK;
+import static com.axalotl.fabrolia.common.regions.IslandScheduledTicks.SCHEDULED_HOLD_STUCK_STREAK;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Bounded same-L fail-closed HOLD retry: pure streak accounting on PIsland. */
-class IslandScheduledHoldStreakTest {
+final class IslandScheduledHoldStreakTest {
 
     @Test
-    void budgetExhaustsOnlyAfterMaxStreakConsecutiveHoldsAtTheSameL() {
+    void stuckIsReportedAtTheThresholdAndAtEveryFurtherMultiple() {
         IslandRegistry.PIsland island = new IslandRegistry.PIsland(55L, 0L);
-        long l = 884_293_201L;
-        assertFalse(IslandScheduledTicks.holdBudgetExhausted(island, l));
-        for (int attempt = 1; attempt < SCHEDULED_HOLD_MAX_STREAK; attempt++) {
-            assertEquals(attempt, IslandScheduledTicks.recordHold(island, l));
-            assertFalse(IslandScheduledTicks.holdBudgetExhausted(island, l),
-                    "attempt " + attempt + " must still hold");
+        long l = 12_345L;
+        for (int attempt = 1; attempt < 3 * SCHEDULED_HOLD_STUCK_STREAK + 1; attempt++) {
+            int streak = IslandScheduledTicks.recordHold(island, l);
+            assertEquals(attempt, streak, "the streak keeps counting past the threshold");
+            assertEquals(attempt % SCHEDULED_HOLD_STUCK_STREAK == 0,
+                    IslandScheduledTicks.holdStreakStuck(streak),
+                    "attempt " + attempt);
         }
-        assertEquals(SCHEDULED_HOLD_MAX_STREAK, IslandScheduledTicks.recordHold(island, l));
-        assertTrue(IslandScheduledTicks.holdBudgetExhausted(island, l));
-        assertFalse(IslandScheduledTicks.holdBudgetExhausted(island, l + 1),
-                "budget is keyed by L");
+        assertFalse(IslandScheduledTicks.holdStreakStuck(0));
     }
 
     @Test
-    void newLogicalTickStartsAFreshStreak() {
+    void aDifferentLStartsAFreshStreak() {
         IslandRegistry.PIsland island = new IslandRegistry.PIsland(56L, 0L);
-        for (int i = 0; i < SCHEDULED_HOLD_MAX_STREAK; i++) {
+        for (int i = 0; i < SCHEDULED_HOLD_STUCK_STREAK; i++) {
             IslandScheduledTicks.recordHold(island, 10L);
         }
-        assertTrue(IslandScheduledTicks.holdBudgetExhausted(island, 10L));
+        assertTrue(IslandScheduledTicks.holdStreakStuck(island.scheduledHoldStreak));
         assertEquals(1, IslandScheduledTicks.recordHold(island, 11L));
-        assertFalse(IslandScheduledTicks.holdBudgetExhausted(island, 11L));
-        assertFalse(IslandScheduledTicks.holdBudgetExhausted(island, 10L));
+        assertEquals(11L, island.scheduledHoldL);
     }
 
     @Test
-    void admissionClearsTheStreakSoTheNextHoldAtAnyLStartsAtOne() {
+    void admissionClearsTheStreak() {
         IslandRegistry.PIsland island = new IslandRegistry.PIsland(57L, 0L);
-        for (int i = 0; i < SCHEDULED_HOLD_MAX_STREAK; i++) {
+        for (int i = 0; i < SCHEDULED_HOLD_STUCK_STREAK; i++) {
             IslandScheduledTicks.recordHold(island, 10L);
         }
         IslandScheduledTicks.clearHoldStreak(island);
-        assertFalse(IslandScheduledTicks.holdBudgetExhausted(island, 10L));
+        assertEquals(0, island.scheduledHoldStreak);
         assertEquals(1, IslandScheduledTicks.recordHold(island, 10L));
     }
 }

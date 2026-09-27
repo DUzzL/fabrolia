@@ -215,6 +215,90 @@ final class EntityStatusOwnerTransactionTest {
     }
 
     @Test
+    void persistentlyClaimedOwnerGetsClaimInterestAfterEscalationPassesAndLosesItOnceApplied() throws Exception {
+        IslandRegistry.PIsland busy = owner(717L);
+        var statuses = new PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions();
+        List<String> events = new ArrayList<>();
+        PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.Runner runner = (key, body) ->
+                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(busy, false, body);
+        int threshold = PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.ESCALATE_AFTER_PASSES;
+        busy.unitClaim.set(true);
+        statuses.offer(1L, () -> events.add("hidden"));
+        statuses.offer(1L, () -> events.add("tracked"));
+        for (int pass = 1; pass < threshold; pass++) {
+            statuses.drainAtTickHead(runner, key -> busy);
+            assertFalse(busy.claimWanted, "pass " + pass + " is below the escalation threshold");
+        }
+        statuses.drainAtTickHead(runner, key -> busy);
+        assertTrue(busy.claimWanted, "pass " + threshold + " announces Main's interest");
+        assertEquals(List.of(), events);
+        statuses.drainAtTickHead(runner, key -> busy);
+        assertTrue(busy.claimWanted, "interest stands while the chunk stays deferred");
+        assertFalse(statuses.idle());
+
+        busy.unitClaim.set(false);
+        statuses.drainAtTickHead(runner, key -> busy);
+        assertEquals(List.of("hidden", "tracked"), events);
+        assertFalse(busy.claimWanted, "applied status drops the interest in the same pass");
+        assertTrue(statuses.idle());
+        assertFalse(busy.unitClaim.get());
+        assertFalse(IslandCommands.mainHolds(busy));
+
+        // The counter restarted: a fresh deferral needs the full threshold again.
+        busy.unitClaim.set(true);
+        statuses.offer(1L, () -> events.add("ticking"));
+        for (int pass = 1; pass < threshold; pass++) {
+            statuses.drainAtTickHead(runner, key -> busy);
+        }
+        assertFalse(busy.claimWanted);
+        statuses.drainAtTickHead(runner, key -> busy);
+        assertTrue(busy.claimWanted);
+        busy.unitClaim.set(false);
+        statuses.drainAtTickHead(runner, key -> busy);
+        assertFalse(busy.claimWanted);
+    }
+
+    @Test
+    void onlyTheTickHeadPassTouchesClaimInterestAndASiblingChunkKeepsIt() throws Exception {
+        IslandRegistry.PIsland busy = owner(718L);
+        var statuses = new PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions();
+        List<String> events = new ArrayList<>();
+        PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.Runner runner = (key, body) ->
+                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(busy, false, body);
+        int threshold = PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.ESCALATE_AFTER_PASSES;
+        busy.unitClaim.set(true);
+        statuses.offer(1L, () -> events.add("one"));
+        statuses.offer(2L, () -> events.add("two"));
+        for (int pass = 0; pass < threshold; pass++) {
+            // Status-callback drains between ticks neither count nor escalate.
+            statuses.drain(runner, false);
+            statuses.drainAtTickHead(runner, key -> busy);
+        }
+        assertTrue(busy.claimWanted);
+
+        // Chunk 1 settles outside the tick-head pass (a status callback drain
+        // while the unit happens to be between claims); chunk 2 is offered a
+        // successor first so it stays pending after the same drain.
+        statuses.offer(2L, () -> events.add("two-later"));
+        busy.unitClaim.set(false);
+        PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.Runner onlyChunkOne = (key, body) ->
+                key == 1L && PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(busy, false, body);
+        statuses.drain(onlyChunkOne, false);
+        assertEquals(List.of("one"), events);
+        assertTrue(busy.claimWanted, "a non-tick-head drain never drops the interest");
+        busy.unitClaim.set(true);
+        statuses.drainAtTickHead(runner, key -> busy);
+        assertTrue(busy.claimWanted, "chunk 2 is still escalated on the same owner");
+        assertFalse(statuses.idle());
+
+        busy.unitClaim.set(false);
+        statuses.drainAtTickHead(runner, key -> busy);
+        assertEquals(List.of("one", "two", "two-later"), events);
+        assertFalse(busy.claimWanted);
+        assertTrue(statuses.idle());
+    }
+
+    @Test
     void failedGenerationCancelsUnenteredStatusBodiesWithoutAcknowledgingTheirEffects() {
         var statuses = new PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions();
         List<String> effects = new ArrayList<>();

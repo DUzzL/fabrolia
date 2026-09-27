@@ -55,8 +55,9 @@ public final class ScheduledTickIslandAdmission {
      *  vanilla's exact check, which also needs the ready BLOCK_TICKING future
      *  and loaded entities. Outside that range vanilla refuses for distance
      *  alone, so the refusal is stable and stays DORMANT; inside it the exact
-     *  refusal is a readiness hole, held for a bounded number of retries
-     *  ({@code IslandScheduledTicks.SCHEDULED_HOLD_MAX_STREAK}) by the caller. */
+     *  refusal is a readiness hole the caller holds for until it heals (a
+     *  stall is reported every {@code IslandScheduledTicks.SCHEDULED_HOLD_STUCK_STREAK}
+     *  holds, never degraded). */
     static Decision classify(boolean exactTickCheck, boolean entityTickingRange,
                              boolean pulseCoherenceRequired) {
         if (exactTickCheck) return Decision.ADMIT;

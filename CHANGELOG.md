@@ -15,9 +15,16 @@
   loading (entities never marked loaded, scheduled ticks held, chunk delivery
   stuck) and paused all entity unloads level-wide. Entries are now deferred
   per chunk while the rest of the queue drains.
-- Island scheduled-tick holds are bounded: after ~10 s of consecutive holds at
-  one logical tick the unit falls back to vanilla's per-container refusal and
-  logs SCHEDULED-HOLD-EXHAUSTED with chunk readiness details.
+- An island that chains units back-to-back no longer starves its OWN chunks'
+  entity status transitions (Main's single non-blocking claim attempt per
+  tick almost never won): after 20 consecutive deferred ticks Main announces
+  claim interest, the unit yields exactly as for a blocking Main claim, the
+  transition applies and the interest is dropped
+  (`[entity-status] escalating claim ...` at INFO).
+- Island scheduled-tick holds that do not heal are reported loudly instead of
+  degraded: every 200 consecutive holds at one logical tick the unit logs
+  SCHEDULED-HOLD-STUCK with the refused chunk's readiness legs, and keeps
+  holding (the periodic SCHEDULED-HOLD line carries the same legs).
 - A due redstone (pulse-sensitive) scheduled tick in a chunk on the
   simulation-distance edge (block-ticking but not entity-ticking) no longer
   holds the whole island: vanilla never runs such a container either, so it
