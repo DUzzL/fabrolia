@@ -208,6 +208,14 @@ fails, stay merged; merged-but-idle islands cost nothing extra.
   out of all claims; no partial-claim wait or Main-deferred teleport queue remains.
   Players retain their instances and listener FIFO exclusion through the ordered
   Main-only metadata tail; non-player arrivals use vanilla destination clones.
+  A reservation with no player and no transmitting waypoint anywhere in its
+  custody runs **inline**: nothing is deferred to Main, and the worker finishes
+  the reservation (source UUID release, portal-pending clear, preparation
+  close) right after the vanilla teleport while it still holds both island
+  claims. The clone is tickable by the destination island's next unit and its
+  tracker takes the ordinary island path, so a lagging Main cannot delay a
+  mob, item or cart crossing (portal farms). The paragraph below describes
+  the tail mode, used whenever a player is in the cohort.
 
   An arriving entity's tracking publication retains its exact schedule token and
   original TickTask, including pending pairing/bulk obligations. After metadata,
@@ -222,7 +230,10 @@ fails, stay merged; merged-but-idle islands cost nothing extra.
   separate volatile bit on the existing entity tick lease, not a removal spoof
   or a player-actor reservation token.
   `NetherPortalPreparation` preserves vanilla POI selection, world-border and
-  portal geometry rules. Cold preparation and a genuinely missing portal run on
+  portal geometry rules. Its publication fence tracks only `nether_portal` POI
+  callbacks (the search reads no other POI type; vanilla defers every POI
+  change through `server.execute`).
+  Cold preparation and a genuinely missing portal run on
   physical Main under the real pool pause. This pause may retain queued next-unit
   regional tasks, but waits for running helpers, flat/global work and tracked
   causal obligations. It does not stop independent world-generation executors:

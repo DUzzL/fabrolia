@@ -10,6 +10,17 @@
 
 ### Fixed
 
+- Mobs, items and carts crossing a Nether portal no longer wait for Main.
+  The worker teleported them under both island claims but the arrival stayed
+  untickable and untracked until Main's once-per-tick metadata tail drained
+  (30-45 ms at 20 TPS; the whole Main stall under lag - 1.94 s measured under
+  a 2 s Main park, which broke portal farms). A transfer with no player and no
+  transmitting waypoint now finishes on the worker right after the vanilla
+  teleport (0-7 ms under the same park). Player transfers keep the ordered
+  Main tail. The portal preparation POI fence now tracks only `nether_portal`
+  POI callbacks, so bed/job-site/hive churn cannot make a transfer wait for
+  Main's preparation pass. `/fabrolia regions debug flightrec status` reports
+  transfer counts/latency; `-Dfabrolia.netherTransferTrace=true` logs each.
 - Region workers no longer tick an entity whose own chunk has already left
   FULL (vanilla removes it from the tick list synchronously; here the removal
   arrives asynchronously from C2ME). Ticking it forced a bridged chunk reload
