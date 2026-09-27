@@ -10,6 +10,11 @@
 
 ### Fixed
 
+- Worldgen no longer crashes the server with "success-only body refused by a
+  closed or exclusive pool generation" when a structure piece or spawn
+  finalizer mounts entities that are not yet published to the level (ocean
+  ruin drowned, jockeys): an unpublished, player-free ride component runs
+  its ride mutation directly instead of through the lifecycle fence.
 - Nether portal creation no longer fails with "generation returned before its
   POI publication" when a destination POI publication is queued during
   generation; preparation re-requests Main until both levels' publications

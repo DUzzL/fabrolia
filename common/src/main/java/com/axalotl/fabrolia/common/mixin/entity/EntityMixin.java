@@ -10,6 +10,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.entity.EntityInLevelCallback;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
@@ -217,6 +218,7 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
             com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2.LifecycleMutationKind
                     kind,
             Entity[] participants, java.util.function.Supplier<T> body) {
+        if (fabrolia$isUnpublishedRide(participants)) return body.get();
         com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2.LifecycleLeaseScope scope =
                 com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                         .beginLifecycleMutation(kind, participants);
@@ -252,6 +254,38 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
         }
         if (failure != null) EntityMixin.<RuntimeException>fabrolia$throwLifecycleFailure(failure);
         return (T) result[0];
+    }
+
+    /**
+     * Worldgen-private ride assembly: structure pieces, spawn finalizers and
+     * entity deserialization mount entities no level has published yet (no
+     * PESM callback, no region index, no lease, no tracker) from threads the
+     * pool never admits, e.g. C2ME's worldgen workers. Such a component has
+     * nothing for the lifecycle fence to protect, so the body runs directly.
+     * One published participant or a ServerPlayer anywhere in the ride
+     * component restores the fenced path.
+     */
+    @Unique
+    private static boolean fabrolia$isUnpublishedRide(Entity[] participants) {
+        for (Entity root : participants) {
+            if (root != null && !fabrolia$isUnpublishedRideTree(root.getRootVehicle())) return false;
+        }
+        return true;
+    }
+
+    @Unique
+    private static boolean fabrolia$isUnpublishedRideTree(Entity entity) {
+        if (entity instanceof ServerPlayer
+                || !(entity instanceof EntityLevelCallbackAccessor callback)
+                || callback.fabrolia$getLevelCallback() != EntityInLevelCallback.NULL
+                || !(entity instanceof RegionKeyed keyed)
+                || keyed.fabrolia$getRegionKey() != RegionKeyed.NO_REGION) {
+            return false;
+        }
+        for (Entity passenger : entity.getPassengers()) {
+            if (!fabrolia$isUnpublishedRideTree(passenger)) return false;
+        }
+        return true;
     }
 
     @Unique
