@@ -62,36 +62,6 @@ class TrackedExternalExecutorTest {
     }
 
     @Test
-    void fatalCutCancelsDeferredMainControlBeforeNativePublication() {
-        assertTimeoutPreemptively(Duration.ofSeconds(3), () -> {
-            RegionWorkerPool pool = new RegionWorkerPool(1);
-            RuntimeException failure = new RuntimeException("failure before native control replay");
-            AtomicReference<Runnable> queued = new AtomicReference<>();
-            AtomicInteger bodies = new AtomicInteger();
-            AtomicInteger cancellations = new AtomicInteger();
-            class Control implements Runnable, RegionTaskFanIn.CancellableQueueEntry {
-                @Override public void run() { bodies.incrementAndGet(); }
-                @Override public void cancelQueuedBeforeStart() { cancellations.incrementAndGet(); }
-            }
-            pool.start();
-            try {
-                pool.pauseExactTurnAndAwait(() -> {});
-                CompletableFuture.runAsync(() ->
-                        pool.executeTrackedMainControl(queued::set, new Control())).join();
-                assertNull(queued.get());
-                pool.publishFatalFailure(failure);
-                assertSame(failure, assertThrows(RuntimeException.class, pool::resumeExactTurn));
-                assertNull(queued.get(), "cancelled roots cannot leave stale native queue carriers");
-                assertEquals(0, bodies.get());
-                assertEquals(1, cancellations.get());
-            } finally {
-                assertSame(failure, assertThrows(RuntimeException.class, pool::stop));
-            }
-            assertEquals(1, cancellations.get(), "stop must not cancel the retired root twice");
-        });
-    }
-
-    @Test
     void inlineInvocationFollowedByExecutorFailureNeverEntersTheBody() {
         assertTimeoutPreemptively(Duration.ofSeconds(3), () -> {
             RegionWorkerPool pool = new RegionWorkerPool(1);

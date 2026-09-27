@@ -51,7 +51,7 @@ class PlayerChunkIndexSnapshotTest {
             PlayerChunkIndex.rebuild(level);
             PlayerChunkIndex index = PlayerChunkIndex.usable(level);
             assertNotNull(index);
-            assertEquals(List.of(first, second), index.allPlayers());
+            assertEquals(List.of(first, second), index.candidates(0, 0, Double.POSITIVE_INFINITY));
             assertTrue(backing.isEmpty());
         } finally {
             PlayerChunkIndex.onLevelUnload(level);

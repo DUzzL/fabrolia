@@ -183,8 +183,7 @@ final class ScheduledTickGlobalCellDiscoveryTest {
         return (cellX & 0xFFFF_FFFFL) | ((cellZ & 0xFFFF_FFFFL) << 32);
     }
 
-    private static final class LogicalServer extends DedicatedServer
-            implements RegionalPlayerEntityTicksV2.PhysicalServerThreadAccess {
+    private static final class LogicalServer extends DedicatedServer {
         Thread logicalThread;
 
         private LogicalServer() {
@@ -203,10 +202,6 @@ final class ScheduledTickGlobalCellDiscoveryTest {
         // changing its distinct, final physical serverThread.
         @Override public Thread getRunningThread() {
             return logicalThread == null ? super.getRunningThread() : logicalThread;
-        }
-
-        @Override public Thread fabrolia$physicalServerThread() {
-            return super.getRunningThread();
         }
     }
 

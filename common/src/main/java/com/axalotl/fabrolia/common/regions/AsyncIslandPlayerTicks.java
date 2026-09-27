@@ -2038,7 +2038,7 @@ public final class AsyncIslandPlayerTicks {
             RegionScheduler.runWithMainEntityClaim(player, () -> {
                 if (!cancelDirectMainListenerTick(
                         lease.state, listener, player, lifecycle)) body.run();
-            });
+            }, () -> cancelDirectMainListenerTick(lease.state, listener, player, lifecycle));
         });
     }
 

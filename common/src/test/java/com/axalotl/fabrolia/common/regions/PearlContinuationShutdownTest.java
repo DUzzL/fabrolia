@@ -44,7 +44,7 @@ class PearlContinuationShutdownTest {
                     Thread.currentThread().interrupt();
                     throw new AssertionError(interrupted);
                 }
-                RegionScheduler.enqueueGlobalMainGameplay(() -> {
+                RegionScheduler.enqueueGlobalMainOnly(() -> {
                     bodyThread.set(Thread.currentThread());
                     teleports.incrementAndGet();
                 });

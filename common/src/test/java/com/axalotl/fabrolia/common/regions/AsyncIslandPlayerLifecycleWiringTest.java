@@ -539,12 +539,11 @@ final class AsyncIslandPlayerLifecycleWiringTest {
         Fixture() throws Exception {
             assertNull(previousPool);
             MinecraftServer server = (MinecraftServer) unsafe().allocateInstance(com.axalotl.fabrolia.common.regions.TestDedicatedServer.class);
-            PreparedAdvancementTestResources.install(server);
             set(MinecraftServer.class, server, "serverThread", Thread.currentThread());
             set(MinecraftServer.class, server, "levels", Map.of());
             set(net.minecraft.util.thread.BlockableEventLoop.class, server, "pendingRunnables",
                     new java.util.concurrent.ConcurrentLinkedQueue<net.minecraft.server.TickTask>());
-            pool = new RegionWorkerPool(1, server);
+            pool = new RegionWorkerPool(1);
             level = (TestLevel) unsafe().allocateInstance(TestLevel.class);
             level.server = server;
             runtime = new RegionizedServer(level, new RegionGrid(3));
@@ -620,7 +619,6 @@ final class AsyncIslandPlayerLifecycleWiringTest {
                     completion.completeExceptionally(failure);
                 }
             }));
-            assertTrue(pool.runExclusiveWorkerStep());
             completion.get(5L, TimeUnit.SECONDS);
         }
 

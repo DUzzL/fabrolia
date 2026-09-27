@@ -160,26 +160,32 @@ class FabroliaIslandOwnershipTest {
     @Test
     void ownerCallbackCompletesBeforeReturnWithoutReleasingItsClaim() throws Exception {
         try (Fixture fixture = new Fixture(true)) {
+            java.util.concurrent.CompletableFuture<Void> done = new java.util.concurrent.CompletableFuture<>();
             assertTrue(fixture.pool.enqueueGlobal(() -> {
-                RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
-                worker.currentRegion = fixture.ownRegion;
-                claim(fixture.ownRegion);
                 try {
-                    java.util.ArrayList<String> order = new java.util.ArrayList<>();
-                    order.add("before");
-                    FabroliaIslandApi.executeOnOwner(fixture.level, OWN, () -> {
-                        assertTrue(fixture.owns(OWN));
-                        order.add("body");
-                    });
-                    order.add("after");
-                    org.junit.jupiter.api.Assertions.assertEquals(
-                            java.util.List.of("before", "body", "after"), order);
-                } finally {
-                    release(fixture.ownRegion);
-                    worker.currentRegion = null;
+                    RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
+                    worker.currentRegion = fixture.ownRegion;
+                    claim(fixture.ownRegion);
+                    try {
+                        java.util.ArrayList<String> order = new java.util.ArrayList<>();
+                        order.add("before");
+                        FabroliaIslandApi.executeOnOwner(fixture.level, OWN, () -> {
+                            assertTrue(fixture.owns(OWN));
+                            order.add("body");
+                        });
+                        order.add("after");
+                        org.junit.jupiter.api.Assertions.assertEquals(
+                                java.util.List.of("before", "body", "after"), order);
+                    } finally {
+                        release(fixture.ownRegion);
+                        worker.currentRegion = null;
+                    }
+                    done.complete(null);
+                } catch (Throwable failure) {
+                    done.completeExceptionally(failure);
                 }
             }));
-            assertTrue(fixture.pool.runExclusiveWorkerStep());
+            done.get(5, TimeUnit.SECONDS);
         }
     }
 
@@ -201,7 +207,6 @@ class FabroliaIslandOwnershipTest {
             var publishReady = RegionWorkerPool.class.getDeclaredMethod("publishReady", Region.class);
             publishReady.setAccessible(true);
             publishReady.invoke(fixture.pool, fixture.ownRegion);
-            assertTrue(fixture.pool.runExclusiveWorkerStep());
             assertTrue(completed.await(5, TimeUnit.SECONDS),
                     "the queued callback must run after the foreign claim releases");
         }
@@ -296,7 +301,7 @@ class FabroliaIslandOwnershipTest {
     private static final class Fixture implements AutoCloseable {
         final Thread physicalMain = Thread.currentThread();
         final MinecraftServer server = serverOwnedBy(physicalMain);
-        final RegionWorkerPool pool = new RegionWorkerPool(1, server);
+        final RegionWorkerPool pool = new RegionWorkerPool(1);
         final TestLevel level = TestLevel.create(server);
         final TestLevel otherLevel = TestLevel.create(server);
         final TestLevel foreignServerLevel = TestLevel.create(serverOwnedBy(physicalMain));

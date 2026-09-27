@@ -81,10 +81,10 @@ class SpawnCensusQueryAcceptanceTest {
             // The census callback records eligibility only; it does not inspect a chunk.
             accepted.accept(null);
         };
-        SpawnCensus.CensusCounts part = new SpawnCensus.CensusCounts();
         long[] keys = {1, 2, 3};
-        SpawnCensus.fabrolia$reduceRange(census, ticking, getter, keys, part);
-        SpawnCensus.Reduced result = SpawnCensus.fabrolia$finishReduction(part);
+        SpawnCensus.CensusPart part = new SpawnCensus.CensusPart(0, keys.length);
+        SpawnCensus.fabrolia$reduceRange(census, ticking, getter, keys, part, null);
+        SpawnCensus.Reduced result = SpawnCensus.fabrolia$mergeParts(keys, new SpawnCensus.CensusPart[] {part});
 
         assertEquals(List.of(1L, 2L, 3L), queries);
         assertEquals(12, result.counts().getInt(MobCategory.values()[0]));
@@ -105,10 +105,10 @@ class SpawnCensusQueryAcceptanceTest {
             if (key == 2L) throw failure;
             accepted.accept(null);
         };
-        SpawnCensus.CensusCounts part = new SpawnCensus.CensusCounts();
+        SpawnCensus.CensusPart part = new SpawnCensus.CensusPart(0, 3);
         assertSame(failure, assertThrows(RuntimeException.class, () ->
                 SpawnCensus.fabrolia$reduceRange(census, new Long2IntConcurrentHashMap(),
-                        getter, new long[]{1, 2, 3}, part)));
+                        getter, new long[]{1, 2, 3}, part, null)));
         assertEquals(List.of(1L, 2L), queries);
         assertEquals(2, part.counts[0]);
         assertSame(failure, assertThrows(Throwable.class, RegionScheduler::throwWorkerFailureIfAny));
@@ -209,10 +209,10 @@ class SpawnCensusQueryAcceptanceTest {
         Long2IntConcurrentHashMap ticking = new Long2IntConcurrentHashMap();
         ticking.put(1L, 1);
         long[] keys = {1L};
-        SpawnCensus.CensusCounts part = new SpawnCensus.CensusCounts();
+        SpawnCensus.CensusPart part = new SpawnCensus.CensusPart(0, keys.length);
         SpawnCensus.fabrolia$reduceRange(
-                census, ticking, (key, accepted) -> accepted.accept(null), keys, part);
-        SpawnCensus.Reduced result = SpawnCensus.fabrolia$finishReduction(part);
+                census, ticking, (key, accepted) -> accepted.accept(null), keys, part, null);
+        SpawnCensus.Reduced result = SpawnCensus.fabrolia$mergeParts(keys, new SpawnCensus.CensusPart[] {part});
         assertEquals(entities, result.counts().getInt(MobCategory.MONSTER));
         assertEquals(mobs, result.totalMobs());
         if (mobs == 0) {

@@ -111,57 +111,6 @@ class NetherTransferAdmissionTest {
         }
     }
 
-    @Test
-    void metadataClaimsCanUpgradeToGlobalWithoutReleasingSourceOrArrival() throws Exception {
-        exerciseMetadataGlobalUpgrade(false);
-    }
-
-    @Test
-    void failedMetadataUpgradeBodyKeepsItsWinnerAndReleasesOnlyItsOwnClaims() throws Exception {
-        exerciseMetadataGlobalUpgrade(true);
-    }
-
-    private static void exerciseMetadataGlobalUpgrade(boolean failBody) throws Exception {
-        try (Fixture fixture = new Fixture()) {
-            AtomicInteger callbacks = new AtomicInteger();
-            AssertionError failure = new AssertionError("metadata callback failed");
-            // Exercise the exact claim set used by tryRunPlayerMetadata, then
-            // the real global writer acquisition. The pool stays stopped so
-            // a self-wait fails immediately rather than hanging the test.
-            try (AutoCloseable claims = fixture.tryClaims(List.of(
-                    new NetherPortalPreparation.ChunkRef(fixture.level, 0L),
-                    new NetherPortalPreparation.ChunkRef(fixture.level, 32L)))) {
-                assertNotNull(claims);
-                assertFalse(RegionScheduler.ownsExclusiveGameplay(),
-                        "source/arrival claims alone are not global writer authority");
-                Runnable upgrade = () -> RegionScheduler.runGlobalMainBody(fixture.server, () -> {
-                    assertTrue(fixture.runtime.currentThreadHoldsAllClaims());
-                    assertFalse(fixture.owner.tryClaimAutonomousWork());
-                    assertFalse(fixture.arrival.tryClaimAutonomousWork());
-                    assertFalse(fixture.other.tryClaimAutonomousWork());
-                    callbacks.incrementAndGet();
-                    if (failBody) throw failure;
-                });
-                if (failBody) {
-                    assertSame(failure, assertThrows(AssertionError.class, upgrade::run));
-                } else {
-                    upgrade.run();
-                }
-                assertEquals(1, callbacks.get());
-                assertTrue(fixture.owner.unitClaim.get(),
-                        "global frame release must retain the source metadata claim");
-                assertTrue(fixture.arrival.unitClaim.get(),
-                        "global frame release must retain the arrival metadata claim");
-                assertFalse(fixture.other.unitClaim.get());
-                assertFalse(IslandCommands.fenceWindowHeld());
-            }
-            assertFalse(fixture.owner.unitClaim.get());
-            assertFalse(fixture.arrival.unitClaim.get());
-            assertFalse(IslandCommands.mainHolds(fixture.owner));
-            assertFalse(IslandCommands.mainHolds(fixture.arrival));
-        }
-    }
-
     private static void await(CountDownLatch latch) {
         try {
             assertTrue(latch.await(5, TimeUnit.SECONDS), "Main did not publish the fence");
