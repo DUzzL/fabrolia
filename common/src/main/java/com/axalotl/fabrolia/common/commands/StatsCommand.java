@@ -180,7 +180,13 @@ public class StatsCommand {
                         totalEntities.incrementAndGet();
                         entityTypeCounts.merge(entityType, 1, Integer::sum);
 
-                        boolean isFabrolia = !ParallelProcessor.shouldTickSynchronously(entity);
+                        // Region mode admits entities through requiresMainThread (RegionizedServer
+                        // .tickOneAdmitted); the flat-pool sync policy (blocked classes, config
+                        // synchronizedEntities) only applies when regions are off.
+                        boolean isFabrolia = !FabroliaConfig.disabled
+                                && (RegionScheduler.isActive() && RegionScheduler.forLevel(world) != null
+                                        ? !ParallelProcessor.requiresMainThread(entity)
+                                        : !ParallelProcessor.shouldTickSynchronously(entity));
                         entityTypeFabrolia.put(entityType, isFabrolia);
 
                         if (isFabrolia) {
