@@ -6,11 +6,9 @@ import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
-import com.llamalad7.mixinextras.sugar.Local;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ServerLevelAccessor;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.EndPortalBlock;
@@ -42,10 +40,8 @@ public abstract class EndPortalBlockMixin {
     }
 
     /**
-     * Non-player platform regeneration shares the staged arrival's destination
-     * cohort, including publication from physical Main. A player's arrival is
-     * synchronous under its full Main lifecycle fence, so its platform must be
-     * regenerated inline before the player is inserted or observes the destination.
+     * Platform regeneration shares the staged arrival's destination cohort,
+     * including publication from physical Main.
      */
     @org.spongepowered.asm.mixin.Unique
     private static boolean fabrolia$shouldStageRegen(ServerLevel dest, BlockPos pos) {
@@ -65,9 +61,8 @@ public abstract class EndPortalBlockMixin {
             at = @org.spongepowered.asm.mixin.injection.At(value = "INVOKE",
                     target = "Lnet/minecraft/world/level/levelgen/feature/EndPlatformFeature;createEndPlatform(Lnet/minecraft/world/level/ServerLevelAccessor;Lnet/minecraft/core/BlockPos;Z)V"))
     private void fabrolia$stageRegen(ServerLevelAccessor level, BlockPos pos, boolean dropResources,
-                                     Operation<Void> original, @Local(argsOnly = true) Entity entity) {
+                                     Operation<Void> original) {
         if (!CrossDimArrivals.PUBLISHING.get()
-                && !(entity instanceof ServerPlayer)
                 && RegionScheduler.isActive()
                 && level instanceof ServerLevel sl
                 && fabrolia$shouldStageRegen(sl, pos)) {

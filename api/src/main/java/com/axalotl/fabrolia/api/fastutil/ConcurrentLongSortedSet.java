@@ -22,8 +22,6 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>Cache-miss path iterates the skip list directly into a fastutil {@code LongArrayList}
  *       (no boxing in the result, amortized growth).</li>
  * </ul>
- * <p>Range sets are live bounded views. Their snapshot caches are separate, but
- * mutations through any view invalidate the caches of every alias.
  *
  * <p>Snapshot semantics intentionally relaxed: a concurrent add/remove that races with
  * {@code toLongArray} may see either the pre- or post-mod state. Vanilla's original
@@ -33,21 +31,16 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class ConcurrentLongSortedSet implements LongSortedSet {
 
-    private final NavigableSet<Long> backing;
+    private final ConcurrentSkipListSet<Long> backing;
 
-    private final AtomicLong modCount;
+    private final AtomicLong modCount = new AtomicLong();
 
     private volatile Snapshot cached;
 
     private record Snapshot(long version, long[] data) {}
 
     public ConcurrentLongSortedSet() {
-        this(new ConcurrentSkipListSet<>(), new AtomicLong());
-    }
-
-    private ConcurrentLongSortedSet(NavigableSet<Long> backing, AtomicLong modCount) {
-        this.backing = backing;
-        this.modCount = modCount;
+        this.backing = new ConcurrentSkipListSet<>();
     }
 
     public ConcurrentLongSortedSet(Collection<Long> collection) {
@@ -56,8 +49,7 @@ public final class ConcurrentLongSortedSet implements LongSortedSet {
     }
 
     @Override public LongBidirectionalIterator iterator(long fromElement) {
-        Long first = backing.ceiling(fromElement);
-        return wrap(first == null ? Collections.emptyIterator() : backing.tailSet(first, true).iterator());
+        return wrap(backing.tailSet(fromElement).iterator());
     }
 
     @Override public LongBidirectionalIterator iterator() { return wrap(backing.iterator()); }
@@ -153,13 +145,13 @@ public final class ConcurrentLongSortedSet implements LongSortedSet {
     }
 
     @Override public LongSortedSet subSet(long from, long to) {
-        return new ConcurrentLongSortedSet(backing.subSet(from, true, to, false), modCount);
+        return new ConcurrentLongSortedSet(backing.subSet(Math.min(from, to), Math.max(from, to)));
     }
     @Override public LongSortedSet headSet(long to) {
-        return new ConcurrentLongSortedSet(backing.headSet(to, false), modCount);
+        return new ConcurrentLongSortedSet(backing.headSet(to));
     }
     @Override public LongSortedSet tailSet(long from) {
-        return new ConcurrentLongSortedSet(backing.tailSet(from, true), modCount);
+        return new ConcurrentLongSortedSet(backing.tailSet(from));
     }
     @Override public LongComparator comparator() { return null; }
     @Override public long firstLong() { return backing.first(); }

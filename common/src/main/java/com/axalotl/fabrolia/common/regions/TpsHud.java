@@ -20,14 +20,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * Metric definitions: island MSPT = successful-unit EWMA from body start
  * to completion preparation (before arrival sealing/successor preparation).
  * Deadline/queue wait and unsuccessful attempts are excluded; in-body
- * barrier waiting and coordinator help work are included. Freshness and
- * current due/queue/claim state accompany this completed-only cost.
+ * barrier waiting and coordinator help work are included.
  * Island TPS = completed logical units per real second (cached reader-side window
  * over the unit counter — never derived from main's tick counter, never
  * clamped, correct during sprint and rates above 20). Main TPS = Δoverworld
- * gameTime per real second; Main MSPT = the last 100 completed outer loops,
- * packet processing through post-tick service, excluding only native deadline
- * idle parks. Minecraft's own tickServer ring is left unchanged.
+ * gameTime per real second; Main MSPT = the server's own average tick time
+ * ({@code MinecraftServer#getAverageTickTimeNanos}).
  * Ownerless positions show GLOBAL explicitly — never a stale island line.
  *
  * <p>Carpet note: carpet is not a compile dependency of Fabrolia, so
@@ -38,36 +36,18 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class TpsHud {
 
     private static final Set<UUID> SUBSCRIBERS = ConcurrentHashMap.newKeySet();
+    private static final TpsWindow MAIN_TPS_WINDOW = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, 20.0);
+    private static long mainEmaNanos;
+    private static double mainTps = 20.0;
 
     private TpsHud() {}
 
-    /** Completed inclusive Main work; -1 until the first completed loop. */
     public static long mainMsptNanos() {
-        MainLoopTiming timing = mainTiming(RegionScheduler.getServer());
-        return timing == null ? -1 : timing.meanWorkNanos();
+        return mainEmaNanos;
     }
 
-    /** Main TPS from observed game-time progress; NaN while warming. */
     public static double mainTpsValue() {
-        MainLoopTiming timing = mainTiming(RegionScheduler.getServer());
-        return timing == null ? Double.NaN : timing.tps();
-    }
-
-    private static MainLoopTiming mainTiming(MinecraftServer server) {
-        return server instanceof MainLoopTiming.Access access
-                ? access.fabrolia$mainLoopTiming() : null;
-    }
-
-    /** Shared HUD/admin rendering; an absent sample is never a guessed rate. */
-    public static String mainSummary() {
-        MainLoopTiming timing = mainTiming(RegionScheduler.getServer());
-        String tps = IslandMetrics.formatTps(timing == null ? Double.NaN : timing.tps());
-        String mspt = timing == null || !timing.hasCompletedLoop()
-                ? "warming" : String.format(java.util.Locale.ROOT, "%.1f", timing.meanWorkNanos() / 1_000_000.0);
-        long activeNanos = timing == null ? -1 : timing.activeWorkNanos(System.nanoTime());
-        String active = activeNanos < 0 ? "" : String.format(
-                java.util.Locale.ROOT, " / active work %.1fms", activeNanos / 1_000_000.0);
-        return "Main: " + tps + " TPS / " + mspt + " avg completed-loop MSPT" + active;
+        return mainTps;
     }
 
     public static boolean toggle(ServerPlayer player) {
@@ -85,8 +65,11 @@ public final class TpsHud {
             return; // one sample stream: the overworld drive only
         }
         long now = System.nanoTime();
-        MainLoopTiming timing = mainTiming(server);
-        if (timing == null || !timing.updateTps(overworld.getGameTime(), now)) {
+        mainEmaNanos = server.getAverageTickTimeNanos();
+        long gt = overworld.getGameTime();
+        boolean mainSampleUpdated = MAIN_TPS_WINDOW.update(gt, now);
+        mainTps = MAIN_TPS_WINDOW.value();
+        if (!mainSampleUpdated) {
             return;
         }
         if (SUBSCRIBERS.isEmpty()) {
@@ -173,7 +156,8 @@ public final class TpsHud {
 
     private static Component buildLine(ServerPlayer p,
             java.util.IdentityHashMap<IslandRegistry.PIsland, java.util.List<ServerPlayer>> roster) {
-        net.minecraft.network.chat.MutableComponent out = Component.literal(mainSummary());
+        net.minecraft.network.chat.MutableComponent out = Component.literal(String.format(
+                java.util.Locale.ROOT, "Main: %.1f TPS / %.1f MSPT", mainTps, mainEmaNanos / 1_000_000.0));
         if (!(p.level() instanceof ServerLevel sl)) {
             return out;
         }
@@ -188,10 +172,10 @@ public final class TpsHud {
             return out;
         }
         out.append(Component.literal(String.format(java.util.Locale.ROOT,
-                " | Island %s: %s TPS / %s",
+                " | Island %s: %.1f TPS / %.2f MSPT",
                 IslandMetrics.label(rs, isl),
-                IslandMetrics.formatTps(IslandMetrics.actualTps(isl)),
-                IslandMetrics.completedCostAndState(isl, System.nanoTime()))));
+                IslandMetrics.actualTps(isl),
+                isl.emaUnitNanos / 1_000_000.0)));
         appendRoster(out, roster.get(isl));
 
         // Cross-dimension coupling (task #43). Standing at a portal farm the one

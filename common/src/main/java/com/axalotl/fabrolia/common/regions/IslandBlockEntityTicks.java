@@ -8,15 +8,16 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.TickingBlockEntity;
 
 import java.util.ArrayList;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.locks.LockSupport;
 
 /**
- * Island-owned block-entity ticks with a globally owned Main complement.
+ * Island-owned block-entity ticks with a Main-side residual pass.
  *
  * <p>Autonomous units execute their own cells serially on the claim-holding
- * coordinator. Classified nonlocal native producers rendezvous with globally
- * owned Main at that same unit ordinal and clock; Main's residual never ticks
- * them again. Synchronous mode and the async residual enter a global envelope
- * before observing any live ticker or invoking its body.
+ * coordinator. Main's residual partitions the remaining cells per island and
+ * fans the slices out to the region workers under a fail-stop gate, ticking
+ * the isolated remainder itself while pumping the level's main-thread executor.
  *
  * <p>F2b (2026-07-12): the per-tick partition no longer walks
  * {@code Level.blockEntityTickers} at all. Block entities never change chunk,
@@ -199,7 +200,7 @@ public final class IslandBlockEntityTicks {
                 return rs.islandOwnerOfChunk(ChunkPos.pack(tp)) != island;
             });
             if (!pendingTail.isEmpty()) {
-                tickSlice(level, rs, pendingTail, rs.unitRemovedBes, tickable, null, null);
+                tickSlice(level, pendingTail, rs.unitRemovedBes, tickable, null, null);
             }
             // retire carried entries the fold has delivered (seen in a cell
             // list this unit) or that finalized/died — the rest keep ticking
@@ -242,14 +243,25 @@ public final class IslandBlockEntityTicks {
         try {
             preUnitMaintenance(sl, rs);
 
-            ArrayList<BlockEntityTickerList> residual = new ArrayList<>();
+            int islandCount = rs.islands().size();
+            @SuppressWarnings("unchecked")
+            ArrayList<BlockEntityTickerList>[] perIsland = new ArrayList[islandCount];
+            int[] perIslandSize = new int[islandCount];
+            ArrayList<BlockEntityTickerList> isolatedCells = null;
+            int isolatedSize = 0;
+            final ConcurrentLinkedQueue<TickingBlockEntity> removed = new ConcurrentLinkedQueue<>();
+            BlockEntityTickerList posless = null;
             var cells = rs.beCells;
             long[] cellKeys = cells.keySet().toLongArray();
             java.util.Arrays.sort(cellKeys);
             for (long cellKey : cellKeys) {
                 BlockEntityTickerList cell = cells.get(cellKey);
                 if (cell == null || cell.isEmpty()) continue;
-                if (rs.asyncActive && cellKey != Long.MIN_VALUE) {
+                if (cellKey == Long.MIN_VALUE) {
+                    posless = cell;
+                    continue;
+                }
+                if (rs.asyncActive) {
                     // Exact complement of tickIslandCells: units own both their
                     // member cells and halo, never the global/positionless lane.
                     Region cellRegion = rs.regionizer().peekByGridKey(cellKey);
@@ -258,15 +270,138 @@ public final class IslandBlockEntityTicks {
                         continue;
                     }
                 }
-                residual.add(cell);
+                int island = rs.islandForCell(cellKey);
+                if (island >= 0 && island < islandCount) {
+                    ArrayList<BlockEntityTickerList> lists = perIsland[island];
+                    if (lists == null) {
+                        perIsland[island] = lists = new ArrayList<>(4);
+                    }
+                    lists.add(cell);
+                    perIslandSize[island] += cell.size();
+                } else {
+                    if (isolatedCells == null) {
+                        isolatedCells = new ArrayList<>(4);
+                    }
+                    isolatedCells.add(cell);
+                    isolatedSize += cell.size();
+                }
             }
-            final java.util.Queue<TickingBlockEntity> removed = new java.util.ArrayDeque<>();
-            if (!residual.isEmpty()) {
-                // No registry monitor survives into acquisition. One merge restores
-                // native registration order across every Main-owned cell, including
-                // explicit global tickers. Empty complements need no global barrier.
-                RegionScheduler.runGlobalMainBody(sl.getServer(),
-                        () -> tickCells(level, rs, residual, removed));
+            ArrayList<Slice> slices = new ArrayList<>(islandCount);
+            for (int i = 0; i < islandCount; i++) {
+                if (perIsland[i] != null) {
+                    slices.add(new Slice(perIsland[i], perIslandSize[i]));
+                }
+            }
+            if (slices.isEmpty()) {
+                if (isolatedCells != null) {
+                    tickCells(level, rs, isolatedCells, removed);
+                }
+                if (posless != null) {
+                    tickSlice(level, posless, removed,
+                            new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(4));
+                }
+                sweepRemoved(level, rs, removed);
+                return true;
+            }
+            slices.sort((a, b) -> Integer.compare(b.size(), a.size()));
+            final int SMALL_SLICE_THRESHOLD = 3;
+            if (slices.size() > 2) {
+                ArrayList<BlockEntityTickerList> tinyMerged = null;
+                int tinySize = 0;
+                int writeIdx = 0;
+                for (int readIdx = 0; readIdx < slices.size(); readIdx++) {
+                    Slice s = slices.get(readIdx);
+                    if (s.size() < SMALL_SLICE_THRESHOLD && readIdx > 0) {
+                        if (tinyMerged == null) {
+                            tinyMerged = new ArrayList<>();
+                        }
+                        tinyMerged.addAll(s.cells());
+                        tinySize += s.size();
+                    } else {
+                        slices.set(writeIdx++, s);
+                    }
+                }
+                while (slices.size() > writeIdx) {
+                    slices.remove(slices.size() - 1);
+                }
+                if (tinyMerged != null && !tinyMerged.isEmpty()) {
+                    if (isolatedCells == null) {
+                        isolatedCells = tinyMerged;
+                    } else {
+                        isolatedCells.addAll(tinyMerged);
+                    }
+                    isolatedSize += tinySize;
+                }
+            }
+
+            RegionScheduler.drainMainSafeNow();
+            final ArrayList<BlockEntityTickerList> isolatedFinal = isolatedCells;
+            final FailStopGate gate = new FailStopGate(slices.size());
+            Runnable runner = () -> {
+                int idx;
+                while ((idx = gate.claimSlice()) >= 0) {
+                    try {
+                        tickCells(level, rs, slices.get(idx).cells(), removed);
+                        RegionScheduler.throwWorkerFailureIfAny();
+                    } catch (Throwable th) {
+                        Throwable winner = gate.failAndSelect(th);
+                        rethrow(winner);
+                    } finally {
+                        gate.finish();
+                    }
+                }
+            };
+            int workerRunners = Math.min(slices.size(), Math.max(1, RegionScheduler.workerCount()));
+            for (int i = 0; i < workerRunners && !gate.failed(); i++) {
+                try {
+                    RegionScheduler.enqueueGlobal(runner);
+                } catch (Throwable submissionFailure) {
+                    gate.failAndSelect(submissionFailure);
+                    break;
+                }
+            }
+            if (workerRunners > 0 && !gate.failed()) {
+                try {
+                    RegionScheduler.wakeWorkers();
+                } catch (Throwable wakeFailure) {
+                    gate.failAndSelect(wakeFailure);
+                }
+            }
+            if (isolatedFinal != null && gate.claimMainLane()) {
+                try {
+                    tickCells(level, rs, isolatedFinal, removed);
+                    RegionScheduler.throwWorkerFailureIfAny();
+                } catch (Throwable th) {
+                    gate.failAndSelect(th);
+                } finally {
+                    gate.finish();
+                }
+            }
+            runner.run();
+            while (gate.hasActive()) {
+                if (gate.failed()) {
+                    LockSupport.parkNanos(20_000L);
+                    continue;
+                }
+                boolean drained;
+                try {
+                    drained = RegionScheduler.callSuccessBooleanIfHealthy(
+                            () -> sl.getChunkSource().mainThreadProcessor.pollTask());
+                } catch (Throwable taskFailure) {
+                    gate.failAndSelect(taskFailure);
+                    drained = false;
+                }
+                if (!drained) {
+                    LockSupport.parkNanos(20_000L);
+                }
+            }
+            Throwable failure = gate.failure();
+            if (failure != null) {
+                rethrow(failure);
+            }
+            if (posless != null) {
+                tickSlice(level, posless, removed,
+                        new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(4));
             }
             sweepRemoved(level, rs, removed);
             return true;
@@ -307,12 +442,12 @@ public final class IslandBlockEntityTicks {
         }
         if (live == 0) return;
         if (live == 1) {
-            tickSlice(level, rs, only, removed, tickable, skip, seen);
+            tickSlice(level, only, removed, tickable, skip, seen);
             return;
         }
         BlockEntityTickerList.Merge merge = new BlockEntityTickerList.Merge(lists, rs.beSeqOf);
-        if (merge.advance()) {
-            tickCursor(level, rs, merge, removed, tickable, skip, seen);
+        while (merge.advance()) {
+            tickOne(level, merge.ticker(), removed, tickable, skip, seen);
         }
     }
 
@@ -328,7 +463,13 @@ public final class IslandBlockEntityTicks {
      * branch.
      */
 
-    private static void tickSlice(Level level, RegionizedServer rs, java.util.List<TickingBlockEntity> slice,
+    private static void tickSlice(Level level, java.util.List<TickingBlockEntity> slice,
+                                  java.util.Queue<TickingBlockEntity> removed,
+                                  it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable) {
+        tickSlice(level, slice, removed, tickable, null, null);
+    }
+
+    private static void tickSlice(Level level, java.util.List<TickingBlockEntity> slice,
                                   java.util.Queue<TickingBlockEntity> removed,
                                   it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable,
                                   java.util.Set<TickingBlockEntity> skip,
@@ -342,123 +483,35 @@ public final class IslandBlockEntityTicks {
         // advanced = flying machines breaking at one chunk's entry/exit (bomber fleet
         // report, 2026-07-06). The memo restores vanilla's whole-phase coherence per
         // chunk — and drops N map lookups per chunk to one as a bonus.
-        RegionWorkerThread worker = Thread.currentThread() instanceof RegionWorkerThread current
-                ? current : null;
         for (int i = 0, m = slice.size(); i < m; i++) {
-            TickingBlockEntity ticker = slice.get(i);
-            if (skipTicker(ticker, skip, seen)) continue;
-            if (worker != null && rs.beMainBodyTickers.contains(ticker)) {
-                tickCursor(level, rs, new SliceCursor(slice, i, m, ticker),
-                        removed, tickable, skip, seen);
-                return;
-            }
-            tickOne(level, ticker, removed, tickable);
-        }
-    }
-
-    /** Borrow the source cursor for a contiguous, already-declared global run.
-     *  No successor metadata is read before its predecessor's original body.
-     *  The first local/skipped wrapper remains current for the worker; per-source
-     *  order is preserved, not a total order between independent islands. */
-    private static void tickCursor(Level level, RegionizedServer rs, BlockEntityTickerList.Cursor cursor,
-                                   java.util.Queue<TickingBlockEntity> removed,
-                                   it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable,
-                                   java.util.Set<TickingBlockEntity> skip,
-                                   java.util.Set<TickingBlockEntity> seen) {
-        RegionWorkerThread worker = Thread.currentThread() instanceof RegionWorkerThread current
-                ? current : null;
-        while (cursor.hasCurrent()) {
-            TickingBlockEntity ticker = cursor.ticker();
-            if (skipTicker(ticker, skip, seen)) {
-                cursor.advance();
-                continue;
-            }
-            if (worker == null || !rs.beMainBodyTickers.contains(ticker)) {
-                tickOne(level, ticker, removed, tickable);
-                cursor.advance();
-                continue;
-            }
-            EpochDomain domain = worker.currentDomain;
-            if (domain == null || domain.owner == null) {
-                throw new IllegalStateException("global block ticker lost its source island unit");
-            }
-            IslandRegistry.PIsland source = domain.owner;
-            // Queue publication and terminal rendezvous transfer exclusive use
-            // of this cursor; the coordinator never advances it concurrently.
-            IslandCommands.runBlockEntityTickOnMain(rs, source, () -> {
-                do {
-                    tickOne(level, cursor.ticker(), removed, tickable);
-                    // Preserve the former per-ticker post-body source check.
-                    // A normal callback may invalidate topology or the generation;
-                    // it must not lend its old source identity to the suffix.
-                    if (IslandCommands.routedUnitSourceOnMain(rs) != source) {
-                        throw new IllegalStateException("block ticker lost its exact source unit");
-                    }
-                } while (cursor.advance()
-                        && (skip == null || !skip.contains(cursor.ticker()))
-                        && rs.beMainBodyTickers.contains(cursor.ticker()));
-            });
-        }
-    }
-
-    private static boolean skipTicker(TickingBlockEntity ticker,
-                                      java.util.Set<TickingBlockEntity> skip,
-                                      java.util.Set<TickingBlockEntity> seen) {
-        if (skip == null || !skip.contains(ticker)) return false;
-        if (seen != null) seen.add(ticker); // fold delivered it: carry retires it
-        return true; // pending/carried: ticked once in the tail pass
-    }
-
-    /** Allocated only when a single-list pass first needs a Main rendezvous. */
-    private static final class SliceCursor implements BlockEntityTickerList.Cursor {
-        private final java.util.List<TickingBlockEntity> slice;
-        private final int end;
-        private int index;
-        private TickingBlockEntity ticker;
-
-        SliceCursor(java.util.List<TickingBlockEntity> slice, int index, int end,
-                    TickingBlockEntity ticker) {
-            this.slice = slice;
-            this.index = index;
-            this.end = end;
-            this.ticker = ticker;
-        }
-
-        @Override public boolean advance() {
-            if (++index < end) {
-                ticker = slice.get(index);
-                return true;
-            }
-            ticker = null;
-            return false;
-        }
-
-        @Override public boolean hasCurrent() {
-            return index < end;
-        }
-
-        @Override public TickingBlockEntity ticker() {
-            return ticker;
+            tickOne(level, slice.get(i), removed, tickable, skip, seen);
         }
     }
 
     private static void tickOne(Level level, TickingBlockEntity t,
                                 java.util.Queue<TickingBlockEntity> removed,
-                                it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable) {
-        // Predicate observations and the body share one first-W entry cut.
-        // Spatial/global ownership was established by the producer, never here.
-        RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            if (t.isRemoved()) { removed.add(t); return; }
-            BlockPos pos = t.getPos();
-            if (pos == null) return; // Lithium sleeping stub — keep it, it wakes later
-            long chunkKey = ChunkPos.pack(pos);
-            byte gate = tickable.get(chunkKey); // 0 = unknown, 1 = tick, 2 = skip
-            if (gate == 0) {
-                gate = level.shouldTickBlocksAt(pos) ? (byte) 1 : (byte) 2;
-                tickable.put(chunkKey, gate);
-            }
-            if (gate == 1) t.tick();
-        });
+                                it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable,
+                                java.util.Set<TickingBlockEntity> skip,
+                                java.util.Set<TickingBlockEntity> seen) {
+        if (skip != null && skip.contains(t)) {
+            if (seen != null) seen.add(t); // fold delivered it: carry retires it
+            return; // pending/carried: ticked once in the tail pass
+        }
+        if (t.isRemoved()) { removed.add(t); return; }
+        BlockPos pos = t.getPos();
+        if (pos == null) return; // Lithium sleeping stub — keep it, it wakes later
+        long chunkKey = ChunkPos.pack(pos);
+        byte gate = tickable.get(chunkKey); // 0 = unknown, 1 = tick, 2 = skip
+        if (gate == 0) {
+            gate = level.shouldTickBlocksAt(pos) ? (byte) 1 : (byte) 2;
+            tickable.put(chunkKey, gate);
+        }
+        if (gate == 1) RegionScheduler.runSuccessBodyIfHealthy(t::tick);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 
 
@@ -488,7 +541,6 @@ public final class IslandBlockEntityTicks {
                 new it.unimi.dsi.fastutil.longs.LongOpenHashSet(Math.min(64, pending.size()));
         for (TickingBlockEntity dead : pending) {
             rs.beSeqOf.remove(dead);
-            rs.beMainBodyTickers.remove(dead);
             long cell = rs.beCellOf.removeLong(dead);
             if (cell != Long.MAX_VALUE) {
                 touched.add(cell);
@@ -511,5 +563,67 @@ public final class IslandBlockEntityTicks {
         }
         }
         pending.clear();
+    }
+
+    /** Fail-stop fan-out gate: workers claim slice ordinals until one fails;
+     *  the first failure wins and every later claim returns -1. */
+    static final class FailStopGate {
+        private final int sliceCount;
+        private int nextSlice;
+        private int active;
+        private Throwable failure;
+
+        FailStopGate(int sliceCount) {
+            this.sliceCount = sliceCount;
+        }
+
+        synchronized int claimSlice() {
+            if (failure != null || nextSlice >= sliceCount) return -1;
+            active++;
+            return nextSlice++;
+        }
+
+        synchronized boolean claimMainLane() {
+            if (failure != null) return false;
+            active++;
+            return true;
+        }
+
+        synchronized boolean fail(Throwable thrown) {
+            if (failure != null) return false;
+            failure = thrown;
+            notifyAll();
+            return true;
+        }
+
+        Throwable failAndSelect(Throwable candidate) {
+            fail(candidate);
+            Throwable winner = RegionScheduler.publishFatalAndSelectWinner(candidate);
+            synchronized (this) {
+                failure = winner;
+                notifyAll();
+                return winner;
+            }
+        }
+
+        synchronized void finish() {
+            active--;
+            notifyAll();
+        }
+
+        synchronized boolean hasActive() {
+            return active != 0;
+        }
+
+        synchronized boolean failed() {
+            return failure != null;
+        }
+
+        synchronized Throwable failure() {
+            return failure;
+        }
+    }
+
+    private record Slice(ArrayList<BlockEntityTickerList> cells, int size) {
     }
 }

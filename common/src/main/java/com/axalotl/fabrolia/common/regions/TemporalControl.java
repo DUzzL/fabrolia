@@ -1199,7 +1199,8 @@ public final class TemporalControl {
 
     public static String status(RegionizedServer rs) {
         StringBuilder sb = new StringBuilder();
-        sb.append(TpsHud.mainSummary()).append(' ');
+        sb.append(String.format(java.util.Locale.ROOT, "main=%.1ftps/%.2fms ",
+                TpsHud.mainTpsValue(), TpsHud.mainMsptNanos() / 1_000_000.0));
         sb.append("globalTarget=").append(String.format(java.util.Locale.ROOT, "%.1f",
                 1_000_000_000.0 / globalIslandTargetNanos)).append("tps");
         var srv = RegionScheduler.getServer();

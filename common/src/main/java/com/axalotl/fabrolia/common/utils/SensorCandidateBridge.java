@@ -24,8 +24,7 @@ import java.util.List;
  *       coverage, candidate overflow) — the caller falls back to vanilla;</li>
  *   <li>a provider failure propagates through the vanilla entity-tick crash
  *       boundary; only an explicit {@code null} is a supported vanilla fallback.</li>
- *   <li>register during bootstrap, or on physical Main once island workers
- *       have started; live replacement acquires exclusive gameplay ownership.</li>
+ *   <li>register during bootstrap; last registration wins.</li>
  * </ul>
  */
 public final class SensorCandidateBridge {
@@ -42,41 +41,14 @@ public final class SensorCandidateBridge {
     }
 
     private static volatile Provider provider;
-    private static final Object BOOTSTRAP = new Object();
-    private static boolean bootstrapSealed;
 
     private SensorCandidateBridge() {}
 
-    /** Last registration wins; live publication excludes every entered island E. */
+    /** Last registration wins. */
     public static void register(Provider p) {
-        java.util.Objects.requireNonNull(p);
-        boolean bootstrap;
-        synchronized (BOOTSTRAP) {
-            bootstrap = !bootstrapSealed;
-            if (bootstrap) provider = p;
-        }
-        if (bootstrap) {
-            LOGGER.info("Sensor candidate provider registered: {}", p.getClass().getName());
-            return;
-        }
-        com.axalotl.fabrolia.common.regions.RegionScheduler.runGlobalMainBody(
-                com.axalotl.fabrolia.common.ParallelProcessor.getServer(), () -> {
-                    provider = p;
-                    LOGGER.info("Sensor candidate provider registered: {}", p.getClass().getName());
-                });
+        provider = p;
+        LOGGER.info("Sensor candidate provider registered: {}", p.getClass().getName());
     }
-    /** Closes bootstrap publication before the first worker can enter gameplay. */
-    public static void sealBootstrap() {
-        synchronized (BOOTSTRAP) {
-            bootstrapSealed = true;
-        }
-    }
-
-    /** Absence remains stable while a real island or global claim is retained. */
-    public static boolean hasProvider() {
-        return provider != null;
-    }
-
 
     /**
      * Query the provider, or return {@code null} when absent/declining. A thrown

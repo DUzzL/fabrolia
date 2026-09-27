@@ -1,12 +1,10 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.regions.NetherPortalPlayerAccess;
-import com.axalotl.fabrolia.common.regions.WorldGenEntityConstruction;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.waypoints.ServerWaypointManager;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.waypoints.WaypointTransmitter;
 import org.spongepowered.asm.mixin.Mixin;
 
@@ -29,7 +27,6 @@ public abstract class ServerWaypointManagerMixin {
 
     @WrapMethod(method = "trackWaypoint(Lnet/minecraft/world/waypoints/WaypointTransmitter;)V")
     private void fabrolia$trackWaypoint(WaypointTransmitter transmitter, Operation<Void> original) {
-        if (transmitter instanceof Entity entity) WorldGenEntityConstruction.revoke(entity);
         var metadata = NetherPortalPlayerAccess.metadataOwner(transmitter);
         if (metadata != null && metadata.deferMetadata(() -> {
             synchronized (this) { original.call(transmitter); }
@@ -40,7 +37,6 @@ public abstract class ServerWaypointManagerMixin {
     @WrapMethod(method = "updateWaypoint(Lnet/minecraft/world/waypoints/WaypointTransmitter;)V")
     private void fabrolia$updateWaypoint(WaypointTransmitter transmitter, Operation<Void> original) {
         var metadata = NetherPortalPlayerAccess.metadataOwner(transmitter);
-        if (metadata != null && transmitter instanceof Entity entity) WorldGenEntityConstruction.revoke(entity);
         if (metadata != null && metadata.deferMetadata(() -> {
             synchronized (this) { original.call(transmitter); }
         })) return;
@@ -50,7 +46,6 @@ public abstract class ServerWaypointManagerMixin {
     @WrapMethod(method = "untrackWaypoint(Lnet/minecraft/world/waypoints/WaypointTransmitter;)V")
     private void fabrolia$untrackWaypoint(WaypointTransmitter transmitter, Operation<Void> original) {
         var metadata = NetherPortalPlayerAccess.metadataOwner(transmitter);
-        if (metadata != null && transmitter instanceof Entity entity) WorldGenEntityConstruction.revoke(entity);
         if (metadata != null && metadata.deferMetadata(() -> {
             synchronized (this) { original.call(transmitter); }
         })) return;
@@ -95,7 +90,6 @@ public abstract class ServerWaypointManagerMixin {
 
     @WrapMethod(method = "remakeConnections")
     private void fabrolia$remakeConnections(WaypointTransmitter transmitter, Operation<Void> original) {
-        if (transmitter instanceof Entity entity) WorldGenEntityConstruction.revoke(entity);
         var metadata = NetherPortalPlayerAccess.metadataOwner(transmitter);
         if (metadata != null && metadata.deferMetadata(() -> {
             synchronized (this) { original.call(transmitter); }

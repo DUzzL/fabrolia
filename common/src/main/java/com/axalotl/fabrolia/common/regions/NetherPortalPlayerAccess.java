@@ -23,12 +23,7 @@ public final class NetherPortalPlayerAccess {
     private static final ConcurrentLinkedQueue<Reservation> METADATA = new ConcurrentLinkedQueue<>();
     /** Identity and level are published by the lifecycle owner; position requires indexed-owner claims. */
     public record SourceReference(Entity entity, ServerLevel level) {}
-    private record CameraLink(ServerLevel level, Entity target, List<SourceReference> rideComponent) {
-        CameraLink {
-            WorldGenEntityConstruction.revoke(target);
-            for (SourceReference reference : rideComponent) WorldGenEntityConstruction.revoke(reference.entity);
-        }
-    }
+    private record CameraLink(ServerLevel level, Entity target, List<SourceReference> rideComponent) {}
     private record DeferredDisconnect(ServerGamePacketListenerImpl listener, Runnable body) {}
     private static final IdentityHashMap<ServerPlayer, CameraLink> CAMERAS = new IdentityHashMap<>();
     private static final IdentityHashMap<ServerPlayer, CameraMutation> CAMERA_MUTATIONS = new IdentityHashMap<>();
@@ -98,36 +93,6 @@ public final class NetherPortalPlayerAccess {
             return ARRIVAL_METADATA.containsKey(entity)
                     || CAPTURED.containsKey(entity) && !SyncItemPickup.holdsUnreservedConsumption(entity);
         }
-    }
-
-    /** Custody of an existing exact-token tracking task, not permission to run it inline. */
-    interface ArrivalPublication {
-        void publish();
-        void cancel();
-    }
-
-    static boolean deferArrivalPublication(Entity entity, ArrivalPublication publication) {
-        var lease = ((ParallelProcessor.TickGuard) entity).fabrolia$tickLease();
-        while (lease.isArrivalPending()) {
-            Reservation reservation;
-            // A producer may hold its tracker: never nest CAMERAS around the reservation monitor.
-            synchronized (CAMERAS) { reservation = ARRIVAL_METADATA.get(entity); }
-            if (reservation == null) return false;
-            synchronized (reservation) {
-                // A new arrival may have replaced the observed, now-settled reservation.
-                if (reservation.publicationClosed) continue;
-                RegionScheduler.throwWorkerFailureIfAny();
-                if (reservation.failure != null)
-                    return NetherPortalPlayerAccess.<Boolean, RuntimeException>rethrow(reservation.failure);
-                if (reservation.canceled)
-                    throw new IllegalStateException("Canceled Nether arrival cannot accept publication");
-                Objects.requireNonNull(publication);
-                if (reservation.arrivalPublications == null) reservation.arrivalPublications = new ArrayList<>();
-                reservation.arrivalPublications.add(publication);
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -216,7 +181,6 @@ public final class NetherPortalPlayerAccess {
                 if (previous != null && previous != current)
                     throw new IllegalStateException("Nether arrival crossed metadata ownership");
                 if (previous == null) {
-                    WorldGenEntityConstruction.revoke(entity);
                     current.metadataArrivals.add(entity);
                     ARRIVAL_METADATA.put(entity, current);
                     ((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().setArrivalPending(true);
@@ -433,18 +397,15 @@ public final class NetherPortalPlayerAccess {
     /** Null means a concurrent lifecycle publication or overlapping request must finish first. */
     public static Reservation reserve(Entity root, Object requestIdentity) {
         Reservation reservation = new Reservation(root, requestIdentity);
-        try {
-            synchronized (reservation) {
+        synchronized (reservation) {
+            try {
                 synchronized (CAMERAS) {
                     if (!reservation.captureFollowers()) return null;
                     for (Entity entity : reservation.custody.keySet()) {
                         if (CAPTURED.containsKey(entity) || ENTITY_SAVES.containsKey(entity)
                                 || entity instanceof ServerPlayer player && CHUNK_SENDS.containsKey(player)) return null;
                     }
-                    for (Entity entity : reservation.custody.keySet()) {
-                        WorldGenEntityConstruction.revoke(entity);
-                        CAPTURED.put(entity, reservation);
-                    }
+                    for (Entity entity : reservation.custody.keySet()) CAPTURED.put(entity, reservation);
                 }
                 for (Entity entity : reservation.custody.keySet()) {
                     if (entity instanceof ServerPlayer player) {
@@ -457,12 +418,11 @@ public final class NetherPortalPlayerAccess {
                     }
                 }
                 return reservation;
+            } catch (Throwable failure) {
+                Throwable winner = RegionScheduler.publishFatalAndSelectWinner(failure);
+                reservation.cancel(winner);
+                return NetherPortalPlayerAccess.<Reservation, RuntimeException>rethrow(winner);
             }
-        } catch (Throwable failure) {
-            // No arrival can exist before worker entry; cancellation still runs outside the monitor.
-            Throwable winner = RegionScheduler.publishFatalAndSelectWinner(failure);
-            reservation.cancel(winner);
-            return NetherPortalPlayerAccess.<Reservation, RuntimeException>rethrow(winner);
         }
     }
 
@@ -553,9 +513,6 @@ public final class NetherPortalPlayerAccess {
         private final ArrayList<Runnable> outbox = new ArrayList<>();
         private final ArrayList<Entity> metadataArrivals = new ArrayList<>();
         private boolean metadataClosed;
-        /** Closed with arrival readiness, independently of metadata drain and terminal cleanup. */
-        private boolean publicationClosed;
-        private ArrayList<ArrivalPublication> arrivalPublications;
         private final IdentityHashMap<ServerGamePacketListenerImpl, DeferredDisconnect> disconnects = new IdentityHashMap<>();
         private final ArrayList<DeferredDisconnect> disconnectOrder = new ArrayList<>();
         private ServerGamePacketListenerImpl deliveringDisconnect;
@@ -684,28 +641,24 @@ public final class NetherPortalPlayerAccess {
             if (cancelNow) cancel(problem);
         }
 
-        public Scope enter() {
-            Throwable winner;
-            synchronized (this) {
-                if (!executionReserved || entered || canceled || terminal
-                        || CURRENT.get() != null
-                        || NetherPortalTransfers.currentTransfer() != request) {
-                    throw new IllegalStateException("Nether body lost its reserved player execution custody");
-                }
-                Scope scope = new Scope(this);
-                try {
-                    CURRENT.set(this);
-                    entered = true;
-                    active = true;
-                    return scope;
-                } catch (Throwable problem) {
-                    winner = RegionScheduler.publishFatalAndSelectWinner(problem);
-                    CURRENT.remove();
-                }
+        public synchronized Scope enter() {
+            if (!executionReserved || entered || canceled || terminal
+                    || CURRENT.get() != null
+                    || NetherPortalTransfers.currentTransfer() != request) {
+                throw new IllegalStateException("Nether body lost its reserved player execution custody");
             }
-            // Entry has not published an arrival; keep cleanup outside the monitor regardless.
-            cancel(winner);
-            return NetherPortalPlayerAccess.<Scope, RuntimeException>rethrow(winner);
+            Scope scope = new Scope(this);
+            try {
+                CURRENT.set(this);
+            } catch (Throwable problem) {
+                Throwable winner = RegionScheduler.publishFatalAndSelectWinner(problem);
+                CURRENT.remove();
+                cancel(winner);
+                return NetherPortalPlayerAccess.<Scope, RuntimeException>rethrow(winner);
+            }
+            entered = true;
+            active = true;
+            return scope;
         }
 
         private void requireWorker() {
@@ -743,32 +696,26 @@ public final class NetherPortalPlayerAccess {
             }
         }
 
-        public void complete(Runnable releaseSourceReservations) {
-            Throwable winner;
-            synchronized (this) {
-                if (!entered || active || queued || terminal) {
-                    throw new IllegalStateException("Nether player completion outside closed worker body");
-                }
-                releaseSource = Objects.requireNonNull(releaseSourceReservations);
-                try {
-                    // complete still runs under the transfer's cohort claims. Arrivals
-                    // must use the metadata tail even when no vanilla builder was captured.
-                    if (players.isEmpty() && outbox.isEmpty() && metadataArrivals.isEmpty()) {
-                        RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                            finish();
-                            terminal = true;
-                        });
-                        return;
-                    }
-                    queued = true;
-                    METADATA.add(this);
-                    return;
-                } catch (Throwable problem) {
-                    winner = RegionScheduler.publishFatalAndSelectWinner(problem);
-                }
+        public synchronized void complete(Runnable releaseSourceReservations) {
+            if (!entered || active || queued || terminal) {
+                throw new IllegalStateException("Nether player completion outside closed worker body");
             }
-            cancel(winner);
-            NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(winner);
+            releaseSource = Objects.requireNonNull(releaseSourceReservations);
+            try {
+                if (players.isEmpty() && outbox.isEmpty()) {
+                    RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                        finish();
+                        terminal = true;
+                    });
+                    return;
+                }
+                queued = true;
+                METADATA.add(this);
+            } catch (Throwable problem) {
+                Throwable winner = RegionScheduler.publishFatalAndSelectWinner(problem);
+                cancel(winner);
+                NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(winner);
+            }
         }
 
         private boolean runMetadata() {
@@ -803,76 +750,34 @@ public final class NetherPortalPlayerAccess {
                         CURRENT.remove();
                     }
                     });
-                    if (metadataCompleted) completeMetadata();
+                    if (metadataCompleted) {
+                        synchronized (this) {
+                            if (canceled || failure != null) return;
+                            finish();
+                        }
+                        deliverDisconnects();
+                        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                            synchronized (this) {
+                                if (canceled || failure != null) return;
+                                releaseMarkers(true);
+                                disconnects.clear();
+                                disconnectOrder.clear();
+                                terminal = true;
+                            }
+                        });
+                    }
                 });
             } catch (Throwable problem) {
                 thrown = RegionScheduler.publishFatalAndSelectWinner(problem);
             }
-            boolean cancelNow;
-            Throwable cancellationFailure;
             synchronized (this) {
                 active = false;
                 metadata = false;
                 if (thrown != null) failure = thrown;
-                cancelNow = failure != null || canceled;
-                cancellationFailure = failure;
+                if (failure != null || canceled) cancel(failure);
             }
-            if (cancelNow) cancel(cancellationFailure);
             if (thrown != null) NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(thrown);
             return metadataCompleted || terminal;
-        }
-
-        /** Called only after tryRunPlayerMetadata returned and released every cohort claim. */
-        private void completeMetadata() {
-            synchronized (this) {
-                if (canceled || failure != null) return;
-                finish();
-            }
-            deliverDisconnects();
-            RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                synchronized (this) {
-                    if (canceled || failure != null) return;
-                    releaseMarkers(true);
-                    disconnects.clear();
-                    disconnectOrder.clear();
-                    terminal = true;
-                }
-            });
-            Throwable problem = settleArrivalPublications(true, null);
-            if (problem != null) NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(problem);
-        }
-
-        private Throwable settleArrivalPublications(boolean publish, Throwable problem) {
-            ArrayList<ArrivalPublication> publications;
-            synchronized (this) {
-                publicationClosed = true;
-                publications = arrivalPublications;
-                arrivalPublications = null;
-                if (failure != null) problem = failure;
-                if (canceled) publish = false;
-            }
-            if (problem != null) problem = RegionScheduler.publishFatalAndSelectWinner(problem);
-            if (publications == null) return problem;
-            if (publish && problem == null) {
-                try {
-                    for (ArrivalPublication publication : publications)
-                        RegionScheduler.runSuccessBodyIfHealthy(publication::publish);
-                    return null;
-                } catch (Throwable publicationFailure) {
-                    // Select W before releasing even the offer-then-throw task's token.
-                    problem = RegionScheduler.publishFatalAndSelectWinner(publicationFailure);
-                }
-            }
-            // Also cancel already-offered members: a failing offer can retain its TickTask.
-            // The exact-token handles make this cleanup safe for every member of the batch.
-            for (ArrivalPublication publication : publications) {
-                try {
-                    publication.cancel();
-                } catch (Throwable cleanupFailure) {
-                    problem = RegionScheduler.publishFatalAndSelectWinner(cleanupFailure);
-                }
-            }
-            return problem;
         }
 
         private void finish() {
@@ -886,58 +791,45 @@ public final class NetherPortalPlayerAccess {
 
         public void cancel(Throwable problem) {
             boolean publishDisconnect = false;
-            Throwable cleanupFailure = null;
             synchronized (this) {
-                if (terminal && problem == null && failure == null) return;
-                if (!terminal && problem == null && entered) {
+                if (terminal) return;
+                if (problem == null && entered) {
                     NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(
                             RegionScheduler.publishFatalAndSelectWinner(new IllegalStateException(
                                     "An entered Nether player must settle metadata before healthy cancellation")));
                 }
                 if (problem != null) failure = RegionScheduler.publishFatalAndSelectWinner(problem);
-                if (!terminal) {
-                    canceled = true;
-                    if (active || executionReserved && !entered) return;
-                    try {
-                        METADATA.remove(this);
-                        if (failure == null && !disconnects.isEmpty()) {
-                            unregisterCaptured();
-                            outbox.clear();
-                            if (!cancellationQueued) {
-                                cancellationQueued = true;
-                                publishDisconnect = true;
-                            }
-                        } else {
-                            try {
-                                unregisterCaptured();
-                                releaseMarkers(failure == null);
-                            } finally {
-                                outbox.clear();
-                                disconnects.clear();
-                                disconnectOrder.clear();
-                                terminal = true;
-                            }
-                        }
-                    } catch (Throwable cleanup) {
-                        cleanupFailure = RegionScheduler.publishFatalAndSelectWinner(cleanup);
+                canceled = true;
+                if (active || executionReserved && !entered) return;
+                METADATA.remove(this);
+                if (failure == null && !disconnects.isEmpty()) {
+                    unregisterCaptured();
+                    outbox.clear();
+                    if (!cancellationQueued) {
+                        cancellationQueued = true;
+                        publishDisconnect = true;
                     }
                 } else {
-                    METADATA.remove(this);
+                    try {
+                        unregisterCaptured();
+                        releaseMarkers(failure == null);
+                    } finally {
+                        outbox.clear();
+                        disconnects.clear();
+                        disconnectOrder.clear();
+                        terminal = true;
+                    }
                 }
             }
-            // Even a failed terminal tail must release the list it has not dispatched.
-            Throwable publicationFailure = settleArrivalPublications(false, cleanupFailure);
-            if (publishDisconnect && publicationFailure == null) {
+            if (publishDisconnect) {
                 try {
                     RegionScheduler.enqueueGlobalMainOnly(this);
-                } catch (Throwable rejected) {
-                    Throwable winner = RegionScheduler.publishFatalAndSelectWinner(rejected);
+                } catch (Throwable publicationFailure) {
+                    Throwable winner = RegionScheduler.publishFatalAndSelectWinner(publicationFailure);
                     cancel(winner);
                     NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(winner);
                 }
             }
-            if (cleanupFailure != null || publicationFailure != null && publicationFailure != failure)
-                NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(publicationFailure);
         }
 
 
@@ -1009,7 +901,6 @@ public final class NetherPortalPlayerAccess {
 
         private void unregisterArrivalMetadata() {
             synchronized (CAMERAS) {
-                publicationClosed = true;
                 for (Entity entity : metadataArrivals) {
                     if (ARRIVAL_METADATA.remove(entity, this))
                         ((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().setArrivalPending(false);
@@ -1044,16 +935,12 @@ public final class NetherPortalPlayerAccess {
             if (current == null || CURRENT.get() != current) {
                 throw new IllegalStateException("Nether player scope closed outside its owner");
             }
-            boolean cancelNow;
-            Throwable failure;
             synchronized (current) {
                 CURRENT.remove();
                 current.active = false;
                 reservation = null;
-                cancelNow = current.canceled;
-                failure = current.failure;
+                if (current.canceled) current.cancel(current.failure);
             }
-            if (cancelNow) current.cancel(failure);
         }
     }
 

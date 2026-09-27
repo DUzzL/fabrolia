@@ -156,9 +156,7 @@ public final class ChunkBridgeWait {
                     LOGGER.warn(msg, args);
                 }
             }
-            if (!RegionScheduler.parkExclusiveWorkerForMainService()) {
-                LockSupport.parkNanos(sleepNs);
-            }
+            LockSupport.parkNanos(sleepNs);
             sleepNs = Math.min(sleepNs << 1, MAX_PARK_NS);
         }
         return new Result.Done<>(initial);

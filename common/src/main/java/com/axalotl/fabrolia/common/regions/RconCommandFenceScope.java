@@ -1,11 +1,8 @@
 package com.axalotl.fabrolia.common.regions;
 
 import com.axalotl.fabrolia.common.mixin.server.ReentrantBlockableEventLoopAccessor;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.util.Util;
 
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -36,11 +33,6 @@ public final class RconCommandFenceScope {
             ThreadLocal.withInitial(Frame::new);
 
     private RconCommandFenceScope() {}
-
-    /** The declaration-level loop exposes its real nesting count, not authority. */
-    public interface NativeBlockingDepth {
-        int fabrolia$nativeBlockingDepth();
-    }
 
     /** Exact authenticated RconClient callsite on the RCON client thread. */
     public static <T> T runRconClientCommand(
@@ -236,7 +228,6 @@ public final class RconCommandFenceScope {
         frame.waitEntryClaimed = false;
         frame.runAllTasksClaimed = false;
         frame.managedBlockClaimed = false;
-        frame.publishedGameplayServiced = false;
 
         boolean returned = false;
         try {
@@ -307,150 +298,6 @@ public final class RconCommandFenceScope {
     public static void runWaitUntilNextTickManagedBlock(
             Object server, Runnable body) {
         runCleanDrain(server, DRAIN_MANAGED_BLOCK, body);
-    }
-
-    /** Marks only the literal runAllTasks-to-pollTask invocation, not its nested polls. */
-    public static boolean callRunAllTasksPoll(Object server, BooleanSupplier body) {
-        if (body == null) throw new NullPointerException("body");
-        Frame frame = LOCAL.get();
-        if (!inExactRunAllTasksDrain(frame, server)
-                || frame.runAllPollDepth != 0
-                || frame.mainPollDepth != 0) {
-            return body.getAsBoolean();
-        }
-        frame.runAllPollDepth = 1;
-        frame.runAllPollClaimed = false;
-        try {
-            return body.getAsBoolean();
-        } finally {
-            frame.runAllPollDepth = 0;
-            frame.runAllPollClaimed = false;
-            frame.exactRunAllPollDepth = 0;
-        }
-    }
-
-    /** Receipt for the literal outer managedBlock-to-pollTask invocation only. */
-    public static boolean callManagedBlockPoll(Object server, BooleanSupplier body) {
-        if (body == null) throw new NullPointerException("body");
-        Frame frame = LOCAL.get();
-        if (!inExactManagedBlockDrain(frame, server)
-                || frame.managedPollDepth != 0 || frame.mainPollDepth != 0) {
-            return body.getAsBoolean();
-        }
-        frame.managedPollDepth = 1;
-        frame.managedPollClaimed = false;
-        try {
-            return body.getAsBoolean();
-        } finally {
-            frame.managedPollDepth = 0;
-            frame.managedPollClaimed = false;
-        }
-    }
-
-    /** Every Main poll entry consumes at most its own one-shot callsite receipt. */
-    public static boolean callMainPoll(Object server, BooleanSupplier body) {
-        if (body == null) throw new NullPointerException("body");
-        Frame frame = LOCAL.get();
-        if (frame.mainPollDepth == Integer.MAX_VALUE) {
-            throw fatalInvariant("Main poll provenance depth overflow");
-        }
-        int enteredDepth = ++frame.mainPollDepth;
-        boolean exact = frame.runAllPollDepth == enteredDepth
-                && !frame.runAllPollClaimed
-                && inExactRunAllTasksDrain(frame, server);
-        if (exact) {
-            frame.runAllPollClaimed = true;
-            frame.exactRunAllPollDepth = enteredDepth;
-        }
-        boolean exactManaged = frame.managedPollDepth == enteredDepth
-                && !frame.managedPollClaimed && inExactManagedBlockDrain(frame, server);
-        if (exactManaged) {
-            frame.managedPollClaimed = true;
-            frame.exactManagedPollDepth = enteredDepth;
-        }
-        try {
-            return body.getAsBoolean();
-        } finally {
-            frame.mainPollDepth = enteredDepth - 1;
-            if (exact) frame.exactRunAllPollDepth = 0;
-            if (exactManaged) frame.exactManagedPollDepth = 0;
-        }
-    }
-
-    /** Provenance only: this does not confer command or gameplay authority. */
-    public static boolean exactRunAllTasksPoll(Object server) {
-        Frame frame = LOCAL.get();
-        return frame.exactRunAllPollDepth != 0
-                && frame.mainPollDepth == frame.exactRunAllPollDepth
-                && inExactRunAllTasksDrain(frame, server);
-    }
-
-    static boolean exactManagedBlockPoll(Object server) {
-        Frame frame = LOCAL.get();
-        return frame.exactManagedPollDepth != 0
-                && frame.mainPollDepth == frame.exactManagedPollDepth
-                && inExactManagedBlockDrain(frame, server);
-    }
-
-    static boolean mayServicePublishedGameplay(MinecraftServer server) {
-        Frame frame = LOCAL.get();
-        if (!frame.waitRootActive || frame.waitServer != server) {
-            throw fatalInvariant("optional gameplay service escaped its native wait root");
-        }
-        return !frame.publishedGameplayServiced || Util.getNanos() < server.getNextTickTime();
-    }
-
-    static void markPublishedGameplayServiced(MinecraftServer server) {
-        Frame frame = LOCAL.get();
-        if (!frame.waitRootActive || frame.waitServer != server) {
-            throw fatalInvariant("optional gameplay grant escaped its native wait root");
-        }
-        frame.publishedGameplayServiced = true;
-    }
-
-    /**
-     * Restrict only this service's outer native polls. Nested callbacks and
-     * dependency waits keep their own ordinary progress protocol.
-     */
-    static void runNativeCheckpoint(Object server, Runnable body) {
-        Frame frame = LOCAL.get();
-        Object previousServer = frame.checkpointServer;
-        int previousDepth = frame.checkpointPollDepth;
-        frame.checkpointServer = server;
-        frame.checkpointPollDepth = frame.mainPollDepth + 1;
-        try {
-            body.run();
-        } finally {
-            frame.checkpointServer = previousServer;
-            frame.checkpointPollDepth = previousDepth;
-        }
-    }
-
-    static boolean isNativeCheckpointPoll(Object server) {
-        Frame frame = LOCAL.get();
-        return frame.checkpointServer == server
-                && frame.checkpointPollDepth == frame.mainPollDepth;
-    }
-
-    private static boolean inExactRunAllTasksDrain(Frame frame, Object server) {
-        if (!frame.cleanDrainActive
-                || frame.cleanDrainServer != server
-                || frame.cleanDrainKind != DRAIN_RUN_ALL_TASKS
-                || !inExactWaitEntry(frame, server)) return false;
-        var physicalServer = RegionScheduler.getServer();
-        return physicalServer == null || (physicalServer == server
-                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(physicalServer));
-    }
-
-    private static boolean inExactManagedBlockDrain(Frame frame, Object server) {
-        if (!frame.cleanDrainActive || frame.cleanDrainServer != server
-                || frame.cleanDrainKind != DRAIN_MANAGED_BLOCK
-                || !inExactWaitEntry(frame, server)
-                || !(server instanceof NativeBlockingDepth depth)
-                || depth.fabrolia$nativeBlockingDepth() != frame.managedBlockingDepth) return false;
-        var physicalServer = RegionScheduler.getServer();
-        return physicalServer == null || (physicalServer == server
-                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(physicalServer));
     }
 
     /** Exact private lambda entry on physical Main. */
@@ -570,16 +417,6 @@ public final class RconCommandFenceScope {
                 throw fatalInvariant("exact waitUntilNextTick managedBlock edge repeated");
             }
             frame.managedBlockClaimed = true;
-            if (server instanceof NativeBlockingDepth depth) {
-                int baseline = depth.fabrolia$nativeBlockingDepth();
-                if (baseline < 0 || baseline == Integer.MAX_VALUE) {
-                    throw fatalInvariant("invalid native managedBlock nesting count");
-                }
-                // Vanilla increments before evaluating even its first predicate.
-                frame.managedBlockingDepth = baseline + 1;
-            } else if (server instanceof MinecraftServer) {
-                throw fatalInvariant("MinecraftServer is missing its native blocking-depth accessor");
-            }
         }
 
         frame.cleanDrainActive = true;
@@ -593,28 +430,13 @@ public final class RconCommandFenceScope {
             String invariant = null;
             if (returned && (!frame.cleanDrainActive
                     || frame.cleanDrainServer != server
-                    || frame.cleanDrainKind != kind
-                    || frame.mainPollDepth != 0
-                    || frame.runAllPollDepth != 0
-                    || frame.exactRunAllPollDepth != 0
-                    || frame.managedPollDepth != 0
-                    || frame.exactManagedPollDepth != 0)) {
+                    || frame.cleanDrainKind != kind)) {
                 invariant = "exact top-level Main task drain frame was replaced";
             }
             frame.cleanDrainActive = false;
             frame.cleanDrainServer = null;
             frame.cleanDrainKind = 0;
-            frame.managedBlockingDepth = 0;
             if (invariant != null) throw fatalInvariant(invariant);
-        }
-        // An overdue tick may skip managedBlock and already-complete barriers.
-        // Finish the published-control prefix, then budget whole gameplay grants.
-        // Neither service inherits the retired native-drain provenance.
-        var physicalServer = RegionScheduler.getServer();
-        if (kind == DRAIN_RUN_ALL_TASKS
-                && physicalServer != null && physicalServer == server) {
-            RegionScheduler.throwWorkerFailureIfAny();
-            RegionScheduler.servicePublishedMainGameplay(physicalServer);
         }
     }
 
@@ -733,11 +555,6 @@ public final class RconCommandFenceScope {
         frame.waitEntryClaimed = false;
         frame.runAllTasksClaimed = false;
         frame.managedBlockClaimed = false;
-        frame.publishedGameplayServiced = false;
-        frame.managedBlockingDepth = 0;
-        frame.managedPollDepth = 0;
-        frame.managedPollClaimed = false;
-        frame.exactManagedPollDepth = 0;
         frame.cleanDrainActive = false;
         frame.cleanDrainServer = null;
         frame.cleanDrainKind = 0;
@@ -835,22 +652,10 @@ public final class RconCommandFenceScope {
         boolean waitEntryClaimed;
         boolean runAllTasksClaimed;
         boolean managedBlockClaimed;
-        boolean publishedGameplayServiced;
-        int managedBlockingDepth;
-        int managedPollDepth;
-        boolean managedPollClaimed;
-        int exactManagedPollDepth;
 
         boolean cleanDrainActive;
         Object cleanDrainServer;
         int cleanDrainKind;
-
-        int mainPollDepth;
-        int runAllPollDepth;
-        boolean runAllPollClaimed;
-        int exactRunAllPollDepth;
-        Object checkpointServer;
-        int checkpointPollDepth;
 
         boolean rconMainTaskActive;
         Object rconMainTaskServer;

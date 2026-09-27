@@ -1,13 +1,11 @@
 package com.axalotl.fabrolia.common.mixin.utils;
 
-import com.axalotl.fabrolia.common.regions.NativeVanishCachePublication;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
 
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TypeInsnNode;
@@ -184,13 +182,6 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
 
     @Override
     public void postApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
-        if (mixinClassName.equals("com.axalotl.fabrolia.common.mixin.vanish.VanishPlayerObserverCacheMixin")) {
-            NativeVanishCachePublication.register();
-        }
-        if (mixinClassName.equals("com.axalotl.fabrolia.common.mixin.entity.EntityMixin")) {
-            publishNativePosition(targetClass);
-            publishNativeVehicle(targetClass);
-        }
         Collection<String> targetMethods = mixin2MethodsMap.get(mixinClassName);
         Collection<String> excludedMethods = mixin2MethodsExcludeMap.get(mixinClassName);
 
@@ -208,36 +199,6 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
             }
         }
         rewriteFastutilInstantiations(targetClassName, targetClass);
-    }
-
-    /**
-     * A volatile @Shadow does not alter the target field's access flags. Change
-     * the actual ClassNode field instead, so every native PUTFIELD/GETFIELD has
-     * release/acquire semantics without another Vec3 or per-movement hook.
-     */
-    private static void publishNativePosition(ClassNode targetClass) {
-        for (FieldNode field : targetClass.fields) {
-            if (field.name.equals("position")
-                    && field.desc.equals("Lnet/minecraft/world/phys/Vec3;")
-                    && (field.access & (Opcodes.ACC_STATIC | Opcodes.ACC_FINAL)) == 0) {
-                field.access |= Opcodes.ACC_VOLATILE;
-                return;
-            }
-        }
-        throw new IllegalStateException("native Entity.position publication field not found");
-    }
-
-    /** Every writer, including FSit's generated accessor, publishes this link. */
-    private static void publishNativeVehicle(ClassNode targetClass) {
-        for (FieldNode field : targetClass.fields) {
-            if (field.name.equals("vehicle")
-                    && field.desc.equals("Lnet/minecraft/world/entity/Entity;")
-                    && (field.access & (Opcodes.ACC_STATIC | Opcodes.ACC_FINAL)) == 0) {
-                field.access |= Opcodes.ACC_VOLATILE;
-                return;
-            }
-        }
-        throw new IllegalStateException("native Entity.vehicle publication field not found");
     }
 
     private void applySynchronizeBit(ClassNode targetClass, Collection<String> targetMethods, String targetClassName) {

@@ -29,8 +29,7 @@ public abstract class TrialSpawnerStateDataMixin {
     )
     private void fabrolia$prefetchLineOfSight(ServerLevel level, BlockPos pos, TrialSpawner spawner, CallbackInfo ci) {
         // The vanilla detect() about to fire from here is the (level, selector, pos,
-        // requiredPlayerRange, useLOS=true) variant. Seed on this same owner;
-        // no live world reads or native callbacks are dispatched to helpers.
+        // requiredPlayerRange, useLOS=true) variant.
         //
         // We deliberately use the same player-selection criterion as the vanilla detectors
         // (closerThan + !creative + !spectator) — close enough that 99% of candidates we
@@ -48,6 +47,6 @@ public abstract class TrialSpawnerStateDataMixin {
         Vec3 from = Vec3.atCenterOf(pos);
         List<Vec3> targets = new ArrayList<>(nearby.size());
         for (ServerPlayer p : nearby) targets.add(p.getEyePosition());
-        TrialSpawnerLineOfSightCache.prefetch(level, from, targets);
+        TrialSpawnerLineOfSightCache.parallelPrefetch(level, from, targets);
     }
 }

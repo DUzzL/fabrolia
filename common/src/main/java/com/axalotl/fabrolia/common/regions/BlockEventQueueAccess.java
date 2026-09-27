@@ -14,6 +14,4 @@ public interface BlockEventQueueAccess {
     Object fabrolia$blockEventLock();
 
     ObjectLinkedOpenHashSet<BlockEventData> fabrolia$blockEvents();
-
-    IslandBlockEvents.Publications fabrolia$blockEventPublications();
 }

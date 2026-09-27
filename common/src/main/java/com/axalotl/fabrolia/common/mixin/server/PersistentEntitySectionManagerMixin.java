@@ -210,16 +210,6 @@ public abstract class PersistentEntitySectionManagerMixin<T extends EntityAccess
         return result;
     }
 
-    @Inject(method = "addEntity(Lnet/minecraft/world/level/entity/EntityAccess;Z)Z",
-            at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/world/level/entity/EntitySection;add(Lnet/minecraft/world/level/entity/EntityAccess;)V"))
-    private void fabrolia$publishConstruction(EntityAccess entityAccess, boolean newEntity,
-                                             CallbackInfoReturnable<Boolean> cir) {
-        if (entityAccess instanceof net.minecraft.world.entity.Entity entity) {
-            com.axalotl.fabrolia.common.regions.WorldGenEntityConstruction.revoke(entity);
-        }
-    }
-
     /**
      * Live-entry feed for {@link com.axalotl.fabrolia.common.parallelised.utils.HardColliderIndex}.
      *

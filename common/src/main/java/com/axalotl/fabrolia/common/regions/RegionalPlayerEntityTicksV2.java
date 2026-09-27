@@ -36,11 +36,6 @@ public final class RegionalPlayerEntityTicksV2 {
 
     private RegionalPlayerEntityTicksV2() {}
 
-    /** Physical ownership must not follow the temporary logical getRunningThread override. */
-    public interface PhysicalServerThreadAccess {
-        Thread fabrolia$physicalServerThread();
-    }
-
     private static volatile boolean enabled;
     private static final AtomicLong NEXT_PHASE = new AtomicLong(1L);
     private static final AtomicReference<GlobalPhase> CURRENT = new AtomicReference<>();
@@ -64,8 +59,6 @@ public final class RegionalPlayerEntityTicksV2 {
      * from V2's narrower advancement bypass and exact-player accounting.
      */
     public static Thread logicalServerThread(MinecraftServer server) {
-        Thread selected = RegionScheduler.exclusiveGameplayWorkerOrNull(server);
-        if (selected != null) return selected;
         LogicalTurn turn = LOGICAL_TURN.get();
         return turn != null && turn.server == server
                 && RegionScheduler.isExactPlayerTurnPausedBy(turn.physicalMain)
@@ -99,8 +92,7 @@ public final class RegionalPlayerEntityTicksV2 {
         if (phase != null && phase.enabledSnapshot && phase.server == server) {
             return Thread.currentThread() == phase.mainThread;
         }
-        return server instanceof PhysicalServerThreadAccess access
-                && Thread.currentThread() == access.fabrolia$physicalServerThread();
+        return server.isSameThread();
     }
 
     /** Scheduler generations may change only between complete tickChildren phases. */

@@ -81,7 +81,7 @@ public final class IslandTickUnit {
         private volatile long toLogicalTick = Long.MIN_VALUE;
         private volatile Throwable failure;
 
-        public AttemptReceipt() {}
+        private AttemptReceipt() {}
 
         public boolean isDone() {
             return terminal.get();
@@ -148,6 +148,7 @@ public final class IslandTickUnit {
         final long toLogicalTick;
         final AttemptReceipt receipt;
         final UnitPublication publication;
+        final Runnable queuedUnit;
 
         private GlobalSprintRequest(RegionizedServer runtime,
                                     IslandRegistry.PIsland island,
@@ -159,6 +160,8 @@ public final class IslandTickUnit {
             this.receipt = new AttemptReceipt();
             this.publication = new UnitPublication(runtime, island, receipt,
                     fromLogicalTick, false, Long.MIN_VALUE, 0L, this);
+            this.queuedUnit = RegionScheduler.cancellableRoot(
+                    publication, publication::cancelBeforeStart);
         }
 
         boolean tryClaim() {
@@ -175,7 +178,7 @@ public final class IslandTickUnit {
 
         void start() {
             try {
-                if (!RegionScheduler.enqueueUnit(runtime, publication)) {
+                if (!RegionScheduler.enqueueUnit(runtime, queuedUnit)) {
                     throw new IllegalStateException(
                             "global sprint unit publication was refused by its live generation");
                 }
@@ -187,6 +190,13 @@ public final class IslandTickUnit {
                     publication.cancelBeforeStart(failure);
                 } catch (Throwable cleanupFailure) {
                     failure = publishMergedFailure(failure, cleanupFailure);
+                }
+                if (queuedUnit instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
+                    try {
+                        cancellable.cancelQueuedBeforeStartWithFailure(failure);
+                    } catch (Throwable cleanupFailure) {
+                        failure = publishMergedFailure(failure, cleanupFailure);
+                    }
                 }
                 IslandTickUnit.<RuntimeException>rethrow(failure);
             }
@@ -277,6 +287,13 @@ public final class IslandTickUnit {
             request.publication.cancelBeforeStart(failure);
         } catch (Throwable cleanupFailure) {
             failure = publishMergedFailure(failure, cleanupFailure);
+        }
+        if (request.queuedUnit instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
+            try {
+                cancellable.cancelQueuedBeforeStartWithFailure(failure);
+            } catch (Throwable cleanupFailure) {
+                failure = publishMergedFailure(failure, cleanupFailure);
+            }
         }
         // start1 may already be RUNNING when publication/start2 selects W.
         // cancelBeforeStart is deliberately a no-op for that state: Main must
@@ -463,15 +480,17 @@ public final class IslandTickUnit {
         UnitPublication publication = new UnitPublication(rs, island, receipt,
                 submittedAtL, frontierBound, submittedDeadlineNanos,
                 deadlineSlackNanos, null);
+        Runnable queuedUnit = null;
         try {
+            queuedUnit = RegionScheduler.cancellableRoot(publication, publication::cancelBeforeStart);
             if (RegionScheduler.ownsExactExecutionTurn()) {
                 // The exact actor is already the causal owner; accept before
                 // running inline so an OFFERING waiter can never self-deadlock.
                 publication.accept();
-                RegionScheduler.runSuccessBodyIfHealthy(publication);
+                RegionScheduler.runSuccessBodyIfHealthy(queuedUnit);
                 return;
             }
-            if (!RegionScheduler.enqueueUnit(rs, publication)) {
+            if (!RegionScheduler.enqueueUnit(rs, queuedUnit)) {
                 // The generation closed before this receipt became visible.
                 // No simulation body exists to fail or retry; retire the old
                 // obligation locally so it cannot contaminate a later runtime.
@@ -489,6 +508,13 @@ public final class IslandTickUnit {
                 publication.cancelBeforeStart(failure);
             } catch (Throwable cleanupFailure) {
                 failure = publishMergedFailure(failure, cleanupFailure);
+            }
+            if (queuedUnit instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
+                try {
+                    cancellable.cancelQueuedBeforeStartWithFailure(failure);
+                } catch (Throwable cleanupFailure) {
+                    failure = publishMergedFailure(failure, cleanupFailure);
+                }
             }
             IslandTickUnit.<RuntimeException>rethrow(failure);
         }
@@ -511,7 +537,7 @@ public final class IslandTickUnit {
      * inside enqueueUnit; offer-then-throw therefore cancels an unentered root
      * instead of producing a ghost tick.
      */
-    static final class UnitPublication implements Runnable, RegionTaskFanIn.CancellableQueueEntry {
+    private static final class UnitPublication implements Runnable {
         private static final int OFFERING = 0;
         private static final int ACCEPTED = 1;
         private static final int RUNNING = 2;
@@ -550,19 +576,6 @@ public final class IslandTickUnit {
                 throw new IllegalStateException(
                         "island unit publication was already decided");
             }
-        }
-
-        @Override
-        public void cancelQueuedBeforeStart() {
-            cancelBeforeStart(new java.util.concurrent.CancellationException(
-                    "island unit cancelled before execution"));
-        }
-
-        @Override
-        public void cancelQueuedBeforeStartWithFailure(Throwable primary) {
-            cancelBeforeStart(primary != null ? primary
-                    : new java.util.concurrent.CancellationException(
-                            "island unit cancelled before execution"));
         }
 
         void cancelBeforeStart(Throwable failure) {
@@ -648,19 +661,22 @@ public final class IslandTickUnit {
      */
     private static final class PreparedSuccessor {
         private static final PreparedSuccessor NONE =
-                new PreparedSuccessor(null, null);
+                new PreparedSuccessor(null, null, null);
 
         private final UnitPublication unit;
+        private final Runnable queuedUnit;
         private TemporalControl.Pacer.PreparedArm paced;
 
         private PreparedSuccessor(UnitPublication unit,
+                                  Runnable queuedUnit,
                                   TemporalControl.Pacer.PreparedArm paced) {
             this.unit = unit;
+            this.queuedUnit = queuedUnit;
             this.paced = paced;
         }
 
-        static PreparedSuccessor unit(UnitPublication publication) {
-            return new PreparedSuccessor(publication, null);
+        static PreparedSuccessor unit(UnitPublication publication, Runnable queuedUnit) {
+            return new PreparedSuccessor(publication, queuedUnit, null);
         }
 
         static PreparedSuccessor preparePaced(RegionizedServer runtime,
@@ -669,7 +685,7 @@ public final class IslandTickUnit {
             // Allocate the owner before prepareArmAfterUnit can expose an
             // OFFERING DelayQueue node. After that offer, only this fixed field
             // write remains before the cancellation handle is returned.
-            PreparedSuccessor prepared = new PreparedSuccessor(null, null);
+            PreparedSuccessor prepared = new PreparedSuccessor(null, null, null);
             prepared.paced = TemporalControl.prepareArmAfterUnit(
                     runtime, island, deadlineNanos);
             return prepared;
@@ -685,6 +701,13 @@ public final class IslandTickUnit {
             if (unit != null) {
                 try {
                     unit.cancelBeforeStart(failure);
+                } catch (Throwable cleanupFailure) {
+                    failure = publishMergedFailure(failure, cleanupFailure);
+                }
+            }
+            if (queuedUnit instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
+                try {
+                    cancellable.cancelQueuedBeforeStartWithFailure(failure);
                 } catch (Throwable cleanupFailure) {
                     failure = publishMergedFailure(failure, cleanupFailure);
                 }
@@ -719,21 +742,23 @@ public final class IslandTickUnit {
         }
         AttemptReceipt receipt;
         UnitPublication publication = null;
+        Runnable queuedUnit = null;
         try {
             receipt = new AttemptReceipt();
             publication = new UnitPublication(rs, island, receipt, submittedAtL,
                     false, Long.MIN_VALUE, 0L, null);
+            queuedUnit = RegionScheduler.cancellableRoot(publication, publication::cancelBeforeStart);
             if (RegionScheduler.ownsExactExecutionTurn()) {
                 throw new IllegalStateException(
                         "a chained island successor cannot publish inline in an exact turn");
             }
-            if (!RegionScheduler.enqueueUnit(rs, publication)) {
+            if (!RegionScheduler.enqueueUnit(rs, queuedUnit)) {
                 // Normal generation retirement: the successor never became a
                 // body and therefore has neither a success edge nor a W edge.
                 publication.retireBeforeStart();
                 return PreparedSuccessor.NONE;
             }
-            return PreparedSuccessor.unit(publication);
+            return PreparedSuccessor.unit(publication, queuedUnit);
         } catch (Throwable publicationFailure) {
             Throwable failure = RegionScheduler.publishFatalAndSelectWinner(rs,
                     publicationFailure);
@@ -746,6 +771,13 @@ public final class IslandTickUnit {
             } else {
                 synchronized (island.unitAdmissionLock) {
                     island.submitQueued.set(false);
+                }
+            }
+            if (queuedUnit instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
+                try {
+                    cancellable.cancelQueuedBeforeStartWithFailure(failure);
+                } catch (Throwable cleanupFailure) {
+                    failure = publishMergedFailure(failure, cleanupFailure);
                 }
             }
             IslandTickUnit.<RuntimeException>rethrow(failure);
@@ -772,6 +804,7 @@ public final class IslandTickUnit {
         AttemptOutcome terminalOutcome = AttemptOutcome.NO_BODY;
         boolean claimAcquired = false;
         try {
+            NetherPortalTransfers.beforeUnitAdmission();
             try {
                 if (!rs.asyncActive || island.retired) {
                     if (globalSprintRequest != null) {
@@ -811,17 +844,12 @@ public final class IslandTickUnit {
                         }
                         LockSupport.parkNanos(20_000L);
                     }
-                } else if (island.claimWanted || rs.mainClaimsFenceActive()) {
-                    return;
                 } else if (!(claimAcquired = island.tryClaimAutonomousWork())) {
                     // Brief claim contention need not cost the island a tick.
                     // A longer topology/save/Main hold defers to the next drive.
                     long spinUntil = System.nanoTime() + 200_000L;
                     boolean claimed = false;
                     while (System.nanoTime() < spinUntil) {
-                        if (island.claimWanted || rs.mainClaimsFenceActive()) {
-                            return;
-                        }
                         if ((claimAcquired = island.tryClaimAutonomousWork())) {
                             claimed = true;
                             break;
@@ -831,14 +859,6 @@ public final class IslandTickUnit {
                     if (!claimed) {
                         return; // quiesced by topology/save — the next drive retries
                     }
-                }
-                // Main may have closed admission while this queued coordinator
-                // waited at the claim CAS. This is still before every producer
-                // body: the outer exact-CAS cleanup returns NO_BODY without L.
-                // A later close sees an entered, physically claimed unit.
-                if (globalSprintRequest == null
-                        && (island.claimWanted || rs.mainClaimsFenceActive())) {
-                    return;
                 }
             } finally {
                 // CLAIM-ADMISSION HANDSHAKE (2026-08-22 c2me enhanced autosave):
@@ -895,17 +915,6 @@ public final class IslandTickUnit {
                             "global sprint unit did not start at its exact fromL="
                                     + globalSprintRequest.fromLogicalTick
                                     + " currentL=" + island.logicalTick);
-                }
-                return;
-            }
-            // The configured grid may have changed while this attempt waited
-            // for its claim. Refuse unsupported geometry before any producer
-            // body or clock advance; its due frontier remains for Main.
-            if (RegionScheduler.requiresExclusiveUnitGrants()
-                    && !RegionScheduler.ownsExclusiveGameplay()) {
-                if (globalSprintRequest != null) {
-                    throw new IllegalStateException(
-                            "global sprint unit lost its producer execution scope");
                 }
                 return;
             }
@@ -1787,7 +1796,6 @@ public final class IslandTickUnit {
             island.costNanos = cost;
             island.emaUnitNanos = nextEma;
             island.maxUnitNanos = nextMax;
-            island.lastCompletionNanos = System.nanoTime();
             island.unitsCompleted = nextUnitsCompleted;
             island.missedDeadlines = nextMissedDeadlines;
             island.lagNanos = nextLagNanos;

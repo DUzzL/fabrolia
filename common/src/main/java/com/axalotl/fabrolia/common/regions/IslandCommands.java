@@ -1273,10 +1273,8 @@ public final class IslandCommands {
      *  simulation work until that frame clears the level intent. Main may
      *  treat an otherwise-held unit claim as stable only through this exact
      *  token, never through the broader waitingOnRoutedCommand diagnostic bit. */
-    private record GlobalFenceParkAck(GlobalFenceFrame frame) {}
-
     private static final java.util.concurrent.ConcurrentHashMap<
-            IslandRegistry.PIsland, GlobalFenceParkAck> GLOBAL_FENCE_PARK_ACKS =
+            IslandRegistry.PIsland, Object> GLOBAL_FENCE_PARK_ACKS =
             new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Single-island claims MAIN currently holds (interaction handlers,
@@ -1343,16 +1341,10 @@ public final class IslandCommands {
         // first — ticket ticking is server-thread-only (vanilla invariant;
         // VMP enforces it with a CME that kicks the triggering player). Any
         // future off-main caller of a claim spin gets a no-op, never a drain.
-        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) return;
+        if (server == null || !server.isSameThread()) return;
         for (net.minecraft.server.level.ServerLevel lvl : server.getAllLevels()) {
-            // One native polling opportunity per level and claim attempt.
-            // Distance-manager work may consume it before a FIFO head is run.
-            // A waiting worker retains its claim and requests further passes
-            // until its exact future completes. Do not drain a replenished
-            // C2ME backlog to exhaustion or move, retry or drop any callback.
-            RegionScheduler.runNativeMainServiceBody(() ->
-                    RegionScheduler.callSuccessBooleanIfHealthy(
-                            () -> lvl.getChunkSource().pollTask()));
+            RegionScheduler.callSuccessBooleanIfHealthy(
+                    () -> lvl.getChunkSource().mainThreadProcessor.pollTask());
         }
     }
 
@@ -1362,7 +1354,7 @@ public final class IslandCommands {
 
     private static void offMainBelt(String api) {
         var srv = RegionScheduler.getServer();
-        if (srv == null || RegionalPlayerEntityTicksV2.isPhysicalServerThread(srv)) {
+        if (srv == null || srv.isSameThread()) {
             return;
         }
         long now = System.nanoTime();
@@ -1430,31 +1422,13 @@ public final class IslandCommands {
         long spinStart = 0L;
         boolean contended = false;
         int stuck = 0;
-        boolean acquired = false;
-        RegionizedServer.AllIslandClaimIntents admission = null;
-        Throwable failure = null;
         try {
             while (!owner.unitClaim.compareAndSet(false, true)) {
                 if (!contended) {
                     spinStart = System.nanoTime();
                     contended = true;
                 }
-                if (owner.waitingOnRoutedCommand && hasRoutedPending()) {
-                    // The target's entered unit may need several Main
-                    // rendezvous. Do not reopen unrelated pacing/chaining at
-                    // every released frame and replenish the work it must
-                    // rendezvous with. Already queued/entered units still
-                    // finish; interest is neither a claim nor body authority.
-                    if (admission == null) {
-                        admission = new RegionizedServer.AllIslandClaimIntents(16);
-                    }
-                    // Extend only BETWEEN child frames: capturing an inner
-                    // frame's temporary true would retain an orphaned intent.
-                    for (RegionizedServer rs : RegionScheduler.publishedLevels()) {
-                        if (requiresMainFence(rs)) {
-                            admission.include(rs.islandRegistry.identitySnapshot());
-                        }
-                    }
+                if (owner.waitingOnRoutedCommand) {
                     drainRoutedBatch();
                     continue;
                 }
@@ -1482,19 +1456,8 @@ public final class IslandCommands {
                 drainMainChunkServices();
                 LockSupport.parkNanos(20_000L);
             }
-            acquired = true;
-        } catch (Throwable thrown) {
-            failure = publishFatalPreserving(thrown);
         } finally {
-            failure = RegionizedServer.clearAllIslandClaimIntents(admission, failure);
-            // The outer snapshot captured the target's temporary true.
-            // Restore it before restoring this target wait's original value.
             owner.claimWanted = priorClaimWanted;
-        }
-        if (failure != null) {
-            if (acquired) failure = releaseMainClaim(owner, failure);
-            IslandCommands.<RuntimeException>rethrow(publishFatalPreserving(failure));
-            return;
         }
         // ACQUIRED. Publication must be leak-proof: every caller arms its
         // release try/finally only AFTER this method returns, so any throw
@@ -1508,7 +1471,7 @@ public final class IslandCommands {
                 MAIN_HELD.add(owner);
             });
         } catch (Throwable t) {
-            failure = publishFatalPreserving(t);
+            Throwable failure = publishFatalPreserving(t);
             failure = releaseMainClaim(owner, failure);
             IslandCommands.<RuntimeException>rethrow(
                     publishFatalPreserving(failure));
@@ -1560,40 +1523,7 @@ public final class IslandCommands {
      *  save hooks — the state is already quiescent for us). @return true iff
      *  THIS call took the claim and the caller must {@link #mainRelease}. */
     public static boolean mainClaimScoped(IslandRegistry.PIsland owner) {
-        var server = RegionScheduler.getServer();
-        if (server != null && !RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
-            throw new IllegalStateException("mainClaimScoped entered off physical Main");
-        }
         if (mainHolds(owner)) {
-            return false;
-        }
-        RegionizedServer runtime = owner.level == null
-                ? null : RegionScheduler.publishedForLevel(owner.level);
-        if (runtime != null && runtime.currentThreadHoldsLocalAllClaims()) {
-            // A target-level quiesce remains the writer even while a global
-            // read/acquisition frame covers the other, non-quiesced levels.
-            if (owner.retired || !runtime.islandRegistry.identitySnapshot().contains(owner)) {
-                throw new IllegalStateException(
-                        "scoped Main claim is outside the local writer's live island generation");
-            }
-            return false;
-        }
-        GlobalFenceFrame frame = ACTIVE_FENCE;
-        if (frame != null) {
-            // Physical frame claims and parked writer ACKs are not MAIN_HELD
-            // entries. Only the completed writer receipt can lend this scope;
-            // waiting on an incomplete frame would self-deadlock.
-            if (frame.owner != Thread.currentThread()
-                    || frame.phase != GlobalFencePhase.HELD) {
-                throw new IllegalStateException(
-                        "scoped Main claim cannot inherit an incomplete or foreign global fence");
-            }
-            if (owner.retired || runtime == null
-                    || !runtime.currentThreadHoldsAllClaims()
-                    || !runtime.islandRegistry.identitySnapshot().contains(owner)) {
-                throw new IllegalStateException(
-                        "scoped Main claim is outside the current writer's live island generation");
-            }
             return false;
         }
         mainClaim(owner);
@@ -1608,7 +1538,7 @@ public final class IslandCommands {
         return false;
     }
 
-    public static boolean requiresMainFence(RegionizedServer runtime) {
+    static boolean requiresMainFence(RegionizedServer runtime) {
         if (runtime.asyncActive) return true;
         var committedOwners = runtime.arrivalOwnerSnapshot();
         if (committedOwners != null && !committedOwners.isEmpty()) return true;
@@ -1628,11 +1558,6 @@ public final class IslandCommands {
      *  Current exact command/function callers fail-stop on that receipt; they
      *  never acknowledge, defer, replay, or skip the vanilla invocation. */
     public static boolean quiesceAllExcept(IslandRegistry.PIsland except, long spinBudgetNanos) {
-        return acquireGlobalFrame(except, spinBudgetNanos);
-    }
-
-    private static boolean acquireGlobalFrame(
-            IslandRegistry.PIsland except, long spinBudgetNanos) {
         offMainBelt("quiesceAllExcept");
         long deadline = spinBudgetNanos == Long.MAX_VALUE
                 ? Long.MAX_VALUE : System.nanoTime() + spinBudgetNanos;
@@ -1669,10 +1594,6 @@ public final class IslandCommands {
                 }
             }
             if (!needsClaims) return false;
-            if (RegionScheduler.inNativeMainService()) {
-                throw new IllegalStateException(
-                        "native Main chunk service cannot acquire a fresh global fence");
-            }
 
             frame = new GlobalFenceFrame(Thread.currentThread(), except);
             ACTIVE_FENCE = frame;
@@ -1681,52 +1602,23 @@ public final class IslandCommands {
                 frame.intentLevels.add(rs);
                 rs.installGlobalFenceIntent(frame);
             }
-            if (!acquireGlobalClaims(frame, deadline)) {
-                Throwable cleanup = releaseGlobalFenceFrame(frame, null);
-                if (cleanup != null) IslandCommands.<RuntimeException>rethrow(cleanup);
-                RegionScheduler.commitSuccessIfHealthy(() -> {});
-                return false;
-            }
-            for (RegionizedServer rs : frame.intentLevels) {
-                frame.ownedLevels.add(rs);
-                rs.publishGlobalAllClaimsOwnership(frame);
-            }
-            GlobalFenceFrame acquiredFrame = frame;
-            RegionScheduler.commitSuccessIfHealthy(
-                    () -> acquiredFrame.phase = GlobalFencePhase.HELD);
-            return true;
-        } catch (Throwable primary) {
-            Throwable failure = frame == null
-                    ? publishFatalPreserving(primary) : releaseGlobalFenceFrame(frame, primary);
-            IslandCommands.<RuntimeException>rethrow(publishFatalPreserving(failure));
-            return false;
-        }
-    }
-
-    private static boolean acquireGlobalClaims(GlobalFenceFrame frame, long deadline) {
-        for (RegionizedServer rs : frame.intentLevels) {
-            for (IslandRegistry.PIsland island : rs.islandRegistry.identitySnapshot()) {
-                if (mainHolds(island)) continue;
-                if (island.retired) {
-                    throw new IllegalStateException(
-                            "global fence enumerated retired island#" + island.id
-                                    + "/gen" + island.gen + ": " + claimForensics(island));
-                }
-                // Every participating runtime already exposes this frame's global
-                // admission intent. An uncontended real CAS needs no temporary
-                // per-island interest and must not disturb an older one.
-                boolean claimed = island.unitClaim.compareAndSet(false, true);
-                if (!claimed) {
+            for (int levelIndex = 0; levelIndex < frame.intentLevels.size(); levelIndex++) {
+                RegionizedServer rs = frame.intentLevels.get(levelIndex);
+                for (IslandRegistry.PIsland island : rs.islandRegistry.identitySnapshot()) {
+                    if (mainHolds(island)) continue;
+                    if (island.retired) {
+                        throw new IllegalStateException(
+                                "global fence enumerated retired island#" + island.id
+                                        + "/gen" + island.gen + ": " + claimForensics(island));
+                    }
+                    boolean claimed = false;
                     boolean priorClaimWanted = island.claimWanted;
                     island.claimWanted = true;
                     try {
                         long spinStarted = System.nanoTime();
                         int stuck = 0;
-                        while (!(claimed = island.unitClaim.compareAndSet(false, true))) {
-                            GlobalFenceParkAck ack = GLOBAL_FENCE_PARK_ACKS.get(island);
-                            if (rs.globalFenceIntentMatches(frame) && ack != null && ack.frame == frame) {
-                                break;
-                            }
+                        while (!(claimed = island.unitClaim.compareAndSet(false, true))
+                                && !commandWaiterParkedForGlobalFence(rs, island, frame)) {
                             if (!RegionScheduler.poolRunning()) {
                                 RegionScheduler.throwWorkerFailureIfAny();
                                 throw new IllegalStateException(
@@ -1743,38 +1635,58 @@ public final class IslandCommands {
                                                     + "/gen" + island.gen + ": " + claimForensics(island));
                                 }
                             }
-                            if (deadline != Long.MAX_VALUE && System.nanoTime() > deadline) return false;
+                            if (deadline != Long.MAX_VALUE && System.nanoTime() > deadline) {
+                                Throwable cleanup = releaseGlobalFenceFrame(frame, null);
+                                if (cleanup != null) IslandCommands.<RuntimeException>rethrow(cleanup);
+                                RegionScheduler.commitSuccessIfHealthy(() -> {});
+                                return false;
+                            }
                             drainMainChunkServices();
                             RegionScheduler.throwWorkerFailureIfAny();
-                            if ((claimed = island.unitClaim.compareAndSet(false, true))) break;
                             LockSupport.parkNanos(20_000L);
                         }
                     } finally {
                         island.claimWanted = priorClaimWanted;
                     }
-                }
-                if (claimed) {
-                    try {
-                        island.noteClaim("fence");
-                        frame.claims.add(island);
-                    } catch (Throwable publicationFailure) {
-                        Throwable failure = publishFatalPreserving(publicationFailure);
+                    if (claimed) {
                         try {
-                            island.clearClaim();
-                        } catch (Throwable cleanup) {
-                            failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+                            island.noteClaim("fence");
+                            frame.claims.add(island);
+                        } catch (Throwable publicationFailure) {
+                            Throwable failure = publishFatalPreserving(publicationFailure);
+                            try {
+                                island.clearClaim();
+                            } catch (Throwable cleanup) {
+                                failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+                            }
+                            try {
+                                island.unitClaim.set(false);
+                            } catch (Throwable cleanup) {
+                                failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+                            }
+                            IslandCommands.<RuntimeException>rethrow(failure);
                         }
-                        try {
-                            island.unitClaim.set(false);
-                        } catch (Throwable cleanup) {
-                            failure = publishFatalPreserving(mergeFailure(failure, cleanup));
-                        }
-                        IslandCommands.<RuntimeException>rethrow(failure);
                     }
                 }
+                frame.ownedLevels.add(rs);
+                rs.publishGlobalAllClaimsOwnership(frame);
             }
+            GlobalFenceFrame acquiredFrame = frame;
+            RegionScheduler.commitSuccessIfHealthy(
+                    () -> acquiredFrame.phase = GlobalFencePhase.HELD);
+            return true;
+        } catch (Throwable primary) {
+            Throwable failure = frame == null
+                    ? publishFatalPreserving(primary) : releaseGlobalFenceFrame(frame, primary);
+            try {
+                RegionScheduler.publishFatalFailure(failure);
+            } catch (Throwable publicationFailure) {
+                failure = mergeFailure(failure, publicationFailure);
+            }
+            RegionScheduler.throwWorkerFailureIfAny();
+            IslandCommands.<RuntimeException>rethrow(failure);
+            return false;
         }
-        return true;
     }
 
     /**

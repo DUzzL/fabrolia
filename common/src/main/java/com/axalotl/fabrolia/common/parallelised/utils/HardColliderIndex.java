@@ -1,6 +1,5 @@
 package com.axalotl.fabrolia.common.parallelised.utils;
 
-import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
@@ -136,21 +135,8 @@ public final class HardColliderIndex {
         return (cx & 0xFFFFFFFFL) | ((long) cz << 32);
     }
 
-    /** Main level-head maintenance; only live snapshot construction needs global ownership. */
+    /** Main level-head maintenance. */
     public static void rebuildCells(ServerLevel level) {
-        Set<Entity> set = BY_LEVEL.get(level);
-        if (set == null || set.isEmpty()) {
-            // Eviction reads no Entity. A concurrent add remains visible through
-            // the flat-scan fallback; do not clear its recent-add notification.
-            CELLS_BY_LEVEL.remove(level);
-            RegionScheduler.throwWorkerFailureIfAny();
-            return;
-        }
-        RegionScheduler.runGlobalMainBody(level.getServer(), () -> rebuildOwnedCells(level));
-    }
-
-    private static void rebuildOwnedCells(ServerLevel level) {
-        // The level/membership may have changed while ownership was acquired.
         Set<Entity> set = BY_LEVEL.get(level);
         if (set == null || set.isEmpty()) {
             CELLS_BY_LEVEL.remove(level);

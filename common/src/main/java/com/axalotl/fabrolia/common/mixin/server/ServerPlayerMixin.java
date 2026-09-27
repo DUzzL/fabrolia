@@ -1,7 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer;
-import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.mojang.authlib.GameProfile;
@@ -546,7 +545,7 @@ public abstract class ServerPlayerMixin extends Player implements
             return;
         }
         if (Thread.currentThread() instanceof com.axalotl.fabrolia.common.regions.RegionWorkerThread) {
-            AdvancementBuffer.queueFlush(player, force);
+            AdvancementBuffer.queueFlush(player);
             return;
         }
         original.call(advancements, player, force);
@@ -555,18 +554,6 @@ public abstract class ServerPlayerMixin extends Player implements
     @WrapMethod(method = "tick()V")
     private void fabrolia$bufferAdvancementsDuringTick(Operation<Void> original) {
         ServerPlayer self = (ServerPlayer) (Object) this;
-        if (com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .isPhysicalServerThread(self.level().getServer())) {
-            com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.runMainPlayerProducer(
-                    self, () -> fabrolia$runOwnedTick(original), null);
-        } else {
-            fabrolia$runOwnedTick(original);
-        }
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    private void fabrolia$runOwnedTick(Operation<Void> original) {
-        ServerPlayer self = (ServerPlayer) (Object) this;
         com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks
                 .markServerPlayerTickEntered(self);
         boolean directLease = com.axalotl.fabrolia.common.regions
@@ -574,7 +561,6 @@ public abstract class ServerPlayerMixin extends Player implements
         Throwable failure = null;
         boolean advancementFrame = false;
         try {
-            AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(self);
             if (com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                     .isWorkerTickOf(self)) {
             // The old generic off-main buffer applies grants at batch end and therefore
@@ -717,20 +703,6 @@ public abstract class ServerPlayerMixin extends Player implements
      */
     @WrapMethod(method = "doTick()V")
     private void fabrolia$bufferAdvancementsDuringDoTick(Operation<Void> original) {
-        ServerPlayer self = (ServerPlayer) (Object) this;
-        if (com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .isPhysicalServerThread(self.level().getServer())) {
-            com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.runMainPlayerProducer(
-                    self, () -> fabrolia$runOwnedDoTick(original), null);
-        } else {
-            fabrolia$runOwnedDoTick(original);
-        }
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    private void fabrolia$runOwnedDoTick(Operation<Void> original) {
-        AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(
-                (ServerPlayer) (Object) this);
         Throwable failure = null;
         boolean advancementFrame = false;
         AdvancementBuffer.enter();

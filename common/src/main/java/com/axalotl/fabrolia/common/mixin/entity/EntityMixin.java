@@ -5,13 +5,11 @@ import com.axalotl.fabrolia.common.parallelised.utils.FabroliaTrackingDirtyFlag;
 import com.axalotl.fabrolia.common.regions.EntityTickLease;
 import com.axalotl.fabrolia.common.regions.FishingHookRemovalTrace;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
-import com.axalotl.fabrolia.common.regions.WorldGenEntityConstruction;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.entity.EntityInLevelCallback;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
@@ -24,35 +22,7 @@ import com.axalotl.fabrolia.common.regions.RegionKeyed;
 
 @Mixin(Entity.class)
 public abstract class EntityMixin implements ParallelProcessor.TickGuard, RegionKeyed,
-        com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.Ledger,
-        WorldGenEntityConstruction.Constructed,
-        com.axalotl.fabrolia.common.regions.NativePlayerObservations.RidingMetadata {
-
-    @Shadow
-    private Entity vehicle;
-
-    @Override
-    public final Entity fabrolia$queryVehicle() {
-        return vehicle;
-    }
-
-    @Unique
-    private volatile long fabrolia$constructionScope = WorldGenEntityConstruction.currentScope();
-
-    @Override
-    public long fabrolia$constructionScope() {
-        return fabrolia$constructionScope;
-    }
-
-    @Override
-    public void fabrolia$clearConstructionScope() {
-        fabrolia$constructionScope = 0;
-    }
-
-    @Inject(method = "setLevelCallback", at = @At("HEAD"))
-    private void fabrolia$publishConstruction(EntityInLevelCallback callback, CallbackInfo ci) {
-        if (callback != EntityInLevelCallback.NULL) fabrolia$clearConstructionScope();
-    }
+        com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.Ledger {
 
     private final Object fabrolia$censusLock = new Object();
     private boolean fabrolia$censusTracked;
@@ -107,7 +77,6 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
     public void fabrolia$setPortalPending(boolean pending) {
         // Transaction visibility only. The eventual ServerPlayer.teleport wrapper
         // owns the real lifecycle mutation after the source island claim retires.
-        if (pending) fabrolia$clearConstructionScope();
         fabrolia$portalPending = pending;
     }
 
@@ -174,7 +143,6 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
 
     @Override
     public void fabrolia$setRegionKey(long key) {
-        if (key != RegionKeyed.NO_REGION) fabrolia$clearConstructionScope();
         fabrolia$regionKey = key;
     }
 
@@ -248,21 +216,7 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
     private <T> T fabrolia$withPlayerLifecycleLease(
             com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2.LifecycleMutationKind
                     kind,
-            Entity[] participants, boolean generationPrivateRide, java.util.function.Supplier<T> body) {
-        if (generationPrivateRide) {
-            // Callers prove both private construction and event-free ride bookkeeping.
-            // This is not authority for game events, removal hooks or shared world state.
-            try {
-                RegionScheduler.commitSuccessIfHealthy(() -> {});
-                T result = body.get();
-                RegionScheduler.commitSuccessIfHealthy(() -> {});
-                return result;
-            } catch (Throwable thrown) {
-                EntityMixin.<RuntimeException>fabrolia$throwLifecycleFailure(
-                        RegionScheduler.publishFatalAndSelectWinner(thrown));
-                throw new AssertionError("unreachable");
-            }
-        }
+            Entity[] participants, java.util.function.Supplier<T> body) {
         com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2.LifecycleLeaseScope scope =
                 com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                         .beginLifecycleMutation(kind, participants);
@@ -362,7 +316,7 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
         fabrolia$withPlayerLifecycleLease(
                 com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                         .LifecycleMutationKind.HARD_EXIT,
-                new Entity[]{self}, false, () -> {
+                new Entity[]{self}, () -> {
             synchronized (fabrolia$lock) {
                 if (com.axalotl.fabrolia.common.utils.FabroliaDebug.FISHING_TRACE
                         && self instanceof FishingHookRemovalTrace trace) {
@@ -400,7 +354,7 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
         fabrolia$withPlayerLifecycleLease(
                 com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                         .LifecycleMutationKind.SOFT_HANDOFF,
-                participants, WorldGenEntityConstruction.owns(participants), () -> {
+                participants, () -> {
             synchronized (fabrolia$lock) {
                 original.call(passenger);
             }
@@ -415,7 +369,7 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
         fabrolia$withPlayerLifecycleLease(
                 com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                         .LifecycleMutationKind.SOFT_HANDOFF,
-                participants, WorldGenEntityConstruction.owns(participants), () -> {
+                participants, () -> {
             synchronized (fabrolia$lock) {
                 original.call(passenger);
             }
@@ -429,7 +383,7 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
         fabrolia$withPlayerLifecycleLease(
                 com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                         .LifecycleMutationKind.SOFT_HANDOFF,
-                new Entity[]{self}, false, () -> {
+                new Entity[]{self}, () -> {
             synchronized (fabrolia$lock) {
                 original.call();
             }
@@ -441,14 +395,10 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
     private boolean startRiding(Entity entityToRide, boolean force, boolean sendEventAndTriggers, Operation<Boolean> original) {
         Entity self = (Entity) (Object) this;
         Entity[] participants = new Entity[]{self, entityToRide};
-        com.axalotl.fabrolia.common.regions.NativePlayerObservations
-                .requireSupportedRideTransition(entityToRide);
-        boolean generationPrivateRide = !sendEventAndTriggers
-                && WorldGenEntityConstruction.owns(participants) && self.getVehicle() == null;
         return fabrolia$withPlayerLifecycleLease(
                 com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                         .LifecycleMutationKind.SOFT_HANDOFF,
-                participants, generationPrivateRide, () -> {
+                participants, () -> {
             synchronized (fabrolia$lock) {
                 return original.call(entityToRide, force, sendEventAndTriggers);
             }
@@ -487,12 +437,10 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
     private void removeVehicle(Operation<Void> original) {
         Entity self = (Entity) (Object) this;
         Entity[] participants = new Entity[]{self};
-        boolean generationPrivateRide = WorldGenEntityConstruction.owns(participants)
-                && self.getVehicle() == null;
         fabrolia$withPlayerLifecycleLease(
                 com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                         .LifecycleMutationKind.SOFT_HANDOFF,
-                participants, generationPrivateRide, () -> {
+                participants, () -> {
             synchronized (fabrolia$lock) {
                 original.call();
             }

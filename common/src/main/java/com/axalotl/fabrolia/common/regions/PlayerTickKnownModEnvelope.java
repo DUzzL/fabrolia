@@ -31,9 +31,9 @@ final class PlayerTickKnownModEnvelope {
         return CARPET.idle(player) && FSIT.idle(player);
     }
 
-    /** Owner-only: Carpet's HEAD action may call gameMode.useItem without a packet. */
-    static boolean hasActiveCarpetActions(ServerPlayer player) {
-        return !CARPET.idle(player);
+    static boolean idleForAsync(ServerPlayer player, IslandPlayerTurnSession.PlayerKind kind) {
+        return FSIT.idle(player)
+                && (kind == IslandPlayerTurnSession.PlayerKind.CARPET || CARPET.idle(player));
     }
 
     /** Main-thread, status-command diagnostic; never used on the per-tick hot path. */

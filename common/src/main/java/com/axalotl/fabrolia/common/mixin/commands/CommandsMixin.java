@@ -15,6 +15,7 @@ import com.mojang.brigadier.ParseResults;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import org.spongepowered.asm.mixin.Mixin;
 
 import java.util.concurrent.CompletableFuture;
@@ -78,20 +79,10 @@ public abstract class CommandsMixin {
         }
         boolean cleanMainRoot = cleanConsoleRoot | cleanRconRoot;
         if (Thread.currentThread() instanceof RegionWorkerThread
-                || IslandCommands.inRoutedBatch()) {
+                || IslandCommands.inRoutedBatch()
+                || !IslandCommands.requiresMainFence()) {
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> original.call(source, command));
-            return;
-        }
-        if (!IslandCommands.requiresMainFence()) {
-            // No autonomous claims does not itself grant Main gameplay authority.
-            if (RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)
-                    && !RegionScheduler.ownsExclusiveGameplay()) {
-                RegionScheduler.runGlobalMainBody(server, () ->
-                        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(source, command)));
-            } else {
-                RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(source, command));
-            }
             return;
         }
         if (IslandCommands.fenceWindowHeld()) {
@@ -147,19 +138,10 @@ public abstract class CommandsMixin {
         boolean cleanPlayerRoot = PlayerCommandFenceScope.claimParsedCommand(
                 (Commands) (Object) this, parsed, command);
         if (Thread.currentThread() instanceof RegionWorkerThread
-                || IslandCommands.inRoutedBatch()) {
+                || IslandCommands.inRoutedBatch()
+                || !IslandCommands.requiresMainFence()) {
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> original.call(parsed, command));
-            return;
-        }
-        if (!IslandCommands.requiresMainFence()) {
-            if (RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)
-                    && !RegionScheduler.ownsExclusiveGameplay()) {
-                RegionScheduler.runGlobalMainBody(server, () ->
-                        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(parsed, command)));
-            } else {
-                RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(parsed, command));
-            }
             return;
         }
         if (IslandCommands.fenceWindowHeld()) {
@@ -229,7 +211,7 @@ public abstract class CommandsMixin {
                 (RegionTaskFanIn.CancellableQueueEntry) root;
         Throwable submissionFailure = null;
         try {
-            RegionScheduler.scheduleMainControlTask(server, () -> {
+            server.schedule(new TickTask(server.getTickCount(), () -> {
                 try {
                     RegionScheduler.throwWorkerFailureIfAny();
                     if (server.isStopped() || server.isShutdown()) {
@@ -245,7 +227,7 @@ public abstract class CommandsMixin {
                     cancellation.cancelQueuedBeforeStartWithFailure(failure);
                     terminal.complete(failure);
                 }
-            });
+            }));
         } catch (Throwable failure) {
             // schedule may enqueue and THEN throw. Cancel only an unentered
             // root; if Main already entered it, wait through its complete tail.

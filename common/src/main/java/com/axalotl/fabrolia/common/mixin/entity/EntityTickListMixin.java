@@ -42,7 +42,6 @@ public class EntityTickListMixin {
     private void add(Entity entity, Operation<Void> original) {
         synchronized (this) {
             fabrolia$ensureMutableActive();
-            com.axalotl.fabrolia.common.regions.WorldGenEntityConstruction.revoke(entity);
             this.active.put(entity.getId(), entity);
         }
         // Region-owned entity index mirrors EntityTickList membership (no-op when the

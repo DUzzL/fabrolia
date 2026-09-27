@@ -13,6 +13,7 @@ import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.LastSeenMessages;
 import net.minecraft.network.protocol.game.ServerboundChatCommandSignedPacket;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.util.FutureChain;
 import net.minecraft.util.TaskChainer;
@@ -54,7 +55,7 @@ public abstract class ServerGamePacketListenerDeferredContinuationMixin {
                 AsyncIslandPacketContinuations.capture(self());
         Consumer routed = value -> RegionScheduler.runSuccessBodyIfHealthy(() -> {
             Runnable body = () -> consumer.accept(value);
-            if (!AsyncIslandPacketContinuations.enqueueMain(
+            if (!AsyncIslandPacketContinuations.enqueuePlayer(
                     owner, "edit-book-filter", body)) {
                 consumer.accept(value);
             }
@@ -117,7 +118,8 @@ public abstract class ServerGamePacketListenerDeferredContinuationMixin {
                                 owner, "chat-command-stage-one", handler);
                 owned = commandTask != null;
                 if (owned) {
-                    RegionScheduler.scheduleTrackedMainControlTask(server, commandTask);
+                    server.schedule(new TickTask(server.getTickCount(),
+                            () -> RegionScheduler.runSuccessBodyIfHealthy(commandTask)));
                 }
             } else {
                 owned = AsyncIslandPacketContinuations.enqueueMain(

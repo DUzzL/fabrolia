@@ -1,17 +1,20 @@
 package com.axalotl.fabrolia.common.parallelised.utils;
 
 import com.axalotl.fabrolia.common.regions.IslandClock;
-import com.axalotl.fabrolia.common.regions.NativePlayerObservations;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.targeting.TargetingConditions;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 /**
  * Immutable per-generation player census and chunk buckets for producer preflight.
@@ -38,9 +41,6 @@ public final class PlayerChunkIndex {
     private final Reference2IntOpenHashMap<ServerPlayer> ordinals =
             new Reference2IntOpenHashMap<>(64);
     private List<ServerPlayer> players = List.of();
-    private final Comparator<ServerPlayer> nativeOrder =
-            Comparator.comparingInt(ordinals::getInt);
-    private boolean supportsLiveObservations = true;
     /**
      * Worker-context-free W-clock heartbeat of the snapshot. {@code ServerLevel#getGameTime()}
      * is deliberately not used here: island workers observe their owner-local L
@@ -66,7 +66,6 @@ public final class PlayerChunkIndex {
         // SnapshotList's iterator pins one generation; separate size/get calls do not.
         for (ServerPlayer p : level.players()) {
             snapshot.add(p);
-            idx.supportsLiveObservations &= NativePlayerObservations.isSupportedPlayer(p);
             long key = bucketKey(Mth.floor(p.getX()) >> 4, Mth.floor(p.getZ()) >> 4);
             ArrayList<ServerPlayer> bucket = idx.buckets.get(key);
             if (bucket == null) {
@@ -87,14 +86,6 @@ public final class PlayerChunkIndex {
         return idx != null
                 && idx.builtAtWallTime == IslandClock.wallTime(level)
                 ? idx : null;
-    }
-
-    public List<ServerPlayer> allPlayers() {
-        return players;
-    }
-
-    public boolean supportsLiveObservations() {
-        return supportsLiveObservations;
     }
 
     private static long bucketKey(int cx, int cz) {
@@ -123,23 +114,8 @@ public final class PlayerChunkIndex {
         long width = (long) cx1 - cx0 + 1;
         long height = (long) cz1 - cz0 + 1;
         if (width <= 0 || height <= 0) return players;
+        if (width * height > buckets.size()) return players;
         ArrayList<ServerPlayer> out = new ArrayList<>(8);
-        if (width * height > buckets.size()) {
-            var entries = buckets.long2ObjectEntrySet().fastIterator();
-            while (entries.hasNext()) {
-                var entry = entries.next();
-                long key = entry.getLongKey();
-                int cx = (int) key;
-                int cz = (int) (key >>> 32);
-                if (cx >= cx0 && cx <= cx1 && cz >= cz0 && cz <= cz1) {
-                    out.addAll(entry.getValue());
-                }
-            }
-            // This branch used to visit the full player list in native order.
-            // Keep that order, but never enlarge a finite candidate rectangle.
-            out.sort(nativeOrder);
-            return out;
-        }
         for (int cz = cz0; cz <= cz1; cz++) {
             for (int cx = cx0; cx <= cx1; cx++) {
                 ArrayList<ServerPlayer> bucket = buckets.get(bucketKey(cx, cz));
@@ -151,5 +127,58 @@ public final class PlayerChunkIndex {
         return out;
     }
 
+    public int ordinalOf(ServerPlayer p) {
+        return ordinals.getInt(p);
+    }
 
+    @Nullable
+    public ServerPlayer nearestPlayer(ServerLevel level, TargetingConditions conditions,
+                                      @Nullable LivingEntity source, double range,
+                                      double x, double y, double z) {
+        List<ServerPlayer> candidates = source != null && range > 0
+                ? candidates(source.getX(), source.getZ(), Math.max(range, 2.0))
+                : players;
+        double best = -1.0;
+        int bestOrd = Integer.MAX_VALUE;
+        ServerPlayer result = null;
+        for (int i = 0, n = candidates.size(); i < n; i++) {
+            ServerPlayer p = candidates.get(i);
+            if (!conditions.test(level, source, p)) continue;
+            double distance = p.distanceToSqr(x, y, z);
+            int ordinal = ordinalOf(p);
+            if (result == null || distance < best
+                    || (distance == best && ordinal < bestOrd)) {
+                best = distance;
+                bestOrd = ordinal;
+                result = p;
+            }
+        }
+        return result;
+    }
+
+    @Nullable
+    public ServerPlayer nearestPlayer(double x, double y, double z, double maxDistance,
+                                      @Nullable Predicate<Entity> predicate) {
+        List<ServerPlayer> candidates = maxDistance < 0
+                ? players
+                : candidates(x, z, maxDistance);
+        double best = -1.0;
+        int bestOrd = Integer.MAX_VALUE;
+        ServerPlayer result = null;
+        for (int i = 0, n = candidates.size(); i < n; i++) {
+            ServerPlayer p = candidates.get(i);
+            if (predicate != null && !predicate.test(p)) continue;
+            double distance = p.distanceToSqr(x, y, z);
+            if (maxDistance < 0 || distance < maxDistance * maxDistance) {
+                int ordinal = ordinalOf(p);
+                if (result == null || distance < best
+                        || (distance == best && ordinal < bestOrd)) {
+                    best = distance;
+                    bestOrd = ordinal;
+                    result = p;
+                }
+            }
+        }
+        return result;
+    }
 }

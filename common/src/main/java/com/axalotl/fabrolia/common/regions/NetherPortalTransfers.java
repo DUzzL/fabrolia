@@ -3,8 +3,6 @@ package com.axalotl.fabrolia.common.regions;
 import com.axalotl.fabrolia.api.utils.SyncItemPickup;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.mixin.entity.EntityNetherPortalInvoker;
-import com.axalotl.fabrolia.common.config.FabroliaConfig;
-import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -133,8 +131,6 @@ public final class NetherPortalTransfers {
             EpochDomain domain = worker.currentRegion == null ? worker.currentDomain : worker.currentRegion.domain;
             if (domain != null) return domain;
         }
-        IslandRegistry.PIsland source = IslandCommands.routedUnitSourceOnMain(runtime);
-        if (source != null) return source.domain;
         IslandRegistry.PIsland owner = runtime.islandOwnerOfChunk(root.chunkPosition().pack());
         // MAIN_SYNC is still a contribution to the source's open entity phase.
         if (runtime.asyncActive && owner != null && owner.domain.entityPending.get() != 0) return owner.domain;
@@ -212,6 +208,9 @@ public final class NetherPortalTransfers {
         return false;
     }
 
+    static void beforeUnitAdmission() {
+        serviceOne();
+    }
 
     /** Read under unitAdmissionLock; never takes a player or preparation monitor. */
     static boolean blocksAutonomousUnit(IslandRegistry.PIsland owner) {
@@ -479,7 +478,6 @@ public final class NetherPortalTransfers {
             if (guard != null && !guard.tryEnterReservation()) return false;
             try {
                 if (state.get() != WAITING || entity.isRemoved()) return false;
-                WorldGenEntityConstruction.revoke(entity);
                 Transfer prior = SOURCES.putIfAbsent(entity.getUUID(), this);
                 if (prior != null && prior != this) return false;
                 entities.add(entity);
@@ -503,7 +501,6 @@ public final class NetherPortalTransfers {
                 if (guard != null && !guard.tryEnterReservation()) return false;
                 try {
                     if (state.get() != WAITING || entity.isRemoved()) return false;
-                    WorldGenEntityConstruction.revoke(entity);
                     Transfer prior = SOURCES.putIfAbsent(entity.getUUID(), this);
                     if (prior != null && prior != this) return false;
                     custodyEntities.add(entity);
@@ -810,11 +807,9 @@ public final class NetherPortalTransfers {
         final ArrayList<IslandRegistry.PIsland> owners = new ArrayList<>();
         final ArrayList<IslandRegistry.PIsland> acquired = new ArrayList<>();
         final boolean quiescent;
-        final boolean mainClaims;
         private Claims(List<NetherPortalPreparation.ChunkRef> footprint, boolean quiescent) {
             this.footprint = List.copyOf(footprint);
             this.quiescent = quiescent;
-            this.mainClaims = RegionalPlayerEntityTicksV2.isPhysicalServerThread(RegionScheduler.getServer());
         }
         static Claims tryAcquire(List<NetherPortalPreparation.ChunkRef> footprint, boolean quiescent) {
             Claims claims = new Claims(footprint, quiescent);
@@ -843,18 +838,14 @@ public final class NetherPortalTransfers {
                         continue;
                     }
                     synchronized (owner.unitAdmissionLock) {
-                        // Metadata may upgrade this still-held footprint to a
-                        // global writer. Main's ledger lets that frame borrow
-                        // these exact claims without waiting on its own CAS.
                         if (owner.retired || owner.globalSprintFenced
-                                || !(claims.mainClaims ? IslandCommands.tryMainClaim(owner)
-                                : owner.tryClaimAutonomousWork())) {
+                                || !owner.tryClaimAutonomousWork()) {
                             claims.close();
                             return null;
                         }
                         claims.owners.add(owner);
                         claims.acquired.add(owner);
-                        if (!claims.mainClaims) owner.noteClaim("nether-transfer");
+                        owner.noteClaim("nether-transfer");
                     }
                 }
                 for (NetherPortalPreparation.ChunkRef chunk : footprint) {
@@ -916,11 +907,6 @@ public final class NetherPortalTransfers {
             Throwable failure = null;
             for (int i = acquired.size() - 1; i >= 0; i--) {
                 IslandRegistry.PIsland owner = acquired.get(i);
-                if (mainClaims) {
-                    try { IslandCommands.mainRelease(owner); }
-                    catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(merge(failure, cleanup)); }
-                    continue;
-                }
                 try { owner.clearClaim(); }
                 catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(merge(failure, cleanup)); }
                 try { owner.unitClaim.set(false); }
@@ -993,7 +979,6 @@ public final class NetherPortalTransfers {
             if (player == entity && scope.transfer.players.isTeleportCandidate(player)) { expected = true; break; }
         }
         if (!expected) throw new IllegalStateException("Nether add introduced an uncaptured entity identity");
-        WorldGenEntityConstruction.revoke(entity);
         scope.transfer.arrivals.put(entity, Boolean.TRUE);
         NetherPortalPlayerAccess.captureArrivalMetadata(entity);
         return true;
@@ -1042,23 +1027,7 @@ public final class NetherPortalTransfers {
             if (!transfer.validateIndexedSources(claims)) return false;
             if (!claims.allowsEntry()) return false;
             ACTIVE.set(new Scope(transfer, claims));
-            // Source/arrival ownership precedes listener inspection. Only these
-            // transferred players can produce metadata callbacks; an unrelated
-            // installed advancement is not this operation's dependency.
-            boolean global = FabroliaConfig.disabled;
-            if (!AdvancementCaptureOwnership.ownsGlobalProducerEnvelope()) {
-                for (ServerPlayer player : transfer.players.references()) {
-                    if (AdvancementCaptureOwnership.requiresGlobalProducerEnvelope(player)) {
-                        global = true;
-                        break;
-                    }
-                }
-            }
-            if (global) {
-                RegionScheduler.runGlobalMainBody(server, () -> RegionScheduler.runSuccessBodyIfHealthy(body));
-            } else {
-                RegionScheduler.runSuccessBodyIfHealthy(body);
-            }
+            RegionScheduler.runSuccessBodyIfHealthy(body);
             return true;
         } finally {
             ACTIVE.remove();

@@ -1,9 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.ParallelProcessor;
-import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
-import com.axalotl.fabrolia.common.regions.MainLoopTiming;
 import com.axalotl.fabrolia.common.regions.RconCommandFenceScope;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
@@ -30,35 +28,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 @Mixin(value = MinecraftServer.class)
-public class MinecraftServerMixin implements RegionalPlayerEntityTicksV2.PhysicalServerThreadAccess,
-        MainLoopTiming.Access {
-
-    @org.spongepowered.asm.mixin.Unique
-    private final MainLoopTiming fabrolia$loopTiming = new MainLoopTiming();
-
-    @Override
-    public MainLoopTiming fabrolia$mainLoopTiming() {
-        return fabrolia$loopTiming;
-    }
-
-    @org.spongepowered.asm.mixin.Shadow
-    @org.spongepowered.asm.mixin.Final
-    private Thread serverThread;
-
-    @Override
-    public Thread fabrolia$physicalServerThread() {
-        return this.serverThread;
-    }
-
-    /** The complete server tick is a control stack, not a global gameplay fence. */
-    @WrapMethod(method = "tickServer(Ljava/util/function/BooleanSupplier;)V",
-            require = 1, allow = 1)
-    private void fabrolia$ownServerTick(BooleanSupplier haveTime, Operation<Void> original) {
-        // The shared control envelope deliberately retains no ExternalPermit
-        // across this stack's exact V2/A5 preparation barriers.
-        RegionScheduler.runMainControlBody(
-                (MinecraftServer) (Object) this, () -> original.call(haveTime));
-    }
+public class MinecraftServerMixin {
 
     @WrapOperation(
             method = "lambda$spin$0(Ljava/util/concurrent/atomic/AtomicReference;)V",
@@ -81,31 +51,14 @@ public class MinecraftServerMixin implements RegionalPlayerEntityTicksV2.Physica
     @WrapOperation(
             method = "runServer()V",
             at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/MinecraftServer;processPacketsAndTick(Z)V"),
-            require = 1, allow = 1)
-    private void fabrolia$beginMainLoopTiming(
-            MinecraftServer server, boolean sprinting, Operation<Void> original) {
-        fabrolia$loopTiming.beginLoop(System.nanoTime());
-        original.call(server, sprinting);
-    }
-
-    @WrapOperation(
-            method = "runServer()V",
-            at = @At(value = "INVOKE",
                     target = "Lnet/minecraft/server/MinecraftServer;"
                             + "waitUntilNextTick()V"),
             require = 1,
             allow = 1)
     private void fabrolia$markExactTopLevelWait(
             MinecraftServer server, Operation<Void> original) {
-        fabrolia$loopTiming.enterTopLevelWait();
-        try {
-            RconCommandFenceScope.runServerWaitUntilNextTick(
-                    server, () -> original.call(server));
-            fabrolia$loopTiming.completeLoop(System.nanoTime());
-        } finally {
-            fabrolia$loopTiming.exitTopLevelWait();
-        }
+        RconCommandFenceScope.runServerWaitUntilNextTick(
+                server, () -> original.call(server));
     }
 
     @WrapMethod(method = "waitUntilNextTick()V", require = 1, allow = 1)
@@ -138,18 +91,7 @@ public class MinecraftServerMixin implements RegionalPlayerEntityTicksV2.Physica
             MinecraftServer server, BooleanSupplier done,
             Operation<Void> original) {
         RconCommandFenceScope.runWaitUntilNextTickManagedBlock(
-                server, () -> {
-                    if (Thread.currentThread() != serverThread) {
-                        original.call(server, done);
-                        return;
-                    }
-                    fabrolia$loopTiming.enterDeadlineWait();
-                    try {
-                        original.call(server, done);
-                    } finally {
-                        fabrolia$loopTiming.exitDeadlineWait();
-                    }
-                });
+                server, () -> original.call(server, done));
     }
 
     @WrapOperation(
@@ -172,53 +114,12 @@ public class MinecraftServerMixin implements RegionalPlayerEntityTicksV2.Physica
         RegionScheduler.drainDeferredLifecycleTransitionsAtPostTickBoundary(server);
     }
 
-    @WrapMethod(method = "pollTask()Z", require = 1, allow = 1)
-    private boolean fabrolia$frameMainPoll(Operation<Boolean> original) {
-        if (Thread.currentThread() != serverThread) {
-            return RconCommandFenceScope.callMainPoll(this, () -> original.call());
-        }
-        fabrolia$loopTiming.enterPoll();
-        try {
-            return RconCommandFenceScope.callMainPoll(this, () -> original.call());
-        } finally {
-            fabrolia$loopTiming.exitPoll();
-        }
-    }
-
-    @WrapOperation(
-            method = "waitForTasks()V",
-            at = @At(value = "INVOKE",
-                    target = "Ljava/util/concurrent/locks/LockSupport;parkNanos(Ljava/lang/Object;J)V"),
-            require = 1, allow = 1)
-    private void fabrolia$observeDeadlineIdlePark(
-            Object blocker, long nanos, Operation<Void> original) {
-        if (nanos <= 0 || Thread.currentThread() != serverThread
-                || !fabrolia$loopTiming.isDeadlineIdlePark()) {
-            original.call(blocker, nanos);
-            return;
-        }
-        long start = System.nanoTime();
-        try {
-            original.call(blocker, nanos);
-        } finally {
-            fabrolia$loopTiming.recordDeadlineIdlePark(System.nanoTime() - start);
-        }
-    }
-
     @Inject(method = "pollTask()Z", at = @At("HEAD"), require = 1)
     private void fabrolia$failStopBeforeNextMainTask(CallbackInfoReturnable<Boolean> cir) {
         // BlockableEventLoop#doRunTask logs and swallows ordinary task
         // Exceptions.  The next poll is the first boundary outside that catch:
         // fail here before MinecraftServer removes or starts another queued task.
         RegionScheduler.throwWorkerFailureIfAny();
-    }
-
-    @Inject(method = "pollTask()Z", at = @At("RETURN"), cancellable = true, require = 1)
-    private void fabrolia$serviceResidualGameplay(CallbackInfoReturnable<Boolean> cir) {
-        if (RegionScheduler.serviceMainGameplayAfterPoll(
-                (MinecraftServer) (Object) this)) {
-            cir.setReturnValue(true);
-        }
     }
 
     @Inject(method = "getRunningThread()Ljava/lang/Thread;",

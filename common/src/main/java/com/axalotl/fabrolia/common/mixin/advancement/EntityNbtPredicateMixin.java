@@ -26,8 +26,6 @@ public abstract class EntityNbtPredicateMixin {
     @WrapMethod(method = "matches")
     private boolean fabrolia$tryFastMatch(Entity entity, ServerLevel level, @Nullable Vec3 position,
                                           Operation<Boolean> original) {
-        com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership
-                .requireEntityObservationOwnership(entity);
         CompoundTag expected = ((EntityNbtPredicate) (Object) this).nbt().tag();
         if (NbtPredicateFastPath.isHandled(expected)) {
             Boolean fast = NbtPredicateFastPath.tryMatch(entity, expected);

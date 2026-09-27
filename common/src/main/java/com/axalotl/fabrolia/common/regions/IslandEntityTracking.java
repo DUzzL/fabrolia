@@ -796,11 +796,6 @@ public final class IslandEntityTracking {
             // Validate the existing binding before any detached gap is created.
             // This rebuild's BEGIN snapshot, not the mutable spatial map, owns carry.
             handoffMainPublicationToActiveOwnerLocked(tracker, entity);
-            if (arrivalPending(entity)) {
-                detach(tracker);
-                scheduleMainPublication(tracker);
-                return;
-            }
             IslandRegistry.PIsland current =
                     runtime.islandOwnerOfChunk(entity.chunkPosition().pack());
             if (current == null && entity instanceof ServerPlayer player
@@ -884,7 +879,6 @@ public final class IslandEntityTracking {
                 detach(tracker);
                 return false;
             }
-            if (deferPendingArrival(tracker, entity)) return false;
             IslandRegistry.PIsland current =
                     runtime.islandOwnerOfChunk(entity.chunkPosition().pack());
             if (current != island) {
@@ -1130,61 +1124,6 @@ public final class IslandEntityTracking {
         }
     }
 
-    /**
-     * Completes the original real-player publication after an audited same-level
-     * soft move. The old permit identifies the obligation, not its spatial writer:
-     * only the typed Main-L writer may refresh the player at its live destination.
-     * Pairing work stays on the exact tracker until the ordered listener handoff
-     * reaches its existing Main publication tail.
-     */
-    static PostPhysicsResult publishPendingRealPlayerAfterSoftLifecycleOnMain(
-            AsyncIslandPlayerTicks.PendingLate pending,
-            IslandRegistry.PIsland island) {
-        if (pending == null || island == null) return PostPhysicsResult.INVALID;
-        boolean hardLifecycleCut;
-        synchronized (pending.state) {
-            if (!pendingRealPlayerAfterPhysicsInvariantLocked(pending, island)) {
-                return PostPhysicsResult.INVALID;
-            }
-            hardLifecycleCut = explicitPostPhysicsLifecycleCutLocked(pending);
-            if (!hardLifecycleCut
-                    && !AsyncIslandPlayerTicks.ownsSoftLifecycleLateOnMain(pending, island)) {
-                return PostPhysicsResult.INVALID;
-            }
-        }
-        // The original listener may itself die/disconnect/change level. Its
-        // existing hard-exit path owns retirement, including an absent tracker;
-        // the earlier soft receipt must not turn that into live publication.
-        if (hardLifecycleCut) return publishPendingRealPlayerAfterPhysics(pending, island);
-        IslandTrackedEntityAccess tracker = currentPlayerTracker(pending.player);
-        if (tracker == null) return PostPhysicsResult.INVALID;
-        synchronized (tracker) {
-            synchronized (pending.state) {
-                if (!AsyncIslandPlayerTicks.ownsSoftLifecycleLateOnMain(pending, island)
-                        || !currentLivePlayerTrackerLocked(tracker, pending.player)
-                        || !pending.state.trackingPublication.matches(tracker, pending.owner)
-                        || pending.state.trackingTopologyGap != null
-                        || arrivalPending(pending.player)) {
-                    return PostPhysicsResult.INVALID;
-                }
-                IslandRegistry.PIsland cadence = tracker.fabrolia$islandTrackingOwner();
-                if (cadence == null || cadence.retired
-                        || pending.state.trackingPublication.cadenceOwner() != cadence
-                        || !cadence.pendingEntityUpdates.contains(tracker)) {
-                    return PostPhysicsResult.INVALID;
-                }
-                // Do not use POST_PHYSICS_CROSSING_PUBLISHING here: the source
-                // generation no longer supplies publication authority. This is
-                // the ordinary native Main publisher, including its hard-clock
-                // duplicate rule; a duplicate is terminal, never a replay.
-                publishUnderTrackerLock(tracker);
-                RegionScheduler.runSuccessBodyIfHealthy(() ->
-                        detachForPostPhysicsHandoffLocked(pending, tracker, false));
-                return PostPhysicsResult.HANDOFF;
-            }
-        }
-    }
-
     /** Missing/replaced trackers are containable only behind an explicit lifecycle cut. */
     private static PostPhysicsResult unavailablePostPhysicsTrackerResult(
             AsyncIslandPlayerTicks.PendingLate pending,
@@ -1299,13 +1238,7 @@ public final class IslandEntityTracking {
                 || pending.owner.domainIdentity() != island.domain
                 || pending.owner.kind() != IslandPlayerTurnSession.PlayerKind.REAL
                 || !pending.permit.owner().matchesExactly(pending.owner)
-                || !pending.state.session.isRunningRealLate(pending.permit)
-                || !AsyncIslandPlayerTicks.isIslandPlayerTickOf(pending.player)
-                || !(IslandCommands.ownsPlayerLateOnMain(pending.player, island)
-                || Thread.currentThread() instanceof RegionWorkerThread worker
-                && island.unitClaim.get()
-                && island.claimHolder == worker
-                && worker.currentDomain == island.domain)) {
+                || !pending.state.session.isRunningRealLate(pending.permit)) {
             return false;
         }
         return pending.listener instanceof AsyncIslandListenerAccess listenerAccess
@@ -1388,13 +1321,6 @@ public final class IslandEntityTracking {
 
     private static boolean publishAndPairUnderTrackerLock(
             IslandTrackedEntityAccess tracker) {
-        return publishAndPairUnderTrackerLock(tracker, null);
-    }
-
-    private static boolean publishAndPairUnderTrackerLock(
-            IslandTrackedEntityAccess tracker, MainTrackingTask continuation) {
-        if (continuation != null ? continuation.deferToArrivalLocked()
-                : deferPendingArrival(tracker, tracker.fabrolia$trackedEntity())) return false;
         boolean published = publishUnderTrackerLock(tracker);
         if (published || tracker.fabrolia$hasPendingIslandPairings()) {
             // A false result on a live tracker is the exact hard-clock duplicate:
@@ -1511,19 +1437,6 @@ public final class IslandEntityTracking {
                 && guard.fabrolia$isPortalPending();
     }
 
-    private static boolean arrivalPending(Entity entity) {
-        return entity instanceof ParallelProcessor.TickGuard guard
-                && guard.fabrolia$tickLease().isArrivalPending();
-    }
-
-    /** Preserve the producer obligation, never unrelated recipient packets. */
-    private static boolean deferPendingArrival(
-            IslandTrackedEntityAccess tracker, Entity entity) {
-        if (!arrivalPending(entity)) return false;
-        scheduleMainPublication(tracker);
-        return true;
-    }
-
     private static boolean physicalMain(Entity entity) {
         return entity != null && entity.level() instanceof ServerLevel level
                 && RegionalPlayerEntityTicksV2
@@ -1596,10 +1509,8 @@ public final class IslandEntityTracking {
         // clock and subjects it to lastMainTrackingServerTick dedupe.
         if (POST_PHYSICS_CROSSING_PUBLISHING.get() == tracker) return true;
         RegionizedServer runtime = runtime(entity);
-        boolean softMainLate = entity instanceof ServerPlayer player
-                && AsyncIslandPlayerTicks.ownsSoftLifecycleLateOnMain(player);
         if (runtime == null || !runtime.asyncActive
-                || !softMainLate && !requiresPersistentMainPublisher(entity)) return true;
+                || !requiresPersistentMainPublisher(entity)) return true;
         return entity.level() instanceof ServerLevel level
                 && tracker.fabrolia$tryBeginMainTrackingPublication(
                 level.getServer().getTickCount());
@@ -1743,7 +1654,6 @@ public final class IslandEntityTracking {
         long scheduleToken = tracker.fabrolia$tryScheduleMainTracking();
         if (scheduleToken == 0L) return;
         MainPublicationReceipt receipt = null;
-        MainTrackingTask task = null;
         boolean tokenReleased = false;
         try {
             // A caller may have passed the first W read and then waited for the
@@ -1755,19 +1665,17 @@ public final class IslandEntityTracking {
                 tokenReleased = true;
                 return;
             }
+            MinecraftServer server = level.getServer();
             receipt = new MainPublicationReceipt();
-            // MinecraftServer.execute() may inline on physical Main. Route and
-            // membership staging are called with the exact tracker monitor
-            // held; an inline claim would create tracker -> island while the
-            // island tail uses island -> tracker. Typed control publication is an
-            // unconditional enqueue and therefore releases the monitor first.
-            task = new MainTrackingTask(
-                    tracker, entity, level, scheduleToken, receipt);
-            if (!NetherPortalPlayerAccess.deferArrivalPublication(entity, task)) {
-                task.publish();
-            }
+            server.schedule(new TickTask(server.getTickCount(), new MainTrackingTask(
+                    tracker, entity, level, scheduleToken, receipt)));
             MainPublicationReceipt commitReceipt = receipt;
-            RegionScheduler.commitSuccessIfHealthy(commitReceipt::accept);
+            RegionScheduler.commitSuccessIfHealthy(() -> {
+                if (!commitReceipt.accept()) {
+                    throw new IllegalStateException(
+                            "Main tracking publication cancelled before scheduler commit");
+                }
+            });
         } catch (Throwable schedulingFailure) {
             // A scheduler may enqueue and then throw.  Publish the failure while
             // the token is still closed, so that queued task can perform only
@@ -1778,8 +1686,7 @@ public final class IslandEntityTracking {
             if (!tokenReleased) {
                 try {
                     synchronized (tracker) {
-                        if (task != null) task.releaseScheduleTokenLocked();
-                        else tracker.fabrolia$finishMainTrackingSchedule(scheduleToken);
+                        tracker.fabrolia$finishMainTrackingSchedule(scheduleToken);
                         tokenReleased = true;
                     }
                 } catch (Throwable cleanupFailure) {
@@ -1803,7 +1710,7 @@ public final class IslandEntityTracking {
         }
 
         private void cancel() {
-            state.set(CANCELLED);
+            state.compareAndSet(OFFERING, CANCELLED);
         }
 
         private boolean awaitAccepted() {
@@ -1817,15 +1724,12 @@ public final class IslandEntityTracking {
         }
     }
 
-    /** One exact continuation, held by either the scheduler or arrival settlement. */
-    private static final class MainTrackingTask
-            implements Runnable, NetherPortalPlayerAccess.ArrivalPublication {
+    private static final class MainTrackingTask implements Runnable {
         private final IslandTrackedEntityAccess tracker;
         private final Entity entity;
         private final ServerLevel scheduledLevel;
         private final long scheduleToken;
         private final MainPublicationReceipt publication;
-        private boolean arrivalHeldUnderTracker;
         private boolean scheduleReleasedUnderTracker;
 
         private MainTrackingTask(IslandTrackedEntityAccess tracker, Entity entity,
@@ -1839,42 +1743,13 @@ public final class IslandEntityTracking {
         }
 
         @Override
-        public void publish() {
-            try {
-                // Never execute inline: settlement can still be unwinding the
-                // caller's tracker scope, and entity claims are acquired by run.
-                RegionScheduler.scheduleMainControlTask(scheduledLevel.getServer(), this);
-            } catch (Throwable thrown) {
-                Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
-                try {
-                    cancel();
-                } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
-                }
-                IslandEntityTracking.<RuntimeException>rethrow(failure);
-            }
-        }
-
-        @Override
-        public void cancel() {
-            publication.cancel();
-            synchronized (tracker) {
-                releaseScheduleTokenLocked();
-            }
-        }
-
-        @Override
         public void run() {
             Throwable failure = null;
             try {
                 if (!publication.awaitAccepted()) {
-                    // Cancellation may be a normal arrival retirement. A
-                    // scheduler failure has already selected W before cancel.
                     RegionScheduler.throwWorkerFailureIfAny();
-                    synchronized (tracker) {
-                        releaseScheduleTokenLocked();
-                    }
-                    return;
+                    throw new IllegalStateException(
+                            "cancelled Main tracking publication lost its fatal failure");
                 }
                 // BlockableEventLoop may otherwise log an ordinary task failure
                 // and continue. First close the already-retired/already-owned
@@ -1895,11 +1770,11 @@ public final class IslandEntityTracking {
                 failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
             }
 
-            if (!scheduleReleasedUnderTracker
-                    && (failure != null || !arrivalHeldUnderTracker)) {
+            if (!scheduleReleasedUnderTracker) {
                 try {
                     synchronized (tracker) {
-                        releaseScheduleTokenLocked();
+                        tracker.fabrolia$finishMainTrackingSchedule(scheduleToken);
+                        scheduleReleasedUnderTracker = true;
                     }
                 } catch (Throwable cleanupFailure) {
                     if (failure == null) {
@@ -1922,8 +1797,6 @@ public final class IslandEntityTracking {
          */
         private boolean preflightWithoutMainClaim() {
             synchronized (tracker) {
-                arrivalHeldUnderTracker = false;
-                if (scheduleReleasedUnderTracker) return true;
                 if (entity.level() != scheduledLevel) {
                     releaseScheduleTokenLocked();
                     return true;
@@ -1949,8 +1822,8 @@ public final class IslandEntityTracking {
                 // Exactly one attempt belongs to this accepted continuation.
                 // A hard-clock duplicate is terminal too: another caller already
                 // performed this tick's vanilla body, so no replay is invented.
-                publishAndPairUnderTrackerLock(tracker, this);
-                if (!arrivalHeldUnderTracker) releaseScheduleTokenLocked();
+                publishAndPairUnderTrackerLock(tracker);
+                releaseScheduleTokenLocked();
             }
         }
 
@@ -1960,23 +1833,13 @@ public final class IslandEntityTracking {
                 throw new IllegalStateException(
                         "Main tracking preflight without tracker lock");
             }
-            if (scheduleReleasedUnderTracker) return true;
-            if (entity.level() != scheduledLevel || entity.isRemoved()
-                    || tracker.fabrolia$islandTrackingState()
-                    == IslandTrackedEntityAccess.TRACKING_RETIRED) {
-                releaseScheduleTokenLocked();
-                return true;
+            if (entity.level() == scheduledLevel
+                    && tracker.fabrolia$islandTrackingState()
+                    != IslandTrackedEntityAccess.TRACKING_RETIRED
+                    && !handoffMainPublicationToActiveOwnerLocked(tracker, entity)) {
+                return false;
             }
-            if (deferToArrivalLocked()) return true;
-            if (!handoffMainPublicationToActiveOwnerLocked(tracker, entity)) return false;
             releaseScheduleTokenLocked();
-            return true;
-        }
-
-        /** Transfer this accepted envelope; its exact token remains closed. */
-        private boolean deferToArrivalLocked() {
-            if (!NetherPortalPlayerAccess.deferArrivalPublication(entity, this)) return false;
-            arrivalHeldUnderTracker = true;
             return true;
         }
 
@@ -2063,13 +1926,8 @@ public final class IslandEntityTracking {
 
     public static void retire(IslandTrackedEntityAccess tracker) {
         if (tracker == null) return;
-        synchronized (tracker) {
-            synchronized (ARRIVAL_PAIRINGS) {
-                ARRIVAL_PAIRINGS.remove(tracker);
-            }
-            unregisterPlayerTracker(tracker);
-            detach(tracker);
-        }
+        unregisterPlayerTracker(tracker);
+        detach(tracker);
     }
 
     private static void attach(IslandTrackedEntityAccess tracker,

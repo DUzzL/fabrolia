@@ -8,18 +8,11 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
- * Region-worker pool. Ordinary gameplay grants rotate across ready, unit, global,
- * Main-safe and portal lanes; units-only grants leave that rotation untouched.
- *
- * <p>A ready grant retires at most 1024 notifications, stopping at the first
- * admitted region/helper execution path. This batches bookkeeping, not unrelated
- * gameplay bodies; one admitted path retains its existing FIFO/help/entity drain.
- * The bound counts notifications, not elapsed time.
+ * Region-worker pool.
  *
  * <p>Ready regions are claimed with {@link Region#tryClaim}, published as the
  * worker's {@code currentRegion}, drained and released. A lost claim may run
@@ -27,28 +20,18 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * Rearming when work arrives during a drain prevents a lost wake from
  * stranding accepted work or its entity-barrier obligation.
  * Retained unit/global/Main-safe roots keep their admission and receipt paths.
- * Ready notification counts only suppress redundant Main-healer publication.
  *
  * <p>Workers are not bound to regions; N≈cores-2 threads multiplex hundreds of regions.
  * Submit paths call {@link RegionScheduler#wakeWorkers()}; idle workers park with a
  * 10ms fallback timeout, so a missed wake costs at most one slice.
- *
- * <p>Typed island units enter independently under their own claims. Physical
- * Main grants exclusive roots only for shared gameplay or unsupported grid
- * geometry, waiting for their terminal cleanup. A producer's advancement
- * dependencies select that producer's venue, never the whole island's cadence.
- * Queued roots and pure transport retain their receipt/lifecycle accounting.
  */
 public final class RegionWorkerPool {
     private static final Logger LOGGER = LoggerFactory.getLogger(RegionWorkerPool.class);
     private static final AtomicInteger WORKER_COUNTER = new AtomicInteger();
-    private static final AtomicIntegerFieldUpdater<Region> READY_NOTIFICATIONS =
-            AtomicIntegerFieldUpdater.newUpdater(Region.class, "readyNotifications");
     /** Explicitly propagated parent step for a worker -> foreign-executor handoff. */
     private static final ThreadLocal<StepToken> CAUSAL_STEP = new ThreadLocal<>();
 
     private final Thread[] workers;
-    private final net.minecraft.server.MinecraftServer gameplayServer;
     private volatile boolean running;
     private boolean accepting;
     private final Object lifecycleLock = new Object();
@@ -98,471 +81,6 @@ public final class RegionWorkerPool {
      * observed the producer's result.
      */
     private long shutdownActivityEpoch;
-
-    /**
-     * One physical-Main grant for a root without independent island ownership.
-     * Publishing the turn closes autonomous admission; its worker may start only
-     * after entered island units have completed. Their original receipts remain
-     * live while Main services native chunk and routed-command dependencies.
-     */
-    private static final class GameplayTurn {
-        final Thread main;
-        Runnable root;
-        ReadyEntry ready;
-        Thread worker;
-        boolean readyToRun;
-        boolean mainOnly;
-        boolean serviceRequested;
-        boolean serviceOwned;
-        boolean terminal;
-        boolean worked;
-        PublishedGameplayCohort cohort;
-
-        GameplayTurn(Thread main) {
-            this.main = main;
-        }
-    }
-
-    private GameplayTurn gameplayTurn;
-    /** Guarded by lifecycleLock; every completed selection advances lane preference. */
-    private int nextGameplayLane;
-
-    /**
-     * Links share the lifecycle publication cut; detach accounting stays local
-     * to each FIFO so ordinary work never waits for the lifecycle monitor.
-     * These private queues are mutated only through add/offer/poll.
-     */
-    private final class PublishedQueue<T> extends ConcurrentLinkedQueue<T> {
-        private long linked;
-        private volatile long detached;
-
-        @Override
-        public boolean add(T entry) {
-            return offer(entry);
-        }
-
-        @Override
-        public boolean offer(T entry) {
-            synchronized (lifecycleLock) {
-                synchronized (this) {
-                    boolean added = super.offer(entry);
-                    if (added) linked++;
-                    return added;
-                }
-            }
-        }
-
-        @Override
-        public T poll() {
-            if (super.peek() == null) return null;
-            synchronized (this) {
-                T entry = super.poll();
-                if (entry != null) detached++;
-                return entry;
-            }
-        }
-
-        T pollBefore(long cut) {
-            synchronized (this) {
-                return detached < cut ? poll() : null;
-            }
-        }
-    }
-
-    /** Scheduling eligibility only; never owns a claim or a gameplay permit. */
-    static final class PublishedGameplayCohort {
-        private final long ready;
-        private final long units;
-        private final long global;
-        private final long mainSafe;
-        private final long mainGameplay;
-        private boolean portal;
-
-        private PublishedGameplayCohort(RegionWorkerPool pool) {
-            ready = pool.ready.linked;
-            units = pool.unitTasks.linked;
-            global = pool.globalTasks.linked;
-            mainSafe = pool.mainSafeTasks.linked;
-            mainGameplay = pool.mainGameplayTasks.linked;
-            portal = NetherPortalTransfers.hasPending();
-        }
-    }
-
-    // Physical-Main scheduling state only; never retains gameplay authority.
-    private PublishedGameplayCohort pendingGameplayCohort;
-    private boolean publishedGameplayCheckpointDue;
-
-    PublishedGameplayCohort capturePublishedGameplay() {
-        synchronized (lifecycleLock) {
-            throwIfFailed();
-            // Native idle polls must not allocate a fresh empty cut on every attempt.
-            if (pendingGameplayCohort == null || !hasPublishedGameplay(pendingGameplayCohort)
-                    && (ready.detached < ready.linked || unitTasks.detached < unitTasks.linked
-                    || globalTasks.detached < globalTasks.linked
-                    || mainSafeTasks.detached < mainSafeTasks.linked
-                    || mainGameplayTasks.detached < mainGameplayTasks.linked
-                    || NetherPortalTransfers.hasPending())) {
-                pendingGameplayCohort = new PublishedGameplayCohort(this);
-            }
-            return pendingGameplayCohort;
-        }
-    }
-
-    boolean hasPublishedGameplay(PublishedGameplayCohort cohort) {
-        synchronized (lifecycleLock) {
-            return ready.detached < cohort.ready || unitTasks.detached < cohort.units
-                    || globalTasks.detached < cohort.global
-                    || mainSafeTasks.detached < cohort.mainSafe
-                    || mainGameplayTasks.detached < cohort.mainGameplay || cohort.portal;
-        }
-    }
-
-    /** True means one terminal grant, even when its ready/portal attempt did no work. */
-    boolean runPublishedGameplayStep(PublishedGameplayCohort cohort) {
-        boolean granted = runExclusiveWorkerStep(false, cohort);
-        if (granted) publishedGameplayCheckpointDue = true;
-        return granted;
-    }
-
-    /** Carries the eligible native-FIFO opportunity across slices and cuts. */
-    boolean takePublishedGameplayCheckpoint() {
-        boolean due = publishedGameplayCheckpointDue;
-        publishedGameplayCheckpointDue = false;
-        return due;
-    }
-
-    boolean ownsExclusiveGameplay(Thread caller) {
-        synchronized (lifecycleLock) {
-            GameplayTurn turn = gameplayTurn;
-            if (turn == null) {
-                if (!exactTurnPaused || exactTurnOwner != caller) return false;
-                Thread actor = RegionalPlayerEntityTicksV2.logicalServerThread(gameplayServer);
-                return actor == null || actor == caller
-                        || IslandCommands.delegatesGameplayFrom(actor, caller);
-            }
-            boolean commandLoan = IslandCommands.delegatesGameplayFrom(turn.worker, turn.main);
-            return !turn.terminal && (turn.worker == caller
-                    && !turn.serviceRequested && !turn.serviceOwned && !commandLoan
-                    || turn.main == caller && commandLoan);
-        }
-    }
-
-    Thread exclusiveGameplayWorkerOrNull() {
-        synchronized (lifecycleLock) {
-            GameplayTurn turn = gameplayTurn;
-            return turn != null && !turn.terminal && !turn.serviceRequested
-                    && !turn.serviceOwned
-                    && !IslandCommands.delegatesGameplayFrom(turn.worker, turn.main)
-                    ? turn.worker : null;
-        }
-    }
-
-    boolean hasEnteredGameplayTurn() {
-        synchronized (lifecycleLock) {
-            return gameplayTurn != null && gameplayTurn.worker != null && !gameplayTurn.terminal;
-        }
-    }
-
-    /** Progress eligibility only; the routed body still needs its exact frame/ACK. */
-    boolean allowsRoutedProgress(Thread waitingWorker) {
-        synchronized (lifecycleLock) {
-            GameplayTurn turn = gameplayTurn;
-            // Only Main publishes readyToRun, after this progress call returns.
-            // A ready turn with no assigned worker is closed, not ownerless.
-            return turn == null || !turn.readyToRun
-                    || waitingWorker != null && turn.worker == waitingWorker
-                    && !turn.terminal && !turn.serviceRequested && !turn.serviceOwned;
-        }
-    }
-
-    /** Native schedule unparks Main; a selected turn waits on this monitor instead. */
-    void mainControlPublished() {
-        synchronized (lifecycleLock) {
-            if (gameplayTurn != null) signalLifecycleWaiters();
-        }
-    }
-
-    /**
-     * Main's control envelope is suspended across this call, not forgiven from
-     * lifecycle accounting. No general pool pause is acquired: accepted queues
-     * and the caller's exact external permit remain tracked throughout the turn.
-     */
-    boolean runExclusiveWorkerStep() {
-        return runExclusiveWorkerStep(false);
-    }
-
-    boolean runExclusiveWorkerStep(boolean unitsOnly) {
-        return runExclusiveWorkerStep(unitsOnly, null);
-    }
-
-    private boolean runExclusiveWorkerStep(boolean unitsOnly, PublishedGameplayCohort cohort) {
-        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(gameplayServer)) {
-            throw new IllegalStateException("gameplay worker grant entered off physical Main");
-        }
-        if (RegionScheduler.inNativeMainService()
-                || IslandCommands.fenceWindowHeld()
-                || RegionScheduler.currentThreadHoldsLiveIslandClaim()) {
-            return false;
-        }
-        boolean globallyScopedUnits = !autonomousUnitProducersAllowed();
-        GameplayTurn turn;
-        synchronized (lifecycleLock) {
-            throwIfFailed();
-            if (gameplayTurn != null) {
-                return false;
-            }
-            if (exactTurnPaused) {
-                return false;
-            }
-            // Existing local units finish under their own claims. The published
-            // turn blocks successors without pretending parked units are idle.
-            if (!running) {
-                return false;
-            }
-            Runnable unitHead = unitTasks.peek();
-            boolean eligibleUnit = unitHead != null
-                    && (globallyScopedUnits || !isIslandUnit(unitHead));
-            if (unitsOnly) {
-                if (!eligibleUnit) return false;
-            } else if (!eligibleUnit && globalTasks.isEmpty() && mainSafeTasks.isEmpty()
-                    && mainGameplayTasks.isEmpty()
-                    && (ready.peek() == null || isIslandNotification(ready.peek()))
-                    && !NetherPortalTransfers.hasPending()) {
-                return false;
-            }
-            turn = new GameplayTurn(Thread.currentThread());
-            turn.cohort = cohort;
-            boolean portalPending = false;
-            if (unitsOnly) {
-                if (globallyScopedUnits || !isIslandUnit(unitTasks.peek())) {
-                    turn.root = unitTasks.poll();
-                }
-            } else {
-                // A refused ready claim is still a consumed notification, not
-                // progress for another lane. Bound starvation in grants, without
-                // reversing it when island units continuously chain successors.
-                for (int scanned = 0; scanned < 6; scanned++) {
-                    switch (nextGameplayLane) {
-                        case 0 -> {
-                            if (!isIslandNotification(ready.peek())) {
-                                turn.ready = cohort == null ? ready.poll() : ready.pollBefore(cohort.ready);
-                            }
-                        }
-                        case 1 -> {
-                            if (globallyScopedUnits || !isIslandUnit(unitTasks.peek())) {
-                                turn.root = cohort == null ? unitTasks.poll() : unitTasks.pollBefore(cohort.units);
-                            }
-                        }
-                        case 2 -> turn.root = cohort == null ? globalTasks.poll()
-                                : globalTasks.pollBefore(cohort.global);
-                        case 3 -> turn.root = cohort == null ? mainSafeTasks.poll()
-                                : mainSafeTasks.pollBefore(cohort.mainSafe);
-                        case 4 -> {
-                            portalPending = (cohort == null || cohort.portal)
-                                    && NetherPortalTransfers.hasPending();
-                            if (cohort != null) cohort.portal = false;
-                        }
-                        case 5 -> {
-                            turn.root = cohort == null ? mainGameplayTasks.poll()
-                                    : mainGameplayTasks.pollBefore(cohort.mainGameplay);
-                            turn.mainOnly = turn.root != null;
-                        }
-                    }
-                    nextGameplayLane = (nextGameplayLane + 1) % 6;
-                    if (turn.ready != null || turn.root != null || portalPending) break;
-                }
-            }
-            if (turn.ready == null && turn.root == null && !portalPending) return false;
-            // The chosen turn closes autonomous admission even when its root is
-            // not an island unit; its exact interval explains queued-unit delay.
-            gameplayTurn = turn;
-            turn.readyToRun = activeSteps.get() == 0;
-            signalLifecycleWaiters();
-        }
-        for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
-        Throwable failure = null;
-        boolean interrupted = false;
-        for (;;) {
-            boolean service = false;
-            boolean quiescing = false;
-            boolean runOnMain = false;
-            synchronized (lifecycleLock) {
-                if (fatalFailure != null && turn.worker == null) turn.terminal = true;
-                if (turn.terminal) break;
-                if (!turn.readyToRun && fatalFailure == null) {
-                    if (activeSteps.get() == 0) {
-                        turn.readyToRun = true;
-                        signalLifecycleWaiters();
-                    } else {
-                        quiescing = true;
-                    }
-                }
-                if (turn.readyToRun && turn.mainOnly) {
-                    turn.worker = turn.main;
-                    runOnMain = true;
-                } else if (turn.serviceRequested && fatalFailure == null) {
-                    turn.serviceOwned = true;
-                    service = true;
-                } else if (!IslandCommands.hasActionableRoutedProgress()) {
-                    try {
-                        awaitLifecycleChange(1L);
-                    } catch (InterruptedException ignored) {
-                        interrupted = true;
-                    }
-                }
-            }
-            if (runOnMain) {
-                try {
-                    runSelectedMainGameplayStep(turn);
-                } catch (Throwable thrown) {
-                    failure = publishAndSelectFatal(thrown);
-                }
-            } else if (quiescing) {
-                try {
-                    // Main-only callbacks retain their own target/global guards.
-                    // Never run a Main-safe/global body before this cut settles.
-                    drainMainSafeAll(true);
-                    IslandCommands.drainMainChunkServices();
-                    if (IslandCommands.hasRoutedPending()) IslandCommands.drainRoutedBatch();
-                } catch (Throwable thrown) {
-                    failure = publishAndSelectFatal(thrown);
-                }
-            } else if (service) {
-                try {
-                    IslandCommands.drainMainChunkServices();
-                } catch (Throwable thrown) {
-                    failure = publishAndSelectFatal(thrown);
-                } finally {
-                    synchronized (lifecycleLock) {
-                        turn.serviceOwned = false;
-                        turn.serviceRequested = false;
-                        signalLifecycleWaiters();
-                    }
-                }
-            } else if (IslandCommands.hasRoutedPending() && fatalFailure == null) {
-                try {
-                    // The command protocol acquires its own exact parked-worker
-                    // acknowledgement before any Main command body may enter.
-                    IslandCommands.drainRoutedBatch();
-                } catch (Throwable thrown) {
-                    failure = publishAndSelectFatal(thrown);
-                }
-            }
-        }
-        if (turn.worker == null) {
-            // W may win after Main detached the exact receipt but before a
-            // worker acquired the grant. The controller owns that cancellation.
-            failure = fatalFailure;
-            if (turn.root != null) failure = cancelQueuedEntry(turn.root, failure);
-            if (turn.ready != null) {
-                try {
-                    turn.ready.cancelPublication();
-                } catch (Throwable cleanup) {
-                    failure = publishAndSelectFatal(mergeFailure(failure, cleanup));
-                }
-            }
-        }
-        synchronized (lifecycleLock) {
-            if (gameplayTurn != turn) {
-                failure = publishAndSelectFatal(new IllegalStateException(
-                        "gameplay turn lost its exact terminal receipt"));
-            } else {
-                gameplayTurn = null;
-                signalLifecycleWaiters();
-            }
-        }
-        if (interrupted) Thread.currentThread().interrupt();
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
-        throwIfFailed();
-        return cohort != null || turn.worked;
-    }
-
-    private void runSelectedMainGameplayStep(GameplayTurn turn) {
-        Throwable failure = null;
-        try {
-            Runnable body = () -> RegionScheduler.runGlobalMainBody(gameplayServer, turn.root);
-            StepToken causal = currentThreadCausalStepForThisPoolOrNull();
-            if (causal != null) {
-                runAcceptedCausalBody(causal, body);
-            } else {
-                ExternalPermit permit = reserveSuccessBodyPermit(true);
-                if (permit == null) {
-                    throwIfFailed();
-                    throw new IllegalStateException("accepted Main gameplay root lost its body permit");
-                }
-                runAcceptedExternalBody(permit, body);
-            }
-            turn.worked = true;
-        } catch (Throwable thrown) {
-            failure = publishAndSelectFatal(thrown);
-            failure = cancelQueuedEntry(turn.root, failure);
-        } finally {
-            synchronized (lifecycleLock) {
-                turn.terminal = true;
-                signalLifecycleWaiters();
-            }
-        }
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
-    }
-
-    private boolean runSelectedGameplayStep(RegionWorkerThread worker, GameplayTurn turn) {
-        if (turn.ready != null) {
-            boolean worked = false;
-            // Normal dispatch/queue producers can leave many benign duplicates.
-            // Retire a bounded prefix without a Main/worker handoff per node, but
-            // return after the first admitted region/help body, not a body batch.
-            for (int retired = 0; retired < 1024; retired++) {
-                ReadyEntry entry = turn.ready;
-                throwIfFailed();
-                if (!entry.awaitPublication()) {
-                    entry.closeEntityReceipt();
-                    throwIfFailed();
-                } else {
-                    worked |= workReadyEntry(worker, entry);
-                }
-                throwIfFailed();
-                if (entry.bodyEntered || retired == 1023) break;
-                // The selected worker owns this cursor until terminal; keep the
-                // exact detached entry reachable by its outer failure cleanup.
-                turn.ready = turn.cohort == null ? ready.poll() : ready.pollBefore(turn.cohort.ready);
-                if (turn.ready == null) break;
-            }
-            return worked;
-        }
-        if (turn.root != null) {
-            turn.root.run();
-            return true;
-        }
-        return NetherPortalTransfers.serviceOne();
-    }
-
-    /** Wake Main for the selected root's native dependency; no claim is lent. */
-    boolean parkExclusiveWorkerForMainService() {
-        boolean interrupted = false;
-        synchronized (lifecycleLock) {
-            GameplayTurn turn = gameplayTurn;
-            if (turn == null || turn.worker != Thread.currentThread()) return false;
-            if (turn.serviceRequested || turn.serviceOwned || turn.terminal) {
-                throw new IllegalStateException("nested gameplay service delegation");
-            }
-            turn.serviceRequested = true;
-            signalLifecycleWaiters();
-            while (turn.serviceRequested || turn.serviceOwned) {
-                if (fatalFailure != null && !turn.serviceOwned) {
-                    turn.serviceRequested = false;
-                    break;
-                }
-                try {
-                    awaitLifecycleChange();
-                } catch (InterruptedException ignored) {
-                    interrupted = true;
-                }
-            }
-        }
-        if (interrupted) Thread.currentThread().interrupt();
-        throwIfFailed();
-        return true;
-    }
 
     boolean isRunning() { return running; }
 
@@ -959,7 +477,7 @@ public final class RegionWorkerPool {
                         ? "exact player turn was requested twice by its owner"
                         : "exact player turn already owned by another thread");
             }
-            if (retainQueuedRegions && mainPreparationNeedsControlProgress()) return false;
+            if (retainQueuedRegions && IslandCommands.hasRoutedPending()) return false;
             exactTurnRequested = true;
             exactTurnOwner = Thread.currentThread();
         }
@@ -967,7 +485,7 @@ public final class RegionWorkerPool {
         boolean validatingPausedCut = false;
         Throwable fatalDuringPause = null;
         for (;;) {
-            boolean yieldForMainControl = false;
+            boolean yieldForRoutedCommand = false;
             synchronized (lifecycleLock) {
                 if (fatalFailure != null) {
                     fatalDuringPause = fatalFailure;
@@ -978,8 +496,8 @@ public final class RegionWorkerPool {
                     signalLifecycleWaiters();
                 }
                 if (fatalDuringPause == null && retainQueuedRegions
-                        && mainPreparationNeedsControlProgress()) {
-                    yieldForMainControl = true;
+                        && IslandCommands.hasRoutedPending()) {
+                    yieldForRoutedCommand = true;
                 }
                 // Same fixed-point cut as shutdown, without closing admission: every
                 // task accepted before this monitor edge either finished, remains an
@@ -987,13 +505,13 @@ public final class RegionWorkerPool {
                 // external permit. Setting PAUSED under this exact monitor prevents a
                 // worker from incrementing activeSteps after the cut.
                 if (fatalDuringPause == null
-                        && !yieldForMainControl && !validatingPausedCut
+                        && !yieldForRoutedCommand && !validatingPausedCut
                         && exactTurnQuiescentLocked(retainQueuedRegions)) {
                     exactTurnPaused = true;
                     exactTurnRequested = false;
                     validatingPausedCut = true;
                 } else if (fatalDuringPause == null
-                        && !yieldForMainControl && !validatingPausedCut) {
+                        && !yieldForRoutedCommand && !validatingPausedCut) {
                     try {
                         awaitLifecycleChange(1L);
                     } catch (InterruptedException ignored) {
@@ -1002,7 +520,7 @@ public final class RegionWorkerPool {
                 }
             }
             if (fatalDuringPause != null) break;
-            if (yieldForMainControl) {
+            if (yieldForRoutedCommand) {
                 try {
                     // Accepted Main work still needs its own venue: replay publications
                     // without pretending that Main acquired its exclusive turn.
@@ -1041,7 +559,7 @@ public final class RegionWorkerPool {
                     // calls made by the physical owner execute inline; a raw pool
                     // publication is visible here and forces one more drain cycle.
                     if (exactTurnQuiescentLocked(retainQueuedRegions)
-                            && (!retainQueuedRegions || !mainPreparationNeedsControlProgress())) {
+                            && (!retainQueuedRegions || !IslandCommands.hasRoutedPending())) {
                         break;
                     }
                     exactTurnPaused = false;
@@ -1057,11 +575,6 @@ public final class RegionWorkerPool {
             RegionWorkerPool.<RuntimeException>rethrow(fatalDuringPause);
         }
         return true;
-    }
-
-    private boolean mainPreparationNeedsControlProgress() {
-        return IslandCommands.hasRoutedPending()
-                || RegionScheduler.hasTrackedMainControlTasks(this);
     }
 
     private boolean exactTurnQuiescentLocked(boolean retainQueuedRegions) {
@@ -1431,24 +944,7 @@ public final class RegionWorkerPool {
     }
 
     RegionWorkerPool(int size) {
-        this(size, null);
-    }
-
-    RegionWorkerPool(int size, net.minecraft.server.MinecraftServer gameplayServer) {
-        this.gameplayServer = gameplayServer;
         this.workers = new Thread[Math.max(1, size)];
-    }
-
-    boolean requiresExclusiveWorkerGrants() {
-        return gameplayServer != null;
-    }
-
-    boolean requiresExclusiveUnitGrants() {
-        return gameplayServer != null && !autonomousUnitProducersAllowed();
-    }
-
-    boolean servesGameplayServer(net.minecraft.server.MinecraftServer expected) {
-        return gameplayServer != null && gameplayServer == expected;
     }
 
     void start() {
@@ -1609,7 +1105,6 @@ public final class RegionWorkerPool {
                                 && idleSnapshotActivityEpoch == observedActivityEpoch) {
                             accepting = false;
                             running = false;
-                            signalLifecycleWaiters();
                             break;
                         }
                         // A retained result can become visible just after progress
@@ -1645,7 +1140,7 @@ public final class RegionWorkerPool {
                         steps = activeSteps.get();
                         readySize = ready.size();
                         globalSize = globalTasks.size();
-                        mainOnlySize = mainOnlyTasks.size() + mainGameplayTasks.size();
+                        mainOnlySize = mainOnlyTasks.size();
                         mainSafeSize = mainSafeTasks.size();
                         unitSize = unitTasks.size();
                     }
@@ -1812,13 +1307,6 @@ public final class RegionWorkerPool {
             failure = mergeFailure(failure, cleanup);
         }
         try {
-            while ((queued = mainGameplayTasks.poll()) != null) {
-                failure = cancelQueuedEntry(queued, failure);
-            }
-        } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
-        }
-        try {
             while ((queued = mainSafeTasks.poll()) != null) {
                 failure = cancelQueuedEntry(queued, failure);
             }
@@ -1869,7 +1357,6 @@ public final class RegionWorkerPool {
     private boolean failedGenerationOwnQueuesEmpty() {
         synchronized (lifecycleLock) {
             return globalTasks.isEmpty() && mainOnlyTasks.isEmpty()
-                    && mainGameplayTasks.isEmpty()
                     && mainSafeTasks.isEmpty()
                     && unitTasks.isEmpty() && ready.isEmpty()
                     && exactDeferredRoots.isEmpty();
@@ -1878,7 +1365,6 @@ public final class RegionWorkerPool {
 
     /** Unpark all workers. Called when work lands in a region queue. */
     void wakeAll() {
-        wakePhysicalMainForRetainedWork();
         for (Thread t : workers) if (t != null) LockSupport.unpark(t);
     }
 
@@ -1892,111 +1378,11 @@ public final class RegionWorkerPool {
      */
     void wake(int k) {
         if (k <= 0) return;
-        wakePhysicalMainForRetainedWork();
         for (Thread t : workers) {
             if (t instanceof RegionWorkerThread w && w.parked) {
                 w.parked = false;
                 LockSupport.unpark(w);
                 if (--k == 0) return;
-            }
-        }
-    }
-
-    private boolean autonomousUnitProducersAllowed() {
-        RegionGrid grid = RegionScheduler.grid();
-        return grid != null && grid.shift >= RegionGrid.DEFAULT_SHIFT;
-    }
-
-    private boolean isIslandUnit(Runnable entry) {
-        return entry instanceof QueuedRootTask queued
-                && queued.body instanceof IslandTickUnit.UnitPublication;
-    }
-
-    private static boolean isIslandNotification(ReadyEntry entry) {
-        if (entry == null) return false;
-        EpochDomain domain = entry.region.domain;
-        // Pending callbacks retain their last real notification. Duplicate
-        // notifications may retire even when the coordinator has already
-        // published its next batch; otherwise continuous units accumulate them.
-        // Retirement rechecks under admissionLock before closing the exact pin.
-        return domain != null && domain.owner != null
-                && (coordinatorOwnsEntityFrontier(entry.region, domain)
-                || entry.region.readyNotifications > 1
-                || entry.region.queue().isEmpty()
-                && (domain.entityPending.get() == 0
-                || domain.owner.unitClaim.get()
-                && domain.owner.claimHolder instanceof RegionWorkerThread));
-    }
-
-    private static boolean coordinatorOwnsEntityFrontier(Region region, EpochDomain domain) {
-        IslandRegistry.PIsland owner = domain.owner;
-        long epoch = domain.epoch;
-        return owner != null && !owner.retired && owner.domain == domain
-                && owner.unitClaim.get()
-                && owner.claimHolder instanceof RegionWorkerThread worker
-                && worker.isAlive() && worker.currentDomain == domain
-                && region.domain == domain && domain.isEventEntityEpoch(epoch)
-                && domain.entityDispatchPublication.isAccepted()
-                && region.groupedEpoch == epoch && region.entityEpoch < epoch
-                && region.doneEpoch < epoch && domain.entityPending.get() > 0;
-    }
-
-    private void wakePhysicalMainForRetainedWork() {
-        if (!(gameplayServer instanceof RegionalPlayerEntityTicksV2.PhysicalServerThreadAccess access)) {
-            return;
-        }
-        Runnable unit = unitTasks.peek();
-        ReadyEntry notification = ready.peek();
-        if (!mainOnlyTasks.isEmpty() || !mainSafeTasks.isEmpty() || !globalTasks.isEmpty()
-                || !mainGameplayTasks.isEmpty()
-                || notification != null && !isIslandNotification(notification)
-                || unit != null && (!isIslandUnit(unit) || !autonomousUnitProducersAllowed())
-                || NetherPortalTransfers.hasPending()) {
-            LockSupport.unpark(access.fabrolia$physicalServerThread());
-        }
-    }
-
-    /**
-     * The coordinator's accepted member frontier, not a second ready consumer,
-     * executes island work. Retire only its redundant notification/receipt here;
-     * the region FIFO and entity obligation remain owned by that coordinator.
-     */
-    private boolean retireIslandNotification(ReadyEntry entry) {
-        if (!entry.awaitPublication()) {
-            entry.closeEntityReceipt();
-            throwIfFailed();
-            return true;
-        }
-        synchronized (entry.region.admissionLock) {
-            if (isIslandNotification(entry)) {
-                entry.closeEntityReceipt();
-                return true;
-            }
-            // A topology cut or a newly accepted callback changed this node's
-            // consumer. Preserve the original receipt for the exclusive lane.
-            ready.add(entry);
-        }
-        wakePhysicalMainForRetainedWork();
-        return false;
-    }
-
-    private void retireIslandNotifications() {
-        for (int retired = 0; retired < 64; retired++) {
-            ReadyEntry entry;
-            synchronized (lifecycleLock) {
-                if (gameplayTurn != null || !isIslandNotification(ready.peek())) return;
-                entry = ready.poll();
-            }
-            try {
-                if (!retireIslandNotification(entry)) return;
-            } catch (Throwable thrown) {
-                Throwable failure = publishAndSelectFatal(thrown);
-                try {
-                    entry.cancelPublication();
-                } catch (Throwable cleanup) {
-                    failure = publishAndSelectFatal(mergeFailure(failure, cleanup));
-                }
-                RegionWorkerPool.<RuntimeException>rethrow(failure);
             }
         }
     }
@@ -2082,10 +1468,6 @@ public final class RegionWorkerPool {
         /** Successful Region.tryClaim receipt. It remains open through the
          * complete body/successor tail and this entry's entity receipt close. */
         private boolean claimTransactionOpen;
-        /** Real queue notification, retained through consumption; synthetic helpers have none. */
-        private boolean notificationOpen;
-        /** One eligible region/help admission ends the grant's bookkeeping batch. */
-        private boolean bodyEntered;
 
         private ReadyEntry(Region region) {
             this(region, false, null, -1L);
@@ -2141,16 +1523,9 @@ public final class RegionWorkerPool {
 
         private synchronized void closeEntityReceipt() {
             EntityReadyReceipt receipt = entityReceipt;
-            entityReceipt = null;
-            try {
-                if (receipt != null) receipt.close();
-            } finally {
-                // Ordinary notifications may have no entity receipt at all.
-                // Cancellation and later queue consumption share this exact close.
-                if (notificationOpen) {
-                    notificationOpen = false;
-                    READY_NOTIFICATIONS.decrementAndGet(region);
-                }
+            if (receipt != null) {
+                entityReceipt = null;
+                receipt.close();
             }
         }
 
@@ -2161,7 +1536,7 @@ public final class RegionWorkerPool {
         }
     }
 
-    private final PublishedQueue<ReadyEntry> ready = new PublishedQueue<>();
+    private final ConcurrentLinkedQueue<ReadyEntry> ready = new ConcurrentLinkedQueue<>();
 
     /** Non-null result meaning the live holder had no helper ready to detach. */
     private static final Runnable LIVE_CLAIM_WITHOUT_HELP = () -> {
@@ -2187,8 +1562,6 @@ public final class RegionWorkerPool {
         ReadyEntry entry = new ReadyEntry(
                 region, false, entityPublication, entityEpoch);
         try {
-            READY_NOTIFICATIONS.incrementAndGet(region);
-            entry.notificationOpen = true;
             ready.add(entry);
         } catch (Throwable publicationFailure) {
             Throwable failure = publishAndSelectFatal(
@@ -2342,11 +1715,7 @@ public final class RegionWorkerPool {
                             boolean mainSafePublished = false;
                             if (RegionScheduler.shouldRunMainSafe(runtime, region)) {
                                 synchronized (lifecycleLock) {
-                                    // Preserve a retained regional prefix in every
-                                    // lifecycle state, not only during stop. Its
-                                    // next-epoch boundary cannot be crossed by a
-                                    // later callback on the independent Main lane.
-                                    if (!rootAdmissionClosed && region.queue().isEmpty()) {
+                                    if (!rootAdmissionClosed) {
                                         EpochDomain bodyDomain = region.domain;
                                         long bodyEpoch = bodyDomain == null
                                                 ? Long.MIN_VALUE : bodyDomain.epoch;
@@ -2598,16 +1967,6 @@ public final class RegionWorkerPool {
         return accepted;
     }
 
-    /**
-     * Publish a native Main-control root, retaining unrelated arrivals behind an
-     * exact turn. The executor must enqueue onto physical Main: deferred replay
-     * publishes its native slot before the exact-turn owner releases the pause.
-     * Owned foreign handoffs and retained-result markers use the strict API below.
-     */
-    void executeTrackedMainControl(Executor executor, Runnable body) {
-        executeTrackedExternal(executor, body, null, true);
-    }
-
     /** Publish a tracked foreign-executor body without a deferred-root replay edge. */
     void executeTrackedExternal(Executor executor, Runnable body) {
         executeTrackedExternal(executor, body, null);
@@ -2624,12 +1983,6 @@ public final class RegionWorkerPool {
      */
     void executeTrackedExternal(Executor executor, Runnable body,
                                 Runnable beforeExecutorVisibility) {
-        executeTrackedExternal(executor, body, beforeExecutorVisibility, false);
-    }
-
-    private void executeTrackedExternal(Executor executor, Runnable body,
-                                        Runnable beforeExecutorVisibility,
-                                        boolean deferMainControl) {
         if (executor == null) throw new NullPointerException("executor");
         if (body == null) throw new NullPointerException("body");
         // An Executor may run the wrapper before execute returns (direct/CallerRuns).
@@ -2670,20 +2023,14 @@ public final class RegionWorkerPool {
         ExecutorPublication publication = null;
         enterRootAdmission();
         ExternalTask task = null;
-        DeferredRoot deferred = null;
         Throwable failure = null;
         try {
             synchronized (lifecycleLock) {
-                if (deferMainControl && (exactTurnRequested || exactTurnPaused)
-                        && running && accepting && !rootAdmissionClosed) {
-                    deferred = deferExactRootEntryLocked(
-                            () -> executeTrackedExternal(executor, body), body);
-                }
-                if (deferred == null && acceptSubmissionLocked()) {
+                if (acceptSubmissionLocked()) {
                     ExternalPermit permit = new ExternalPermit();
                     task = new ExternalTask(body, permit, true);
                     externalObligations++;
-                } else if (deferred == null) {
+                } else {
                     failure = fatalFailure;
                     if (failure == null) {
                         failure = new IllegalStateException(
@@ -2691,7 +2038,7 @@ public final class RegionWorkerPool {
                     }
                 }
             }
-            if (task != null) {
+            if (failure == null) {
                 if (beforeExecutorVisibility != null) beforeExecutorVisibility.run();
                 publication = new ExecutorPublication(task);
                 executor.execute(publication);
@@ -2703,14 +2050,11 @@ public final class RegionWorkerPool {
         if (failure != null) {
             failure = publishAndSelectFatal(failure);
             if (task != null) failure = task.cancelPublication(failure);
-            if (deferred != null) failure = deferred.cancelPublication(failure);
         }
         failure = closeRootAdmission(failure,
-                task == null ? null : task.permit.publication,
-                deferred == null ? null : deferred.publication, null);
+                task == null ? null : task.permit.publication, null, null);
         if (failure != null) {
             if (task != null) failure = task.cancelPublication(failure);
-            if (deferred != null) failure = deferred.cancelPublication(failure);
             try {
                 recordExternalPublicationFailure(failure);
             } catch (Throwable bookkeepingFailure) {
@@ -3319,7 +2663,7 @@ public final class RegionWorkerPool {
      * release per region), so a tick costs ~2×workers tasks instead of 3×regionCount.
      * Group tasks manage currentRegion themselves per region segment.
      */
-    private final PublishedQueue<Runnable> globalTasks = new PublishedQueue<>();
+    private final ConcurrentLinkedQueue<Runnable> globalTasks = new ConcurrentLinkedQueue<>();
 
     private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
         if (secondary == null) return primary;
@@ -3396,9 +2740,6 @@ public final class RegionWorkerPool {
     private final ConcurrentLinkedQueue<Runnable> mainOnlyTasks =
             new ConcurrentLinkedQueue<>();
 
-    /** Explicit asynchronous global gameplay; never consumed by native chunk service. */
-    private final PublishedQueue<Runnable> mainGameplayTasks = new PublishedQueue<>();
-
     /**
      * Main-safe global lane: tasks with NO unbounded claim-spins inside (chunk grouping
      * jobs). The barrier pump may steal from here, and ordinary region workers may also
@@ -3406,17 +2747,10 @@ public final class RegionWorkerPool {
      * claim-spin while the claim holder waits on mainThreadProcessor (which only main
      * drains) would be a hard cycle.
      */
-    private final PublishedQueue<Runnable> mainSafeTasks = new PublishedQueue<>();
+    private final ConcurrentLinkedQueue<Runnable> mainSafeTasks =
+            new ConcurrentLinkedQueue<>();
 
     boolean enqueueGlobalMainOnly(Runnable task) {
-        return enqueueMainTask(task, false);
-    }
-
-    boolean enqueueGlobalMainGameplay(Runnable task) {
-        return enqueueMainTask(task, true);
-    }
-
-    private boolean enqueueMainTask(Runnable task, boolean gameplay) {
         enterRootAdmission();
         QueuedRootTask queued = null;
         DeferredRoot deferred = null;
@@ -3425,15 +2759,15 @@ public final class RegionWorkerPool {
         try {
             synchronized (lifecycleLock) {
                 deferred = deferExactRootEntryLocked(() -> {
-                    if (!enqueueMainTask(task, gameplay)) {
-                        throw new IllegalStateException("deferred Main task was rejected");
+                    if (!enqueueGlobalMainOnly(task)) {
+                        throw new IllegalStateException("deferred main-only task was rejected");
                     }
                 }, task);
                 if (deferred != null) {
                     accepted = true;
                 } else if (acceptSubmissionLocked()) {
                     queued = new QueuedRootTask(task);
-                    (gameplay ? mainGameplayTasks : mainOnlyTasks).add(queued);
+                    mainOnlyTasks.add(queued);
                     accepted = true;
                 }
             }
@@ -3502,13 +2836,6 @@ public final class RegionWorkerPool {
      *  Main-only lane and drains both to a joint fixed point, including tasks one
      *  lane publishes into the other while executing. */
     void drainMainSafeAll(boolean physicalMain) {
-        if (physicalMain && gameplayServer != null) {
-            boolean mayGrant;
-            synchronized (lifecycleLock) {
-                mayGrant = gameplayTurn == null && !exactTurnPaused;
-            }
-            if (mayGrant) runExclusiveWorkerStep();
-        }
         Runnable body = () -> drainMainSafeBody(physicalMain);
         StepToken causalAuthority = currentThreadCausalStepForThisPoolOrNull();
         if (causalAuthority != null) {
@@ -3523,36 +2850,13 @@ public final class RegionWorkerPool {
         throwIfFailed();
         for (;;) {
             Runnable g = physicalMain ? mainOnlyTasks.poll() : null;
-            // Server-bound Main-safe roots use the exclusive worker lane.
-            // In particular, topology receipts do not serialize their bodies.
-            if (g == null && gameplayServer == null) g = mainSafeTasks.poll();
-            if (g == null && physicalMain && gameplayServer == null) g = mainGameplayTasks.poll();
+            if (g == null) g = mainSafeTasks.poll();
             if (g == null) {
                 if (!physicalMain || mainOnlyTasks.peek() == null) return;
                 continue;
             }
             g.run();
         }
-    }
-
-    boolean hasPublishedMainSafeTask() {
-        return mainSafeTasks.peek() != null;
-    }
-
-    /** Consume one accepted receipt without granting any worker or polling native tasks. */
-    boolean runOnePublishedMainSafeUnderMainOwnership() {
-        if (gameplayServer == null
-                || !RegionalPlayerEntityTicksV2.isPhysicalServerThread(gameplayServer)
-                || RegionScheduler.inNativeMainService()
-                || !RegionScheduler.ownsExclusiveGameplay() || hasEnteredGameplayTurn()) {
-            throw new IllegalStateException("topology Main-safe progress lost global physical Main ownership");
-        }
-        return callSuccessBooleanIfHealthy(() -> {
-            Runnable task = mainSafeTasks.poll();
-            if (task == null) return false;
-            task.run();
-            return true;
-        });
     }
 
     /**
@@ -3570,10 +2874,6 @@ public final class RegionWorkerPool {
             new java.util.concurrent.atomic.AtomicLong();
 
     boolean stealOne(boolean physicalMain) {
-        if (gameplayServer != null && !physicalMain
-                && !ownsExclusiveGameplay(Thread.currentThread())) {
-            throw new IllegalStateException("unselected helper cannot consume gameplay roots");
-        }
         java.util.function.BooleanSupplier body = () -> stealOneBody(physicalMain);
         StepToken causalAuthority = currentThreadCausalStepForThisPoolOrNull();
         if (causalAuthority != null)
@@ -3585,8 +2885,7 @@ public final class RegionWorkerPool {
     private boolean stealOneBody(boolean physicalMain) {
         throwIfFailed();
         Runnable g = physicalMain ? mainOnlyTasks.poll() : null;
-        if (g == null && gameplayServer == null) g = mainSafeTasks.poll();
-        if (g == null && physicalMain && gameplayServer == null) g = mainGameplayTasks.poll();
+        if (g == null) g = mainSafeTasks.poll();
         if (g != null) {
             g.run();
             return true;
@@ -3596,10 +2895,7 @@ public final class RegionWorkerPool {
         // Main could claim/drain a long region or run its help tail while the owner
         // unit was already the authoritative continuation. Leave the entry queued;
         // no work is dropped, deferred, or acknowledged here.
-        if (physicalMain) {
-            return gameplayServer != null
-                    && runExclusiveWorkerStep();
-        }
+        if (physicalMain) return false;
         ReadyEntry readyEntry = pollReady();
         if (readyEntry == null) {
             return false;
@@ -3924,7 +3220,7 @@ public final class RegionWorkerPool {
             synchronized (lifecycleLock) {
                 // A region FIFO has one consumer. During stop, physical Main
                 // alone consumes its retained bodies and any causal suffix.
-                if (rootAdmissionClosed) mainGameplayTasks.add(external);
+                if (rootAdmissionClosed) mainOnlyTasks.add(external);
                 else mainSafeTasks.add(external);
             }
         } catch (Throwable transferFailure) {
@@ -3940,7 +3236,7 @@ public final class RegionWorkerPool {
      *  {@code allowUnits=false}) can NEVER pick up another unit and nest —
      *  nesting would stack unit latencies and coordinator stacks arbitrarily
      *  deep. Only the top-level worker loop starts units. */
-    private final PublishedQueue<Runnable> unitTasks = new PublishedQueue<>();
+    private final ConcurrentLinkedQueue<Runnable> unitTasks = new ConcurrentLinkedQueue<>();
 
     boolean enqueueUnit(Runnable task) {
         enterRootAdmission();
@@ -3986,21 +3282,11 @@ public final class RegionWorkerPool {
     private void workerLoop() {
         RegionWorkerThread me = (RegionWorkerThread) Thread.currentThread();
         while (true) {
-            boolean worked = false;
-            boolean autonomousUnits = gameplayServer == null || autonomousUnitProducersAllowed();
-            StepToken step = null;
-            GameplayTurn selected = null;
-            Runnable islandRoot = null;
-            ReadyEntry islandNotification = null;
             Throwable stepFailure = null;
+            StepToken step;
             // Dequeue and the active-step receipt share the shutdown/admission cut.
-            // Only typed island publications and body-free notifications bypass a
-            // physical-Main grant in a server-bound pool.
             synchronized (lifecycleLock) {
-                while (running && fatalFailure == null
-                        && (exactTurnPaused || gameplayTurn != null
-                        && (gameplayTurn.mainOnly || !gameplayTurn.readyToRun
-                        || gameplayTurn.worker != null))) {
+                while (running && exactTurnPaused && fatalFailure == null) {
                     try {
                         awaitLifecycleChange();
                     } catch (InterruptedException ignored) {
@@ -4008,103 +3294,25 @@ public final class RegionWorkerPool {
                     }
                 }
                 if (!running || fatalFailure != null) break;
-                boolean localUnit = gameplayServer != null && gameplayTurn == null
-                        && autonomousUnits && isIslandUnit(unitTasks.peek());
-                boolean localNotification = gameplayServer != null && gameplayTurn == null
-                        && isIslandNotification(ready.peek());
-                if (gameplayServer == null || gameplayTurn != null || localUnit || localNotification) {
-                    try {
-                        step = new StepToken(this);
-                    } catch (Throwable setupFailure) {
-                        publishFatalFailure(setupFailure);
-                        return;
-                    }
-                    step.active = true;
-                    activeSteps.incrementAndGet();
-                    if (gameplayTurn != null) {
-                        selected = gameplayTurn;
-                        selected.worker = me;
-                    } else if (localNotification) {
-                        islandNotification = ready.poll();
-                    } else if (localUnit) {
-                        islandRoot = unitTasks.poll();
-                    }
-                }
+                step = new StepToken(this);
+                step.active = true;
+                activeSteps.incrementAndGet();
             }
-            if (step == null) {
-                me.parked = true;
-                boolean workAvailable;
-                synchronized (lifecycleLock) {
-                    workAvailable = !running || fatalFailure != null || gameplayTurn != null
-                            || isIslandNotification(ready.peek())
-                            || autonomousUnits && isIslandUnit(unitTasks.peek());
-                }
-                if (!workAvailable) LockSupport.parkNanos(this, 10_000_000L);
-                me.parked = false;
-                continue;
-            }
+            CAUSAL_STEP.set(step);
+            boolean worked;
             try {
-                CAUSAL_STEP.set(step);
-                if (selected != null) {
-                    worked = runSelectedGameplayStep(me, selected);
-                } else if (islandRoot != null) {
-                    islandRoot.run();
-                    worked = true;
-                    retireIslandNotifications();
-                } else if (islandNotification != null) {
-                    retireIslandNotification(islandNotification);
-                    worked = true;
-                    retireIslandNotifications();
-                } else {
-                    worked = workOnce(me, true);
-                }
-                if (gameplayServer != null && worked && rootAdmissionClosed) {
-                    synchronized (lifecycleLock) {
-                        shutdownActivityEpoch++;
-                        signalLifecycleWaiters();
-                    }
-                }
+                worked = workOnce(me, true);
             } catch (Throwable thrown) {
-                stepFailure = publishAndSelectFatal(thrown);
+                stepFailure = thrown;
                 worked = false;
-                if (selected != null) {
-                    if (selected.root != null) {
-                        stepFailure = cancelQueuedEntry(selected.root, stepFailure);
-                    }
-                    if (selected.ready != null) {
-                        try {
-                            selected.ready.cancelPublication();
-                        } catch (Throwable cleanup) {
-                            stepFailure = publishAndSelectFatal(mergeFailure(stepFailure, cleanup));
-                        }
-                    }
-                }
-                if (islandRoot != null) {
-                    stepFailure = cancelQueuedEntry(islandRoot, stepFailure);
-                }
-                if (islandNotification != null) {
-                    try {
-                        islandNotification.cancelPublication();
-                    } catch (Throwable cleanup) {
-                        stepFailure = publishAndSelectFatal(mergeFailure(stepFailure, cleanup));
-                    }
-                }
+                publishFatalFailure(thrown);
             } finally {
-                try {
-                    CAUSAL_STEP.remove();
-                } catch (Throwable cleanup) {
-                    stepFailure = publishAndSelectFatal(mergeFailure(stepFailure, cleanup));
-                }
                 synchronized (lifecycleLock) {
                     step.active = false;
                     activeSteps.decrementAndGet();
-                    GameplayTurn turn = gameplayTurn;
-                    if (turn != null && turn.worker == me) {
-                        turn.worked = worked;
-                        turn.terminal = true;
-                    }
                     signalLifecycleWaiters();
                 }
+                CAUSAL_STEP.remove();
             }
             if (stepFailure != null) return;
             if (worked) continue;
@@ -4223,8 +3431,7 @@ public final class RegionWorkerPool {
         RegionWorkerPool owner = currentThreadCausalOwnerOrNull();
         if (owner == null) return false;
         synchronized (owner.lifecycleLock) {
-            return owner.exactTurnRequested || owner.exactTurnPaused || owner.gameplayTurn != null
-                    || isIslandNotification(owner.ready.peek());
+            return owner.exactTurnRequested || owner.exactTurnPaused;
         }
     }
 
@@ -4246,9 +3453,7 @@ public final class RegionWorkerPool {
     private boolean ordinaryQueuesEmpty() {
         return ready.isEmpty() && globalTasks.isEmpty()
                 && mainOnlyTasks.isEmpty() && mainSafeTasks.isEmpty()
-                && mainGameplayTasks.isEmpty()
-                && unitTasks.isEmpty()
-                && (gameplayTurn == null || gameplayTurn.terminal);
+                && unitTasks.isEmpty();
     }
 
     /** Detached accepted data waits while ordinary roots drain into an exact turn. */
@@ -4367,14 +3572,6 @@ public final class RegionWorkerPool {
     private boolean workReadyEntryBody(RegionWorkerThread me, ReadyEntry readyEntry) {
             Region claimed = readyEntry.region;
             EpochDomain readyDomain = claimed.domain;
-            if (gameplayServer != null && readyDomain != null && readyDomain.owner != null
-                    && !ownsExclusiveGameplay(me)
-                    && (!readyDomain.owner.unitClaim.get()
-                    || readyDomain.owner.claimHolder != me || me.currentDomain != readyDomain)) {
-                // An autonomous unit has one coordinator. The separate global
-                // lane may drain retained queues only after all units terminalize.
-                return true;
-            }
             if (readyDomain != null) {
                 EpochDomain.EntityDispatchPublication readyPublication =
                         readyDomain.entityDispatchPublication;
@@ -4444,7 +3641,6 @@ public final class RegionWorkerPool {
                     me.currentRegion = claimed;
                     try {
                         // ExternalTask linearizes fatal selection against body entry.
-                        readyEntry.bodyEntered = true;
                         help.run();
                         throwIfFailed();
                     } finally {
@@ -4479,7 +3675,6 @@ public final class RegionWorkerPool {
                         .eligible(claimed, claimedServer)) {
                     claimed.stampAcquire("workOnce");
                     claimStamped = true;
-                    readyEntry.bodyEntered = true;
                     // Same orphan-help recovery as stealOne's successful-claim path. This
                     // worker publishes currentRegion and holds the exact region claim.
                     drainOrphanHelp(claimed);

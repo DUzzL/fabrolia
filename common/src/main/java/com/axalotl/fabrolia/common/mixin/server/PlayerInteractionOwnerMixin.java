@@ -1,9 +1,9 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.mixin.network.ServerCommonPacketListenerAccessor;
-import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks;
+import com.axalotl.fabrolia.common.regions.IslandRegistry;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
@@ -36,7 +36,7 @@ public abstract class PlayerInteractionOwnerMixin {
 
     @WrapMethod(method = "handleUseItemOn")
     private void fabrolia$ownUseItemOn(ServerboundUseItemOnPacket packet, Operation<Void> original) {
-        withOwner(ChunkPos.pack(packet.getHitResult().getBlockPos()), true, true,
+        withOwner(ChunkPos.pack(packet.getHitResult().getBlockPos()), true,
                 () -> original.call(packet));
     }
 
@@ -47,8 +47,8 @@ public abstract class PlayerInteractionOwnerMixin {
             return;
         }
         ServerboundPlayerActionPacket.Action action = packet.getAction();
-        withPlayerOwner(() -> withOwner(fabrolia$playerActionOwnerChunk(packet, action),
-                fabrolia$isDestroyBlockAction(action), () -> original.call(packet)));
+        withOwner(fabrolia$playerActionOwnerChunk(packet, action),
+                fabrolia$isDestroyBlockAction(action), () -> original.call(packet));
     }
 
     /**
@@ -83,9 +83,9 @@ public abstract class PlayerInteractionOwnerMixin {
 
     @WrapMethod(method = "handleUseItem")
     private void fabrolia$ownUseItem(ServerboundUseItemPacket packet, Operation<Void> original) {
-        withUseProducer(() -> {
-            if (!fabrolia$routeFishingRetrieve(packet, original)) original.call(packet);
-        });
+        if (!fabrolia$routeFishingRetrieve(packet, original)) {
+            withPlayerOwner(() -> original.call(packet));
+        }
     }
 
     @WrapMethod(method = "handleInteract")
@@ -114,28 +114,9 @@ public abstract class PlayerInteractionOwnerMixin {
         withEntityOwner(packet.entityId(), () -> original.call(packet));
     }
 
-    /** Vehicle movement has no retained source/target/sweep certificate on Main. */
     @WrapMethod(method = "handleMoveVehicle")
     private void fabrolia$ownMoveVehicle(net.minecraft.network.protocol.game.ServerboundMoveVehiclePacket packet, Operation<Void> original) {
-        if (fabrolia$rawEntry()) {
-            original.call(packet);
-            return;
-        }
-        if (AsyncIslandPlayerTicks.inPacketReplay()) {
-            throw AsyncIslandPlayerTicks.packetInteractionFailure(
-                    "vehicle movement entered an island packet body");
-        }
-        ServerPlayer expected = this.player;
-        var listener = (ServerGamePacketListenerImpl) (Object) this;
-        long lifecycle = ((com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp) expected)
-                .fabrolia$playerLifecycleEpoch();
-        RegionScheduler.runGlobalMainBody(
-                ((ServerCommonPacketListenerAccessor) this).fabrolia$getServer(), () -> {
-                    if (this.player != expected || expected.connection != listener
-                            || ((com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp) expected)
-                            .fabrolia$playerLifecycleEpoch() != lifecycle) return;
-                    original.call(packet);
-                });
+        withVehicleOwner(() -> original.call(packet));
     }
 
     @WrapMethod(method = "handlePaddleBoat")
@@ -148,13 +129,9 @@ public abstract class PlayerInteractionOwnerMixin {
             body.run();
             return;
         }
-        withPlayerOwner(() -> {
-            Entity vehicle = this.player.getRootVehicle();
-            Entity target = vehicle != null ? vehicle : this.player;
-            withOwner(target.chunkPosition().pack(), () -> {
-                if (this.player.getRootVehicle() == target) body.run();
-            });
-        });
+        Entity vehicle = this.player.getRootVehicle();
+        Entity target = vehicle != null && vehicle != this.player ? vehicle : this.player;
+        withOwner(target.chunkPosition().pack(), body);
     }
 
     /** Riding jump / custom vehicle screen / leave-bed all touch island state
@@ -265,53 +242,12 @@ public abstract class PlayerInteractionOwnerMixin {
         return true;
     }
 
-    /** Select use admission under the same exact source claim as its native body. */
-    private void withUseProducer(Runnable body) {
-        withPlayerOwner(body, true);
-    }
-
     private void withPlayerOwner(Runnable body) {
-        withPlayerOwner(body, false);
-    }
-
-    private void withPlayerOwner(Runnable body, boolean itemUse) {
         if (fabrolia$rawEntry()) {
             body.run();
             return;
         }
-        if (AsyncIslandPlayerTicks.inPacketReplay(this.player)) {
-            AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(this.player);
-            if (itemUse
-                    ? AdvancementCaptureOwnership.requiresGlobalPlayerUseEnvelope(this.player)
-                    : AdvancementCaptureOwnership.requiresGlobalPlayerTickEnvelope(
-                            this.player, this.player.isUsingItem())) {
-                throw AsyncIslandPlayerTicks.packetInteractionFailure(
-                        "nonlocal player producer entered an island packet body");
-            }
-            body.run();
-            return;
-        }
-        ServerPlayer expected = this.player;
-        var listener = (ServerGamePacketListenerImpl) (Object) this;
-        long lifecycle = ((com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp) expected)
-                .fabrolia$playerLifecycleEpoch();
-        Runnable ownedBody = () -> {
-            if (this.player != expected || expected.connection != listener
-                    || ((com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp) expected)
-                    .fabrolia$playerLifecycleEpoch() != lifecycle) return;
-            AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(expected);
-            body.run();
-        };
-        RegionScheduler.runWithMainEntityClaim(expected, () -> {
-            if (itemUse
-                    ? AdvancementCaptureOwnership.requiresGlobalPlayerUseEnvelope(expected)
-                    : AdvancementCaptureOwnership.requiresGlobalPlayerTickEnvelope(
-                            expected, expected.isUsingItem())) {
-                RegionScheduler.runGlobalMainBody(expected.level().getServer(), ownedBody);
-            } else {
-                ownedBody.run();
-            }
-        });
+        withOwner(this.player.chunkPosition().pack(), body);
     }
 
     private void withOwner(long chunkPos, Runnable body) {
@@ -319,11 +255,6 @@ public abstract class PlayerInteractionOwnerMixin {
     }
 
     private void withOwner(long chunkPos, boolean clientSelectedTarget, Runnable body) {
-        withOwner(chunkPos, clientSelectedTarget, false, body);
-    }
-
-    private void withOwner(long chunkPos, boolean clientSelectedTarget,
-                           boolean itemUse, Runnable body) {
         if (fabrolia$rawEntry()) {
             body.run();
             return;
@@ -343,48 +274,33 @@ public abstract class PlayerInteractionOwnerMixin {
                         .packetInteractionFailure(
                                 "A5 source-local packet left its claimed island");
             }
-            AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(this.player);
             body.run();
             return;
         }
-        withPlayerOwner(() -> {
-            if (this.player.level() != sl) return;
-            RegionizedServer runtime = RegionScheduler.forLevel(sl);
-            var owner = runtime == null ? null : runtime.islandOwnerOfChunk(chunkPos);
-            if (owner == null || !IslandCommands.requiresMainFence(runtime)) {
-                RegionScheduler.runSuccessBodyIfHealthy(body);
-                return;
-            }
-            ServerPlayer expected = this.player;
-            long sourceChunk = expected.chunkPosition().pack();
-            long lifecycle = ((com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp) expected)
-                    .fabrolia$playerLifecycleEpoch();
-            boolean release = IslandCommands.mainClaimScoped(owner);
-            Throwable failure = null;
-            try {
-                if (this.player == expected && expected.level() == sl
-                        && expected.chunkPosition().pack() == sourceChunk
-                        && ((com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp) expected)
-                        .fabrolia$playerLifecycleEpoch() == lifecycle
-                        && RegionScheduler.forLevel(sl) == runtime
-                        && runtime.islandOwnerOfChunk(chunkPos) == owner && !owner.retired
-                        && expected.connection == (Object) this) {
-                    RegionScheduler.runSuccessBodyIfHealthy(body);
-                }
-            } catch (Throwable thrown) {
-                failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
-            } finally {
-                if (release) {
-                    try {
-                        IslandCommands.mainRelease(owner);
-                    } catch (Throwable cleanup) {
-                        failure = RegionScheduler.publishFatalAndSelectWinner(cleanup);
-                    }
-                }
-            }
-            if (failure != null) IslandCommands.publishAndPropagate(failure);
-            RegionScheduler.commitSuccessIfHealthy(() -> {});
-        }, itemUse);
+        RegionizedServer runtime = RegionScheduler.forLevel(sl);
+        if (runtime == null || !runtime.asyncActive || runtime.currentThreadHoldsAllClaims()) {
+            RegionScheduler.runSuccessBodyIfHealthy(body);
+            return;
+        }
+        IslandRegistry.PIsland owner = runtime.islandOwnerOfChunk(chunkPos);
+        if (owner == null) {
+            RegionScheduler.runSuccessBodyIfHealthy(body);
+            return;
+        }
+        IslandCommands.mainClaim(owner);
+        Throwable failure = null;
+        try {
+            RegionScheduler.runSuccessBodyIfHealthy(body);
+        } catch (Throwable bodyFailure) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);
+        }
+        try {
+            IslandCommands.mainRelease(owner);
+        } catch (Throwable cleanupFailure) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(
+                    fabrolia$mergeFailure(failure, cleanupFailure));
+        }
+        if (failure != null) IslandCommands.publishAndPropagate(failure);
     }
 
     /**
@@ -404,7 +320,6 @@ public abstract class PlayerInteractionOwnerMixin {
             return;
         }
         if (AsyncIslandPlayerTicks.inPacketReplay(this.player)) {
-            AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(this.player);
             Entity target = level.getEntityOrPart(entityId);
             if (target == null) {
                 // Vanilla still updates source-player interaction state for an
@@ -434,38 +349,74 @@ public abstract class PlayerInteractionOwnerMixin {
             return;
         }
 
-        withPlayerOwner(() -> {
-            if (this.player.level() != level) return;
+        RegionizedServer runtime = RegionScheduler.forLevel(level);
+        if (runtime == null || !runtime.asyncActive) {
+            RegionScheduler.runSuccessBodyIfHealthy(body);
+            return;
+        }
+        if (runtime.currentThreadHoldsAllClaims()) {
+            Entity target = level.getEntityOrPart(entityId);
+            if (target == null
+                    || (target.level() == level
+                    && runtime.islandOwnerOfChunk(target.chunkPosition().pack())
+                    == runtime.islandOwnerOfChunk(this.player.chunkPosition().pack()))) {
+                RegionScheduler.runSuccessBodyIfHealthy(body);
+            }
+            return;
+        }
+        for (int attempt = 0; attempt < 3; attempt++) {
             Entity target = level.getEntityOrPart(entityId);
             if (target == null) {
+                withPlayerOwner(body);
+                return;
+            }
+            if (target.level() != level || this.player.level() != level) return;
+            IslandRegistry.PIsland owner = runtime.islandOwnerOfChunk(target.chunkPosition().pack());
+            IslandRegistry.PIsland playerOwner = runtime.islandOwnerOfChunk(this.player.chunkPosition().pack());
+            if (owner != playerOwner) return;
+            if (target instanceof ServerPlayer) {
+                AsyncIslandPlayerTicks.runFencedMainMutation(
+                        "player-target entity interaction", () -> withEntityOwner(entityId, body));
+                return;
+            }
+            if (owner == null) {
                 RegionScheduler.runSuccessBodyIfHealthy(body);
                 return;
             }
-            ServerPlayer expected = this.player;
-            long sourceChunk = expected.chunkPosition().pack();
-            long lifecycle = ((com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp) expected)
-                    .fabrolia$playerLifecycleEpoch();
-            long chunk = target.chunkPosition().pack();
-            RegionScheduler.runWithMainEntityClaim(target, () -> {
-                Runnable targetBody = () -> {
-                    if (this.player == expected && expected.level() == level
-                            && expected.chunkPosition().pack() == sourceChunk
-                            && ((com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp) expected)
-                            .fabrolia$playerLifecycleEpoch() == lifecycle
-                            && target.level() == level && level.getEntityOrPart(entityId) == target
-                            && target.chunkPosition().pack() == chunk
-                            && expected.connection == (Object) this) body.run();
-                };
-                if (!AdvancementCaptureOwnership.ownsGlobalProducerEnvelope()
-                        && com.axalotl.fabrolia.common.regions.AsyncIslandPacketPolicy
-                                .requiresEntityInteractionFence(expected, target)) {
-                    RegionScheduler.runGlobalMainBody(level.getServer(), targetBody);
-                } else {
-                    targetBody.run();
+            IslandCommands.mainClaim(owner);
+            boolean bodyRan = false;
+            Throwable failure = null;
+            try {
+                Entity current = level.getEntityOrPart(entityId);
+                if (current == target && current.level() == level && !owner.retired
+                        && runtime.islandOwnerOfChunk(current.chunkPosition().pack()) == owner
+                        && this.player.level() == level
+                        && runtime.islandOwnerOfChunk(this.player.chunkPosition().pack()) == owner) {
+                    RegionScheduler.runSuccessBodyIfHealthy(body);
+                    bodyRan = true;
                 }
-            });
-        });
+            } catch (Throwable bodyFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);
+            }
+            try {
+                IslandCommands.mainRelease(owner);
+            } catch (Throwable cleanupFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(
+                        fabrolia$mergeFailure(failure, cleanupFailure));
+            }
+            if (failure != null) IslandCommands.publishAndPropagate(failure);
+            if (bodyRan) return;
+        }
     }
 
-
+    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
+        if (primary == null) return cleanup;
+        if (cleanup != null && cleanup != primary) {
+            try {
+                primary.addSuppressed(cleanup);
+            } catch (Throwable ignored) {
+            }
+        }
+        return primary;
+    }
 }

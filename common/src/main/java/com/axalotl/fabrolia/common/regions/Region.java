@@ -57,11 +57,6 @@ public final class Region {
      *  UNCLAIMED region with pending queue work (lost ready entry). */
     int strandedQueueSightings;
 
-    /** Outstanding real ready notifications, including detached consumers.
-     *  Coalescing retains the last pin while callbacks remain. This is not
-     *  claim authority or a quiescence receipt. */
-    volatile int readyNotifications;
-
     /** Last epoch whose queue/entity phase cutoff was published. Queue/help
      *  admissions retained beyond that cutoff belong to the following epoch. */
     public volatile long doneEpoch;

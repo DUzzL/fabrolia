@@ -98,10 +98,6 @@ public abstract class SimpleCriterionTriggerMixin {
 
     @WrapMethod(method = "trigger(Lnet/minecraft/server/level/ServerPlayer;Ljava/util/function/Predicate;)V")
     private void fabrolia$bufferOrTrigger(ServerPlayer player, Predicate<?> predicate, Operation<Void> original) {
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        CriterionTrigger<?> selfTrigger = (CriterionTrigger) (Object) this;
-        com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership
-                .requireTriggerEvaluationOwnership(player, selfTrigger);
         // Vanish skip-check (inlined from me.drex.vanish.mixin.interaction.SimpleCriterionTriggerMixin —
         // their mixin is disabled via MixinCanceller when we ship). Same semantics: skip when player
         // is vanished AND the config flag is on, or spectator AND the spectator flag is on.
@@ -124,6 +120,8 @@ public abstract class SimpleCriterionTriggerMixin {
         // Trigger-map fetch happens INSIDE the buffer's pa monitor (2026-07-17
         // torn-read fix): the outer activeTriggers map resizes under main's
         // registerListeners; a lock-free get from a worker raced it.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        CriterionTrigger<?> selfTrigger = (CriterionTrigger) (Object) this;
         if (AdvancementBuffer.tryBuffer(player, predicate, selfTrigger)) {
             return;
         }

@@ -14,18 +14,19 @@ final class TpsWindow {
     static final long ONE_SECOND_NANOS = 1_000_000_000L;
 
     private final long minimumWindowNanos;
+    private final double initialValue;
     private long baselineCount;
     private long baselineNanos;
-    private double value = Double.NaN;
-    private long lastCount;
-    private long lastNanos;
+    private double value;
     private boolean initialized;
 
-    TpsWindow(long minimumWindowNanos) {
+    TpsWindow(long minimumWindowNanos, double initialValue) {
         if (minimumWindowNanos <= 0) {
             throw new IllegalArgumentException("minimumWindowNanos must be positive");
         }
         this.minimumWindowNanos = minimumWindowNanos;
+        this.initialValue = initialValue;
+        this.value = initialValue;
     }
 
     /**
@@ -34,13 +35,10 @@ final class TpsWindow {
      * @return true only when a complete new rate window was committed
      */
     boolean update(long count, long nowNanos) {
-        boolean reset = !initialized || nowNanos < lastNanos || count < lastCount;
-        lastCount = count;
-        lastNanos = nowNanos;
-        if (reset) {
+        if (!initialized || nowNanos < baselineNanos || count < baselineCount) {
             baselineCount = count;
             baselineNanos = nowNanos;
-            value = Double.NaN;
+            value = initialValue;
             initialized = true;
             return false;
         }
@@ -58,9 +56,5 @@ final class TpsWindow {
 
     double value() {
         return value;
-    }
-
-    boolean hasSample() {
-        return !Double.isNaN(value);
     }
 }

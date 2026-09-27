@@ -1,7 +1,5 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
-import com.axalotl.fabrolia.common.ParallelProcessor;
-import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
 import net.minecraft.server.level.ServerChunkCache;
 import org.spongepowered.asm.mixin.Mixin;
@@ -20,15 +18,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * the atomic logical-turn stamp names the actor.
  */
 @Mixin(ServerChunkCache.MainThreadExecutor.class)
-public abstract class ServerChunkCacheMainThreadExecutorMixin
-        implements RegionScheduler.NativeChunkServiceExecutor {
+public abstract class ServerChunkCacheMainThreadExecutorMixin {
 
     @Inject(method = "getRunningThread()Ljava/lang/Thread;",
             at = @At("HEAD"), cancellable = true, require = 1)
     private void fabrolia$logicalPlayerActorThread(CallbackInfoReturnable<Thread> cir) {
-        if (RegionalPlayerEntityTicksV2.inExactPlayerActor()
-                || RegionScheduler.exclusiveGameplayWorkerOrNull(ParallelProcessor.getServer())
-                == Thread.currentThread()) {
+        if (RegionalPlayerEntityTicksV2.inExactPlayerActor()) {
             cir.setReturnValue(Thread.currentThread());
         }
     }

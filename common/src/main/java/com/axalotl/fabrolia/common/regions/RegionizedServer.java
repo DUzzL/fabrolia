@@ -286,21 +286,6 @@ public final class RegionizedServer {
 
     public void onLevelTickStart() {
         RegionScheduler.mainCurrentLevel = level;
-        boolean wantAsync = RegionScheduler.asyncModeWantedAtLevelHead()
-                && RegionalPlayerEntityTicksV2.asyncActivationAllowedAtLevelHead();
-        if (wantAsync != asyncActive) {
-            changeModeAndRebuild(() -> {
-                publishLevelTickHead(wantAsync);
-                evictIdleRegions();
-            });
-        } else {
-            publishLevelTickHead(wantAsync);
-            evictIdleRegions();
-            rebuildIslandsIfDirty();
-        }
-    }
-
-    private void publishLevelTickHead(boolean wantAsync) {
         if (!failClosedMarkerChecked) {
             failClosedMarkerChecked = true;
             // Crash/trip state is SESSION-ONLY (2026-07-18 policy): a marker
@@ -319,6 +304,8 @@ public final class RegionizedServer {
                         RegionScheduler.publishFatalAndSelectWinner(markerFailure));
             }
         }
+        boolean wantAsync = RegionScheduler.asyncModeWantedAtLevelHead()
+                && RegionalPlayerEntityTicksV2.asyncActivationAllowedAtLevelHead();
         if (FabroliaConfig.asyncFailClosedTripped && asyncActive) {
             // FAIL-CLOSED CONTAINMENT (2026-07-14 rate-40 wedge): the old rule
             // kept async RUNNING post-trip ("no live collapse") — so the very
@@ -385,32 +372,6 @@ public final class RegionizedServer {
                         i, b, String.format("%.1f", 100.0 * b / t),
                         FabroliaConfig.fabroliaOptimisticBorderMargin, 1L << (regionizer.grid.shift + 4));
             }
-        }
-    }
-
-    /** Mode, clocks, handoff and topology commit share one terminal local quiesce. */
-    private void changeModeAndRebuild(Runnable publishMode) {
-        if (mainHoldsAllClaims() || IslandCommands.fenceWindowHeld()) {
-            // A global writer frame may only have parked a unit at an ACK.
-            // Neither mode publication nor topology may overtake its remaining tail.
-            throw new IllegalStateException("mode transition requires an unowned completed Main boundary");
-        }
-        boolean quiesced = quiesceAllIslands();
-        boolean committed = false;
-        Throwable failure = null;
-        try {
-            committed = RegionScheduler.callSuccessBooleanIfHealthy(() -> {
-                publishMode.run();
-                return rebuildIslandsIfDirty(true);
-            });
-        } catch (Throwable primary) {
-            failure = RegionScheduler.publishFatalAndSelectWinner(primary);
-        }
-        if (quiesced) failure = releaseAllIslands(failure);
-        failure = finishTopologyRebuild(failure, committed);
-        if (failure != null) {
-            RegionizedServer.<RuntimeException>rethrow(
-                    RegionScheduler.publishFatalAndSelectWinner(failure));
         }
     }
 
@@ -510,18 +471,15 @@ public final class RegionizedServer {
     it.unimi.dsi.fastutil.longs.LongOpenHashSet scheduledTickDiscoveryCellsMainThread(
             String operation) {
         net.minecraft.server.MinecraftServer server = level.getServer();
-        // getRunningThread() can name a logical gameplay worker while physical
-        // Main is still pumping native chunk completions.
-        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
-            Thread expected = server instanceof RegionalPlayerEntityTicksV2.PhysicalServerThreadAccess access
-                    ? access.fabrolia$physicalServerThread() : null;
-            Thread current = Thread.currentThread();
-            throw new IllegalStateException("scheduled-tick cell index " + operation
-                    + " off main: current=" + current.getName()
-                    + " expected=" + (expected == null ? "<missing>" : expected.getName())
-                    + " level=" + level.dimension().identifier());
+        Thread expected = server == null ? null : server.getRunningThread();
+        Thread current = Thread.currentThread();
+        if (expected != null && current == expected) {
+            return scheduledTickDiscoveryCells;
         }
-        return scheduledTickDiscoveryCells;
+        throw new IllegalStateException("scheduled-tick cell index " + operation
+                + " off main: current=" + current.getName()
+                + " expected=" + (expected == null ? "<missing>" : expected.getName())
+                + " level=" + level.dimension().identifier());
     }
 
     /** Defensive self-check (/fabrolia regions popcheck): compare the population
@@ -1091,13 +1049,8 @@ public final class RegionizedServer {
                 // still free to chain another unit. With the stable snapshot
                 // fenced first, all in-flight tails drain concurrently and the
                 // claim pass waits approximately for their MAX instead.
-                var liveIslands = islandRegistry.identitySnapshot();
-                if (intentIslands == null) {
-                    intentIslands = publishAllIslandClaimIntents(liveIslands);
-                } else {
-                    intentIslands.include(liveIslands);
-                }
-                for (IslandRegistry.PIsland p : liveIslands) {
+                intentIslands = publishAllIslandClaimIntents(islandRegistry.islands());
+                for (IslandRegistry.PIsland p : intentIslands.islands) {
                     current = p;
                     currentClaimed = false;
                     long spinStart = System.nanoTime();
@@ -1121,10 +1074,10 @@ public final class RegionizedServer {
                             }
                         }
                         if (p.waitingOnRoutedCommand) {
-                            // Main's global batch needs the physical claims, not
-                            // permission to start new autonomous units. Retain
-                            // every original admission interest across retries.
-                            Throwable retryFailure = releaseAllIslands(null);
+                            Throwable retryFailure =
+                                    clearAllIslandClaimIntents(intentIslands, null);
+                            intentIslands = null;
+                            retryFailure = releaseAllIslands(retryFailure);
                             if (retryFailure != null) {
                                 RegionizedServer.<RuntimeException>rethrow(
                                         RegionScheduler.publishFatalAndSelectWinner(
@@ -1185,34 +1138,27 @@ public final class RegionizedServer {
         return true;
     }
 
-    static final class AllIslandClaimIntents {
+    private static final class AllIslandClaimIntents {
         final ArrayList<IslandRegistry.PIsland> islands;
-        final java.util.IdentityHashMap<IslandRegistry.PIsland, Boolean> priorClaimWanted;
+        final boolean[] priorClaimWanted;
         int publishedCount;
 
-        AllIslandClaimIntents(int expectedSize) {
-            this.islands = new ArrayList<>(expectedSize);
-            this.priorClaimWanted = new java.util.IdentityHashMap<>(expectedSize);
-        }
-
-        void include(java.util.Collection<IslandRegistry.PIsland> liveIslands) {
-            for (IslandRegistry.PIsland island : liveIslands) {
-                if (priorClaimWanted.containsKey(island)) continue;
-                boolean prior = island.claimWanted;
-                priorClaimWanted.put(island, prior);
-                islands.add(island);
-                publishedCount++;
-                island.claimWanted = true;
-            }
+        AllIslandClaimIntents(java.util.Collection<IslandRegistry.PIsland> islands) {
+            this.islands = new ArrayList<>(islands);
+            this.priorClaimWanted = new boolean[this.islands.size()];
         }
     }
 
-    /** Fence an exact identity set; one transaction survives every routed-progress retry. */
     private static AllIslandClaimIntents publishAllIslandClaimIntents(
             java.util.Collection<IslandRegistry.PIsland> islands) {
-        AllIslandClaimIntents snapshot = new AllIslandClaimIntents(islands.size());
+        AllIslandClaimIntents snapshot = new AllIslandClaimIntents(islands);
         try {
-            snapshot.include(islands);
+            for (int i = 0, n = snapshot.islands.size(); i < n; i++) {
+                IslandRegistry.PIsland island = snapshot.islands.get(i);
+                snapshot.priorClaimWanted[i] = island.claimWanted;
+                snapshot.publishedCount = i + 1;
+                island.claimWanted = true;
+            }
             return snapshot;
         } catch (Throwable primary) {
             Throwable failure = RegionScheduler.publishFatalAndSelectWinner(primary);
@@ -1226,30 +1172,17 @@ public final class RegionizedServer {
     /** Idempotent, exhaustive whole-attempt cleanup. The already-selected
      * primary remains authoritative; a cleanup failure is merged behind it and
      * never skips later intent slots or physical claim release. */
-    static Throwable clearAllIslandClaimIntents(
+    private static Throwable clearAllIslandClaimIntents(
             AllIslandClaimIntents snapshot, Throwable primary) {
-        return clearAllIslandClaimIntents(snapshot, primary, null);
-    }
-
-    /** A native checkpoint may outlive a pool cutover; its cleanup belongs to
-     * the captured generation, not the mutable scheduler's replacement pool. */
-    static Throwable clearAllIslandClaimIntents(
-            AllIslandClaimIntents snapshot, Throwable primary, RegionWorkerPool failureOwner) {
         Throwable failure = primary;
         if (snapshot == null) return failure;
         int count = snapshot.publishedCount;
         snapshot.publishedCount = 0;
-        // Restore the original interest once per identity, including islands
-        // retired or replaced while a routed Main body made progress.
         for (int i = count - 1; i >= 0; i--) {
             try {
-                IslandRegistry.PIsland island = snapshot.islands.get(i);
-                boolean prior = snapshot.priorClaimWanted.get(island);
-                island.claimWanted = prior;
+                snapshot.islands.get(i).claimWanted = snapshot.priorClaimWanted[i];
             } catch (Throwable cleanup) {
-                failure = failureOwner == null ? publishCleanupFailure(failure, cleanup)
-                        : failureOwner.publishAndSelectFatal(
-                                failureOwner.mergeCancellationFailure(failure, cleanup));
+                failure = publishCleanupFailure(failure, cleanup);
             }
         }
         return failure;
@@ -1332,11 +1265,10 @@ public final class RegionizedServer {
      */
     void prepareForSchedulerStop() {
         if (!asyncActive && !domainsIslandized) return;
-        changeModeAndRebuild(() -> {
-            asyncActive = false;
-            RegionScheduler.updateAsyncLive();
-            islandsDirty = true;
-        });
+        asyncActive = false;
+        RegionScheduler.updateAsyncLive();
+        islandsDirty = true;
+        rebuildIslandsIfDirty();
         if (asyncActive || domainsIslandized || mainHoldsAllClaims()) {
             throw new IllegalStateException("async level did not reach the shutdown wall-domain boundary: "
                     + level.dimension().identifier());
@@ -1496,60 +1428,27 @@ public final class RegionizedServer {
         return regionizer.grid.keyFor(net.minecraft.world.level.ChunkPos.pack(pos));
     }
 
-    /** Registration-time body policy, retained across sleeping wrapper rebinds.
-     *  A Main body is not a Main-cadence ticker: native producers keep their
-     *  positional cell and rendezvous at their original island ordinal. */
-    final java.util.Set<net.minecraft.world.level.block.entity.TickingBlockEntity> beMainBodyTickers =
-            java.util.concurrent.ConcurrentHashMap.newKeySet();
-
     private static boolean fabroliaIsMainOnlyTicker(net.minecraft.world.level.block.entity.TickingBlockEntity t) {
-        String type = t.getType();
-        if (type == null) return false;
-        return switch (type) {
-            // BaseSpawner uses a data-driven range and hasNearbyAlivePlayer's
-            // rich all-player scan. Trial/vault detectors (including our trial
-            // LOS prefetch) also read live all-player state before filtering.
-            case "minecraft:mob_spawner", "minecraft:trial_spawner", "minecraft:vault",
-                    // Beacon effects/advancements have no pre-body closure proof.
-                    // Bell, conduit and heart additionally retain live entity
-                    // references which may have left the original query radius.
-                    "minecraft:beacon", "minecraft:bell", "minecraft:conduit",
-                    "minecraft:creaking_heart",
-                    "minecraft:test_block", "minecraft:test_instance_block" -> true;
-            // Command blocks retain A8 per-invocation routing, not whole-body
-            // routing. 26.2 end-gateway portalTick only advances cooldown/age;
-            // enchanting-table animation has no native server ticker.
-            default -> false;
-        };
-    }
-
-    /** Only harness tickers retain the historical Main/W cadence. */
-    private static boolean fabroliaUsesMainTickerCadence(net.minecraft.world.level.block.entity.TickingBlockEntity t) {
         String type = t.getType();
         return "minecraft:test_block".equals(type) || "minecraft:test_instance_block".equals(type);
     }
 
-    /** Any thread under the registration lock: capture policy and position before
+    /** Any thread under the registration lock: capture the position before
      *  removal/sleep can rebind the native wrapper to a positionless stub. */
     public void stashPendingBeAdd(net.minecraft.world.level.block.entity.TickingBlockEntity ticker) {
-        if (fabroliaIsMainOnlyTicker(ticker)) beMainBodyTickers.add(ticker);
         net.minecraft.core.BlockPos pos = RegionScheduler.resolveBlockEntityTickerPosition(ticker);
         boolean pendingOverflow = pendingBeAdds.offer(new PendingBeAdd(ticker,
-                pos == null || fabroliaUsesMainTickerCadence(ticker) ? Long.MIN_VALUE : beCellKeyFor(pos)));
+                pos == null || fabroliaIsMainOnlyTicker(ticker) ? Long.MIN_VALUE : beCellKeyFor(pos)));
         // A2: a BE created from inside an island's own unit (its entity phase
         // placing a block, etc.) must tick THIS tick — vanilla's direct-list
         // add gives exactly that. The persistent index only adopts it at the
         // next maintenance pass, so hand it to the island's same-tick pending
         // list, drained by the unit's BE pass.
-        if (asyncActive && !fabroliaUsesMainTickerCadence(ticker)) {
-            IslandRegistry.PIsland p;
-            if (Thread.currentThread() instanceof RegionWorkerThread w) {
-                Region cur = w.currentRegion;
-                EpochDomain d = cur != null ? cur.domain : w.currentDomain;
-                p = d != null ? d.owner : null;
-            } else {
-                p = IslandCommands.routedUnitSourceOnMain(this);
-            }
+        if (asyncActive && !fabroliaIsMainOnlyTicker(ticker)
+                && Thread.currentThread() instanceof RegionWorkerThread w) {
+            Region cur = w.currentRegion;
+            EpochDomain d = cur != null ? cur.domain : w.currentDomain;
+            IslandRegistry.PIsland p = d != null ? d.owner : null;
             // ROUTE BY POSITION, not creating context (2026-07-17 fail-closed:
             // a flying machine's B36 created by island A's cascade in a cell
             // that a rebuild then gave island B stayed in A's same-tick list —
@@ -1597,7 +1496,6 @@ public final class RegionizedServer {
         pendingBeAdds.clear();
         BlockEntityIndexRetention.clear(
                 beCells, beSeqOf, beCellOf, pendingBeSweep, unitRemovedBes);
-        beMainBodyTickers.clear();
         beSeqCounter = 0;
     }
 

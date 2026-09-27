@@ -65,8 +65,7 @@ public abstract class LevelMixin implements LevelAccessor, AutoCloseable,
                                          net.minecraft.world.level.block.state.BlockState state,
                                          int flags, int recursionLeft,
                                          org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
-        com.axalotl.fabrolia.common.regions.RegionAccessDetector
-                .onBlockWrite((Level) (Object) this, pos);
+        com.axalotl.fabrolia.common.regions.RegionAccessDetector.onBlockWrite(pos);
         // Cross-region containment: a worker writing a block state OUTSIDE its claimed
         // region (fire spread, plant growth, a contraption straddling the boundary) would
         // race a concurrent same-colour region two cells away — and even a distance-1
@@ -216,26 +215,18 @@ public abstract class LevelMixin implements LevelAccessor, AutoCloseable,
         if (!com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks
                 .tickPartitioned((Level) (Object) this)) {
             Level level = (Level) (Object) this;
-            Runnable vanilla = () -> {
-                // Vanilla owns the authoritative list; retire its derived index
-                // only after native inline removals complete.
+            // Vanilla owns the authoritative list; retire its derived index
+            // only after native inline removals complete.
+            com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks
+                    .setTickingBlockEntities(level, true);
+            try {
+                original.call();
+            } finally {
                 com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks
-                        .setTickingBlockEntities(level, true);
-                try {
-                    original.call();
-                } finally {
-                    com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks
-                            .setTickingBlockEntities(level, false);
-                }
-                com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks
-                        .maintainIndexOnly(level);
-            };
-            if (level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
-                com.axalotl.fabrolia.common.regions.RegionScheduler
-                        .runGlobalMainBody(serverLevel.getServer(), vanilla);
-            } else {
-                vanilla.run();
+                        .setTickingBlockEntities(level, false);
             }
+            com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks
+                    .maintainIndexOnly(level);
         }
     }
 }

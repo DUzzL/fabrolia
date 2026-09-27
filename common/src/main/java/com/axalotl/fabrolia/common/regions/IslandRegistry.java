@@ -134,16 +134,10 @@ public final class IslandRegistry {
         final ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> pendingUnitBes =
                 new ArrayList<>(4);
 
-        /**
-         * Source-clock stamps remain informational, not eligibility tests.
-         * Publication order is level-wide and survives every queue transfer.
-         * Unstamped tail input acquires a Main stamp only on topology carry.
-         */
-        public record StampedEvent(net.minecraft.world.level.BlockEventData ev, long gen,
-                                   long order, boolean stampOnCarry) {}
+        public record StampedEvent(net.minecraft.world.level.BlockEventData ev, long gen) {}
 
         private final ArrayList<StampedEvent> pendingStampedEvents = new ArrayList<>(8);
-        private final ArrayList<StampedEvent> nextUnitEvents = new ArrayList<>(4);
+        final ArrayList<net.minecraft.world.level.BlockEventData> nextUnitEvents = new ArrayList<>(4);
         /** Dedup for the drive+lane duplicate race: a queued-but-not-started
          *  unit must not be enqueued again. The flag stays set through the
          *  task's claim attempt so opportunistic c2me incremental saves yield
@@ -169,34 +163,22 @@ public final class IslandRegistry {
         final Object unitAdmissionLock = new Object();
         volatile boolean globalSprintFenced;
         volatile IslandTickUnit.GlobalSprintRequest globalSprintRequest;
-        private final Object pendingBlockEvents = new Object();
+        private final ArrayList<net.minecraft.world.level.BlockEventData> pendingBlockEvents =
+                new ArrayList<>(4);
 
-        /** One external eligibility snapshot for an already-admitted event pass. */
-        ArrayList<StampedEvent> drainEventsEntered() {
+        void stashBlockEvent(net.minecraft.world.level.BlockEventData ev, long gen) {
             synchronized (pendingBlockEvents) {
-                ArrayList<StampedEvent> out = mergePendingEvents();
-                pendingStampedEvents.clear();
-                nextUnitEvents.clear();
-                // Physical transfer does not release the level-wide pending identity.
-                return out;
+                pendingStampedEvents.add(new StampedEvent(ev, gen));
             }
         }
 
-        private ArrayList<StampedEvent> mergePendingEvents() {
-            if (pendingStampedEvents.isEmpty() && nextUnitEvents.isEmpty()) return null;
-            var out = new ArrayList<StampedEvent>(pendingStampedEvents.size() + nextUnitEvents.size());
-            int main = 0;
-            int next = 0;
-            while (main < pendingStampedEvents.size() && next < nextUnitEvents.size()) {
-                if (pendingStampedEvents.get(main).order() < nextUnitEvents.get(next).order()) {
-                    out.add(pendingStampedEvents.get(main++));
-                } else {
-                    out.add(nextUnitEvents.get(next++));
-                }
+        ArrayList<StampedEvent> drainDueEventsEntered(long unitL) {
+            synchronized (pendingBlockEvents) {
+                if (pendingStampedEvents.isEmpty()) return null;
+                ArrayList<StampedEvent> out = new ArrayList<>(pendingStampedEvents);
+                pendingStampedEvents.clear();
+                return out;
             }
-            while (main < pendingStampedEvents.size()) out.add(pendingStampedEvents.get(main++));
-            while (next < nextUnitEvents.size()) out.add(nextUnitEvents.get(next++));
-            return out;
         }
 
         /** Retry stamp (informational only under the drain-all model). */
@@ -205,51 +187,65 @@ public final class IslandRegistry {
         }
 
         void restashBlockEvent(net.minecraft.world.level.BlockEventData ev, long gen) {
-            publishNextUnitEvent(ev, gen, false);
-        }
-
-        void stashNextUnitEvent(net.minecraft.world.level.BlockEventData ev) {
-            publishNextUnitEvent(ev, 0L, true);
-        }
-
-        private void publishNextUnitEvent(net.minecraft.world.level.BlockEventData ev,
-                                          long gen, boolean stampOnCarry) {
-            BlockEventQueueAccess access = (BlockEventQueueAccess) level;
-            // Partition takes these locks in the same order. No callback runs here.
-            synchronized (access.fabrolia$blockEventLock()) {
-                long order = access.fabrolia$blockEventPublications().reserve(ev);
-                if (order == 0L) return;
-                synchronized (pendingBlockEvents) {
-                    nextUnitEvents.add(new StampedEvent(ev, gen, order, stampOnCarry));
-                }
+            synchronized (pendingBlockEvents) {
+                pendingStampedEvents.add(new StampedEvent(ev, gen));
             }
         }
 
-        /** Topology transfer preserves the canonical reservation and original order. */
+        void stashNextUnitEvent(net.minecraft.world.level.BlockEventData ev) {
+            synchronized (pendingBlockEvents) {
+                nextUnitEvents.add(ev);
+            }
+        }
+
+        ArrayList<net.minecraft.world.level.BlockEventData> drainNextUnitEventsEntered() {
+            synchronized (pendingBlockEvents) {
+                if (nextUnitEvents.isEmpty()) return null;
+                ArrayList<net.minecraft.world.level.BlockEventData> out = new ArrayList<>(nextUnitEvents);
+                nextUnitEvents.clear();
+                return out;
+            }
+        }
+
         ArrayList<StampedEvent> takeAllStampedEvents(long nowGen) {
             synchronized (pendingBlockEvents) {
-                ArrayList<StampedEvent> out = mergePendingEvents();
-                pendingStampedEvents.clear();
-                nextUnitEvents.clear();
-                if (out != null) {
-                    for (int i = 0; i < out.size(); i++) {
-                        StampedEvent event = out.get(i);
-                        if (event.stampOnCarry()) {
-                            out.set(i, new StampedEvent(event.ev(), nowGen, event.order(), false));
-                        }
+                ArrayList<StampedEvent> out = null;
+                if (!pendingStampedEvents.isEmpty()) {
+                    out = new ArrayList<>(pendingStampedEvents);
+                    pendingStampedEvents.clear();
+                }
+                if (!nextUnitEvents.isEmpty()) {
+                    if (out == null) out = new ArrayList<>();
+                    for (net.minecraft.world.level.BlockEventData ev : nextUnitEvents) {
+                        out.add(new StampedEvent(ev, nowGen));
                     }
+                    nextUnitEvents.clear();
                 }
                 return out;
             }
         }
 
-        void stashStamped(StampedEvent event) {
+        void stashStamped(StampedEvent se) {
             synchronized (pendingBlockEvents) {
-                // Ordinary partition appends; cold carry may arrive out of order.
-                int at = pendingStampedEvents.size();
-                while (at > 0 && pendingStampedEvents.get(at - 1).order() > event.order()) at--;
-                pendingStampedEvents.add(at, event);
+                pendingStampedEvents.add(se);
             }
+        }
+
+        ArrayList<net.minecraft.world.level.BlockEventData> drainPendingBlockEvents() {
+            synchronized (pendingBlockEvents) {
+                if (pendingStampedEvents.isEmpty()) return null;
+                ArrayList<net.minecraft.world.level.BlockEventData> out =
+                        new ArrayList<>(pendingStampedEvents.size());
+                for (StampedEvent se : pendingStampedEvents) {
+                    out.add(se.ev());
+                }
+                pendingStampedEvents.clear();
+                return out;
+            }
+        }
+
+        ArrayList<net.minecraft.world.level.BlockEventData> takeAllBlockEvents() {
+            return drainPendingBlockEvents();
         }
 
         /** Coordinator, once per unit: swap out mid-unit registrations. */
@@ -399,11 +395,9 @@ public final class IslandRegistry {
         public volatile long emaUnitNanos;
         public volatile long maxUnitNanos;
         public volatile long unitsCompleted;
-        /** Monotonic timestamp at the successful completion publication cut. */
-        public volatile long lastCompletionNanos;
         // Reader-side TPS window state (main-thread command/HUD readers only).
         // Cached so one reader never consumes/reset the sample for another.
-        final TpsWindow tpsWindow = new TpsWindow(TpsWindow.ONE_SECOND_NANOS);
+        final TpsWindow tpsWindow = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, 0.0);
 
         /** task #19 arrival spacing chain: {lastSourceTick, lastDeliveryL, valid}.
          *  Guarded by the pendingArrivals monitor. */

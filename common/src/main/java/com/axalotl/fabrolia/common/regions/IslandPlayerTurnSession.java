@@ -570,17 +570,6 @@ public final class IslandPlayerTurnSession<P> {
         }
     }
 
-    /** Capture the original irreversible real E/L obligation; this is not body authority. */
-    @SuppressWarnings("unchecked")
-    EarlyPermit<P> enteredRealLateObligation() {
-        Frame<P> observed = frame.get();
-        if (observed.owner == null || observed.owner.kind != PlayerKind.REAL
-                || observed.phase != Phase.EARLY_RUNNING && observed.phase != Phase.EARLY_DONE) {
-            return null;
-        }
-        return (EarlyPermit<P>) observed.claim;
-    }
-
     /** Exact, non-mutating proof that this real-player token owns the late slot. */
     boolean isAwaitingRealLate(EarlyPermit<P> permit) {
         if (!belongsHere(permit) || permit.owner.kind != PlayerKind.REAL) return false;

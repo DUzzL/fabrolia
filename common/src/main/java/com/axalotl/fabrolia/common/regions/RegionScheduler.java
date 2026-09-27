@@ -59,554 +59,6 @@ public final class RegionScheduler {
     /** Startup failure/admission authority before the runtime is scheduler-visible. */
     private static volatile RegionWorkerPool transitionPool;
 
-    /** Worker grants remain required throughout startup/drain, not just ACTIVE. */
-    static boolean requiresExclusiveWorkerGrants() {
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        return current != null && current.requiresExclusiveWorkerGrants();
-    }
-
-    /** Only unsupported native grid geometry requires whole-unit Main grants. */
-    static boolean requiresExclusiveUnitGrants() {
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        return current != null && current.requiresExclusiveUnitGrants();
-    }
-
-    static boolean isPhysicalGameplayMain(Thread thread) {
-        MinecraftServer current = server;
-        return current != null && thread == Thread.currentThread()
-                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(current);
-    }
-
-    private static final class MainExecutionState {
-        MinecraftServer globalServer;
-        int globalDepth;
-        int nativeDepth;
-    }
-
-    private static final ThreadLocal<MainExecutionState> MAIN_EXECUTION =
-            ThreadLocal.withInitial(MainExecutionState::new);
-
-    /** Native chunk callbacks are a progress venue, not global gameplay owners. */
-    public interface NativeChunkServiceExecutor {}
-
-    private static class MainControlTask extends TickTask {
-        private MainControlTask(int tick, Runnable body) {
-            super(tick, body);
-        }
-    }
-
-    public static void scheduleMainControlTask(MinecraftServer expected, Runnable body) {
-        if (expected == null || body == null) throw new NullPointerException();
-        expected.schedule(new MainControlTask(expected.getTickCount(), body));
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        if (current != null && current.servesGameplayServer(expected)) {
-            current.mainControlPublished();
-        }
-    }
-
-    private static final Object MAIN_CONTROL_LOCK = new Object();
-    private static final ArrayDeque<TrackedMainControlTask> PENDING_MAIN_CONTROLS =
-            new ArrayDeque<>();
-
-    /**
-     * A native queue slot whose accepted body pins its original pool. The census
-     * is for lifecycle progress/cancellation, never an alternate execution queue.
-     */
-    private static final class TrackedMainControlTask extends MainControlTask {
-        final RegionWorkerPool owner;
-        final MinecraftServer expected;
-        final Runnable tracked;
-        private boolean claimed;
-        /** Normal native schedule return, not body acceptance or authority. */
-        private boolean nativePublished;
-
-        TrackedMainControlTask(RegionWorkerPool owner, MinecraftServer expected,
-                               Runnable tracked) {
-            super(expected.getTickCount(), tracked);
-            this.owner = owner;
-            this.expected = expected;
-            this.tracked = tracked;
-        }
-
-        private boolean claim() {
-            synchronized (MAIN_CONTROL_LOCK) {
-                if (claimed) return false;
-                claimed = true;
-                PENDING_MAIN_CONTROLS.remove(this);
-                return true;
-            }
-        }
-
-        @Override
-        public void run() {
-            if (claim()) super.run();
-        }
-    }
-
-    /**
-     * Retain an accepted Main continuation through its original native task slot.
-     * Unlike a wake-only controller, this body must execute or cancel before its
-     * pool closes. The receipt grants lifetime, not gameplay or clean-drain authority.
-     * An unrelated root arriving during an exact turn retains a deferred publication;
-     * an already causal continuation still participates in the pre-turn fixed point.
-     */
-    public static void scheduleTrackedMainControlTask(
-            MinecraftServer expected, Runnable body) {
-        if (expected == null || body == null) throw new NullPointerException();
-        RegionWorkerPool current;
-        synchronized (LIFECYCLE_LOCK) {
-            current = failureGateLocked();
-            if (current == null && orphanFatalFailure != null) {
-                RegionScheduler.<RuntimeException>rethrow(orphanFatalFailure);
-            }
-            if (current == null && (lifecycleState != LifecycleState.STOPPED
-                    || lifecycleOwner != null)) {
-                throw new IllegalStateException(
-                        "tracked Main control publication has no live or terminal generation");
-            }
-        }
-        if (current == null) {
-            // The native server can outlive the regional runtime during a healthy
-            // serial cutover. Its queue remains the venue, not a dark routed queue.
-            scheduleMainControlTask(expected, body);
-            return;
-        }
-        current.executeTrackedMainControl(tracked -> {
-            TrackedMainControlTask task =
-                    new TrackedMainControlTask(current, expected, tracked);
-            synchronized (MAIN_CONTROL_LOCK) {
-                PENDING_MAIN_CONTROLS.addLast(task);
-            }
-            try {
-                expected.schedule(task);
-                synchronized (MAIN_CONTROL_LOCK) {
-                    task.nativePublished = true;
-                }
-                current.mainControlPublished();
-            } catch (Throwable failure) {
-                // schedule may have made the slot visible before throwing. The
-                // pool publication transaction selects W and cancels its receipt;
-                // any surviving native wake must not enter that wrapper again.
-                task.claim();
-                throw failure;
-            }
-        }, body);
-    }
-
-    private static TrackedMainControlTask pendingMainControl(RegionWorkerPool owner) {
-        synchronized (MAIN_CONTROL_LOCK) {
-            for (TrackedMainControlTask task : PENDING_MAIN_CONTROLS) {
-                if (task.owner == owner) return task;
-            }
-        }
-        return null;
-    }
-
-    static boolean hasTrackedMainControlTasks(RegionWorkerPool owner) {
-        return pendingMainControl(owner) != null;
-    }
-
-    /** One real native FIFO opportunity, then return to the other stop lanes. */
-    static void drainTrackedMainControlTasks(RegionWorkerPool owner) {
-        TrackedMainControlTask pending = pendingMainControl(owner);
-        if (pending == null) return;
-        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(pending.expected)) {
-            throw new IllegalStateException("tracked Main control drain lost physical Main");
-        }
-        // An ordinary poll may refuse a young task after the tick's time budget
-        // expires. Use native managedBlock admission, without fabricating a clean
-        // command frame or stealing the selected slot past older vanilla tasks.
-        pending.expected.managedBlock(new BooleanSupplier() {
-            private boolean polled;
-
-            @Override
-            public boolean getAsBoolean() {
-                throwWorkerFailureIfAny();
-                boolean done = polled;
-                polled = true;
-                return done;
-            }
-        });
-        throwWorkerFailureIfAny();
-    }
-
-    /**
-     * Finish a fixed prefix of published controls through their native FIFO.
-     * Only the retired canonical runAllTasks boundary may enter this service:
-     * no native task, managed wait, island claim or gameplay frame is inherited.
-     * The census controls termination only; native polling still selects every
-     * predecessor and each body obtains its own existing authority.
-     */
-    static void servicePublishedMainControls(MinecraftServer expected) {
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        if (current == null) return;
-        throwWorkerFailureIfAny();
-        ArrayList<TrackedMainControlTask> captured = null;
-        synchronized (MAIN_CONTROL_LOCK) {
-            for (TrackedMainControlTask task : PENDING_MAIN_CONTROLS) {
-                if (task.owner != current || task.expected != expected || !task.nativePublished) continue;
-                if (captured == null) captured = new ArrayList<>(PENDING_MAIN_CONTROLS.size());
-                captured.add(task);
-            }
-        }
-        if (captured == null) return;
-        if (expected != server
-                || !RegionalPlayerEntityTicksV2.isPhysicalServerThread(expected)
-                || expected.blockingCount != 0
-                || expected instanceof ReentrantBlockableEventLoopAccessor accessor
-                    && accessor.fabrolia$getReentrantCount() != 0
-                || inNativeMainService() || current.hasEnteredGameplayTurn()
-                || IslandCommands.fenceWindowHeld()
-                || IslandCommands.globalFenceTransitionInProgress()
-                || currentThreadHoldsLiveIslandClaim()) {
-            IslandCommands.publishAndPropagate(new IllegalStateException(
-                    "published Main control service lost its claim-free native boundary"));
-            return;
-        }
-        // Census order can differ from native publication order. Retain all
-        // captured identities; a single census tail is not a FIFO checkpoint.
-        ArrayList<TrackedMainControlTask> checkpoint = captured;
-        Throwable failure = null;
-        try {
-            RconCommandFenceScope.runNativeCheckpoint(expected, () -> expected.managedBlock(new BooleanSupplier() {
-                private int cursor;
-
-                @Override
-                public boolean getAsBoolean() {
-                    current.throwIfFailed();
-                    // A healthy lifecycle cutover closes this old checkpoint.
-                    // Never attach replacement-generation islands to its ledger.
-                    if (expected != server || current != (pool != null ? pool : transitionPool)) {
-                        return true;
-                    }
-                    synchronized (MAIN_CONTROL_LOCK) {
-                        while (cursor < checkpoint.size() && checkpoint.get(cursor).claimed) cursor++;
-                        if (cursor == checkpoint.size()) {
-                            return true;
-                        }
-                    }
-                    // This census owns queue lifetime, not island data. A
-                    // callback that touches an island takes its own target
-                    // claim (or global fence); unrelated units remain runnable.
-                    return false;
-                }
-            }));
-            // Native doRunTask can swallow an Exception after claiming the last slot.
-            current.throwIfFailed();
-        } catch (Throwable thrown) {
-            failure = current.publishAndSelectFatal(thrown);
-        }
-        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
-        current.throwIfFailed();
-    }
-
-    /**
-     * Resume one immutable gameplay FIFO cut after servicing the control census.
-     * Whole grants yield at the native Main deadline;
-     * successors and roots consumed by another venue cannot borrow old slots.
-     */
-    static void servicePublishedMainGameplay(MinecraftServer expected) {
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        if (current == null) return;
-        servicePublishedMainControls(expected);
-        current.throwIfFailed();
-        if (expected != server || current != (pool != null ? pool : transitionPool)) return;
-        RegionWorkerPool.PublishedGameplayCohort cohort = current.capturePublishedGameplay();
-        while (current.hasPublishedGameplay(cohort)) {
-            current.throwIfFailed();
-            if (expected != server || current != (pool != null ? pool : transitionPool)) return;
-            if (!RconCommandFenceScope.mayServicePublishedGameplay(expected)) return;
-            if (current.takePublishedGameplayCheckpoint()) {
-                // Poll under native blockingCount so even a young task is
-                // eligible. Return true from the predicate itself: falling
-                // through managedBlock's loop would park on an empty FIFO.
-                RconCommandFenceScope.runNativeCheckpoint(expected, () ->
-                        expected.managedBlock(() -> {
-                            current.throwIfFailed();
-                            if (expected == server
-                                    && current == (pool != null ? pool : transitionPool)) {
-                                expected.pollTask();
-                            }
-                            return true;
-                        }));
-                current.throwIfFailed();
-                if (expected != server || current != (pool != null ? pool : transitionPool)) return;
-            }
-            if (!runOptionalPublishedGameplayStep(expected, current, cohort)) return;
-        }
-        current.throwIfFailed();
-    }
-
-    private static boolean runOptionalPublishedGameplayStep(
-            MinecraftServer expected, RegionWorkerPool current,
-            RegionWorkerPool.PublishedGameplayCohort cohort) {
-        current.throwIfFailed();
-        if (expected != server || current != (pool != null ? pool : transitionPool)
-                || !RconCommandFenceScope.mayServicePublishedGameplay(expected)) return false;
-        if (!current.runPublishedGameplayStep(cohort)) return false;
-        RconCommandFenceScope.markPublishedGameplayServiced(expected);
-        return true;
-    }
-
-    static Throwable cancelTrackedMainControlTasks(
-            RegionWorkerPool owner, Throwable primary) {
-        Throwable failure = primary;
-        TrackedMainControlTask pending;
-        while ((pending = pendingMainControl(owner)) != null) {
-            if (!pending.claim()) continue;
-            try {
-                ((RegionTaskFanIn.CancellableQueueEntry) pending.tracked)
-                        .cancelQueuedBeforeStartWithFailure(failure);
-            } catch (Throwable cleanup) {
-                failure = owner.mergeCancellationFailure(failure, cleanup);
-            }
-        }
-        return failure;
-    }
-
-    public static boolean isMainControlTask(Runnable task) {
-        return task instanceof MainControlTask;
-    }
-
-    public static boolean inNativeMainService() {
-        return MAIN_EXECUTION.get().nativeDepth != 0;
-    }
-
-    public static void runNativeMainServiceBody(Runnable body) {
-        executeNativeMainService(body, null);
-    }
-
-    public static <T> T callNativeMainServiceBody(java.util.function.Supplier<T> body) {
-        return executeNativeMainService(null, body);
-    }
-
-    private static <T> T executeNativeMainService(
-            Runnable body, java.util.function.Supplier<T> resultBody) {
-        MainExecutionState state = MAIN_EXECUTION.get();
-        T result = null;
-        Throwable failure = null;
-        state.nativeDepth++;
-        try {
-            throwWorkerFailureIfAny();
-            if (resultBody != null) result = resultBody.get();
-            else body.run();
-            throwWorkerFailureIfAny();
-        } catch (Throwable thrown) {
-            failure = publishFatalAndSelectWinner(thrown);
-        } finally {
-            state.nativeDepth--;
-        }
-        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
-        return result;
-    }
-
-    /**
-     * Physical venue and failure boundary only. In particular, neither the
-     * complete tickServer stack nor a routed-result controller owns all islands
-     * or retains an ExternalPermit across its own lifecycle/pause barrier.
-     */
-    public static void runMainControlBody(MinecraftServer expected, Runnable body) {
-        try {
-            if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(expected)) {
-                throw new IllegalStateException("Main control body lost its physical server thread");
-            }
-            throwWorkerFailureIfAny();
-            body.run();
-            throwWorkerFailureIfAny();
-        } catch (Throwable failure) {
-            IslandCommands.publishAndPropagate(failure);
-        }
-    }
-
-    /** Acquire before an ordinary queued gameplay callback enters native code. */
-    public static void runGlobalMainBody(MinecraftServer expected, Runnable body) {
-        executeGlobalMainBody(expected, body, null);
-    }
-
-    public static <T> T callGlobalMainBody(
-            MinecraftServer expected, java.util.function.Supplier<T> body) {
-        return executeGlobalMainBody(expected, null, body);
-    }
-
-    /**
-     * Share real claims across a finite native batch of existing Main roots.
-     * The batch itself does not enter a gameplay-root depth: each callback must
-     * still use runGlobalMainBody/callGlobalMainBody, including its advancement
-     * drain and failure cut. Do not use this for a replenishing queue drain.
-     */
-    public static void runGlobalMainBatch(MinecraftServer expected, Runnable boundedRoots) {
-        boolean tookFence = false;
-        Throwable failure = null;
-        try {
-            tookFence = acquireGlobalMainFence(expected, MAIN_EXECUTION.get());
-            throwWorkerFailureIfAny();
-            boundedRoots.run();
-            throwWorkerFailureIfAny();
-        } catch (Throwable thrown) {
-            failure = publishFatalAndSelectWinner(thrown);
-        } finally {
-            if (tookFence) failure = IslandCommands.releaseAllExcept(failure);
-        }
-        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
-    }
-
-    private static <T> T executeGlobalMainBody(
-            MinecraftServer expected, Runnable body, java.util.function.Supplier<T> resultBody) {
-        MainExecutionState state = MAIN_EXECUTION.get();
-        boolean tookFence = false;
-        boolean entered = false;
-        T result = null;
-        Throwable failure = null;
-        try {
-            tookFence = acquireGlobalMainFence(expected, state);
-            state.globalServer = expected;
-            state.globalDepth++;
-            entered = true;
-            // Old-resource keys must reach progress before reload clears/rebinds it.
-            if (state.globalDepth == 1 && !AdvancementBatchScope.active()) {
-                AdvancementBuffer.applyDeferred();
-                AdvancementBuffer.drainPendingFlushes();
-            }
-            throwWorkerFailureIfAny();
-            if (resultBody != null) result = resultBody.get();
-            else body.run();
-            throwWorkerFailureIfAny();
-        } catch (Throwable thrown) {
-            failure = publishFatalAndSelectWinner(thrown);
-        } finally {
-            if (entered && --state.globalDepth == 0) state.globalServer = null;
-            if (tookFence) failure = IslandCommands.releaseAllExcept(failure);
-        }
-        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
-        return result;
-    }
-
-    private static boolean acquireGlobalMainFence(MinecraftServer expected, MainExecutionState state) {
-        // Both a single root and a finite batch reject before acquisition.
-        // The enclosing caller retains the same sticky failure boundary.
-        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(expected)) {
-            throw new IllegalStateException("global Main body lost its physical server thread");
-        }
-        if (state.globalDepth != 0 && state.globalServer != expected) {
-            throw new IllegalStateException("global Main body crossed server generations");
-        }
-        Thread selected = RegionalPlayerEntityTicksV2.logicalServerThread(expected);
-        if (selected != null && selected != Thread.currentThread()
-                && !IslandCommands.delegatesGameplayFrom(selected, Thread.currentThread())) {
-            throw new IllegalStateException("Main gameplay callback overlaps an active logical owner");
-        }
-        boolean alreadyHeld = ownsExclusiveGameplay();
-        if (state.nativeDepth != 0 && !alreadyHeld) {
-            throw new IllegalStateException(
-                    "native chunk service cannot acquire fresh global gameplay ownership");
-        }
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        if (!alreadyHeld && current != null && current.hasEnteredGameplayTurn()) {
-            throw new IllegalStateException("global Main entry cannot borrow an entered worker turn");
-        }
-        throwWorkerFailureIfAny();
-        return !alreadyHeld && IslandCommands.quiesceAllExcept(null);
-    }
-
-    public static boolean ownsExclusiveGameplay() {
-        MainExecutionState state = MAIN_EXECUTION.get();
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        MinecraftServer observedServer = state.globalServer != null ? state.globalServer : server;
-        boolean physicalMain = RegionalPlayerEntityTicksV2.isPhysicalServerThread(observedServer);
-        if (physicalMain) {
-            // An outer Main frame may be suspended in a legitimate worker pump.
-            // Its inherited depth is not ownership of that worker's native wait.
-            if (current != null && current.hasEnteredGameplayTurn()) {
-                return current.ownsExclusiveGameplay(Thread.currentThread());
-            }
-            Thread logical = RegionalPlayerEntityTicksV2.logicalServerThread(observedServer);
-            if (logical != null && logical != Thread.currentThread()
-                    && !IslandCommands.delegatesGameplayFrom(logical, Thread.currentThread())) {
-                return false;
-            }
-            if (IslandCommands.fenceWindowHeld()) return true;
-        }
-        if (state.globalDepth != 0
-                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(state.globalServer)) {
-            return true;
-        }
-        if (RegionalPlayerEntityTicksV2.inExactPlayerActor()) return true;
-        return current == null
-                ? isPhysicalGameplayMain(Thread.currentThread())
-                : current.ownsExclusiveGameplay(Thread.currentThread());
-    }
-
-    public static Thread exclusiveGameplayWorkerOrNull(MinecraftServer expected) {
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        return current != null && current.servesGameplayServer(expected)
-                ? current.exclusiveGameplayWorkerOrNull() : null;
-    }
-
-    static boolean allowsRoutedProgress(Thread waitingWorker) {
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        return current == null || current.allowsRoutedProgress(waitingWorker);
-    }
-
-    public static boolean parkExclusiveWorkerForMainService() {
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        return current != null && current.parkExclusiveWorkerForMainService();
-    }
-
-
-
-    public static boolean hasLiveGameplayWorkers() {
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        return current != null && current.isRunning();
-    }
-
-    /** Residual service at the native Main poll return boundary. */
-    public static boolean serviceMainGameplayAfterPoll(MinecraftServer polledServer) {
-        if (RconCommandFenceScope.isNativeCheckpointPoll(polledServer)) {
-            throwWorkerFailureIfAny();
-            return false;
-        }
-        if (RconCommandFenceScope.exactRunAllTasksPoll(polledServer)) {
-            // Finish the native FIFO/control census before optional gameplay.
-            // Nested polls keep their mandatory progress protocol below.
-            throwWorkerFailureIfAny();
-            return false;
-        }
-        if (RconCommandFenceScope.exactManagedBlockPoll(polledServer)) {
-            RegionWorkerPool current = pool != null ? pool : transitionPool;
-            if (current == null || inNativeMainService()
-                    || !RegionalPlayerEntityTicksV2.isPhysicalServerThread(polledServer)) return false;
-            // This literal blockingCount poll already supplied the eligible
-            // native opportunity owed by the preceding terminal grant.
-            current.takePublishedGameplayCheckpoint();
-            return runOptionalPublishedGameplayStep(
-                    polledServer, current, current.capturePublishedGameplay());
-        }
-        return serviceMainGameplay();
-    }
-
-    /** One residual exclusive root after vanilla has had its native polling opportunity. */
-    public static boolean serviceMainGameplay() {
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        return current != null && !inNativeMainService()
-                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)
-                && current.runExclusiveWorkerStep();
-    }
-
-    /** Local topology ownership can borrow a global frame for an old-domain receipt. */
-    static boolean drainMainSafeForDomainRebase(ServerLevel level) {
-        RegionWorkerPool current = pool != null ? pool : transitionPool;
-        if (current == null || !current.hasPublishedMainSafeTask()) return false;
-        return callGlobalMainBody(level.getServer(), current::runOnePublishedMainSafeUnderMainOwnership);
-    }
-
-    /** Only the unit lane: used after sprint admission closes, before fromL capture. */
-    static void drainQueuedUnitAttempts() {
-        RegionWorkerPool current = pool;
-        if (current == null) throw new IllegalStateException("unit drain lost its pool");
-        while (current.runExclusiveWorkerStep(true)) {
-            throwWorkerFailureIfAny();
-        }
-    }
     private static volatile RegionGrid grid;
     private static final Map<ServerLevel, RegionizedServer> PER_LEVEL = new ConcurrentHashMap<>();
     /**
@@ -662,9 +114,7 @@ public final class RegionScheduler {
     public static boolean deferLifecycleTransitionFromCurrentBody(
             MinecraftServer mcServer, Runnable transition) {
         if (mcServer == null || transition == null) throw new NullPointerException();
-        if (RegionWorkerPool.currentThreadCausalOwnerOrNull() == null
-                && MAIN_EXECUTION.get().globalDepth == 0
-                && !IslandCommands.fenceWindowHeld()) return false;
+        if (RegionWorkerPool.currentThreadCausalOwnerOrNull() == null) return false;
         if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(mcServer)
                 || !RegionalPlayerEntityTicksV2
                 .schedulerLifecycleTransitionAllowed(mcServer)) {
@@ -2294,7 +1744,12 @@ public final class RegionScheduler {
     public static void executeAt(ServerLevel level, ChunkPos pos, Runnable task) {
         boolean exactRoot = ownsExactRootExecution(task);
         if (!active) {
-            executeGlobal(task);
+            MinecraftServer current = server;
+            if (current != null && !current.isSameThread()) {
+                throw new IllegalStateException(
+                        "region task submitted from a worker after scheduler admission closed");
+            }
+            runRootInlineIfHealthy(task);
             return;
         }
         RegionizedServer rs = forLevel(level);
@@ -2383,47 +1838,16 @@ public final class RegionScheduler {
     }
 
     public static void executeForEntity(Entity entity, Runnable task) {
-        if (!active) { executeGlobal(task); return; }
+        if (!active) { runRootInlineIfHealthy(task); return; }
         if (!(entity.level() instanceof ServerLevel sl)) {
-            executeGlobal(task);
+            runRootInlineIfHealthy(task);
             return;
         }
         executeAt(sl, entity.chunkPosition(), task);
     }
 
     public static void executeGlobal(Runnable task) {
-        if (!inNativeMainService() && AdvancementCaptureOwnership.ownsGlobalProducerEnvelope()) {
-            runRootInlineIfHealthy(task);
-            return;
-        }
-        enqueueGlobalMainGameplay(task);
-    }
-
-    /**
-     * Retain a complete gameplay producer for physical Main with global ownership.
-     * Unlike executeGlobal, never inline on an already-owning gameplay worker;
-     * unlike the Main-only control lane, acquire ownership before body entry.
-     */
-    public static void enqueueGlobalMainGameplay(Runnable task) {
-        RegionWorkerPool current = pool;
-        if (current != null) {
-            if (current.enqueueGlobalMainGameplay(task)) {
-                current.wake(1);
-                return;
-            }
-            Throwable failure = current.fatalFailureOrNull();
-            if (failure == null) {
-                failure = new IllegalStateException("global Main gameplay rejected at the pool drain boundary");
-            }
-            RegionScheduler.<RuntimeException>rethrow(cancelRejectedRoot(current, task, failure));
-            return;
-        }
-        MinecraftServer physicalServer = ParallelProcessor.getServer();
-        if (physicalServer == null) {
-            throw new IllegalStateException("global gameplay callback has no Main owner");
-        }
-        physicalServer.execute(() -> runGlobalMainBody(
-                physicalServer, () -> runRootInlineIfHealthy(task)));
+        runRootInlineIfHealthy(task);
     }
 
     public static int regionCountFor(ServerLevel level) {
@@ -2672,10 +2096,7 @@ public final class RegionScheduler {
             return;
         }
         RegionWorkerPool p = pool;
-        if (p != null && p.enqueueGlobal(task)) {
-            p.wake(1);
-            return;
-        }
+        if (p != null && p.enqueueGlobal(task)) return;
         Throwable failure = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
         if (failure == null) {
             failure = new IllegalStateException(
@@ -2691,10 +2112,7 @@ public final class RegionScheduler {
             return;
         }
         RegionWorkerPool p = pool;
-        if (p != null && p.enqueueGlobalMainSafe(task)) {
-            p.wake(1);
-            return;
-        }
+        if (p != null && p.enqueueGlobalMainSafe(task)) return;
         Throwable fatal = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
         if (fatal != null) {
             RegionScheduler.<RuntimeException>rethrow(
@@ -2734,10 +2152,7 @@ public final class RegionScheduler {
             return;
         }
         RegionWorkerPool p = pool;
-        if (p != null && p.enqueueGlobalMainOnly(task)) {
-            p.wake(1);
-            return;
-        }
+        if (p != null && p.enqueueGlobalMainOnly(task)) return;
         Throwable fatal = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
         if (fatal != null) {
             RegionScheduler.<RuntimeException>rethrow(
@@ -2779,7 +2194,7 @@ public final class RegionScheduler {
      * still-current running pool is an invariant failure and therefore selects W;
      * it is never converted into a skipped tick or a later retry.
      */
-    static boolean enqueueUnit(RegionizedServer expected, IslandTickUnit.UnitPublication task) {
+    static boolean enqueueUnit(RegionizedServer expected, Runnable task) {
         if (task == null) throw new NullPointerException("task");
 
         if (ownsExactExecutionTurn()) {
@@ -2908,7 +2323,6 @@ public final class RegionScheduler {
     /** Pump global/Main-safe dependencies without taking unrelated ready work
      * while the coordinator retains its own island claim. */
     static boolean workerHelpBarrierDependenciesOnce() {
-        if (requiresExclusiveWorkerGrants()) return false;
         RegionWorkerPool p = pool;
         return p != null
                 && Thread.currentThread() instanceof RegionWorkerThread me
@@ -3304,12 +2718,8 @@ public final class RegionScheduler {
                 boolean wasSealedDone = r.hasSealedDone(epoch);
                 ColorGate.tryMarkDone(r, rs);
                 if (!wasSealedDone && r.hasSealedDone(epoch)) effect = true;
-                // A queued or detached notification is still a retained progress
-                // witness. Slow consumption is not a lost wake: repeatedly
-                // re-arming it can bury the original behind millions of duplicates.
                 if (pending && rs.owesEntityPhase(r)) {
-                    if (r.readyNotifications == 0 && r.currentWorker() == null
-                            && ColorGate.eligible(r, rs)) {
+                    if (ColorGate.eligible(r, rs) && r.currentWorker() == null) {
                         enqueueReady(r);
                         wakeWorkers(1);
                         effect = true;
@@ -3327,9 +2737,8 @@ public final class RegionScheduler {
                 // workers idle-parked. Re-arm only eligible, unwitnessed work:
                 // blocked colors and next-epoch queues cannot be consumed yet.
                 if (r.currentWorker() == null
-                        && r.readyNotifications == 0
                         && (!r.queue().isEmpty() || !r.helpQueue.isEmpty())
-                        && ColorGate.eligible(r, rs)) {
+                        && ColorGate.inUnitWindow(r, rs)) {
                     // Two consecutive sightings with no retained notification.
                     if (r.strandedQueueSightings++ >= 1) {
                         r.strandedQueueSightings = 0;

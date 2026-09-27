@@ -1,20 +1,13 @@
 package com.axalotl.fabrolia.common.regions;
 
-import com.axalotl.fabrolia.common.mixin.entity.EntityMovementAccessor;
-import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCaptureOwnership;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.common.*;
 import net.minecraft.network.protocol.cookie.ServerboundCookieResponsePacket;
 import net.minecraft.network.protocol.game.*;
 import net.minecraft.network.protocol.ping.ServerboundPingRequestPacket;
-import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.FishingRodItem;
-import net.minecraft.util.Mth;
-import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.Vec3;
 
 import java.util.Map;
 import java.util.Set;
@@ -49,29 +42,10 @@ import java.util.Set;
  * class is normally island-safe.
  */
 public final class AsyncIslandPacketPolicy {
-    /** Immutable implementation identity, never an interaction callback probe. */
-    private static final ClassValue<Boolean> NATIVE_INTERACTION = new ClassValue<>() {
-        @Override
-        protected Boolean computeValue(Class<?> type) {
-            var source = type.getProtectionDomain().getCodeSource();
-            var nativeSource = net.minecraft.world.entity.Entity.class.getProtectionDomain().getCodeSource();
-            return source != null && nativeSource != null
-                    && type.getClassLoader() == net.minecraft.world.entity.Entity.class.getClassLoader()
-                    && source.equals(nativeSource);
-        }
-    };
-
-
     public enum Lane { ISLAND_FIFO, MAIN_FIFO }
 
     private static final Lane I = Lane.ISLAND_FIFO;
     private static final Lane M = Lane.MAIN_FIFO;
-
-    // An admission bound, not a replacement for native movement validation.
-    private static final double MAX_LOCAL_MOVEMENT_SPAN = 128.0;
-    // EntityGetter inflates by 1e-7, then EntitySectionStorage searches +/-2.
-    // This also contains BlockCollisions' floor(bound +/-1e-7) +/-1 halo.
-    private static final double MOVEMENT_QUERY_HALO = 2.0 + 1.0E-7;
 
     /**
      * One entry for every effective public serverbound handler parameter on
@@ -227,197 +201,25 @@ public final class AsyncIslandPacketPolicy {
     }
 
     /**
-     * Main ingress has no retained movement-footprint certificate. Its source
-     * claim cannot cover a destination, lastGood sweep, rollback or vehicle.
-     * This is body admission, not FIFO routing: proved island replay stays local.
-     */
-    static boolean requiresGlobalMainMovement(Packet<?> packet) {
-        return packet instanceof ServerboundMovePlayerPacket
-                || packet instanceof ServerboundMoveVehiclePacket
-                || packet instanceof ServerboundAcceptTeleportationPacket;
-    }
-
-    /**
      * Owner-only refinement immediately before packet.handle, never at decoded
-     * Netty ingress. Unproven movement footprints, item-use producers, another
-     * player's lifecycle and remote fishing hooks owe a whole fenced Main packet,
-     * not a continuation appended behind the already reserved island prefix.
+     * Netty ingress. Another player's lifecycle and remote fishing hooks owe a
+     * whole fenced Main packet, not a continuation appended behind the already
+     * reserved island prefix.
      */
     static boolean requiresMainInteraction(Packet<?> packet, ServerPlayer player) {
-        if (packet instanceof ServerboundAcceptTeleportationPacket) {
-            // Native acknowledgement absSnapTo's awaitingPositionFromClient and
-            // replaces lastGood. The MovePlayer certificate neither runs here nor
-            // covers that retained destination; hand off before the native prefix.
-            return true;
-        }
-        // Lifecycle/dimension packets already use Main FIFO. The remaining
-        // native handlers retain the E/L closure, including already-active use.
-        if (requiresGlobalUseProducer(packet, player)
-                || !(packet instanceof ServerboundUseItemPacket)
-                    && !(packet instanceof ServerboundUseItemOnPacket)
-                    && AdvancementCaptureOwnership.requiresGlobalPlayerTickEnvelope(
-                            player, player.isUsingItem())) return true;
-        if (packet instanceof ServerboundMoveVehiclePacket) {
-            // A5 excludes vehicles/passengers. Do not infer a vehicle claim from
-            // the rider or use player.lastGood in place of vehicleLastGood.
-            return true;
-        }
-        if (packet instanceof ServerboundMovePlayerPacket movement) {
-            return !ownsMovementFootprint(movement, player);
-        }
         if (packet instanceof ServerboundUseItemPacket use) {
             return player.fishing != null
                     && player.getItemInHand(use.getHand()).getItem() instanceof FishingRodItem;
         }
         if (packet instanceof ServerboundInteractPacket interact) {
-            if (!(player.level() instanceof ServerLevel level)) return true;
-            var target = level.getEntityOrPart(interact.entityId());
-            if (target == null) return false;
-            // The entire originating packet moves before any target/item/Fabric
-            // interaction body. In particular a native target does not certify an
-            // opaque held item's interactLivingEntity callback or its ride graph.
-            return target instanceof ServerPlayer
-                    || requiresEntityInteractionFence(player, target)
-                    || !NATIVE_INTERACTION.get(player.getItemInHand(interact.hand()).getItem().getClass());
+            return player.level() instanceof ServerLevel level
+                    && level.getEntityOrPart(interact.entityId()) instanceof ServerPlayer;
         }
         if (packet instanceof ServerboundAttackPacket attack) {
-            if (!(player.level() instanceof ServerLevel level)) return true;
-            var target = level.getEntityOrPart(attack.entityId());
-            return target instanceof ServerPlayer
-                    || target != null && requiresEntityInteractionFence(player, target);
+            return player.level() instanceof ServerLevel level
+                    && level.getEntityOrPart(attack.entityId()) instanceof ServerPlayer;
         }
         return false;
-    }
-    /**
-     * Damage and interaction can reach an NPC's owner, kill credit or breeding
-     * player. The target's native closure must be local, not just its class.
-     */
-    public static boolean requiresEntityInteractionFence(
-            ServerPlayer player, net.minecraft.world.entity.Entity target) {
-        if (!NATIVE_INTERACTION.get(target.getClass())
-                || !NativePlayerObservations.supportsRidingClosure(target)) return true;
-        if (!AdvancementCaptureOwnership.mayRequireGlobalEntityInteractionEnvelope()) return false;
-        RegionizedServer runtime = RegionScheduler.forLevel(player.level());
-        Region region = runtime == null || !(player instanceof RegionKeyed keyed)
-                ? null : runtime.regionizer().peekByGridKey(keyed.fabrolia$getRegionKey());
-        return region == null || NativeEntityDependencies.requiresFence(runtime, region, target);
-    }
-
-
-    /**
-     * Proves columns for the complete native body, without entering collision
-     * queries or changing listener state. Invalid input still reaches vanilla
-     * exactly once on Main (including infinities that vanilla clamps, not rejects).
-     */
-    private static boolean ownsMovementFootprint(
-            ServerboundMovePlayerPacket packet, ServerPlayer player) {
-        if (!AsyncIslandPlayerTicks.inPacketReplay(player)
-                || !AsyncIslandPlayerTicks.ownsAdvancementObservation(player)
-                || !AsyncIslandPlayerTicks.supportsIslandPlayerType(player)
-                || !(player.connection instanceof AsyncIslandMovementListenerAccess listener)
-                || !(player instanceof EntityMovementAccessor movement)) return false;
-
-        // Read lastGood only after real player/listener ownership, never at ingress.
-        // updateAwaitingTeleport can re-teleport to a retained, non-local position.
-        if (listener.fabrolia$hasAwaitingPosition()
-                || player.getVehicle() != null || !player.getPassengers().isEmpty()) return false;
-        if (!Double.isFinite(packet.getX(0.0))
-                || !Double.isFinite(packet.getY(0.0))
-                || !Double.isFinite(packet.getZ(0.0))
-                || !Float.isFinite(packet.getYRot(0.0F))
-                || !Float.isFinite(packet.getXRot(0.0F))) return false;
-
-        Vec3 current = player.position();
-        if (!finitePosition(current)) return false;
-        double targetX = Mth.clamp(packet.getX(current.x), -3.0E7, 3.0E7);
-        double targetY = Mth.clamp(packet.getY(current.y), -2.0E7, 2.0E7);
-        double targetZ = Mth.clamp(packet.getZ(current.z), -3.0E7, 3.0E7);
-        double dx = targetX - listener.fabrolia$lastGoodX();
-        double dy = targetY - listener.fabrolia$lastGoodY();
-        double dz = targetZ - listener.fabrolia$lastGoodZ();
-        double targetDx = targetX - current.x;
-        double targetDy = targetY - current.y;
-        double targetDz = targetZ - current.z;
-        if (!boundedMovement(dx) || !boundedMovement(dy) || !boundedMovement(dz)
-                || !boundedMovement(targetDx) || !boundedMovement(targetDy)
-                || !boundedMovement(targetDz)) return false;
-
-        // Native stuck-speed and edge/collision clipping only shorten the sweep.
-        // A mod-written multiplier outside that contract cannot use this proof.
-        Vec3 multiplier = movement.fabrolia$stuckSpeedMultiplier();
-        if (multiplier == null || !nativeSlowdown(multiplier.x)
-                || !nativeSlowdown(multiplier.y) || !nativeSlowdown(multiplier.z)) return false;
-        float step = player.maxUpStep();
-        if (!Float.isFinite(step) || step < 0.0F || step > MAX_LOCAL_MOVEMENT_SPAN) return false;
-
-        AABB box = player.getBoundingBox();
-        if (!finiteBox(box) || current.x < box.minX || current.x > box.maxX
-                || current.y < box.minY || current.y > box.maxY
-                || current.z < box.minZ || current.z > box.maxZ) return false;
-
-        // Entity.move starts at CURRENT but receives target-LAST_GOOD. The
-        // target box alone therefore misses the overshoot when those differ.
-        // Union current/rollback, that complete sweep, and the requested target.
-        // tickCount==0 resetPosition uses target-current, also inside this union.
-        double minX = Math.nextDown(box.minX + Math.min(0.0, Math.min(dx, targetDx)) - MOVEMENT_QUERY_HALO);
-        double maxX = Math.nextUp(box.maxX + Math.max(0.0, Math.max(dx, targetDx)) + MOVEMENT_QUERY_HALO);
-        double minZ = Math.nextDown(box.minZ + Math.min(0.0, Math.min(dz, targetDz)) - MOVEMENT_QUERY_HALO);
-        double maxZ = Math.nextUp(box.maxZ + Math.max(0.0, Math.max(dz, targetDz)) + MOVEMENT_QUERY_HALO);
-        if (!boundedMovement(maxX - minX) || !boundedMovement(maxZ - minZ)) return false;
-
-        // Claims cover entire columns: step-up, supporting-block/fall queries and
-        // noBlocksAround's inflate(.0625).expandTowards(0,-.55,0) are contained.
-        // The retained supporting block can precede the packet-start position.
-        BlockPos support = player.mainSupportingBlockPos.orElse(null);
-        if (support != null && (!AsyncIslandPlayerTicks.ownsPacketInteractionTarget(
-                player, ChunkPos.pack(support))
-                || !RegionScheduler.ownsCurrentContext(player.level(), support))) return false;
-        int minChunkX = Mth.floor(minX) >> 4;
-        int maxChunkX = Mth.floor(maxX) >> 4;
-        int minChunkZ = Mth.floor(minZ) >> 4;
-        int maxChunkZ = Mth.floor(maxZ) >> 4;
-        BlockPos.MutableBlockPos column = new BlockPos.MutableBlockPos();
-        for (int x = minChunkX; x <= maxChunkX; x++) {
-            for (int z = minChunkZ; z <= maxChunkZ; z++) {
-                if (!AsyncIslandPlayerTicks.ownsPacketInteractionTarget(
-                        player, ChunkPos.pack(x, z))
-                        || !RegionScheduler.ownsCurrentContext(
-                        player.level(), column.set(x << 4, 0, z << 4))) return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean finitePosition(Vec3 position) {
-        return position != null && Double.isFinite(position.x)
-                && Double.isFinite(position.y) && Double.isFinite(position.z)
-                && Math.abs(position.x) <= 3.0E7 && Math.abs(position.y) <= 2.0E7
-                && Math.abs(position.z) <= 3.0E7;
-    }
-
-    private static boolean boundedMovement(double value) {
-        return Double.isFinite(value) && Math.abs(value) <= MAX_LOCAL_MOVEMENT_SPAN;
-    }
-
-    private static boolean nativeSlowdown(double value) {
-        return Double.isFinite(value) && value >= 0.0 && value <= 1.0;
-    }
-
-    private static boolean finiteBox(AABB box) {
-        return Double.isFinite(box.minX) && Double.isFinite(box.minY)
-                && Double.isFinite(box.minZ) && Double.isFinite(box.maxX)
-                && Double.isFinite(box.maxY) && Double.isFinite(box.maxZ)
-                && box.minX <= box.maxX && box.minY <= box.maxY && box.minZ <= box.maxZ
-                && boundedMovement(box.maxX - box.minX)
-                && boundedMovement(box.maxY - box.minY)
-                && boundedMovement(box.maxZ - box.minZ);
-    }
-
-    /** Owner-only selection: neither use packet requires active use at entry. */
-    static boolean requiresGlobalUseProducer(Packet<?> packet, ServerPlayer player) {
-        return (packet instanceof ServerboundUseItemPacket
-                    || packet instanceof ServerboundUseItemOnPacket)
-                && AdvancementCaptureOwnership.requiresGlobalPlayerUseEnvelope(player);
     }
 
     /** Package-visible immutable audit surface for the two-way 26.2 pin. */

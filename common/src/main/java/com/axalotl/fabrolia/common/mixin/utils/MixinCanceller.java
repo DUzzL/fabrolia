@@ -6,7 +6,6 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
     private boolean LITHIUM = false;
     private boolean VMP = false;
     private boolean C2ME = false;
-    private boolean VANISH = false;
 
     @Override
     public boolean shouldCancel(List<String> targetClassNames, String mixinClassName) {
@@ -19,9 +18,6 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
         if (mixinClassName.contains("ishland.vmp") && !mixinClassName.contains("fabrolia")) {
             VMP = true;
         }
-        if (mixinClassName.equals("me.drex.vanish.mixin.VanishedServerPlayerMixin")) {
-            VANISH = true;
-        }
         // C2ME 0.4.2-alpha.0.41: this class contains no state and exactly one
         // injection handler.  Its @WrapOperation makes ServerLevel#getNextEntityId
         // call hasEntityWithId only when IWorld#getThread equals currentThread.
@@ -31,16 +27,6 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
         // Fabrolia wrapper; do not broaden this to the package or module.
         if (mixinClassName.equals(
                 "com.ishland.c2me.fixes.worldgen.threading_issues.mixin.threading.MixinServerWorld")) {
-            return true;
-        }
-        // VMP 0.2.0+beta.7.236: this stateless mixin only redirects checkDespawn's
-        // nearest-player query. Its bounded lookup falls back to players() and a
-        // direct NO_SPECTATORS.test, bypassing our live observer backend. Restore
-        // the native unbounded query, including native distance/tie semantics;
-        // ServerLevelNearestPlayerMixin wins over VMP's world lookup at 1200.
-        // Keep VMP's area maps, tracking, spawn density and rich alive query intact.
-        if (mixinClassName.equals(
-                "com.ishland.vmp.mixins.playerwatching.optimize_nearby_player_lookups.MixinMobEntity")) {
             return true;
         }
         // ai.task.launch — a genuine target conflict, NOT a crutch.
@@ -193,12 +179,6 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
                 || mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.vmp."
                 + "FabroliaVmpSpawnCandidateMixin")) {
             return !VMP;
-        }
-        // Wraps Vanish-merged methods on ServerPlayer, not a loadable mod class.
-        // With the provider absent neither required method exists.
-        if (mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.vanish."
-                + "VanishPlayerObserverCacheMixin")) {
-            return !VANISH;
         }
         return mixinClassName.endsWith("com.cupboard.mixin.ServerAddEntityMixin");
     }

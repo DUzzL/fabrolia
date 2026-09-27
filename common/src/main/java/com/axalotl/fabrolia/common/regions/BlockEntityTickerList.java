@@ -69,23 +69,14 @@ public final class BlockEntityTickerList extends AbstractList<TickingBlockEntity
         }
     }
 
-    /** A current wrapper is observed once; successors are advanced only after its body. */
-    interface Cursor {
-        boolean advance();
-        boolean hasCurrent();
-        TickingBlockEntity ticker();
-    }
-
     /** K-way merge with one reusable head per cell, not one allocation per wrapper.
      * Generic/foreign lists retain the historical missing-sequence MIN_VALUE rule.
      * Equal heads use the same PriorityQueue poll/reinsert discipline as before. */
-    static final class Merge implements Cursor {
+    static final class Merge {
         private Head[] heap;
         private int size;
         private final Map<TickingBlockEntity, Long> fallbackSequences;
         private Head current;
-        private TickingBlockEntity currentTicker;
-        private boolean tickerObserved;
 
         Merge(List<? extends List<TickingBlockEntity>> lists, Map<TickingBlockEntity, Long> fallbackSequences) {
             this.fallbackSequences = fallbackSequences;
@@ -100,30 +91,19 @@ public final class BlockEntityTickerList extends AbstractList<TickingBlockEntity
             }
         }
 
-        // Observe generic successor metadata only after the previous ticker body.
-        @Override public boolean advance() {
+        boolean advance() {
             if (current != null && ++current.index < current.list.size()) {
                 current.sequence = sequence(current);
                 offer(current);
             }
             current = poll();
-            currentTicker = null;
-            tickerObserved = false;
             return current != null;
         }
 
-        @Override public boolean hasCurrent() {
-            return current != null;
-        }
-
-        @Override public TickingBlockEntity ticker() {
-            if (!tickerObserved) {
-                currentTicker = current.indexed == null
-                        ? current.list.get(current.index)
-                        : current.indexed.tickers[current.index];
-                tickerObserved = true;
-            }
-            return currentTicker;
+        TickingBlockEntity ticker() {
+            return current.indexed == null
+                    ? current.list.get(current.index)
+                    : current.indexed.tickers[current.index];
         }
 
         private long sequence(Head head) {

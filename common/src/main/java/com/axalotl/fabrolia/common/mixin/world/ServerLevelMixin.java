@@ -3,7 +3,6 @@ package com.axalotl.fabrolia.common.mixin.world;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.parallelised.utils.FabroliaNavigationBatch;
-import com.axalotl.fabrolia.common.parallelised.utils.PlayerChunkIndex;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.api.utils.ConcurrentCollections;
 import com.axalotl.fabrolia.api.utils.SnapshotList;
@@ -45,12 +44,20 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.DistanceManager;
+import net.minecraft.util.profiling.Profiler;
+import net.minecraft.util.profiling.ProfilerFiller;
+import net.minecraft.world.TickRateManager;
 import com.axalotl.fabrolia.common.utils.SpawnFutureTaker;
 import com.axalotl.fabrolia.common.regions.FabroliaLocks;
 
@@ -89,8 +96,13 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     @Unique
     final Object fabrolia$blockEventLock = new Object();
     @Unique
-    private final com.axalotl.fabrolia.common.regions.IslandBlockEvents.Publications
-            fabrolia$blockEventPublications = new com.axalotl.fabrolia.common.regions.IslandBlockEvents.Publications();
+    private int fabrolia$lastBatchSize = 256;
+    @Unique
+    private int fabrolia$lastLiveSize = 256;
+    @Unique
+    private ArrayList<Entity> fabrolia$syncBuf;
+    @Unique
+    private ArrayList<Entity> fabrolia$liveBuf;
 
     protected ServerLevelMixin(WritableLevelData levelData, ResourceKey<Level> dimension, RegistryAccess registryAccess, Holder<DimensionType> dimensionTypeRegistration, boolean isClientSide, boolean isDebug, long biomeZoomSeed, int maxChainedNeighborUpdates) {
         super(levelData, dimension, registryAccess, dimensionTypeRegistration, isClientSide, isDebug, biomeZoomSeed, maxChainedNeighborUpdates);
@@ -133,16 +145,18 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                                                 long gameTime, int maxTicks,
                                                 java.util.function.BiConsumer<net.minecraft.core.BlockPos, T> ticker,
                                                 Operation<Void> original) {
-        RegionScheduler.runMainControlBody(this.getServer(), () -> {
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
             if (com.axalotl.fabrolia.common.regions.IslandScheduledTicks
                     .slotPartitionedAsync(
                             instance, this.getLevel(), gameTime, maxTicks, ticker)) {
                 return;
             }
-            // Master OFF is a real vanilla control: do not retain any Fabrolia
-            // cell frontier after the autonomous scheduler declined the slot.
-            RegionScheduler.runGlobalMainBody(this.getServer(),
-                    () -> original.call(instance, gameTime, maxTicks, ticker));
+            if (com.axalotl.fabrolia.common.regions.IslandScheduledTicks
+                    .tickPartitioned(
+                            instance, this.getLevel(), gameTime, maxTicks, ticker)) {
+                return;
+            }
+            original.call(instance, gameTime, maxTicks, ticker);
         });
     }
 
@@ -207,6 +221,139 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private static <T extends Throwable> void fabrolia$throwPlayerTickFailure(
             Throwable failure) throws T {
         throw (T) failure;
+    }
+
+    @Unique
+    private static CompletableFuture<Void> fabrolia$beginFlatFanout(
+            ExecutorService executor, int batchCount,
+            FabroliaFlatFailureGate gate, FabroliaFlatBatch body) {
+        if (batchCount <= 0) return CompletableFuture.completedFuture(null);
+        FabroliaFlatFanout fanout;
+        try {
+            fanout = new FabroliaFlatFanout(batchCount, gate, body);
+        } catch (Throwable constructionFailure) {
+            Throwable winner = gate.publish(constructionFailure);
+            CompletableFuture<Void> failed = new CompletableFuture<>();
+            failed.completeExceptionally(winner);
+            return failed;
+        }
+        try {
+            for (FabroliaFlatTask task : fanout.tasks) {
+                gate.runNext(() -> executor.execute(task));
+            }
+        } catch (Throwable submissionFailure) {
+            gate.publish(submissionFailure);
+        } finally {
+            fanout.finishSubmission();
+        }
+        return fanout.completion;
+    }
+
+    @Unique
+    private static void fabrolia$recordFlatFailure(FabroliaFlatFailureGate failure, Throwable thrown) {
+        failure.publish(thrown);
+    }
+
+    @Unique
+    private static void fabrolia$recordFlatCleanupFailure(FabroliaFlatFailureGate failure, Throwable cleanup) {
+        failure.recordCleanup(cleanup);
+    }
+
+    @Unique
+    private static CompletableFuture<Void> fabrolia$observeFlatFuture(CompletableFuture<Void> future,
+                                                                      FabroliaFlatFailureGate failure) {
+        if (future == null) return null;
+        return future.handle((unused, thrown) -> {
+            if (thrown != null) fabrolia$recordFlatFutureFailure(failure, thrown);
+            return null;
+        });
+    }
+
+    @Unique
+    private void fabrolia$awaitAcceptedFlatWork(CompletableFuture<?> first, CompletableFuture<?> second,
+                                                FabroliaFlatFailureGate failure) {
+        fabrolia$awaitFlatTerminal(first, failure);
+        if (second != null && second != first) {
+            fabrolia$awaitFlatTerminal(second, failure);
+        }
+        try {
+            RegionScheduler.throwWorkerFailureIfAny();
+        } catch (Throwable globalWinner) {
+            failure.publish(globalWinner);
+        }
+    }
+
+    @Unique
+    private void fabrolia$awaitFlatTerminal(CompletableFuture<?> future, FabroliaFlatFailureGate failure) {
+        if (future == null) return;
+        MinecraftServer server = this.getServer();
+        if (server != null && server.isSameThread()) {
+            server.blockingCount++;
+            try {
+                while (!future.isDone()) {
+                    boolean progressed = false;
+                    if (failure.failureOrNull() == null) {
+                        try {
+                            for (ServerLevel level : server.getAllLevels()) {
+                                if (failure.failureOrNull() != null) break;
+                                if (RegionScheduler.callSuccessBooleanIfHealthy(
+                                        () -> level.getChunkSource().mainThreadProcessor.pollTask())) {
+                                    progressed = true;
+                                }
+                            }
+                        } catch (Throwable progressFailure) {
+                            failure.publish(progressFailure);
+                        }
+                    }
+                    if (!progressed) {
+                        LockSupport.parkNanos("Fabrolia ServerLevel flat fail-stop await", 100_000L);
+                    }
+                }
+            } finally {
+                server.blockingCount--;
+            }
+        } else {
+            while (!future.isDone()) {
+                LockSupport.parkNanos("Fabrolia ServerLevel flat fail-stop await off-main", 100_000L);
+            }
+        }
+        try {
+            future.join();
+        } catch (Throwable wrapped) {
+            fabrolia$recordFlatFutureFailure(failure, wrapped);
+        }
+    }
+
+    @Unique
+    private static void fabrolia$recordFlatFutureFailure(FabroliaFlatFailureGate failure, Throwable transported) {
+        try {
+            RegionScheduler.throwWorkerFailureIfAny();
+        } catch (Throwable globalWinner) {
+            failure.publish(globalWinner);
+            return;
+        }
+        failure.publish(fabrolia$unwrapFlatFailure(transported));
+    }
+
+    @Unique
+    private static Throwable fabrolia$unwrapFlatFailure(Throwable failure) {
+        Throwable exact = failure;
+        while ((exact instanceof CompletionException || exact instanceof ExecutionException)
+                && exact.getCause() != null) {
+            exact = exact.getCause();
+        }
+        return exact;
+    }
+
+    @Unique
+    private static void fabrolia$throwFlatFailure(FabroliaFlatFailureGate failure) {
+        Throwable thrown = failure.failureOrNull();
+        if (thrown != null) ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(thrown);
+        try {
+            RegionScheduler.throwWorkerFailureIfAny();
+        } catch (Throwable globalWinner) {
+            ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure.publish(globalWinner));
+        }
     }
 
 
@@ -317,7 +464,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private void fabrolia$admitEnvironmentTickCacheInvalidation(
             net.minecraft.world.attribute.EnvironmentAttributeSystem instance,
             Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -328,7 +475,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private void fabrolia$admitWorldBorderTick(
             net.minecraft.world.level.border.WorldBorder instance,
             Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -338,34 +485,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             allow = 1)
     private void fabrolia$admitWeatherTick(
             ServerLevel instance, Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
-    }
-
-    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
-            at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/players/SleepStatus;areEnoughSleeping(I)Z"),
-            require = 1, allow = 1)
-    private boolean fabrolia$admitSleepingCount(
-            net.minecraft.server.players.SleepStatus instance, int percentage,
-            Operation<Boolean> original) {
-        boolean[] result = new boolean[1];
-        RegionScheduler.runGlobalMainBody(this.getServer(),
-                () -> result[0] = original.call(instance, percentage));
-        return result[0];
-    }
-
-    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
-            at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/players/SleepStatus;"
-                            + "areEnoughDeepSleeping(ILjava/util/List;)Z"),
-            require = 1, allow = 1)
-    private boolean fabrolia$admitDeepSleepingPlayers(
-            net.minecraft.server.players.SleepStatus instance, int percentage,
-            List<ServerPlayer> players, Operation<Boolean> original) {
-        boolean[] result = new boolean[1];
-        RegionScheduler.runGlobalMainBody(this.getServer(),
-                () -> result[0] = original.call(instance, percentage, players));
-        return result[0];
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -378,10 +498,8 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private boolean fabrolia$admitSleepTimeAdvance(
             net.minecraft.world.clock.ServerClockManager instance,
             Holder<?> clock, ResourceKey<?> marker, Operation<Boolean> original) {
-        boolean[] result = new boolean[1];
-        RegionScheduler.runGlobalMainBody(this.getServer(),
-                () -> result[0] = original.call(instance, clock, marker));
-        return result[0];
+        return RegionScheduler.callSuccessBooleanIfHealthy(
+                () -> original.call(instance, clock, marker));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -391,7 +509,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             allow = 1)
     private void fabrolia$admitWakePlayers(
             ServerLevel instance, Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -401,7 +519,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             allow = 1)
     private void fabrolia$admitWeatherReset(
             ServerLevel instance, Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -411,7 +529,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             allow = 1)
     private void fabrolia$admitSkyBrightnessUpdate(
             ServerLevel instance, Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -421,14 +539,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             allow = 1)
     private void fabrolia$admitLevelTimeTick(
             ServerLevel instance, Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(), () -> {
-            original.call(instance);
-            RegionScheduler.throwWorkerFailureIfAny();
-            // tickTime advances W and runs scheduled functions. Publish the
-            // resulting player census before releasing this same writer frame;
-            // a HEAD snapshot becomes stale as soon as native time advances.
-            PlayerChunkIndex.rebuild(instance);
-        });
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -453,7 +564,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private void fabrolia$admitChunkSourceTick(
             ServerChunkCache instance, java.util.function.BooleanSupplier haveTime,
             boolean tickChunks, Operation<Void> original) {
-        RegionScheduler.runMainControlBody(this.getServer(),
+        RegionScheduler.runSuccessBodyIfHealthy(
                 () -> original.call(instance, haveTime, tickChunks));
     }
 
@@ -490,7 +601,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             allow = 1)
     private void fabrolia$admitEnderDragonFightTick(
             EnderDragonFight instance, Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -500,7 +611,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             allow = 1)
     private void fabrolia$admitBlockEntityTick(
             ServerLevel instance, Operation<Void> original) {
-        RegionScheduler.runMainControlBody(this.getServer(), () -> original.call(instance));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -512,7 +623,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private void fabrolia$admitEntityManagerTick(
             net.minecraft.world.level.entity.PersistentEntitySectionManager<?> instance,
             Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call(instance));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -525,7 +636,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private void fabrolia$admitNeighborDebugListener(
             net.minecraft.world.level.redstone.CollectingNeighborUpdater instance,
             java.util.function.Consumer<?> listener, Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(),
+        RegionScheduler.runSuccessBodyIfHealthy(
                 () -> original.call(instance, listener));
     }
 
@@ -539,7 +650,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             net.minecraft.util.debug.LevelDebugSynchronizers instance,
             net.minecraft.util.debug.ServerDebugSubscribers subscribers,
             Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.getServer(),
+        RegionScheduler.runSuccessBodyIfHealthy(
                 () -> original.call(instance, subscribers));
     }
 
@@ -585,6 +696,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             allow = 1)
     private void overwriteEntityTicking(EntityTickList entityTickList, Consumer<Entity> consumer,
                                         Operation<Void> originalEntityList) {
+        ProfilerFiller profiler = Profiler.get();
         ServerLevel self = this.getLevel();
         long batchStart = System.nanoTime();
 
@@ -635,10 +747,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                     regionAll = CompletableFuture.allOf(regionAll, regionBlockTicks);
                 }
             }
-            // Parked island coordinators can occupy every worker while this
-            // remainder/chunk barrier is pending. Service their exact routed
-            // receipts here; the arbitrary server task queue must stay closed.
-            ParallelProcessor.pumpUntilDone(regionAll, true);
+            ParallelProcessor.pumpUntilDone(regionAll);
             // Ordinary region producers are now quiescent. Drain the established
             // main-owned entity lane before acquiring the exact-turn pool fence.
             RegionScheduler.drainMainSyncTicks();
@@ -700,7 +809,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 // A2 async islands: island-domain deferrals were already replayed
                 // inside each unit (coordinator, post-barrier); this drains only
                 // the GLOBAL timeline's queue — identical to pre-A2 in sync mode.
-                rsDefer.drainDeferredCrossRegion();
+                RegionScheduler.runSuccessBodyIfHealthy(rsDefer::drainDeferredCrossRegion);
                 // A8: same-tick completion window for routed commands — units
                 // that reached their command quickly get their result THIS
                 // tick (bounded fence attempt; head batch next tick is the
@@ -720,10 +829,198 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             return;
         }
 
-        // Regions off retains the actual vanilla list, gates, consumer and order.
-        // Acquire before entering any entity predicate or mutation, never from it.
-        RegionScheduler.runGlobalMainBody(self.getServer(),
-                () -> originalEntityList.call(entityTickList, consumer));
+        // Regions off: fail-stop flat fan-out over the vanilla entity list.
+        FabroliaFlatFailureGate flatFailure = new FabroliaFlatFailureGate();
+        CompletableFuture<Void> spawnFuture = ((Object) this.chunkSource) instanceof SpawnFutureTaker taker
+                ? taker.fabrolia$takeSpawnFuture() : null;
+        CompletableFuture<Void> observedSpawn = fabrolia$observeFlatFuture(spawnFuture, flatFailure);
+        DistanceManager distanceManager = this.chunkSource.chunkMap.getDistanceManager();
+        TickRateManager tickRateManager = this.tickRateManager();
+        ArrayList<Entity> live = fabrolia$liveBuf;
+        if (live == null) {
+            live = new ArrayList<>(fabrolia$lastLiveSize);
+            fabrolia$liveBuf = live;
+        } else {
+            live.clear();
+        }
+        ArrayList<Entity> liveList = live;
+        try {
+            flatFailure.runNext(() -> this.entityTickList.forEach(e -> flatFailure.runNext(() -> {
+                if (e != null && !e.isRemoved() && !tickRateManager.isEntityFrozen(e)) {
+                    liveList.add(e);
+                }
+            })));
+        } catch (Throwable thrown) {
+            fabrolia$recordFlatFailure(flatFailure, thrown);
+        }
+
+        int liveCount = live.size();
+        CompletableFuture<Void> despawnWork = null;
+        if (flatFailure.failureOrNull() == null && FabroliaConfig.enableFabroliaDespawn
+                && !FabroliaConfig.disabled && liveCount > 0) {
+            ExecutorService despawnExecutor = ParallelProcessor.executor;
+            int despawnPool = Math.max(1, ParallelProcessor.getPoolSize());
+            int despawnChunkSize = Math.max(16, (liveCount + despawnPool - 1) / despawnPool);
+            int despawnChunks = (liveCount + despawnChunkSize - 1) / despawnChunkSize;
+            despawnWork = fabrolia$beginFlatFanout(despawnExecutor, despawnChunks, flatFailure,
+                    (failureGate, batchIndex) -> {
+                        int from = batchIndex * despawnChunkSize;
+                        int to = Math.min(from + despawnChunkSize, liveCount);
+                        for (int j = from; j < to; j++) {
+                            int entityIndex = j;
+                            failureGate.runNext(() -> {
+                                Entity ent = liveList.get(entityIndex);
+                                if (!ent.isRemoved()
+                                        && !((ParallelProcessor.TickGuard) ent).fabrolia$tickLease().isArrivalPending()) {
+                                    ent.checkDespawn();
+                                }
+                            });
+                        }
+                    });
+            fabrolia$awaitAcceptedFlatWork(despawnWork, null, flatFailure);
+        } else if (flatFailure.failureOrNull() == null) {
+            boolean pushed = false;
+            try {
+                flatFailure.runNext(() -> profiler.push("checkDespawn"));
+                pushed = true;
+            } catch (Throwable thrown) {
+                fabrolia$recordFlatFailure(flatFailure, thrown);
+            }
+            if (pushed) {
+                try {
+                    for (int i = 0; i < liveCount; i++) {
+                        int entityIndex = i;
+                        try {
+                            flatFailure.runNext(() -> {
+                                Entity ent = liveList.get(entityIndex);
+                                if (!ent.isRemoved()
+                                        && !((ParallelProcessor.TickGuard) ent).fabrolia$tickLease().isArrivalPending()) {
+                                    ent.checkDespawn();
+                                }
+                            });
+                        } catch (Throwable thrown) {
+                            fabrolia$recordFlatFailure(flatFailure, thrown);
+                            break;
+                        }
+                    }
+                } finally {
+                    try {
+                        profiler.pop();
+                    } catch (Throwable cleanup) {
+                        fabrolia$recordFlatCleanupFailure(flatFailure, cleanup);
+                    }
+                }
+            }
+        }
+
+        fabrolia$awaitAcceptedFlatWork(null, null, flatFailure);
+        if (flatFailure.failureOrNull() != null) {
+            fabrolia$awaitAcceptedFlatWork(observedSpawn, null, flatFailure);
+            fabrolia$throwFlatFailure(flatFailure);
+        }
+
+        ArrayList<Entity> pendingFabrolia = new ArrayList<>(fabrolia$lastBatchSize);
+        ArrayList<Entity> syncList = fabrolia$syncBuf;
+        if (syncList == null) {
+            syncList = new ArrayList<>(64);
+            fabrolia$syncBuf = syncList;
+        } else {
+            syncList.clear();
+        }
+        ArrayList<Entity> syncDeferred = syncList;
+        for (int i = 0; i < liveCount; i++) {
+            int entityIndex = i;
+            try {
+                flatFailure.runNext(() -> {
+                    Entity entity = liveList.get(entityIndex);
+                    if (entity.isRemoved() || tickRateManager.isEntityFrozen(entity)) return;
+                    if (!(entity instanceof ServerPlayer)
+                            && !distanceManager.inEntityTickingRange(entity.chunkPosition().pack())) {
+                        return;
+                    }
+                    Entity vehicle = entity.getVehicle();
+                    if (vehicle != null) {
+                        if (vehicle instanceof ParallelProcessor.TickGuard vg && vg.fabrolia$isPortalPending()) {
+                            return;
+                        }
+                        if (!vehicle.isRemoved() && vehicle.hasPassenger(entity)) {
+                            return;
+                        }
+                        entity.stopRiding();
+                    }
+                    if (!FabroliaConfig.disabled && !ParallelProcessor.shouldTickSynchronously(entity)) {
+                        pendingFabrolia.add(entity);
+                    } else {
+                        syncDeferred.add(entity);
+                    }
+                });
+            } catch (Throwable thrown) {
+                fabrolia$recordFlatFailure(flatFailure, thrown);
+                break;
+            }
+        }
+        if (flatFailure.failureOrNull() != null) {
+            fabrolia$awaitAcceptedFlatWork(observedSpawn, null, flatFailure);
+            fabrolia$throwFlatFailure(flatFailure);
+        }
+
+        int pendingCount = pendingFabrolia.size();
+        CompletableFuture<Void> entityWork = null;
+        if (pendingCount > 0) {
+            ExecutorService entityExecutor = ParallelProcessor.executor;
+            int pool = Math.max(1, ParallelProcessor.getPoolSize());
+            int chunkSize = Math.max(8, (pendingCount + pool - 1) / pool);
+            int chunks = (pendingCount + chunkSize - 1) / chunkSize;
+            ArrayList<Entity> pending = pendingFabrolia;
+            entityWork = fabrolia$beginFlatFanout(entityExecutor, chunks, flatFailure,
+                    (failureGate, batchIndex) -> {
+                        int from = batchIndex * chunkSize;
+                        int to = Math.min(from + chunkSize, pendingCount);
+                        for (int j = from; j < to; j++) {
+                            int entityIndex = j;
+                            failureGate.runNext(
+                                    () -> ParallelProcessor.tickEntity(self, pending.get(entityIndex), true));
+                        }
+                    });
+        }
+
+        int syncCount = syncDeferred.size();
+        if (syncCount > 0) {
+            boolean pushed = false;
+            try {
+                flatFailure.runNext(() -> profiler.push("tickSync"));
+                pushed = true;
+            } catch (Throwable thrown) {
+                fabrolia$recordFlatFailure(flatFailure, thrown);
+            }
+            if (pushed) {
+                try {
+                    for (int i = 0; i < syncCount; i++) {
+                        int entityIndex = i;
+                        try {
+                            flatFailure.runNext(
+                                    () -> ParallelProcessor.tickEntity(self, syncDeferred.get(entityIndex), false));
+                        } catch (Throwable thrown) {
+                            fabrolia$recordFlatFailure(flatFailure, thrown);
+                            break;
+                        }
+                    }
+                } finally {
+                    try {
+                        profiler.pop();
+                    } catch (Throwable cleanup) {
+                        fabrolia$recordFlatCleanupFailure(flatFailure, cleanup);
+                    }
+                }
+            }
+        }
+
+        fabrolia$awaitAcceptedFlatWork(entityWork, observedSpawn, flatFailure);
+        fabrolia$throwFlatFailure(flatFailure);
+        RegionScheduler.commitSuccessIfHealthy(() -> {
+            fabrolia$lastLiveSize = Math.max(64, liveCount + (liveCount >> 2));
+            fabrolia$lastBatchSize = Math.max(64, pendingCount + (pendingCount >> 2));
+        });
         RegionScheduler.runSuccessBodyIfHealthy(
                 () -> ParallelProcessor.onEntityTickBatchEnd(batchStart));
     }
@@ -740,11 +1037,6 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         return blockEvents;
     }
 
-    @Override
-    public com.axalotl.fabrolia.common.regions.IslandBlockEvents.Publications fabrolia$blockEventPublications() {
-        return fabrolia$blockEventPublications;
-    }
-
     /**
      * A2 increment 3 — with async islands live, the block-event slot processes
      * only GLOBAL-domain events here; island-owned events are stashed (in
@@ -754,12 +1046,10 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
      */
     @WrapMethod(method = "runBlockEvents")
     private void fabrolia$islandBlockEvents(Operation<Void> original) {
-        RegionScheduler.runMainControlBody(this.getServer(), () -> {
-            if (!com.axalotl.fabrolia.common.regions.IslandBlockEvents
-                    .runPartitioned(this.getLevel())) {
-                RegionScheduler.runGlobalMainBody(this.getServer(), () -> original.call());
-            }
-        });
+        if (!com.axalotl.fabrolia.common.regions.IslandBlockEvents
+                .runPartitioned(this.getLevel())) {
+            RegionScheduler.runSuccessBodyIfHealthy(() -> original.call());
+        }
     }
 
     /**
@@ -842,24 +1132,15 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         if (com.axalotl.fabrolia.common.regions.IslandBlockEvents.captureLocal((ServerLevel) (Object) this, (BlockEventData) object)) {
             return true;
         }
-        return com.axalotl.fabrolia.common.regions.IslandBlockEvents.publishShared(
-                (ServerLevel) (Object) this, (BlockEventData) object);
+        synchronized (fabrolia$blockEventLock) {
+            return set.add((BlockEventData) object);
+        }
     }
 
     @Redirect(method = "clearBlockEvents", at = @At(value = "INVOKE", target = "Lit/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet;removeIf(Ljava/util/function/Predicate;)Z", remap = false))
     private boolean overwriteQueueRemoveIf(ObjectLinkedOpenHashSet<BlockEventData> set, Predicate<BlockEventData> filter) {
         synchronized (fabrolia$blockEventLock) {
-            boolean changed = false;
-            var iterator = set.iterator();
-            while (iterator.hasNext()) {
-                BlockEventData event = iterator.next();
-                if (filter.test(event)) {
-                    iterator.remove();
-                    fabrolia$blockEventPublications.remove(event);
-                    changed = true;
-                }
-            }
-            return changed;
+            return set.removeIf(filter);
         }
     }
 
@@ -876,18 +1157,14 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             // The runBlockEvents loop only calls this after its own isEmpty() check; main is the
             // sole drainer (workers only add), so the set is non-empty here. Guard defensively.
             if (set.isEmpty()) return null;
-            BlockEventData event = set.removeFirst();
-            fabrolia$blockEventPublications.remove(event);
-            return event;
+            return set.removeFirst();
         }
     }
 
     @Redirect(method = "runBlockEvents", at = @At(value = "INVOKE", target = "Lit/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet;addAll(Ljava/util/Collection;)Z", remap = false))
     private boolean overwriteQueueAddAll(ObjectLinkedOpenHashSet<BlockEventData> set, Collection<? extends BlockEventData> c) {
         synchronized (fabrolia$blockEventLock) {
-            boolean changed = false;
-            for (BlockEventData event : c) changed |= fabrolia$blockEventPublications.add(set, event);
-            return changed;
+            return set.addAll(c);
         }
     }
 
@@ -997,6 +1274,188 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             }
             if (failure != null) {
                 ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+            }
+        }
+    }
+
+    @Unique
+    @FunctionalInterface
+    interface FabroliaFlatBatch {
+        void run(FabroliaFlatFailureGate gate, int batchIndex);
+    }
+
+    @Unique
+    static final class FabroliaFlatFailureGate {
+        private static final int MAX_SUPPRESSED = 8;
+        private final ArrayList<FabroliaFlatTask> handles = new ArrayList<>();
+        private Throwable failure;
+        private int suppressedCleanup;
+
+        void runNext(Runnable body) {
+            if (body == null) throw new NullPointerException("body");
+            try {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    synchronized (this) {
+                        if (failure != null) {
+                            ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+                        }
+                    }
+                    body.run();
+                });
+            } catch (Throwable thrown) {
+                ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(publish(thrown));
+            }
+        }
+
+        synchronized void register(FabroliaFlatTask[] tasks) {
+            for (FabroliaFlatTask task : tasks) handles.add(task);
+            if (failure != null) cancelQueuedLocked();
+        }
+
+        synchronized Throwable publish(Throwable candidate) {
+            return publishLocked(candidate);
+        }
+
+        private Throwable publishLocked(Throwable candidate) {
+            if (candidate == null) candidate = new NullPointerException("flat entity tick failure");
+            if (failure == null) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(candidate);
+                cancelQueuedLocked();
+            }
+            return failure;
+        }
+
+        private void cancelQueuedLocked() {
+            for (FabroliaFlatTask task : handles) {
+                try {
+                    task.cancelQueuedBeforeStart();
+                } catch (Throwable cleanup) {
+                    mergeCleanupLocked(cleanup);
+                }
+            }
+        }
+
+        synchronized void recordCleanup(Throwable cleanup) {
+            if (failure == null) {
+                publishLocked(cleanup);
+            } else {
+                mergeCleanupLocked(cleanup);
+            }
+        }
+
+        private void mergeCleanupLocked(Throwable cleanup) {
+            if (cleanup != null && cleanup != failure && suppressedCleanup < MAX_SUPPRESSED) {
+                try {
+                    failure.addSuppressed(cleanup);
+                    suppressedCleanup++;
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        synchronized Throwable failureOrNull() {
+            return failure;
+        }
+    }
+
+    @Unique
+    static final class FabroliaFlatFanout {
+        private final FabroliaFlatFailureGate gate;
+        private final FabroliaFlatTask[] tasks;
+        private final AtomicInteger pending;
+        private final CompletableFuture<Void> completion = new CompletableFuture<>();
+
+        private FabroliaFlatFanout(int batchCount, FabroliaFlatFailureGate gate, FabroliaFlatBatch body) {
+            this.gate = gate;
+            this.tasks = new FabroliaFlatTask[batchCount];
+            this.pending = new AtomicInteger(batchCount + 1);
+            for (int i = 0; i < batchCount; i++) {
+                tasks[i] = new FabroliaFlatTask(this, gate, body, i);
+            }
+            gate.register(tasks);
+        }
+
+        private void finishSubmission() {
+            finishObligation();
+        }
+
+        private void finishTask() {
+            finishObligation();
+        }
+
+        private void finishObligation() {
+            int remaining = pending.decrementAndGet();
+            if (remaining < 0) {
+                Throwable duplicate = gate.publish(
+                        new IllegalStateException("flat entity fan-out obligation completed more than once"));
+                ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(duplicate);
+            }
+            if (remaining == 0) {
+                Throwable terminalFailure = gate.failureOrNull();
+                if (terminalFailure == null) {
+                    try {
+                        RegionScheduler.commitSuccessIfHealthy(() -> {
+                            if (!completion.complete(null)) {
+                                throw new IllegalStateException("flat entity fan-out completed more than once");
+                            }
+                        });
+                        return;
+                    } catch (Throwable completionFailure) {
+                        terminalFailure = gate.publish(completionFailure);
+                    }
+                }
+                completion.completeExceptionally(terminalFailure);
+            }
+        }
+    }
+
+    @Unique
+    static final class FabroliaFlatTask implements Runnable {
+        private static final int QUEUED = 0;
+        private static final int RUNNING = 1;
+        private static final int TERMINAL = 2;
+        private static final int CANCELLED = 3;
+        private final FabroliaFlatFanout owner;
+        private final FabroliaFlatFailureGate gate;
+        private final FabroliaFlatBatch body;
+        private final int batchIndex;
+        private final AtomicInteger state = new AtomicInteger(QUEUED);
+
+        private FabroliaFlatTask(FabroliaFlatFanout owner, FabroliaFlatFailureGate gate,
+                                 FabroliaFlatBatch body, int batchIndex) {
+            this.owner = owner;
+            this.gate = gate;
+            this.body = body;
+            this.batchIndex = batchIndex;
+        }
+
+        @Override
+        public void run() {
+            if (!state.compareAndSet(QUEUED, RUNNING)) {
+                if (state.get() != CANCELLED) {
+                    Throwable duplicate = gate.publish(
+                            new IllegalStateException("flat entity fan-out task executed more than once"));
+                    ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(duplicate);
+                }
+                return;
+            }
+            Throwable failure = null;
+            try {
+                gate.runNext(() -> body.run(gate, batchIndex));
+            } catch (Throwable thrown) {
+                failure = gate.publish(thrown);
+            } finally {
+                state.set(TERMINAL);
+                owner.finishTask();
+            }
+            if (failure != null) {
+                ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+            }
+        }
+
+        private void cancelQueuedBeforeStart() {
+            if (state.compareAndSet(QUEUED, CANCELLED)) {
+                owner.finishTask();
             }
         }
     }

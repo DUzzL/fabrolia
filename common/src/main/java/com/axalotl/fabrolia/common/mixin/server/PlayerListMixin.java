@@ -193,8 +193,7 @@ public abstract class PlayerListMixin {
     @WrapMethod(method = "remove(Lnet/minecraft/server/level/ServerPlayer;)V")
     private void fabrolia$onePlayerRemoval(
             ServerPlayer player, Operation<Void> original) {
-        if (!com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .isPhysicalServerThread(this.server)) {
+        if (!this.server.isSameThread()) {
             if (com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                     .inWorkerPlayerTick()) {
                 // Do not turn a lifecycle mutation reached from the experimental body
@@ -410,14 +409,6 @@ public abstract class PlayerListMixin {
 
     @WrapMethod(method = "save(Lnet/minecraft/server/level/ServerPlayer;)V")
     private void fabrolia$ownerSafePlayerSave(ServerPlayer player, Operation<Void> original) {
-        // Native saveEnderPearls observes entities in arbitrary levels. Select
-        // the real global operation fence before reading the player save frame.
-        RegionScheduler.runGlobalMainBody(this.server,
-                () -> fabrolia$saveOwnedPlayer(player, original));
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    private void fabrolia$saveOwnedPlayer(ServerPlayer player, Operation<Void> original) {
         // PlayerList.remove saves before removing the current map entry.  A
         // second remove sees null; a late old-session remove sees the new
         // ServerPlayer.  In both cases writing the stale object's now-empty
@@ -433,8 +424,7 @@ public abstract class PlayerListMixin {
                 IslandRegistry.PIsland owner =
                         rs.islandOwnerOfChunk(player.chunkPosition().pack());
                 if (owner != null) {
-                    boolean release = com.axalotl.fabrolia.common.regions.IslandCommands
-                            .mainClaimScoped(owner);
+                    com.axalotl.fabrolia.common.regions.IslandCommands.mainClaim(owner);
                     Throwable failure = null;
                     try {
                         // The claim wait can outlive this session.  Revalidate at
@@ -449,8 +439,7 @@ public abstract class PlayerListMixin {
                         failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
                     }
                     try {
-                        if (release) com.axalotl.fabrolia.common.regions.IslandCommands
-                                .mainRelease(owner);
+                        com.axalotl.fabrolia.common.regions.IslandCommands.mainRelease(owner);
                     } catch (Throwable cleanup) {
                         failure = fabrolia$publishMergedFailure(failure, cleanup);
                     }

@@ -3,7 +3,6 @@ package com.axalotl.fabrolia.common.mixin.network;
 import com.axalotl.fabrolia.common.regions.FabroliaConnectionEventLoop;
 import com.axalotl.fabrolia.common.regions.FabroliaChunkForgetPublisher;
 import com.axalotl.fabrolia.common.regions.FabroliaFullChunkPublisher;
-import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import net.minecraft.network.Connection;
@@ -74,11 +73,6 @@ public abstract class ServerCommonPacketListenerPlayerTickFlushMixin
                     target = "Lnet/minecraft/server/MinecraftServer;isSameThread()Z"),
             require = 1)
     private boolean fabrolia$preserveSuspendedFlush(boolean original) {
-        // Selected worker roots gain logical gameplay identity, not Main's
-        // wall-tick flush cadence. Their island-clock output must remain visible.
-        if (RegionScheduler.exclusiveGameplayWorkerOrNull(server) == Thread.currentThread()) {
-            return false;
-        }
         return original || RegionalPlayerEntityTicksV2.inWorkerPlayerTick();
     }
 }

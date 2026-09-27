@@ -5,6 +5,7 @@ import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.network.protocol.PacketType;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
@@ -158,6 +159,30 @@ public final class AsyncIslandPacketContinuations {
                     && owner.state.session.view().phase()
                     != IslandPlayerTurnSession.Phase.DISCONNECTED;
         }
+    }
+
+    /**
+     * Routes a player-owned completion through the exact routed-mutation lane of
+     * the captured player.
+     *
+     * @return {@code true} when A5 owns the completion, including a stale token;
+     *         {@code false} returns the body to the original vanilla execution path.
+     */
+    public static boolean enqueuePlayer(ContinuationOwner owner, String operation,
+                                        Runnable continuation) {
+        Objects.requireNonNull(continuation, "continuation");
+        if (owner == null) return false;
+        if (!isCurrent(owner, owner.listener)) return true;
+        if (disconnected(owner)) return true;
+        if (!venueActive(owner)) return false;
+        boolean accepted = AsyncIslandPlayerTicks.enqueueRoutedMutation(
+                owner.player, operation, (runtime, region, island) -> {
+                    if (isCurrent(owner, owner.listener) && !disconnected(owner)) {
+                        continuation.run();
+                    }
+                });
+        if (accepted) return true;
+        return rejectedPublication(owner, "player");
     }
 
     /**
@@ -487,7 +512,6 @@ public final class AsyncIslandPacketContinuations {
         static final int DEFERRED = 2;
         static final int QUEUED = 3;
         static final int COMPLETE = 4;
-        static final int CANCELLED = 5;
 
         private final AtomicInteger phase = new AtomicInteger(NEW);
 
@@ -521,16 +545,6 @@ public final class AsyncIslandPacketContinuations {
             }
         }
 
-        void cancelQueued() {
-            int observed = phase.get();
-            if (observed == CANCELLED) return;
-            if ((observed != NEW && observed != QUEUED)
-                    || !phase.compareAndSet(observed, CANCELLED)) {
-                throw new IllegalStateException(
-                        "A5 Main command cancellation crossed body entry");
-            }
-        }
-
         boolean running() {
             return phase.get() == RUNNING;
         }
@@ -545,8 +559,7 @@ public final class AsyncIslandPacketContinuations {
     }
 
     /** One exact Main controller for the marker published at tryHandleChat. */
-    private static final class MainCommandTask
-            implements Runnable, RegionTaskFanIn.CancellableQueueEntry {
+    private static final class MainCommandTask implements Runnable {
         private final ContinuationOwner owner;
         private final MainCommandContinuationPacket packet;
         private final MinecraftServer server;
@@ -585,12 +598,8 @@ public final class AsyncIslandPacketContinuations {
 
         private void scheduleDeferred() {
             baton.reserveDeferredSchedule();
-            RegionScheduler.scheduleTrackedMainControlTask(server, this);
-        }
-
-        @Override
-        public void cancelQueuedBeforeStart() {
-            baton.cancelQueued();
+            server.schedule(new TickTask(server.getTickCount(),
+                    () -> RegionScheduler.runSuccessBodyIfHealthy(this)));
         }
 
         private void markBodyEntered() {

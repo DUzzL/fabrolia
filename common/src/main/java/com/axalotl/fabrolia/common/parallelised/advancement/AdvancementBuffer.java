@@ -10,12 +10,14 @@ import net.minecraft.advancements.predicates.entity.EntityPredicate;
 import net.minecraft.advancements.triggers.SimpleCriterionTrigger;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.PlayerAdvancements;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.storage.loot.LootContext;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Map;
@@ -26,10 +28,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
 /**
- * Deferred award harness for {@link SimpleCriterionTrigger}. Both criterion conditions
- * are resolved in the source operation's exclusive execution venue, before its live
- * arguments or player state can change. Only successful criterion keys survive the
- * trigger call; awards remain at the surrounding monitor-free drain.
+ * Deferred award harness for {@link SimpleCriterionTrigger}. The per-trigger matcher is
+ * resolved at the trigger call under the player's advancements monitor; the retained
+ * instances, their {@code player:} predicate and the awards are evaluated at the
+ * surrounding monitor-free drain against the {@link LootContext} captured at fire time.
  *
  * <p>26.2 model change: vanilla moved the listener-set off the trigger (no more
  * {@code SimpleCriterionTrigger.players: Map<PlayerAdvancements, Set<Listener>>}) onto each
@@ -52,10 +54,8 @@ import java.util.function.Predicate;
  *       lane. Main triggers outside a frame retain their own drain queue.</li>
  * </ul>
  *
- * <p>Exact target/dependency ownership must already exist before the source operation
- * enters. This buffer asserts that contract; it cannot transport an entered callback
- * or acquire a global fence while its caller holds arbitrary monitors and claims.
- * Neither live loot contexts nor player NBT caches cross trigger boundaries.
+ * <p>This buffer cannot transport an entered callback or acquire a global fence while
+ * its caller holds arbitrary monitors and claims.
  */
 public final class AdvancementBuffer {
 
@@ -95,9 +95,13 @@ public final class AdvancementBuffer {
     private static final AtomicBoolean MAIN_DRAIN_SCHEDULED = new AtomicBoolean();
 
 
-    /** One successful trigger invocation; no deferred predicates or live context. */
+    /** One trigger invocation: matcher-filtered instances plus the live context evaluated at drain. */
     private record Pending(ServerPlayer player,
-                           PlayerAdvancements.TriggerInstanceKey[] keys) {}
+                           LootContext lootContext,
+                           PlayerAdvancements.TriggerInstanceKey[] keys,
+                           Object[] instances) {}
+
+    private record Match(ServerPlayer player, PlayerAdvancements.TriggerInstanceKey key) {}
 
     private AdvancementBuffer() {}
 
@@ -127,22 +131,17 @@ public final class AdvancementBuffer {
                                     Predicate<?> predicate,
                                     CriterionTrigger<?> trigger) {
         if (FabroliaConfig.disabled) return false;
-        AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(player, trigger);
         if (com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .inWorkerPlayerTick() && AdvancementCaptureOwnership.ownsGlobalProducerEnvelope()) {
+                .inWorkerPlayerTick()) {
             // The exact player actor owns the logical server turn while physical
             // main is blocked at this EntityTickList ordinal and the region pool is
             // fenced. Deferring TICK/LEVITATION criteria until batch end would change
             // reward/callback/packet order, so keep the vanilla synchronous chain.
-            // The broad scoped check is deliberate: a reward from player A may
-            // synchronously trigger player B and vanilla keeps that nested chain
-            // inline in the same call stack.
             return false;
         }
         Frame f = FRAME.get();
         MinecraftServer s = ParallelProcessor.getServer();
-        boolean onMain = s == null || com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .isPhysicalServerThread(s);
+        boolean onMain = s == null || s.isSameThread();
         if (f.depth == 0) {
             if (onMain) {
                 // FRAMELESS MAIN (packet-driven triggers: joins, crafting,
@@ -151,10 +150,11 @@ public final class AdvancementBuffer {
                 // award chain (rewards → function fence) inside the trigger
                 // call. Capture complete matches now; only awards wait for
                 // monitor-free drain points.
-                if (!IslandCommands.requiresMainFence() && AdvancementCaptureOwnership.ownsGlobalProducerEnvelope()) {
+                if (!IslandCommands.requiresMainFence()) {
                     return false;
                 }
-                Pending p = buildPending(player, predicate, trigger);
+                Pending p = buildPending(player, predicate, trigger,
+                        EntityPredicate.createContext(player, player));
                 if (p != null) {
                     RegionScheduler.runSuccessBodyIfHealthy(() -> {
                         MAIN_FRAMELESS.addLast(p);
@@ -173,7 +173,8 @@ public final class AdvancementBuffer {
             // batch-end drain. Live symptom: armor-break criteria never registering
             // ("Where are all your clothes?", 2026-07-07). Only complete matches
             // may reach this lane from an authenticated exclusive producer.
-            Pending p = buildPending(player, predicate, trigger);
+            Pending p = buildPending(player, predicate, trigger,
+                    EntityPredicate.createContext(player, player));
             if (p != null) {
                 Pending[] publication = new Pending[]{p};
                 RegionScheduler.runSuccessBodyIfHealthy(
@@ -188,7 +189,7 @@ public final class AdvancementBuffer {
             // buffering is MANDATORY here too (2026-07-17): inline would run
             // awards inside the trigger call while region workers exist; the
             // tick-exit drain applies them on main outside every monitor.
-            if (!IslandCommands.requiresMainFence() && AdvancementCaptureOwnership.ownsGlobalProducerEnvelope()) {
+            if (!IslandCommands.requiresMainFence()) {
                 if (!FabroliaConfig.enableFabroliaAdvancements) return false;
             }
         }
@@ -199,58 +200,50 @@ public final class AdvancementBuffer {
 
         ArrayList<Pending> buf = f.buffer;
         // Each invocation has vanilla's own recursion stack and current state.
-        Pending p = buildPending(player, predicate, trigger);
+        Pending p = buildPending(player, predicate, trigger,
+                EntityPredicate.createContext(player, player));
         if (p != null) buf.add(p);
         return true;
     }
 
     /**
-     * Snapshot listeners under their map monitor, then evaluate matcher and player
-     * condition together, in vanilla order, outside that monitor. Callbacks may mutate
-     * state, consume randomness or raise nested triggers; neither conditions nor NBT
-     * serialization results may be cached across these observations or replayed.
-     * Exclusive source ownership must already be established before this call.
-     * @return the filtered Pending, or {@code null} when no instance passes — nothing to
-     *         defer, the caller still reports the trigger call as handled.
+     * Snapshot the listeners under the player's advancements monitor and keep those
+     * passing the per-trigger matcher, in vanilla order. The {@code player:} predicate is
+     * evaluated later at the drain against the retained {@code lootContext}.
+     * @return the filtered Pending, or {@code null} when no instance passes the matcher —
+     *         nothing to defer, the caller still reports the trigger call as handled.
      */
     private static Pending buildPending(ServerPlayer player, Predicate<?> predicate,
-                                        CriterionTrigger<?> trigger) {
-        AdvancementCaptureOwnership.requireTriggerEvaluationOwnership(player, trigger);
+                                        CriterionTrigger<?> trigger, LootContext lootContext) {
         @SuppressWarnings({"unchecked", "rawtypes"})
         Predicate<Object> pred = (Predicate) predicate;
-        PlayerAdvancements advancements = player.getAdvancements();
-        PlayerAdvancements.TriggerInstanceKey[] keys;
-        Object[] instances;
-        synchronized (advancements) {
+        synchronized (player.getAdvancements()) {
             Map<PlayerAdvancements.TriggerInstanceKey, ?> triggerMap =
-                    advancements.getTriggerMapForType(trigger);
+                    player.getAdvancements().getTriggerMapForType(trigger);
             if (triggerMap == null || triggerMap.isEmpty()) return null;
             int n = triggerMap.size();
-            keys = new PlayerAdvancements.TriggerInstanceKey[n];
-            instances = new Object[n];
-            int index = 0;
+            PlayerAdvancements.TriggerInstanceKey[] keys = new PlayerAdvancements.TriggerInstanceKey[n];
+            Object[] instances = new Object[n];
+            int kept = 0;
             for (Map.Entry<PlayerAdvancements.TriggerInstanceKey, ?> entry : triggerMap.entrySet()) {
-                keys[index] = entry.getKey();
-                instances[index++] = entry.getValue();
+                if (kept >= n) break;
+                Object instance = entry.getValue();
+                if (pred.test(instance)) {
+                    keys[kept] = entry.getKey();
+                    instances[kept] = instance;
+                    kept++;
+                }
             }
+            AdvancementDiag.ENTRIES_INSPECTED.add(n);
+            AdvancementDiag.INSTANCES_KEPT.add(kept);
+            if (kept == 0) return null;
+            AdvancementDiag.EVENTS_PRODUCED.increment();
+            if (kept < n) {
+                keys = Arrays.copyOf(keys, kept);
+                instances = Arrays.copyOf(instances, kept);
+            }
+            return new Pending(player, lootContext, keys, instances);
         }
-        LootContext lootContext = EntityPredicate.createContext(player, player);
-        int matched = 0;
-        int itemMatches = 0;
-        for (int index = 0; index < instances.length; index++) {
-            Object instance = instances[index];
-            if (!pred.test(instance)) continue;
-            itemMatches++;
-            if (!matchesPlayerPredicate(instance, lootContext)) continue;
-            keys[matched++] = keys[index];
-            AdvancementDiag.MATCHES.increment();
-        }
-        AdvancementDiag.ENTRIES_INSPECTED.add(instances.length);
-        AdvancementDiag.INSTANCES_KEPT.add(itemMatches);
-        if (matched == 0) return null;
-        AdvancementDiag.EVENTS_PRODUCED.increment();
-        if (matched < keys.length) keys = Arrays.copyOf(keys, matched);
-        return new Pending(player, keys);
     }
 
     /**
@@ -266,9 +259,8 @@ public final class AdvancementBuffer {
         final int n = buf.size();
         if (n == 0) return;
         MinecraftServer s = ParallelProcessor.getServer();
-        boolean main = s == null || com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .isPhysicalServerThread(s);
-        if (main && (IslandCommands.requiresMainFence() || !AdvancementCaptureOwnership.ownsGlobalProducerEnvelope())) {
+        boolean main = s == null || s.isSameThread();
+        if (main && IslandCommands.requiresMainFence()) {
             // Keep frame order without allocating a temporary Pending[] only
             // to copy it into the retained Main batch.
             MAIN_TICK_BATCH.ensureCapacity(MAIN_TICK_BATCH.size() + n);
@@ -300,14 +292,32 @@ public final class AdvancementBuffer {
     private static void drainOnMain(Pending[] pending, int n,
             IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
         AdvancementBatchScope.ensureEvaluationFence();
+        ArrayList<Match> matches = new ArrayList<>();
+        AdvancementCacheContext.runScoped(() -> evalRange(pending, 0, n, matches));
+        applyMatches(matches, fired);
+    }
+
+    private static void applyMatches(ArrayList<Match> matches,
+            IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
         IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> activeFired =
                 fired == null ? new IdentityHashMap<>() : fired;
-        for (int index = 0; index < n; index++) {
+        for (Match match : matches) {
+            RegionScheduler.runSuccessBodyIfHealthy(() ->
+                    fabrolia$applyAwardInAdmittedBody(match.player, match.key, activeFired));
+        }
+    }
+
+    private static void evalRange(Pending[] pending, int from, int to, ArrayList<Match> matches) {
+        for (int index = from; index < to; index++) {
             Pending p = pending[index];
-            for (int entry = 0; entry < p.keys.length; entry++) {
-                int admittedEntry = entry;
-                RegionScheduler.runSuccessBodyIfHealthy(() ->
-                        applyPendingEntryInAdmittedBody(p, admittedEntry, activeFired));
+            for (int listener = 0; listener < p.keys.length; listener++) {
+                int entry = listener;
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    if (matchesPlayerPredicate(p.instances[entry], p.lootContext)) {
+                        matches.add(new Match(p.player, p.keys[entry]));
+                        AdvancementDiag.MATCHES.increment();
+                    }
+                });
             }
         }
     }
@@ -331,59 +341,34 @@ public final class AdvancementBuffer {
     private static void applyPendingEntryInAdmittedBody(
             Pending p, int entry,
             IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
-        // Both conditions passed at fire time; never inspect the player's later state.
-        fabrolia$applyAwardInAdmittedBody(p.player, p.keys[entry], fired);
+        if (matchesPlayerPredicate(p.instances[entry], p.lootContext)) {
+            fabrolia$applyAwardInAdmittedBody(p.player, p.keys[entry], fired);
+        }
     }
 
-    /** Native flush obligations retain their original argument and FIFO ownership. */
-    private record Flush(ServerPlayer player, boolean force) {}
-    private static final ConcurrentLinkedQueue<Flush> PENDING_FLUSH = new ConcurrentLinkedQueue<>();
+    private static final ConcurrentLinkedQueue<ServerPlayer> PENDING_FLUSH = new ConcurrentLinkedQueue<>();
 
-    public static void queueFlush(ServerPlayer player, boolean force) {
+    public static void queueFlush(ServerPlayer player) {
         // Queue publication is a successor stage. A region/player body which
         // began before peer W may finish, but it cannot publish a later flush
         // after that W has already closed the generation.
-        RegionScheduler.runSuccessBodyIfHealthy(() -> PENDING_FLUSH.add(new Flush(player, force)));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> PENDING_FLUSH.add(player));
     }
 
     /** MAIN, entity-batch end, after grants: run the flushes workers skipped. */
     public static void drainPendingFlushes() {
-        if (PENDING_FLUSH.isEmpty() || IslandCommands.globalFenceTransitionInProgress()) return;
-        if (AdvancementBatchScope.active()) {
-            drainPendingFlushesHeld();
-            return;
-        }
-        Throwable failure = null;
-        AdvancementBatchScope.begin();
-        try {
-            drainPendingFlushesHeld();
-        } catch (Throwable thrown) {
-            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
-        }
-        try {
-            AdvancementBatchScope.end();
-        } catch (Throwable cleanup) {
-            failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
-        }
-        if (failure != null) AdvancementBuffer.<RuntimeException>rethrow(failure);
-    }
-
-    private static void drainPendingFlushesHeld() {
         if (PENDING_FLUSH.isEmpty()) return;
-        // Acquire before detach, and retain exclusion through the last flush.
-        // A nested acquisition pump leaves the original queue untouched.
-        AdvancementBatchScope.ensureEvaluationFence();
+        Set<ServerPlayer> done = Collections.newSetFromMap(new IdentityHashMap<>());
         while (RegionScheduler.callSuccessBooleanIfHealthy(() -> {
-            Flush flush = PENDING_FLUSH.poll();
-            if (flush == null) return false;
-            ServerPlayer target = flush.player;
-            if (!target.hasDisconnected()) {
-                target.getAdvancements().flushDirty(target, flush.force);
+            ServerPlayer target = PENDING_FLUSH.poll();
+            if (target == null) return false;
+            if (done.add(target) && !target.hasDisconnected()) {
+                target.getAdvancements().flushDirty(target, true);
                 AdvancementDiag.FLUSHES.increment();
             }
             return true;
         })) {
-            // fixed point over already-published native flush obligations
+            // fixed point over already-published flush obligations
         }
     }
 
@@ -408,8 +393,8 @@ public final class AdvancementBuffer {
             // Queue instead: the producer unwinds before the ordinary Main
             // pump, and one scheduled drain coalesces its complete slot burst.
             try {
-                RegionScheduler.scheduleMainControlTask(s,
-                        () -> fabrolia$runFailStopMainTask(AdvancementBuffer::drainMainFrameless));
+                s.schedule(new TickTask(s.getTickCount(),
+                        () -> fabrolia$runFailStopMainTask(AdvancementBuffer::drainMainFrameless)));
             } catch (Throwable publicationFailure) {
                 // schedule() may enqueue before throwing. Publish fatal now so an
                 // ambiguously accepted task cannot enter after its producer failed.
@@ -435,7 +420,12 @@ public final class AdvancementBuffer {
     }
 
     private static Throwable fabrolia$publishFatalPreserving(Throwable primary) {
-        return RegionScheduler.publishFatalAndSelectWinner(primary);
+        try {
+            RegionScheduler.publishFatalFailure(primary);
+        } catch (Throwable publicationFailure) {
+            mergeFailure(primary, publicationFailure);
+        }
+        return primary;
     }
 
     /**
@@ -448,11 +438,6 @@ public final class AdvancementBuffer {
      * that sticky window through the complete accepted FIFO.
      */
     public static void drainMainFrameless() {
-        MinecraftServer server = ParallelProcessor.getServer();
-        if (server != null && !com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .isPhysicalServerThread(server)) {
-            throw new IllegalStateException("advancement Main carrier accessed off physical Main");
-        }
         RegionScheduler.throwWorkerFailureIfAny();
         if (com.axalotl.fabrolia.common.regions.IslandCommands
                 .globalFenceTransitionInProgress()) {
@@ -645,10 +630,9 @@ public final class AdvancementBuffer {
                 // One flush per affected player, after the whole batch — the
                 // packet carries the tick's complete final state, same tick.
                 for (ServerPlayer p : affectedPlayers) {
-                    queueFlush(p, true);
+                    queueFlush(p);
                 }
             }
-            drainPendingFlushes();
         } catch (Throwable thrown) {
             // A sticky batch scope may own the global fence. Select W while
             // that ownership is still closed; end() is mandatory cleanup, not
@@ -766,7 +750,11 @@ public final class AdvancementBuffer {
         }
         if (batches.isEmpty()) return;
         AdvancementBatchScope.ensureEvaluationFence();
-        for (Pending[] batch : batches) drainOnMain(batch, batch.length, fired);
+        ArrayList<Match> matches = new ArrayList<>();
+        AdvancementCacheContext.runScoped(() -> {
+            for (Pending[] batch : batches) evalRange(batch, 0, batch.length, matches);
+        });
+        applyMatches(matches, fired);
         // Batch grants can cascade frameless-main raises (reward functions);
         // settle them in the same batch-end window.
         drainMainFrameless(fired);

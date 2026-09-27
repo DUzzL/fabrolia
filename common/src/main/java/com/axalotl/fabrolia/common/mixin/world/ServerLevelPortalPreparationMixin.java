@@ -6,7 +6,6 @@ import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.border.WorldBorder;
 import org.spongepowered.asm.mixin.Mixin;
@@ -33,10 +32,8 @@ public abstract class ServerLevelPortalPreparationMixin implements NetherPortalP
     private void fabrolia$trackPortalPublication(MinecraftServer server, Runnable callback,
                                                 Operation<Void> original) {
         this.fabrolia$portalPublications.submit(callback, tracked -> {
-            if (NetherPortalPreparation.deferGenerationPublication((ServerLevel) (Object) this)) {
-                // execute may inline on Main even with older queued worldgen adds.
-                // Do not let a portal replacement remove overtake its earlier add.
-                server.schedule(new TickTask(server.getTickCount(), tracked));
+            if (NetherPortalPreparation.inlinePublication((ServerLevel) (Object) this)) {
+                tracked.run();
             } else {
                 original.call(server, tracked);
             }

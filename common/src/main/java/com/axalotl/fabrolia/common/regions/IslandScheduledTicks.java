@@ -1,5 +1,7 @@
 package com.axalotl.fabrolia.common.regions;
 
+import com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap;
+import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import it.unimi.dsi.fastutil.longs.Long2LongMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
@@ -24,8 +26,10 @@ import java.util.PriorityQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
+import java.util.function.IntConsumer;
 import java.util.function.LongPredicate;
 
 /**
@@ -44,6 +48,8 @@ public final class IslandScheduledTicks {
     private static final long HOLD_LOG_INTERVAL_NANOS = 10_000_000_000L;
     private static final AtomicLong HOLDS_REPORTED = new AtomicLong();
     private static final AtomicLong HOLD_LAST_LOG_NANOS = new AtomicLong();
+    private static final ThreadLocal<PrimitiveEntryScratch> NEXT_TICK_SCRATCH =
+            ThreadLocal.withInitial(PrimitiveEntryScratch::new);
     /** Logical LevelTicks phase of the handler currently running on this
      * thread. willTickThisTick is phase-local in vanilla; consulting foreign
      * islands would mix independent clocks and create a global barrier. */
@@ -195,20 +201,15 @@ public final class IslandScheduledTicks {
     private record ClockStamp(long island, long gen) {}
 
     private static ClockStamp currentClockStamp() {
-        // Use the same authority as schedule, including routed Main and native-service suppression.
-        long island = IslandClock.contextId();
-        if (island == FabroliaTickDomain.WALL) {
-            return new ClockStamp(FabroliaTickDomain.WALL, -1L);
-        }
         Thread thread = Thread.currentThread();
         if (thread instanceof RegionWorkerThread worker) {
             EpochDomain domain = worker.currentRegion != null
                     ? worker.currentRegion.domain : worker.currentDomain;
-            if (domain != null && domain.owner != null && domain.owner.id == island) {
-                return new ClockStamp(island, domain.owner.gen);
+            if (domain != null && domain.owner != null && domain.unitGameTime != 0L) {
+                return new ClockStamp(domain.owner.id, domain.owner.gen);
             }
         }
-        return new ClockStamp(island, -1L);
+        return new ClockStamp(FabroliaTickDomain.WALL, -1L);
     }
 
     private static <T> ScheduledTick<T> copyToCallerClock(
@@ -425,18 +426,8 @@ public final class IslandScheduledTicks {
             // A whole-island same-L HOLD has no meaning here, and a synthetic
             // cell frontier would let later vanilla phases overtake only part
             // of the scheduled lane.  Use the ordinary exact tickCheck skip.
-            RegionScheduler.runGlobalMainBody(level.getServer(), () -> {
-                // Fence acquisition can service native Main progress. Resolve
-                // the complement again before touching any collected body;
-                // a candidate adopted in that interval belongs to its unit.
-                LongArrayList residual = discoverGlobalDueChunks(
-                        rs, gameTime, access, nextTick);
-                if (residual != null) {
-                    runSlice(access, residual, gameTime, budget, ticker);
-                }
-            });
+            runSlice(access, globals, gameTime, budget, ticker);
         }
-        RegionScheduler.commitSuccessIfHealthy(() -> {});
         return true;
     }
 

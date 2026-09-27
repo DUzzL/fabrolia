@@ -7,6 +7,7 @@ import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.*;
 import net.minecraft.util.Util;
 import net.minecraft.util.profiling.ProfilerFiller;
@@ -39,6 +40,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.locks.LockSupport;
@@ -58,6 +60,7 @@ import com.axalotl.fabrolia.common.regions.RegionizedServer;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionGrid;
 import com.axalotl.fabrolia.common.regions.Region;
+import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.axalotl.fabrolia.common.regions.RegionTaskFanIn;
 
 @Mixin(value = ServerChunkCache.class, priority = 1500)
@@ -213,14 +216,9 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             // Bound this Main slice. A producer which adds/re-adds after the
             // snapshot remains published for the next pass; it cannot keep a
             // weakly-consistent CHM iterator alive indefinitely.
-            var holders = new ArrayList<>(this.chunkHoldersToBroadcast);
-            if (!holders.isEmpty()) {
-                RegionScheduler.runGlobalMainBatch(this.level.getServer(), () -> {
-                    for (ChunkHolder holder : holders) {
-                        RegionScheduler.runGlobalMainBody(this.level.getServer(),
-                                () -> fabrolia$publishChangedHolder(holder));
-                    }
-                });
+            for (ChunkHolder holder : new ArrayList<>(this.chunkHoldersToBroadcast)) {
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        () -> fabrolia$publishChangedHolder(holder));
             }
         } catch (Throwable primary) {
             failure = fabrolia$publishFatalAndSelectWinner(primary);
@@ -433,6 +431,33 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     @Unique private Runnable fabrolia$deferredSpawnArm;
     @Unique private Runnable fabrolia$deferredBlockTicksArm;
 
+    @Unique
+    private static FabroliaFlatSubmission fabrolia$beginFlatFanout(
+            ExecutorService executor, int batchCount, FabroliaFlatBatch body) {
+        if (batchCount <= 0) {
+            return new FabroliaFlatSubmission(CompletableFuture.completedFuture(null), null);
+        }
+        FabroliaFlatFailureGate gate;
+        try {
+            gate = new FabroliaFlatFailureGate(batchCount, body);
+        } catch (Throwable constructionFailure) {
+            Throwable winner = fabrolia$publishFatalAndSelectWinner(constructionFailure);
+            CompletableFuture<Void> failed = new CompletableFuture<>();
+            failed.completeExceptionally(winner);
+            return new FabroliaFlatSubmission(failed, winner);
+        }
+        try {
+            for (FabroliaFlatTask task : gate.tasks) {
+                gate.runNext(() -> executor.execute(task));
+            }
+        } catch (Throwable submissionFailure) {
+            gate.publishFailure(submissionFailure);
+        } finally {
+            gate.finishSubmission();
+        }
+        return new FabroliaFlatSubmission(gate.completion, gate.failureOrNull());
+    }
+
     /** Dense live chunk work stays on its claim-holding coordinator. Independent
      * islands may overlap; a helper cannot borrow another island's claim. */
     @Unique
@@ -459,11 +484,103 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     @Unique
     private CompletableFuture<Void> fabrolia$submitPerRegion(List<LevelChunk> chunks,
                                                           Consumer<LevelChunk> action) {
+        return fabrolia$submitPerRegion(chunks, action, false);
+    }
+
+    @Unique
+    private CompletableFuture<Void> fabrolia$submitPerRegion(List<LevelChunk> chunks,
+                                                          Consumer<LevelChunk> action,
+                                                          boolean serialChunks) {
         RegionizedServer rs = RegionScheduler.forLevel(this.level);
         if (rs == null) return null;
-        // Metadata only: submit every arm inline before entity dispatch. A global
-        // gameplay task is neither needed nor authority for this publication.
-        return fabrolia$groupAndSubmit(rs, chunks, action);
+        List<LevelChunk> chunksCopy = new ArrayList<>(chunks);
+        if (FabroliaConfig.useRegionColorGate()) {
+            return fabrolia$groupAndSubmit(rs, chunksCopy, action, serialChunks);
+        }
+        CompletableFuture<Void> outer = new CompletableFuture<>();
+        RegionScheduler.enqueueGlobalMainSafe(() -> {
+            try {
+                CompletableFuture<Void> inner =
+                        fabrolia$groupAndSubmit(rs, chunksCopy, action, serialChunks);
+                if (inner == null) {
+                    fabrolia$completeFutureAfterHealthyCommit(
+                            outer, null, "outer chunk work completed more than once");
+                } else {
+                    inner.whenComplete((v, tx) -> {
+                        try {
+                            if (tx == null) {
+                                fabrolia$completeFutureAfterHealthyCommit(
+                                        outer, null,
+                                        "outer chunk work completed more than once");
+                            } else {
+                                fabrolia$completeTransportedFutureAfterFatalPublication(outer, tx);
+                            }
+                        } catch (Throwable callbackFailure) {
+                            fabrolia$completeFutureAfterFatalPublication(outer, callbackFailure);
+                        }
+                    });
+                }
+            } catch (Throwable t) {
+                Throwable winner = fabrolia$completeFutureAfterFatalPublication(outer, t);
+                ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(winner);
+            }
+        });
+        RegionScheduler.wakeWorkers();
+        return outer;
+    }
+
+    @Unique
+    private static void fabrolia$runChunksMaybeParallel(Region region,
+                                                        ArrayList<LevelChunk> list,
+                                                        Consumer<LevelChunk> rawAction) {
+        int n = list.size();
+        if (n > 16 && Thread.currentThread() instanceof RegionWorkerThread) {
+            int workers = Math.max(1, RegionScheduler.workerCount());
+            int batchSize = Math.max(8, (n + workers - 1) / workers);
+            int batchCount = (n + batchSize - 1) / batchSize;
+            RegionTaskFanIn fanIn = new RegionTaskFanIn();
+            RegionTaskFanIn.RegisteredTask coordinator = fanIn.register(() -> {
+                int to = Math.min(batchSize, n);
+                for (int i = 0; i < to; i++) {
+                    fabrolia$runChunkIfHealthy(list.get(i), rawAction);
+                }
+            });
+            boolean publicationFailed = false;
+            int published = 0;
+            try {
+                for (int b = 1; b < batchCount; b++) {
+                    int from = b * batchSize;
+                    int to = Math.min(from + batchSize, n);
+                    boolean accepted = fanIn.submit(() -> {
+                        for (int i = from; i < to; i++) {
+                            fabrolia$runChunkIfHealthy(list.get(i), rawAction);
+                        }
+                    }, helper -> RegionScheduler.enqueueHelpTask(region, helper),
+                            "region chunk helper rejected by scheduler lifecycle");
+                    if (!accepted) {
+                        publicationFailed = true;
+                        break;
+                    }
+                    published++;
+                }
+                if (published > 0) {
+                    RegionScheduler.wakeWorkers();
+                }
+            } catch (Throwable failure) {
+                fanIn.fail(failure);
+                publicationFailed = true;
+            }
+            if (publicationFailed) {
+                coordinator.cancelBeforeStart(null);
+            } else {
+                coordinator.run();
+            }
+            fanIn.drainAndAwait(region.helpQueue);
+        } else {
+            for (int i = 0; i < n; i++) {
+                fabrolia$runChunkIfHealthy(list.get(i), rawAction);
+            }
+        }
     }
 
 
@@ -566,7 +683,8 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     @Unique
     private CompletableFuture<Void> fabrolia$groupAndSubmit(RegionizedServer rs,
                                                          List<LevelChunk> chunks,
-                                                         Consumer<LevelChunk> action) {
+                                                         Consumer<LevelChunk> action,
+                                                         boolean serialChunks) {
         // Group by raw grid key first (pure bit math, no monitors) — the first version
         // called regionFor(ChunkPos) per chunk, paying the regionizer monitor + the
         // synchronized noteChunk debug-set for EVERY ticking chunk every tick: 5.38% of
@@ -617,7 +735,9 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             }
             ArrayList<LevelChunk> list = entry.getValue();
             if (gate.isIslandArm()) {
-                Runnable body = () -> fabrolia$runChunksSerial(list, action);
+                Runnable body = serialChunks
+                        ? () -> fabrolia$runChunksSerial(list, action)
+                        : () -> fabrolia$runChunksMaybeParallel(r, list, action);
                 Runnable regionTask = RegionizedServer.armReservedTask(gate, body);
                 fabrolia$enqueueIslandArmTask(r, regionTask,
                         "island chunk task rejected at scheduler drain boundary");
@@ -626,7 +746,11 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             CompletableFuture<Void> cf = new CompletableFuture<>();
             if (!RegionScheduler.enqueueRegionTask(r, () -> {
                 try {
-                    fabrolia$runChunksSerial(list, action);
+                    if (serialChunks) {
+                        fabrolia$runChunksSerial(list, action);
+                    } else {
+                        fabrolia$runChunksMaybeParallel(r, list, action);
+                    }
                 } catch (Throwable failure) {
                     Throwable winner = fabrolia$completeFutureAfterFatalPublication(cf, failure);
                     ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(winner);
@@ -723,7 +847,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                             if (c != null) list.add(c);
                         }
                     }
-                    fabrolia$runChunksSerial(list, action);
+                    fabrolia$runChunksMaybeParallel(r, list, action);
                 } catch (Throwable failure) {
                     Throwable winner = cf == null
                             ? fabrolia$publishFatalAndSelectWinner(failure)
@@ -880,7 +1004,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         CompletableFuture<ChunkResult<ChunkAccess>> chunkFuture = new CompletableFuture<>();
         FabroliaChunkMainPublication publication = new FabroliaChunkMainPublication();
         try {
-            this.mainThreadProcessor.schedule(() -> fabrolia$runPublishedChunkMainRequest(
+            this.mainThreadProcessor.execute(() -> fabrolia$runPublishedChunkMainRequest(
                     publication, chunkFuture, () -> {
                 this.getChunkFutureMainThread(x, z, targetStatus, loadOrGenerate).whenComplete((result, ex) -> {
                     try {
@@ -904,7 +1028,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                         "chunk-Main request publication lost its offering receipt");
             }
         } catch (Throwable publicationFailure) {
-            // schedule may reject, or may enqueue and then throw. The request
+            // execute may reject, or may enqueue and then throw. The request
             // future is the causal receipt in both cases: select W and make it
             // terminal, but never submit the vanilla request a second time.
             Throwable failure;
@@ -1246,17 +1370,13 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         // Surface the level to ParallelSpawnHelper so it can read the incremental SpawnIndex
         // instead of iterating the c2me-notickvd-filtered entity stream — the section walk
         // dominates fillBuffer (4.14% of server thread in R5FaKJnHJg).
-        NaturalSpawner.SpawnState[] result = new NaturalSpawner.SpawnState[1];
-        RegionScheduler.runGlobalMainBody(this.level.getServer(), () -> {
-            FabroliaSpawnContext.currentLevel = this.level;
-            try {
-                result[0] = original.call(spawnableChunkCount, entities, chunkGetter,
-                        localMobCapCalculator);
-            } finally {
-                FabroliaSpawnContext.currentLevel = null;
-            }
-        });
-        return result[0];
+        FabroliaSpawnContext.currentLevel = this.level;
+        try {
+            return original.call(spawnableChunkCount, entities, chunkGetter,
+                    localMobCapCalculator);
+        } finally {
+            FabroliaSpawnContext.currentLevel = null;
+        }
     }
 
     @WrapOperation(
@@ -1268,10 +1388,8 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                                              long timeDiff, List<MobCategory> spawningCategories,
                                              NaturalSpawner.SpawnState spawnCookie,
                                              Operation<Void> original) {
-        if (FabroliaConfig.disabled || !FabroliaConfig.enableFabroliaSpawn
-                || !FabroliaConfig.enableRegionThreading || !RegionScheduler.isActive()) {
-            RegionScheduler.runGlobalMainBody(this.level.getServer(),
-                    () -> original.call(instance, chunk, timeDiff, spawningCategories, spawnCookie));
+        if (FabroliaConfig.disabled || !FabroliaConfig.enableFabroliaSpawn) {
+            original.call(instance, chunk, timeDiff, spawningCategories, spawnCookie);
             return;
         }
 
@@ -1288,55 +1406,62 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         // natural spawning, thunder, and inhabitedTime accrual under region
         // threading. Copy while the list is still populated.
         List<LevelChunk> list = new java.util.ArrayList<>(live);
-
+        int n = list.size();
         long capturedTimeDiff = fabrolia$capturedTimeDiff;
 
-        // Region mode publishes metadata now; its coordinator enters the native
-        // chunk bodies later, in spawn -> random ticks -> entities FIFO order.
+        if (FabroliaConfig.enableRegionThreading && RegionScheduler.isActive()) {
+            // Region mode publishes metadata now; its coordinator enters the native
+            // chunk bodies later, in spawn -> random ticks -> entities FIFO order.
+            ServerLevel lvl0 = this.level;
+            DistanceManager dm0 = this.distanceManager;
+            it.unimi.dsi.fastutil.longs.LongOpenHashSet gate0 =
+                    fabrolia$buildSpawnGate(lvl0, list, spawningCategories);
+            fabrolia$deferredSpawnArm = () -> {
+                com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onPass(lvl0);
+                fabrolia$spawnFuture = fabrolia$submitPerRegion(list, c -> {
+                    long packed = c.getPos().pack();
+                    c.incrementInhabitedTime(capturedTimeDiff);
+                    // Native 26.2 tickSpawningChunk performs thunder before spawning.
+                    if (dm0.inEntityTickingRange(packed)) {
+                        lvl0.tickThunder(c);
+                    }
+                    if (gate0 != null && gate0.contains(packed)) {
+                        com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onChunkVisit(lvl0, packed);
+                        NaturalSpawner.spawnForChunk(lvl0, c, spawnCookie, spawningCategories);
+                    }
+                }, true);
+            };
+            return;
+        }
+
         ServerLevel lvl = this.level;
-        DistanceManager dm = this.distanceManager;
-        it.unimi.dsi.fastutil.longs.LongOpenHashSet spawnGate =
+        DistanceManager dmF = this.distanceManager;
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet gateF =
                 fabrolia$buildSpawnGate(lvl, list, spawningCategories);
-        fabrolia$deferredSpawnArm = () -> {
-            com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onPass(lvl);
-            fabrolia$spawnFuture = fabrolia$submitPerRegion(list, c -> {
-                long packed = c.getPos().pack();
-                c.incrementInhabitedTime(capturedTimeDiff);
-                // Native 26.2 tickSpawningChunk performs thunder before spawning.
-                if (dm.inEntityTickingRange(packed)) {
-                    lvl.tickThunder(c);
-                }
-                if (spawnGate != null && spawnGate.contains(packed)) {
-                    com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onChunkVisit(lvl, packed);
-                    NaturalSpawner.spawnForChunk(lvl, c, spawnCookie, spawningCategories);
-                }
-            });
-        };
-    }
-
-
-    @WrapOperation(
-            method = "tickChunks(Lnet/minecraft/util/profiling/ProfilerFiller;J)V",
-            at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/level/ChunkMap;collectSpawningChunks(Ljava/util/List;)V"),
-            require = 1, allow = 1)
-    private void fabrolia$admitSpawnCandidates(ChunkMap instance, List<LevelChunk> chunks,
-                                             Operation<Void> original) {
-        // The native distance predicates observe live players, unlike the later
-        // position-only grouping and arm publication.
-        RegionScheduler.runGlobalMainBody(this.level.getServer(),
-                () -> original.call(instance, chunks));
-    }
-
-    @WrapOperation(
-            method = "tickChunks(Lnet/minecraft/util/profiling/ProfilerFiller;J)V",
-            at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/level/ServerLevel;tickCustomSpawners(Z)V"),
-            require = 1, allow = 1)
-    private void fabrolia$admitCustomSpawners(ServerLevel instance, boolean spawnEnemies,
-                                            Operation<Void> original) {
-        RegionScheduler.runGlobalMainBody(this.level.getServer(),
-                () -> original.call(instance, spawnEnemies));
+        List<LevelChunk> chunks = list;
+        FabroliaFlatSubmission spawnSubmission = fabrolia$beginFlatFanout(
+                ParallelProcessor.executor, 1, (failureGate, ignoredBatch) -> {
+                    com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onPass(lvl);
+                    for (int i = 0; i < n; i++) {
+                        int chunkIndex = i;
+                        failureGate.runNext(() -> {
+                            LevelChunk c = chunks.get(chunkIndex);
+                            long packed = c.getPos().pack();
+                            c.incrementInhabitedTime(capturedTimeDiff);
+                            if (dmF.inEntityTickingRange(packed)) {
+                                lvl.tickThunder(c);
+                            }
+                            if (gateF != null && gateF.contains(packed)) {
+                                com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onChunkVisit(lvl, packed);
+                                NaturalSpawner.spawnForChunk(lvl, c, spawnCookie, spawningCategories);
+                            }
+                        });
+                    }
+                });
+        fabrolia$spawnFuture = spawnSubmission.completion();
+        if (spawnSubmission.failureAtReturn() != null) {
+            fabrolia$awaitAcceptedFlatWork(spawnSubmission.completion(), null);
+        }
     }
 
     @WrapOperation(
@@ -1346,7 +1471,8 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     )
     private void fabrolia$waitSpawnThenBlockTick(ChunkMap instance, Consumer<LevelChunk> tickingChunkConsumer,
                                               Operation<Void> original) {
-
+        CompletableFuture<Void> spawnFut = fabrolia$spawnFuture;
+        CompletableFuture<Void> blockTicksFut = null;
         // Region mode: random/fluid/thunder ticks per-chunk on the OWNING region's worker,
         // queued AFTER that region's spawn task and BEFORE its entity task (FIFO) — each
         // region runs spawn → random ticks → entities for its own area in vanilla order.
@@ -1398,10 +1524,53 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             return;
         }
 
-        // Regions off, or random-tick dispatch disabled: retain the real native
-        // traversal and consumer, synchronously under a pre-body global envelope.
-        RegionScheduler.runGlobalMainBody(this.level.getServer(),
-                () -> original.call(instance, tickingChunkConsumer));
+        if (!FabroliaConfig.disabled && FabroliaConfig.enableFabroliaRandomTicks) {
+            List<LevelChunk> tickChunks = new ArrayList<>();
+            original.call(instance, (Consumer<LevelChunk>) tickChunks::add);
+            int n = tickChunks.size();
+            if (n > 0) {
+                int poolSize = Math.max(1, ParallelProcessor.getPoolSize());
+                int batchSize = Math.max(8, (n + (poolSize << 2) - 1) / (poolSize << 2));
+                int batchCount = (n + batchSize - 1) / batchSize;
+                FabroliaFlatSubmission blockSubmission = fabrolia$beginFlatFanout(
+                        ParallelProcessor.executor, batchCount, (failureGate, batchIndex) -> {
+                            int start = batchIndex * batchSize;
+                            int end = Math.min(start + batchSize, n);
+                            for (int j = start; j < end; j++) {
+                                int chunkIndex = j;
+                                failureGate.runNext(
+                                        () -> tickingChunkConsumer.accept(tickChunks.get(chunkIndex)));
+                            }
+                        });
+                blockTicksFut = blockSubmission.completion();
+                if (blockSubmission.failureAtReturn() != null) {
+                    fabrolia$awaitAcceptedFlatWork(blockTicksFut, spawnFut);
+                }
+            }
+        } else {
+            original.call(instance, tickingChunkConsumer);
+        }
+
+        boolean rideAlong = FabroliaConfig.enableSpawnBarrierOverlap && !FabroliaConfig.disabled;
+        CompletableFuture<Void> combined;
+        if (rideAlong) {
+            combined = blockTicksFut;
+        } else if (spawnFut != null && blockTicksFut != null) {
+            combined = CompletableFuture.allOf(spawnFut, blockTicksFut);
+        } else if (spawnFut != null) {
+            combined = spawnFut;
+        } else {
+            combined = blockTicksFut;
+        }
+        if (combined != null) {
+            fabrolia$pumpUntilDone(combined);
+        }
+        if (!rideAlong) {
+            if (spawnFut != null && spawnFut.isCompletedExceptionally()) {
+                spawnFut.join();
+            }
+            fabrolia$spawnFuture = null;
+        }
     }
 
     /** Start spawn-gate precomputation at the unconditional chunk-source head. */
@@ -1419,9 +1588,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             at = @At(value = "INVOKE",
                     target = "Lnet/minecraft/server/level/ChunkMap;tick()V"))
     private void fabrolia$trackerOnMain(ChunkMap instance, Operation<Void> original) {
-        // Tracking reads live entities across islands. Its native owner remains
-        // physical Main; serial VMP helpers inherit this pre-body authority.
-        RegionScheduler.runGlobalMainBody(this.level.getServer(), () -> original.call(instance));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
 
@@ -1517,9 +1684,89 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
 
     @Unique
     private void fabrolia$pumpUntilDone(CompletableFuture<?> future) {
-        // Only region-owned obligations remain. Use their control/native-progress
-        // barrier, not the removed detached flat-executor waiter.
-        ParallelProcessor.pumpUntilDone(future);
+        fabrolia$awaitAcceptedFlatWork(future, null);
+    }
+
+    @Unique
+    private void fabrolia$awaitAcceptedFlatWork(CompletableFuture<?> first,
+                                                @Nullable CompletableFuture<?> second) {
+        Throwable failure = null;
+        failure = fabrolia$awaitFlatFutureTerminal(first, failure);
+        if (second != null && second != first) {
+            failure = fabrolia$awaitFlatFutureTerminal(second, failure);
+        }
+        try {
+            RegionScheduler.throwWorkerFailureIfAny();
+        } catch (Throwable globalWinner) {
+            if (failure == null) {
+                failure = globalWinner;
+            } else if (failure != globalWinner) {
+                failure = fabrolia$mergeFailure(globalWinner, failure);
+            }
+        }
+        failure = fabrolia$observeFlatFutureFailure(first, failure);
+        if (second != null && second != first) {
+            failure = fabrolia$observeFlatFutureFailure(second, failure);
+        }
+        if (failure != null) {
+            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(failure);
+        }
+    }
+
+    @Unique
+    private Throwable fabrolia$awaitFlatFutureTerminal(CompletableFuture<?> future,
+                                                       Throwable failure) {
+        MinecraftServer s = this.level.getServer();
+        if (s != null && s.isSameThread()) {
+            s.blockingCount++;
+            try {
+                while (!future.isDone()) {
+                    boolean drained = false;
+                    if (failure == null) {
+                        try {
+                            for (ServerLevel lvl : s.getAllLevels()) {
+                                if (RegionScheduler.callSuccessBooleanIfHealthy(
+                                        () -> lvl.getChunkSource().mainThreadProcessor.pollTask())) {
+                                    drained = true;
+                                }
+                            }
+                        } catch (Throwable progressFailure) {
+                            failure = fabrolia$recordFlatAwaitFailure(failure, progressFailure);
+                        }
+                    }
+                    if (!drained) {
+                        LockSupport.parkNanos("Fabrolia ServerChunkCacheMixin pumpUntilDone", 100_000L);
+                    }
+                }
+            } finally {
+                s.blockingCount--;
+            }
+        } else {
+            while (!future.isDone()) {
+                LockSupport.parkNanos("Fabrolia ServerChunkCacheMixin pumpUntilDone off-main", 100_000L);
+            }
+        }
+        return failure;
+    }
+
+    @Unique
+    private static Throwable fabrolia$observeFlatFutureFailure(CompletableFuture<?> future,
+                                                               Throwable failure) {
+        try {
+            future.join();
+            return failure;
+        } catch (Throwable wrapped) {
+            return failure != null ? failure
+                    : fabrolia$publishFatalAndSelectWinner(fabrolia$unwrapCompletion(wrapped));
+        }
+    }
+
+    @Unique
+    private static Throwable fabrolia$recordFlatAwaitFailure(Throwable failure,
+                                                             Throwable progressFailure) {
+        return failure == null
+                ? fabrolia$publishFatalAndSelectWinner(progressFailure)
+                : fabrolia$mergeFailure(failure, progressFailure);
     }
 
 
@@ -1559,12 +1806,24 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         return winner;
     }
 
+    @Unique
+    private static Throwable fabrolia$completeTransportedFutureAfterFatalPublication(
+            CompletableFuture<?> target, Throwable transported) {
+        try {
+            RegionScheduler.throwWorkerFailureIfAny();
+        } catch (Throwable globalWinner) {
+            return fabrolia$completeFutureAfterFatalPublication(target, globalWinner);
+        }
+        return fabrolia$completeFutureAfterFatalPublication(
+                target, fabrolia$unwrapCompletion(transported));
+    }
+
 
     /** Select the shared generation winner before publishing a local terminal. */
     @Unique
     private static Throwable fabrolia$publishFatalAndSelectWinner(Throwable candidate) {
         if (candidate == null) {
-            candidate = new NullPointerException("chunk work failure");
+            candidate = new NullPointerException("flat chunk fan-out failure");
         }
         return RegionScheduler.publishFatalAndSelectWinner(candidate);
     }
@@ -1596,5 +1855,172 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     @SuppressWarnings("unchecked")
     private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
         throw (T) failure;
+    }
+
+    @Unique
+    @FunctionalInterface
+    interface FabroliaFlatBatch {
+        void run(FabroliaFlatFailureGate failureGate, int batchIndex);
+    }
+
+    @Unique
+    static final class FabroliaFlatFailureGate {
+        private static final int MAX_SUPPRESSED = 8;
+
+        private final FabroliaFlatTask[] tasks;
+        private final AtomicInteger pending;
+        private final CompletableFuture<Void> completion = new CompletableFuture<>();
+        private Throwable failure;
+        private int suppressedCleanup;
+
+        private FabroliaFlatFailureGate(int batchCount, FabroliaFlatBatch body) {
+            this.tasks = new FabroliaFlatTask[batchCount];
+            this.pending = new AtomicInteger(batchCount + 1);
+            for (int i = 0; i < batchCount; i++) {
+                this.tasks[i] = new FabroliaFlatTask(this, body, i);
+            }
+        }
+
+        void runNext(Runnable body) {
+            if (body == null) throw new NullPointerException("body");
+            try {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    synchronized (this) {
+                        if (this.failure != null) {
+                            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(this.failure);
+                        }
+                    }
+                    body.run();
+                });
+            } catch (Throwable thrown) {
+                ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(publishFailure(thrown));
+            }
+        }
+
+        Throwable publishFailure(Throwable candidate) {
+            synchronized (this) {
+                return publishFailureLocked(candidate);
+            }
+        }
+
+        private Throwable publishFailureLocked(Throwable candidate) {
+            if (candidate == null) {
+                candidate = new NullPointerException("flat chunk fan-out failure");
+            }
+            if (this.failure == null) {
+                this.failure = fabrolia$publishFatalAndSelectWinner(candidate);
+                for (FabroliaFlatTask task : this.tasks) {
+                    try {
+                        task.cancelQueuedBeforeStart();
+                    } catch (Throwable cancellationFailure) {
+                        if (cancellationFailure != this.failure
+                                && this.suppressedCleanup < MAX_SUPPRESSED) {
+                            fabrolia$mergeFailure(this.failure, cancellationFailure);
+                            this.suppressedCleanup++;
+                        }
+                    }
+                }
+            }
+            return this.failure;
+        }
+
+        synchronized Throwable failureOrNull() {
+            return this.failure;
+        }
+
+        private void finishSubmission() {
+            finishObligation();
+        }
+
+        private void finishTask() {
+            finishObligation();
+        }
+
+        private void finishObligation() {
+            int remaining = this.pending.decrementAndGet();
+            if (remaining < 0) {
+                Throwable duplicate = publishFailure(new IllegalStateException(
+                        "flat chunk fan-out obligation completed more than once"));
+                ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(duplicate);
+            }
+            if (remaining == 0) {
+                Throwable terminalFailure = failureOrNull();
+                if (terminalFailure == null) {
+                    fabrolia$completeFutureAfterHealthyCommit(
+                            this.completion, null,
+                            "flat chunk fan-out completed more than once");
+                } else {
+                    this.completion.completeExceptionally(terminalFailure);
+                }
+            }
+        }
+    }
+
+    @Unique
+    static final class FabroliaFlatSubmission {
+        private final CompletableFuture<Void> completion;
+        private final Throwable failureAtReturn;
+
+        private FabroliaFlatSubmission(CompletableFuture<Void> completion, Throwable failureAtReturn) {
+            this.completion = completion;
+            this.failureAtReturn = failureAtReturn;
+        }
+
+        CompletableFuture<Void> completion() {
+            return this.completion;
+        }
+
+        Throwable failureAtReturn() {
+            return this.failureAtReturn;
+        }
+    }
+
+    @Unique
+    static final class FabroliaFlatTask implements Runnable {
+        private static final int QUEUED = 0;
+        private static final int RUNNING = 1;
+        private static final int TERMINAL = 2;
+        private static final int CANCELLED = 3;
+
+        private final FabroliaFlatFailureGate gate;
+        private final FabroliaFlatBatch body;
+        private final int batchIndex;
+        private final AtomicInteger state = new AtomicInteger(QUEUED);
+
+        private FabroliaFlatTask(FabroliaFlatFailureGate gate, FabroliaFlatBatch body, int batchIndex) {
+            this.gate = gate;
+            this.body = body;
+            this.batchIndex = batchIndex;
+        }
+
+        @Override
+        public void run() {
+            if (!this.state.compareAndSet(QUEUED, RUNNING)) {
+                if (this.state.get() != CANCELLED) {
+                    Throwable duplicate = this.gate.publishFailure(new IllegalStateException(
+                            "flat chunk fan-out task executed more than once"));
+                    ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(duplicate);
+                }
+                return;
+            }
+            Throwable failure = null;
+            try {
+                this.gate.runNext(() -> this.body.run(this.gate, this.batchIndex));
+            } catch (Throwable thrown) {
+                failure = this.gate.publishFailure(thrown);
+            } finally {
+                this.state.set(TERMINAL);
+                this.gate.finishTask();
+            }
+            if (failure != null) {
+                ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(failure);
+            }
+        }
+
+        private void cancelQueuedBeforeStart() {
+            if (this.state.compareAndSet(QUEUED, CANCELLED)) {
+                this.gate.finishTask();
+            }
+        }
     }
 }

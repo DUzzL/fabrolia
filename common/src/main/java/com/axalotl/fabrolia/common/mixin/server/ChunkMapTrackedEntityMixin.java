@@ -394,7 +394,6 @@ public abstract class ChunkMapTrackedEntityMixin
                     || player.connection.player != player
                     || player.level() != this.entity.level()) return;
             // Bulk and exact pairing commits must not expose a new viewer before Respawn.
-            if (IslandEntityTracking.deferArrivalPairing(this, player)) return;
             if (IslandEntityTracking.isBulkPairingCommit(this)) {
                 original.call(player);
             } else if (IslandEntityTracking.isPairingCommit(this, player)) {

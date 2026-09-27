@@ -88,9 +88,6 @@ public final class AdvancementBatchScope {
                     "advancement evaluation entered outside its exact Main batch");
         }
         if (IslandCommands.fenceWindowHeld()) return;
-        if (RegionScheduler.inNativeMainService()) {
-            throw new IllegalStateException("native Main service cannot acquire an advancement global fence");
-        }
         boolean took = IslandCommands.quiesceAllExcept(null);
         if (took) {
             stickyHeld = true;

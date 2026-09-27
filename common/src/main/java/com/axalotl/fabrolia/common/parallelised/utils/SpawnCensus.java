@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.parallelised.utils;
 
+import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -16,7 +17,12 @@ import net.minecraft.world.level.NaturalSpawner;
 import java.util.Arrays;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinTask;
+import java.util.concurrent.RecursiveAction;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.BiFunction;
 
 /**
@@ -63,6 +69,7 @@ public final class SpawnCensus {
     private static final MobCategory[] CATEGORIES = MobCategory.values();
     private static final int C = CATEGORIES.length;
     private static final VectorUpdate[] VECTOR_UPDATES = fabrolia$vectorUpdates();
+    static final int REDUCE_GRAIN = 512;
 
 
     // ---- ledger (mixed into Entity) ------------------------------------
@@ -230,11 +237,54 @@ public final class SpawnCensus {
                           Long2ObjectOpenHashMap<int[]> mobSeed,
                           int totalMobs) {}
 
-    /** Serial result accumulator; each entry is added after its live query accepts it. */
-    static final class CensusCounts {
+    /** Result accumulator for one contiguous range [from, to) of the sorted key snapshot. */
+    static final class CensusPart {
+        final int from;
+        final int to;
         final int[] counts = new int[C];
-        final Long2ObjectOpenHashMap<int[]> mobSeed = new Long2ObjectOpenHashMap<>(16);
+        int[][] mobSeedByOffset;
+        int mobSeedSize;
         int totalMobs;
+
+        CensusPart(int from, int to) {
+            if (from < 0 || to < from) {
+                throw new IllegalArgumentException("invalid census range " + from + ".." + to);
+            }
+            this.from = from;
+            this.to = to;
+        }
+
+        void putMobSeed(int sortedKeysIndex, int[] mobs) {
+            int offset = sortedKeysIndex - from;
+            if (offset < 0 || offset >= to - from || mobs == null) {
+                throw new IllegalArgumentException("invalid census seed index " + sortedKeysIndex);
+            }
+            int[][] byOffset = mobSeedByOffset;
+            if (byOffset == null) {
+                mobSeedByOffset = byOffset = new int[to - from][];
+            }
+            if (byOffset[offset] != null) {
+                throw new IllegalStateException("duplicate census seed index " + sortedKeysIndex);
+            }
+            byOffset[offset] = mobs;
+            mobSeedSize++;
+        }
+    }
+
+    static int fabrolia$reduceBatchSize(int keyCount, int parallelism) {
+        if (keyCount < 0) {
+            throw new IllegalArgumentException("negative key count");
+        }
+        int workers = Math.max(1, parallelism);
+        int fairShare = (int) (((long) keyCount + workers - 1L) / workers);
+        return Math.max(REDUCE_GRAIN, fairShare);
+    }
+
+    static int fabrolia$reduceBatchCount(int keyCount, int batchSize) {
+        if (keyCount < 0 || batchSize <= 0) {
+            throw new IllegalArgumentException("invalid census batch shape");
+        }
+        return (int) (((long) keyCount + batchSize - 1L) / batchSize);
     }
 
     /**
@@ -257,9 +307,39 @@ public final class SpawnCensus {
             return empty[0];
         }
 
-        CensusCounts counts = new CensusCounts();
-        fabrolia$reduceRange(c, ticking, chunkGetter, keys, counts);
-        return fabrolia$finishReduction(counts);
+        if (keys.length >= 1024
+                && ParallelProcessor.executor instanceof ForkJoinPool fjp
+                && ParallelProcessor.getPoolSize() > 1) {
+            int batchSize = fabrolia$reduceBatchSize(keys.length, ParallelProcessor.getPoolSize());
+            int batchCount = fabrolia$reduceBatchCount(keys.length, batchSize);
+            CensusPart[] parts = new CensusPart[batchCount];
+            CensusRangeTask[] tasks = new CensusRangeTask[batchCount];
+            ParallelSpawnHelper.SpawnFanoutGate gate = ParallelSpawnHelper.fabrolia$newSpawnFanoutGate();
+            int b = 0;
+            for (int from = 0; from < keys.length; from += batchSize) {
+                int to = Math.min(from + batchSize, keys.length);
+                CensusPart part = new CensusPart(from, to);
+                parts[b] = part;
+                tasks[b] = new CensusRangeTask(gate, c, ticking, chunkGetter, keys, part);
+                b++;
+            }
+            int submitted = 0;
+            try {
+                while (submitted < batchCount) {
+                    CensusRangeTask task = tasks[submitted];
+                    submitted++;
+                    gate.runNext(() -> fjp.execute(task));
+                }
+            } catch (Throwable submissionFailure) {
+                gate.publishFailure(submissionFailure);
+            }
+            fabrolia$awaitCensusFanIn(tasks, submitted, gate);
+            return fabrolia$mergeParts(keys, parts);
+        }
+
+        CensusPart part = new CensusPart(0, keys.length);
+        fabrolia$reduceRange(c, ticking, chunkGetter, keys, part, null);
+        return fabrolia$mergeParts(keys, new CensusPart[] {part});
     }
 
     private static long[] fabrolia$snapshotKeys(LevelCensus census) {
@@ -283,12 +363,17 @@ public final class SpawnCensus {
             Long2IntConcurrentHashMap ticking,
             NaturalSpawner.ChunkGetter chunkGetter,
             long[] keys,
-            CensusCounts out) {
+            CensusPart out,
+            ParallelSpawnHelper.SpawnFanoutGate gate) {
         boolean[] queryAccepted = new boolean[1];
         java.util.function.Consumer<net.minecraft.world.level.chunk.LevelChunk> accepted =
                 chunk -> queryAccepted[0] = true;
-        for (int i = 0; i < keys.length; i++) {
+        for (int i = out.from; i < out.to; i++) {
+            if (gate != null) {
+                gate.admitNext();
+            }
             long key = keys[i];
+            int sortedKeysIndex = i;
             // One key is one admitted live query + ledger read. If W wins,
             // no later key enters; an already-entered body fails normally.
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
@@ -310,7 +395,7 @@ public final class SpawnCensus {
                     if (m > 0) {
                         if (mobs == null) {
                             mobs = new int[C];
-                            out.mobSeed.put(key, mobs);
+                            out.putMobSeed(sortedKeysIndex, mobs);
                         }
                         mobs[cat] = m;
                         out.totalMobs += m;
@@ -320,17 +405,196 @@ public final class SpawnCensus {
         }
     }
 
-    static Reduced fabrolia$finishReduction(CensusCounts result) {
-        Reduced[] reduced = new Reduced[1];
-        RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            Object2IntOpenHashMap<MobCategory> counts = new Object2IntOpenHashMap<>(C);
-            for (int cat = 0; cat < C; cat++) {
-                int count = result.counts[cat];
-                if (count != 0) counts.put(CATEGORIES[cat], count);
+    private static void fabrolia$awaitCensusFanIn(
+            CensusRangeTask[] tasks, int count, ParallelSpawnHelper.SpawnFanoutGate gate) {
+        if (!ForkJoinTask.inForkJoinPool()) {
+            boolean interrupted = Thread.interrupted();
+            try {
+                while (true) {
+                    try {
+                        RegionScheduler.throwWorkerFailureIfAny();
+                    } catch (Throwable fatal) {
+                        gate.publishFailure(fatal);
+                    }
+                    if (gate.failureOrNull() != null) {
+                        for (int i = 0; i < count; i++) {
+                            tasks[i].cancelBeforeRun();
+                        }
+                    }
+                    boolean complete = true;
+                    for (int i = 0; i < count; i++) {
+                        if (!tasks[i].isDone()) {
+                            complete = false;
+                            break;
+                        }
+                    }
+                    if (!complete) {
+                        if (Thread.interrupted()) {
+                            interrupted = true;
+                        }
+                        LockSupport.parkNanos("Fabrolia spawn-census quiescence", 25_000L);
+                    }
+                    if (complete) {
+                        if (Thread.interrupted()) {
+                            interrupted = true;
+                        }
+                        break;
+                    }
+                }
+            } finally {
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
             }
-            reduced[0] = new Reduced(counts, result.mobSeed, result.totalMobs);
+        }
+        for (int i = 0; i < count; i++) {
+            if (gate.failureOrNull() != null) {
+                for (int k = 0; k < count; k++) {
+                    tasks[k].cancelBeforeRun();
+                }
+            }
+            try {
+                tasks[i].join();
+            } catch (Throwable encodedFailure) {
+                if (gate.failureOrNull() == null) {
+                    gate.publishFailure(encodedFailure);
+                }
+            }
+        }
+        try {
+            RegionScheduler.throwWorkerFailureIfAny();
+        } catch (Throwable fatal) {
+            gate.publishFailure(fatal);
+        }
+        Throwable failure = gate.failureOrNull();
+        if (failure != null) {
+            fabrolia$rethrow(failure);
+        }
+    }
+
+    static Reduced fabrolia$mergeParts(long[] keys, CensusPart[] parts) {
+        Reduced[] merged = new Reduced[1];
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            int seedEntryCount = 0;
+            int expectedFrom = 0;
+            for (CensusPart part : parts) {
+                if (part == null || part.from != expectedFrom || part.to < part.from || part.to > keys.length) {
+                    throw new IllegalStateException("non-contiguous census merge at " + expectedFrom);
+                }
+                int rangeLength = part.to - part.from;
+                if (part.mobSeedSize < 0
+                        || part.mobSeedSize > rangeLength
+                        || (part.mobSeedByOffset != null && part.mobSeedByOffset.length != rangeLength)
+                        || part.mobSeedSize > keys.length - seedEntryCount) {
+                    throw new IllegalStateException("invalid census seed shape at " + part.from);
+                }
+                seedEntryCount += part.mobSeedSize;
+                expectedFrom = part.to;
+            }
+            if (expectedFrom != keys.length) {
+                throw new IllegalStateException("incomplete census merge " + expectedFrom + "/" + keys.length);
+            }
+            Object2IntOpenHashMap<MobCategory> counts = new Object2IntOpenHashMap<>(C);
+            Long2ObjectOpenHashMap<int[]> mobSeed = new Long2ObjectOpenHashMap<>(Math.max(16, seedEntryCount));
+            int totalMobs = 0;
+            int mergedSeedEntries = 0;
+            for (CensusPart part : parts) {
+                for (int cat = 0; cat < C; cat++) {
+                    int n = part.counts[cat];
+                    if (n != 0) counts.addTo(CATEGORIES[cat], n);
+                }
+                int[][] byOffset = part.mobSeedByOffset;
+                if (byOffset != null) {
+                    for (int offset = 0; offset < byOffset.length; offset++) {
+                        int[] mobs = byOffset[offset];
+                        if (mobs != null) {
+                            mobSeed.put(keys[part.from + offset], mobs);
+                            mergedSeedEntries++;
+                        }
+                    }
+                }
+                totalMobs += part.totalMobs;
+            }
+            if (mergedSeedEntries != seedEntryCount) {
+                throw new IllegalStateException(
+                        "census seed cardinality mismatch " + mergedSeedEntries + "/" + seedEntryCount);
+            }
+            merged[0] = new Reduced(counts, mobSeed, totalMobs);
         });
-        return reduced[0];
+        return merged[0];
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
+        throw (T) failure;
+    }
+
+    private static final class CensusRangeTask extends RecursiveAction {
+        private static final int QUEUED = 0;
+        private static final int RUNNING = 1;
+        private static final int TERMINAL = 2;
+        private static final int CANCELLED = 3;
+
+        private final ParallelSpawnHelper.SpawnFanoutGate gate;
+        private final LevelCensus census;
+        private final Long2IntConcurrentHashMap ticking;
+        private final NaturalSpawner.ChunkGetter chunkGetter;
+        private final long[] keys;
+        private final CensusPart out;
+        private final AtomicInteger state = new AtomicInteger(QUEUED);
+
+        private CensusRangeTask(
+                ParallelSpawnHelper.SpawnFanoutGate gate,
+                LevelCensus census,
+                Long2IntConcurrentHashMap ticking,
+                NaturalSpawner.ChunkGetter chunkGetter,
+                long[] keys,
+                CensusPart out) {
+            this.gate = gate;
+            this.census = census;
+            this.ticking = ticking;
+            this.chunkGetter = chunkGetter;
+            this.keys = keys;
+            this.out = out;
+        }
+
+        @Override
+        protected void compute() {
+            if (!state.compareAndSet(QUEUED, RUNNING)) {
+                return;
+            }
+            Throwable failure = null;
+            try {
+                gate.admitNext();
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        () -> fabrolia$reduceRange(census, ticking, chunkGetter, keys, out, gate));
+                gate.admitNext();
+            } catch (Throwable thrown) {
+                failure = gate.publishFailure(thrown);
+            }
+            state.set(TERMINAL);
+            if (failure == null) {
+                try {
+                    RegionScheduler.commitSuccessIfHealthy(() -> {});
+                } catch (Throwable terminalFailure) {
+                    failure = gate.publishFailure(terminalFailure);
+                }
+            }
+            if (failure != null) {
+                fabrolia$rethrow(failure);
+            }
+        }
+
+        void cancelBeforeRun() {
+            if (state.compareAndSet(QUEUED, CANCELLED)) {
+                Throwable failure = gate.failureOrNull();
+                if (failure == null) {
+                    complete(null);
+                } else {
+                    completeExceptionally(failure);
+                }
+            }
+        }
     }
 
 

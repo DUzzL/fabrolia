@@ -66,7 +66,6 @@ public final class CrossDimArrivals {
                            long sourceTick, long sourceDomain, Entity entity,
                            RouteReceipt routeReceipt) {
         public StagedOp {
-            WorldGenEntityConstruction.revoke(entity);
             if (routeReceipt == null) routeReceipt = RouteReceipt.ACCEPTED_RECEIPT;
         }
 

@@ -1,8 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.entity.sensor;
 
 import com.axalotl.fabrolia.common.parallelised.utils.FastBitRadixSort;
-import com.axalotl.fabrolia.common.regions.NativePlayerObservations;
-import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.server.level.ServerLevel;
@@ -32,21 +30,11 @@ public abstract class PlayerSensorMixin {
 
     @WrapMethod(method = "doTick(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/entity/LivingEntity;)V")
     private void doTick(ServerLevel level, LivingEntity body, Operation<Void> original) {
-        // Unknown/global producers keep every native virtual callback. Local
-        // producers were admitted before their root body with the complete live
-        // player scan and current rich-candidate dependency closure.
-        if (RegionScheduler.workerCount() == 0 || RegionScheduler.ownsExclusiveGameplay()) {
-            original.call(level, body);
-            return;
-        }
         double followDist = this.getFollowDistance(body);
 
         Object[] arr = level.players().stream()
-                .filter(p -> NativePlayerObservations.testPredicate(p, EntitySelector.NO_SPECTATORS))
-                .filter(p -> body.position().closerThan(NativePlayerObservations.position(p), followDist))
-                // Sorting reads live coordinates; the narrow observer surface
-                // does not authorize it or either later targeting callback.
-                .peek(NativePlayerObservations::requireGameplayObservation)
+                .filter(EntitySelector.NO_SPECTATORS)
+                .filter(p -> body.closerThan(p, followDist))
                 .toArray();
 
         playerSort.sort(arr, arr.length, body.position());

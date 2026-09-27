@@ -1,16 +1,25 @@
 package com.axalotl.fabrolia.common.mixin.entity;
 
+import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
-import com.axalotl.fabrolia.common.regions.IslandCommands;
-import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySpawnReason;
+import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.entity.Relative;
+import net.minecraft.world.entity.monster.Endermite;
 import net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEnderpearl;
-import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.level.portal.TeleportTransition;
+import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
@@ -26,11 +35,13 @@ import org.spongepowered.asm.mixin.injection.At;
  * iterator NPE at ChunkDelivery:614, 2026-07-20). VMP's area watching maps and
  * vanilla's {@code pendingChunks} were equally exposed.
  *
- * <p>The complete native {@code onHit} producer runs on physical Main under the
- * source unit's typed writer rendezvous. Its original owner admission, RNG,
- * teleport, damage, sound and discard finish before the worker resumes. No
- * accepted player branch is detached from the lifecycle state that admitted it.
- * Flight and stasis ticks retain their existing island venue.
+ * <p>When the pearl ticks on a region worker and its owner is a live player,
+ * the vanilla teleport branch is short-circuited at the
+ * {@code isAcceptingMessages} admission check and the remainder of the vanilla
+ * player branch (endermite roll, portal cooldown, teleport, damage, sound) is
+ * re-run as a continuation on physical Main. The continuation re-validates the
+ * owner's listener and lifecycle before acting. Flight and stasis ticks retain
+ * their existing island venue.
  */
 @Mixin(ThrownEnderpearl.class)
 public abstract class ThrownEnderpearlMixin {
@@ -137,19 +148,84 @@ public abstract class ThrownEnderpearlMixin {
     private long fabrolia$tightenPearlRenewal(ServerPlayer owner, ThrownEnderpearl pearl,
                                               Operation<Long> original) {
         long timer = original.call(owner, pearl);
-        return com.axalotl.fabrolia.common.regions.RegionScheduler.isActive()
+        return RegionScheduler.isActive()
                 ? Math.min(timer, 30L) : timer;
     }
 
-    @WrapMethod(method = "onHit(Lnet/minecraft/world/phys/HitResult;)V",
-            require = 1, allow = 1)
-    private void fabrolia$runCompleteImpactOnMain(HitResult hit, Operation<Void> original) {
-        if (Thread.currentThread() instanceof RegionWorkerThread) {
-            IslandCommands.runPearlImpactOnMain(
-                    (ThrownEnderpearl) (Object) this, () -> original.call(hit));
-        } else {
-            original.call(hit);
+    @WrapOperation(method = "onHit",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/network/ServerGamePacketListenerImpl;isAcceptingMessages()Z"))
+    private boolean fabrolia$routePlayerTeleportToMain(ServerGamePacketListenerImpl connection,
+                                                       Operation<Boolean> original) {
+        if (!(Thread.currentThread() instanceof RegionWorkerThread)) {
+            return original.call(connection);
         }
+
+        ThrownEnderpearl self = (ThrownEnderpearl) (Object) this;
+        if (!(self.level() instanceof ServerLevel level)
+                || !(self.getOwner() instanceof ServerPlayer player)) {
+            return original.call(connection);
+        }
+
+        if (!original.call(connection)) {
+            return false;
+        }
+        if (!fabrolia$ownerTeleportAllowed(player, level)) {
+            return false;
+        }
+
+        Vec3 teleportPos = self.oldPosition();
+        boolean portalCooldown = self.isOnPortalCooldown();
+        float endermiteRoll = self.getRandom().nextFloat();
+        Runnable mainContinuation = () -> {
+            if (player.connection != connection
+                    || !connection.isAcceptingMessages()
+                    || !fabrolia$ownerTeleportAllowed(player, level)) {
+                throw new IllegalStateException(
+                        "accepted deferred pearl teleport lost its player/listener lifecycle: pearl="
+                                + self.getUUID()
+                                + " owner=" + player.getUUID()
+                                + " source=" + level.dimension().identifier()
+                                + " current=" + player.level().dimension().identifier());
+            }
+
+            if (endermiteRoll < 0.05F
+                    && level.isSpawningMonsters()
+                    && level.getLevelData().getDifficulty() != Difficulty.PEACEFUL) {
+                Endermite endermite = EntityTypes.ENDERMITE.create(level, EntitySpawnReason.TRIGGERED);
+                if (endermite != null) {
+                    endermite.snapTo(player.getX(), player.getY(), player.getZ(),
+                            player.getYRot(), player.getXRot());
+                    level.addFreshEntity(endermite);
+                }
+            }
+
+            if (portalCooldown) {
+                player.setPortalCooldown();
+            }
+
+            ServerPlayer newOwner = player.teleport(new TeleportTransition(
+                    level, teleportPos, Vec3.ZERO, 0.0F, 0.0F,
+                    Relative.union(Relative.ROTATION, Relative.DELTA),
+                    TeleportTransition.DO_NOTHING));
+            if (newOwner != null) {
+                newOwner.resetFallDistance();
+                newOwner.resetCurrentImpulseContext();
+                newOwner.hurtServer(player.level(), self.damageSources().enderPearl(), 5.0F);
+            }
+
+            level.playSound(null, teleportPos.x, teleportPos.y, teleportPos.z,
+                    SoundEvents.PLAYER_TELEPORT, SoundSource.PLAYERS);
+        };
+        RegionScheduler.enqueueGlobalMainOnly(mainContinuation);
+        return false;
+    }
+
+    @Unique
+    private static boolean fabrolia$ownerTeleportAllowed(ServerPlayer player, ServerLevel sourceLevel) {
+        return player.level() == sourceLevel
+                ? player.isAlive() && !player.isSleeping()
+                : player.isAlive() && player.canUsePortal(true);
     }
 
 }
