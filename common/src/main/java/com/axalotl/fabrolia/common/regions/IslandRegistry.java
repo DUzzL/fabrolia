@@ -464,6 +464,15 @@ public final class IslandRegistry {
          *  in that one logical tick while preserving command-before-scheduled
          *  semantics on the first attempt. Coordinator-only under unitClaim. */
         public long unitHeadAppliedL = Long.MIN_VALUE;
+        /** Candidate island-L of the current fail-closed scheduled-tick HOLD
+         *  streak and how many consecutive unit attempts held at it. Bounds
+         *  the same-L retry loop ({@link IslandScheduledTicks#SCHEDULED_HOLD_MAX_STREAK}):
+         *  a readiness hole that never heals (2026-09-27: deferred entity
+         *  status kept areEntitiesLoaded false for minutes) must degrade to
+         *  vanilla's per-container refusal instead of freezing the island.
+         *  Coordinator-only under unitClaim. */
+        public long scheduledHoldL = Long.MIN_VALUE;
+        public int scheduledHoldStreak;
         /** Coalescing keys for pendingIslandTasks (per-function dedup): a
          *  slow island runs a tick function once per ITS tick — missed
          *  server-tick dispatches drop, they never queue up into bursts

@@ -50,9 +50,13 @@ public final class ScheduledTickIslandAdmission {
 
     private ScheduledTickIslandAdmission() {}
 
-    /** {@code entityTickingRange}: the distance manager already places the chunk
-     *  in ENTITY-ticking range, so a false exact tickCheck is a transient hole.
-     *  The block-ticking ring is never exact in vanilla and stays DORMANT. */
+    /** {@code entityTickingRange}: the distance manager's simulation-level
+     *  answer (level {@code <= 31}), a narrowing heuristic only. It is NOT
+     *  vanilla's exact check, which also needs the ready BLOCK_TICKING future
+     *  and loaded entities. Outside that range vanilla refuses for distance
+     *  alone, so the refusal is stable and stays DORMANT; inside it the exact
+     *  refusal is a readiness hole, held for a bounded number of retries
+     *  ({@code IslandScheduledTicks.SCHEDULED_HOLD_MAX_STREAK}) by the caller. */
     static Decision classify(boolean exactTickCheck, boolean entityTickingRange,
                              boolean pulseCoherenceRequired) {
         if (exactTickCheck) return Decision.ADMIT;

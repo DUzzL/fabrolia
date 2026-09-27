@@ -181,6 +181,40 @@ final class EntityStatusOwnerTransactionTest {
     }
 
     @Test
+    void unclaimableOwnerDefersOnlyItsOwnChunksAndKeepsPerChunkOrder() throws Exception {
+        IslandRegistry.PIsland busy = owner(715L);
+        IslandRegistry.PIsland free = owner(716L);
+        var statuses = new PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions();
+        List<String> events = new ArrayList<>();
+        PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.Runner runner = (key, body) ->
+                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(
+                        key == 1L ? busy : free, false, body);
+        busy.unitClaim.set(true);
+        statuses.offer(1L, () -> events.add("busy:hidden"));
+        statuses.offer(2L, () -> {
+            events.add("free:hidden");
+            statuses.offer(2L, () -> events.add("free:tracked"));
+        });
+        statuses.offer(1L, () -> events.add("busy:tracked"));
+        statuses.offer(3L, () -> events.add("free3:hidden"));
+        statuses.drain(runner, false);
+        assertEquals(List.of("free:hidden", "free3:hidden", "free:tracked"), events,
+                "a busy island's head must not block other islands' status changes");
+        assertTrue(statuses.hasPending(1L));
+        assertFalse(statuses.hasPending(2L));
+        assertFalse(statuses.isEmpty());
+        statuses.offer(1L, () -> events.add("busy:ticking"));
+        busy.unitClaim.set(false);
+        statuses.drain(runner, false);
+        assertEquals(List.of("free:hidden", "free3:hidden", "free:tracked",
+                "busy:hidden", "busy:tracked", "busy:ticking"), events,
+                "deferred entries of one chunk keep their order ahead of later offers");
+        assertTrue(statuses.isEmpty());
+        assertFalse(busy.unitClaim.get());
+        assertFalse(IslandCommands.mainHolds(busy));
+    }
+
+    @Test
     void failedGenerationCancelsUnenteredStatusBodiesWithoutAcknowledgingTheirEffects() {
         var statuses = new PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions();
         List<String> effects = new ArrayList<>();

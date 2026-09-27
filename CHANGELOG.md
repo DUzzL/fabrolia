@@ -10,6 +10,14 @@
 
 ### Fixed
 
+- Deferred entity-chunk status transitions no longer block head-of-line: one
+  island whose claim Main cannot take stalled every other island's chunk
+  loading (entities never marked loaded, scheduled ticks held, chunk delivery
+  stuck) and paused all entity unloads level-wide. Entries are now deferred
+  per chunk while the rest of the queue drains.
+- Island scheduled-tick holds are bounded: after ~10 s of consecutive holds at
+  one logical tick the unit falls back to vanilla's per-container refusal and
+  logs SCHEDULED-HOLD-EXHAUSTED with chunk readiness details.
 - A due redstone (pulse-sensitive) scheduled tick in a chunk on the
   simulation-distance edge (block-ticking but not entity-ticking) no longer
   holds the whole island: vanilla never runs such a container either, so it

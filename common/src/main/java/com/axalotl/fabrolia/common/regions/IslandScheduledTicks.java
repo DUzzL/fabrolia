@@ -48,6 +48,16 @@ public final class IslandScheduledTicks {
     private static final long HOLD_LOG_INTERVAL_NANOS = 10_000_000_000L;
     private static final AtomicLong HOLDS_REPORTED = new AtomicLong();
     private static final AtomicLong HOLD_LAST_LOG_NANOS = new AtomicLong();
+    /**
+     * Consecutive same-L fail-closed HOLD attempts an island may make before a
+     * refused pulse-sensitive container degrades to vanilla's per-container
+     * refusal. A HOLD is retried by the pacer after
+     * {@code TemporalControl.Pacer.READINESS_RETRY_NANOS} = 50 ms, so 200
+     * attempts ≈ 10 s of wall time at 0 TPS: far beyond any genuine
+     * publication race (chunk future completion, entity status drain — tens
+     * of milliseconds), far below the multi-minute freeze seen in production.
+     */
+    static final int SCHEDULED_HOLD_MAX_STREAK = 200;
     private static final ThreadLocal<PrimitiveEntryScratch> NEXT_TICK_SCRATCH =
             ThreadLocal.withInitial(PrimitiveEntryScratch::new);
     /** Logical LevelTicks phase of the handler currently running on this
@@ -120,6 +130,73 @@ public final class IslandScheduledTicks {
         }
     }
 
+    /** True once the island already made {@link #SCHEDULED_HOLD_MAX_STREAK}
+     *  consecutive HOLD attempts at {@code unitTime}: the next refusal must
+     *  not hold again. Pure; coordinator-only fields. */
+    static boolean holdBudgetExhausted(IslandRegistry.PIsland owner, long unitTime) {
+        return owner.scheduledHoldL == unitTime
+                && owner.scheduledHoldStreak >= SCHEDULED_HOLD_MAX_STREAK;
+    }
+
+    /** Counts one HOLD attempt at {@code unitTime}; a different L starts a
+     *  fresh streak. Returns the streak length including this attempt. */
+    static int recordHold(IslandRegistry.PIsland owner, long unitTime) {
+        if (owner.scheduledHoldL != unitTime) {
+            owner.scheduledHoldL = unitTime;
+            owner.scheduledHoldStreak = 0;
+        }
+        return ++owner.scheduledHoldStreak;
+    }
+
+    /** The scheduled frontier was admitted at some L: the streak is over. */
+    static void clearHoldStreak(IslandRegistry.PIsland owner) {
+        owner.scheduledHoldL = Long.MIN_VALUE;
+        owner.scheduledHoldStreak = 0;
+    }
+
+    /** First exhausted-degrade at this island/L returns true exactly once; the
+     *  streak is bumped past the bound as the "already warned" marker (it is
+     *  reset by {@link #clearHoldStreak} or an L change). */
+    private static boolean firstExhaustedDegrade(IslandRegistry.PIsland owner) {
+        if (owner.scheduledHoldStreak != SCHEDULED_HOLD_MAX_STREAK) return false;
+        owner.scheduledHoldStreak++;
+        return true;
+    }
+
+    private static void reportHoldExhausted(ServerLevel level, IslandRegistry.PIsland owner,
+                                            long unitTime, long chunkPos,
+                                            ScheduledTick<?> head, String site) {
+        String message = "SCHEDULED-HOLD-EXHAUSTED streak=" + SCHEDULED_HOLD_MAX_STREAK
+                + " dim=" + level.dimension().identifier()
+                + " island#" + owner.id + "/g" + owner.gen
+                + " L=" + unitTime + " site=" + site
+                + " chunk=[" + ChunkPos.getX(chunkPos) + "," + ChunkPos.getZ(chunkPos) + "]"
+                + " head=" + describeHead(head)
+                + describeChunkReadiness(level, chunkPos)
+                + " -> degraded to vanilla per-container refusal";
+        FlightRecorder.record(message);
+        LOGGER.warn("[scheduled-ticks] {}", message);
+    }
+
+    /** Every input of vanilla's exact check plus the DM levels, so a log line
+     *  says WHICH leg refused (same probe shape as PortalStuckProbe). */
+    private static String describeChunkReadiness(ServerLevel level, long chunkPos) {
+        try {
+            var cs = level.getChunkSource();
+            var dm = cs.chunkMap.getDistanceManager();
+            var holder = cs.getVisibleChunkIfPresent(chunkPos);
+            return " simLevel=" + dm.getChunkLevel(chunkPos, true)
+                    + " loadLevel=" + dm.getChunkLevel(chunkPos, false)
+                    + " entityTickingRange=" + dm.inEntityTickingRange(chunkPos)
+                    + " ticketLevel=" + (holder == null ? "unloaded" : holder.getTicketLevel())
+                    + " tickingChunk=" + (holder != null && holder.getTickingChunk() != null)
+                    + " entitiesLoaded=" + level.areEntitiesLoaded(chunkPos)
+                    + " shouldTickBlocks=" + level.shouldTickBlocksAt(chunkPos);
+        } catch (Throwable t) {
+            return " readiness=probe-failed:" + t;
+        }
+    }
+
     /** Always-on but flood-safe evidence that a whole unit stayed at the same L. */
     private static void reportHold(ServerLevel level, long islandId, long unitTime,
                                    PreparedIslandLane<?> lane) {
@@ -140,7 +217,8 @@ public final class IslandScheduledTicks {
                 + " lane=" + (lane.blockLane ? "block" : "fluid")
                 + " chunk=[" + ChunkPos.getX(lane.holdChunk)
                 + "," + ChunkPos.getZ(lane.holdChunk) + "]"
-                + " reason=" + lane.holdReason + " head=" + head;
+                + " reason=" + lane.holdReason + " head=" + head
+                + describeChunkReadiness(level, lane.holdChunk);
         FlightRecorder.record(message);
         LOGGER.warn("[scheduled-ticks] {}", message);
     }
@@ -585,6 +663,7 @@ public final class IslandScheduledTicks {
                 access, null, new AtomicInteger(0), true, null);
         markHold(diagnostic, hold.chunkPos(), hold.head(), hold.reason());
         long islandId = owner.id;
+        recordHold(owner, unitTime);
         RegionScheduler.runSuccessBodyIfHealthy(
                 () -> reportHold(rs.level, islandId, unitTime, diagnostic));
         return false;
@@ -634,12 +713,20 @@ public final class IslandScheduledTicks {
                             "pulse-sensitive-head-preflight/open-write-frontier");
                 }
 
-
                 boolean entityDmBefore = inEntityTickingRange(rs.level, chunkPos);
                 boolean exact = access.fabrolia$tickCheck().test(chunkPos);
                 if (exact) continue;
                 boolean entityDmAfter = inEntityTickingRange(rs.level, chunkPos);
                 if (entityDmBefore || entityDmAfter) {
+                    if (holdBudgetExhausted(d.owner, unitTime)) {
+                        // Bounded HOLD: the hole did not heal within the
+                        // streak budget; vanilla's per-container refusal.
+                        if (firstExhaustedDegrade(d.owner)) {
+                            reportHoldExhausted(rs.level, d.owner, unitTime, chunkPos,
+                                    head, "head-preflight");
+                        }
+                        continue;
+                    }
                     return new CausalPreflightHold(chunkPos, head,
                             "pulse-sensitive-head-preflight/exact-refusal/dm-true");
                 }
@@ -649,13 +736,17 @@ public final class IslandScheduledTicks {
     }
 
     /**
-     * Vanilla's LevelTicks tickCheck ({@code isPositionTickingWithEntitiesLoaded})
-     * is false forever for the block-ticking ring at the simulation-distance edge:
-     * vanilla simply never runs those containers. Only a chunk the distance manager
-     * already places in ENTITY-ticking range can be a transient readiness hole
-     * worth holding the island for; the block-ticking ring is a stable dormant
-     * fringe and takes vanilla's per-container refusal. Holding on the block
-     * range froze a stationary player's island for minutes (2026-09-27).
+     * Narrowing heuristic for a refused pulse-sensitive container, NOT a
+     * substitute for vanilla's exact check. Vanilla's tickCheck
+     * ({@code isPositionTickingWithEntitiesLoaded}) also needs the holder's
+     * BLOCK_TICKING future to be ready and the chunk's entities loaded; the
+     * distance manager alone (simulation level {@code <= 31}) answers neither.
+     * A chunk outside DM entity-ticking range is refused by vanilla for the
+     * distance reason itself, so holding for it can only be a freeze: it takes
+     * vanilla's per-container refusal. A chunk inside that range MAY be a
+     * transient hole worth one retry cadence — or a stuck pipeline leg (deferred
+     * entity status, unready future), which is why the retry is bounded by
+     * {@link #SCHEDULED_HOLD_MAX_STREAK}. The log line prints every leg.
      */
     private static boolean inEntityTickingRange(ServerLevel level, long chunkPos) {
         return level.getChunkSource().chunkMap.getDistanceManager().inEntityTickingRange(chunkPos);
@@ -697,6 +788,7 @@ public final class IslandScheduledTicks {
                 rs.blockTicksAccess, rs.blockTicker, new AtomicInteger(65536), true);
         if (block.hold) {
             long islandId = d.owner != null ? d.owner.id : -1;
+            if (d.owner != null) recordHold(d.owner, unitTime);
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> reportHold(rs.level, islandId, unitTime, block));
             return false;
@@ -715,10 +807,14 @@ public final class IslandScheduledTicks {
         SliceExecution<?> blockExecution = commitPreparedBlockLane(block, unitTime);
         if (block.hold) {
             long islandId = d.owner != null ? d.owner.id : -1;
+            if (d.owner != null) recordHold(d.owner, unitTime);
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> reportHold(rs.level, islandId, unitTime, block));
             return false;
         }
+        // The scheduled frontier is admitted at this L: any same-L HOLD
+        // streak (head preflight or prepare) ends here.
+        if (d.owner != null) clearHoldStreak(d.owner);
 
         runCollectedIslandLane(block, blockExecution);
         RegionScheduler.runSuccessBodyIfHealthy(
@@ -1012,12 +1108,13 @@ public final class IslandScheduledTicks {
                 continue;
             }
 
-
             // Within the closed write frontier, exact tickCheck remains the
-            // readiness authority. The completed DM entity-ticking snapshot is
-            // sampled before it and, on refusal, once after it solely to
-            // distinguish stable dormant fringe (block-ticking ring, never
-            // exact in vanilla either) from a transient readiness/publication hole.
+            // readiness authority. The DM entity-ticking snapshot is sampled
+            // before it and, on refusal, once after it only as a narrowing
+            // heuristic: outside that range vanilla refuses for distance alone
+            // (DORMANT); inside it the refusal is a readiness hole that is
+            // usually transient — but bounded, since a stuck leg (entities not
+            // loaded, future not ready) would otherwise hold the island forever.
             boolean entityDmBefore = inEntityTickingRange(level, chunkPos);
             boolean exact = tickCheck.test(chunkPos);
             if (exact) {
@@ -1037,6 +1134,13 @@ public final class IslandScheduledTicks {
             ScheduledTickIslandAdmission.Decision decision =
                     ScheduledTickIslandAdmission.classify(
                             false, entityDmReady, pulseCoherenceRequired);
+            if (decision == ScheduledTickIslandAdmission.Decision.HOLD
+                    && d.owner != null && holdBudgetExhausted(d.owner, gameTime)) {
+                if (firstExhaustedDegrade(d.owner)) {
+                    reportHoldExhausted(level, d.owner, gameTime, chunkPos, peek, "prepare");
+                }
+                decision = ScheduledTickIslandAdmission.Decision.DORMANT;
+            }
             if (decision == ScheduledTickIslandAdmission.Decision.HOLD) {
                 markHold(lane, chunkPos, peek,
                         "pulse-sensitive-exact-refusal/dm-true");

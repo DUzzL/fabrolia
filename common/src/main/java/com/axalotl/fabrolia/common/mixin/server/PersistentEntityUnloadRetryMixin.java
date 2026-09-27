@@ -107,12 +107,19 @@ public abstract class PersistentEntityUnloadRetryMixin
                 // for every key turns a large unload pass into a lifecycle-lock
                 // convoy.  Standalone processChunkUnload callers still need
                 // their own exact W-vs-body admission.
+                //
+                // A deferred status change of THIS chunk must settle before
+                // unload observes its old HIDDEN value (C2ME's pop loop has no
+                // visibility predicate); a false result re-queues the key.
+                // Other chunks' deferrals are irrelevant here — a level-wide
+                // gate stalled every unload while one island stayed claimed.
                 if (insidePass) {
-                    stored = fabrolia$statusTransitions.isEmpty() && original.call(chunkPos);
+                    stored = !fabrolia$statusTransitions.hasPending(chunkPos) && original.call(chunkPos);
                 } else {
                     stored = com.axalotl.fabrolia.common.regions.RegionScheduler
                             .callSuccessBooleanIfHealthy(
-                                    () -> fabrolia$statusTransitions.isEmpty() && original.call(chunkPos));
+                                    () -> !fabrolia$statusTransitions.hasPending(chunkPos)
+                                            && original.call(chunkPos));
                 }
             } catch (Throwable bodyFailure) {
                 Throwable winner = com.axalotl.fabrolia.common.regions.RegionScheduler
@@ -212,7 +219,16 @@ public abstract class PersistentEntityUnloadRetryMixin
     }
 
     /** The queue monitor protects only admission, never callbacks or a claim
-     * wait. Reentrant chunk services append behind the exact active body. */
+     * wait. Reentrant chunk services append behind the exact active body.
+     *
+     * <p>Order is a per-chunk contract, not a global one: two islands are
+     * independent timelines, so an entry whose owner claim is unavailable is
+     * deferred (kept, in place) together with every later entry of the same
+     * chunk, while other chunks keep draining. Stopping at the queue head
+     * instead let one persistently claimed island block every status change
+     * of every other island — including the FRESH→queued-for-load promotion
+     * that vanilla's areEntitiesLoaded/tickCheck needs — and gated all entity
+     * unloads level-wide (2026-09-27 island#55 3.4-minute hold). */
     @Unique
     static final class FabroliaStatusTransitions {
         private record Entry(long chunkPos, Runnable body) {}
@@ -224,41 +240,78 @@ public abstract class PersistentEntityUnloadRetryMixin
         synchronized void cancel() {
             if (draining) throw new IllegalStateException("status cancellation preceded owner quiescence");
             pending.clear();
+            pendingByChunk.clear();
         }
         private final java.util.ArrayDeque<Entry> pending = new java.util.ArrayDeque<>();
+        /** Entries deferred by the active pass, in queue order; re-queued ahead
+         * of everything offered during that pass when it ends. */
+        private final java.util.ArrayList<Entry> retained = new java.util.ArrayList<>();
+        /** Unapplied entries per chunk: queued, deferred, or the active body. */
+        private final it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap pendingByChunk =
+                new it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap();
         private boolean draining;
 
         synchronized void offer(long chunkPos, Runnable body) {
             pending.addLast(new Entry(chunkPos, body));
+            pendingByChunk.addTo(chunkPos, 1);
         }
 
         synchronized boolean isEmpty() {
-            return pending.isEmpty();
+            return pendingByChunk.isEmpty();
+        }
+
+        /** True while any status change of this chunk is still unapplied,
+         * including the body running right now. */
+        synchronized boolean hasPending(long chunkPos) {
+            return pendingByChunk.containsKey(chunkPos);
+        }
+
+        private synchronized void applied(Entry entry) {
+            if (pendingByChunk.addTo(entry.chunkPos(), -1) == 1) {
+                pendingByChunk.remove(entry.chunkPos());
+            }
         }
 
         void drain(Runner runner, boolean flush) {
             synchronized (this) {
                 if (draining) {
-                    if (flush && !pending.isEmpty()) {
+                    if (flush && !pendingByChunk.isEmpty()) {
                         throw new IllegalStateException("entity save reentered an active status transition");
                     }
                     return;
                 }
                 draining = true;
             }
+            it.unimi.dsi.fastutil.longs.LongOpenHashSet deferredChunks = null;
             try {
                 while (true) {
                     Entry next;
                     synchronized (this) {
-                        next = pending.peekFirst();
+                        next = pending.pollFirst();
                     }
                     if (next == null) return;
-                    if (!runner.run(next.chunkPos(), next.body())) {
-                        if (flush) continue; // unentered topology change: resolve the same head afresh
-                        return;
+                    if (deferredChunks != null && deferredChunks.contains(next.chunkPos())) {
+                        synchronized (this) {
+                            retained.add(next); // same chunk: stays behind its deferred predecessor
+                        }
+                        continue;
+                    }
+                    if (runner.run(next.chunkPos(), next.body())) {
+                        applied(next);
+                        continue;
                     }
                     synchronized (this) {
-                        pending.removeFirst();
+                        if (flush) {
+                            pending.addFirst(next); // unentered topology change: resolve the same head afresh
+                        } else {
+                            retained.add(next);
+                        }
+                    }
+                    if (!flush) {
+                        if (deferredChunks == null) {
+                            deferredChunks = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+                        }
+                        deferredChunks.add(next.chunkPos());
                     }
                 }
             } catch (Throwable failure) {
@@ -267,10 +320,17 @@ public abstract class PersistentEntityUnloadRetryMixin
                 synchronized (this) {
                     // A partially entered body is never replayed after W.
                     pending.clear();
+                    retained.clear();
+                    pendingByChunk.clear();
                 }
                 com.axalotl.fabrolia.common.regions.IslandCommands.publishAndPropagate(winner);
             } finally {
                 synchronized (this) {
+                    // Deferred entries precede everything offered during this pass.
+                    for (int i = retained.size() - 1; i >= 0; i--) {
+                        pending.addFirst(retained.get(i));
+                    }
+                    retained.clear();
                     draining = false;
                 }
             }
@@ -310,10 +370,7 @@ public abstract class PersistentEntityUnloadRetryMixin
 
     @WrapMethod(method = "processUnloads")
     private void fabrolia$restoreFailedUnloadRequests(Operation<Void> original) {
-        // A retained promotion must settle before unload observes the old
-        // HIDDEN value. In particular the owner may become free between this
-        // tick's failed status admission and its later unload pass.
-        if (!fabrolia$statusTransitions.isEmpty()) return;
+        // Per-chunk deferred status changes are gated inside processChunkUnload.
         if (Boolean.TRUE.equals(fabrolia$insideProcessUnloads.get())) {
             // Re-entrant execution inherits the top-level pass admission.
             original.call();
