@@ -87,7 +87,8 @@ public final class VmpTrackingFanoutGate {
       }
    }
 
+   @SuppressWarnings("unchecked")
    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-      throw failure;
+      throw (T) failure;
    }
 }
