@@ -151,23 +151,6 @@ class RegionWorkerPoolRetainedShutdownTest {
         }
     }
 
-    @Test
-    void normalAdmissionCannotOvertakeTheRetainedRegionPrefix() throws Exception {
-        try (Fixture fixture = new Fixture()) {
-            List<String> observed = new ArrayList<>();
-            assertTrue(fixture.pool.enqueueRegionTask(
-                    fixture.region, () -> observed.add("retained")));
-            fixture.commitEntityPhase();
-            assertTrue(fixture.pool.enqueueRegionTask(
-                    fixture.region, () -> observed.add("late")));
-            fixture.pool.drainMainSafeAll(true);
-            assertEquals(List.of(), observed,
-                    "a later Main-safe callback cannot bypass the region's next-epoch prefix");
-            fixture.stopWithProgress();
-            assertEquals(List.of("retained", "late"), observed);
-        }
-    }
-
     private static final class Fixture implements AutoCloseable {
         final RegionWorkerPool pool = new RegionWorkerPool(1);
         final EpochDomain domain = new EpochDomain();

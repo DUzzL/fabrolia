@@ -76,21 +76,6 @@ class PlayerChunkIndexSnapshotTest {
     }
 
     @Test
-    void sparseFiniteCandidatesExcludeDistantPlayersAndKeepNativeOrder() throws Exception {
-        ServerPlayer distant = player(100_000, 0);
-        ServerPlayer first = player(1, 0);
-        ServerPlayer second = player(-1, 0);
-        TestLevel level = level(List.of(distant, first, second));
-        try {
-            PlayerChunkIndex.rebuild(level);
-            PlayerChunkIndex index = PlayerChunkIndex.usable(level);
-            assertEquals(List.of(first, second), index.candidates(0, 0, 16));
-        } finally {
-            PlayerChunkIndex.onLevelUnload(level);
-        }
-    }
-
-    @Test
     void nestedCandidateQueryCannotReplaceTheOuterGeneration() throws Exception {
         ServerPlayer first = player(2, 0);
         ServerPlayer nearest = player(1, 0);

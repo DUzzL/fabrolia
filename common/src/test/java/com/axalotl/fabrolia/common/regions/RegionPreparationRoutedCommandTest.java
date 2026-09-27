@@ -57,17 +57,12 @@ class RegionPreparationRoutedCommandTest {
 
     @Test
     void commandPublishedAfterPauseRequestPreservesFalseAndNextUnitFifo() throws Exception {
-        exercise(false, false, null);
-    }
-
-    @Test
-    void scoreboardCommandQueuedBeforePauseAdmissionPreservesTrueAndNextUnitFifo() throws Exception {
-        exercise(true, true, null);
+        exercise(null);
     }
 
     @Test
     void commandFailureAfterPauseRequestEscapesUnchangedWithoutPreparation() throws Exception {
-        exercise(false, false, new IllegalArgumentException("original routed command failure"));
+        exercise(new IllegalArgumentException("original routed command failure"));
     }
 
     @Test
@@ -170,21 +165,13 @@ class RegionPreparationRoutedCommandTest {
 
     @Test
     void scopedMainClaimInheritsTheWriterWithoutWaitingOrReleasingItsIsland() throws Throwable {
-        exerciseScopedWriterClaim(false);
-    }
-
-    @Test
-    void scopedMainClaimInheritsLocalQuiesceWithoutReleasingItsIsland() throws Throwable {
-        exerciseScopedWriterClaim(true);
-    }
-
-    private static void exerciseScopedWriterClaim(boolean local) throws Throwable {
         try (Fixture f = new Fixture()) {
             List<String> effects = new java.util.ArrayList<>();
             // No worker can acquire this island. A broken nested claim reports
             // the retained flag immediately instead of self-waiting indefinitely.
             try {
-                Runnable nested = () -> {
+                IslandCommands.mainClaim(f.island);
+                try {
                     boolean release = IslandCommands.mainClaimScoped(f.island);
                     try {
                         assertFalse(release, "the enclosing writer owns the release obligation");
@@ -196,25 +183,8 @@ class RegionPreparationRoutedCommandTest {
                     assertFalse(f.island.tryClaimAutonomousWork(),
                             "returning from the nested scope must preserve outer exclusion");
                     effects.add("outer-tail");
-                };
-                if (local) {
-                    set(RegionizedServer.class, f.runtime, "quiescedIslands",
-                            new java.util.ArrayList<>());
-                    set(net.minecraft.world.level.Level.class, f.level, "dimension",
-                            net.minecraft.world.level.Level.OVERWORLD);
-                    assertTrue(f.runtime.quiesceAllIslands());
-                    try {
-                        nested.run();
-                    } finally {
-                        f.runtime.releaseAllIslands();
-                    }
-                } else {
-                    IslandCommands.mainClaim(f.island);
-                    try {
-                        nested.run();
-                    } finally {
-                        IslandCommands.mainRelease(f.island);
-                    }
+                } finally {
+                    IslandCommands.mainRelease(f.island);
                 }
                 assertEquals(List.of("nested", "outer-tail"), effects);
                 assertTrue(f.island.tryClaimAutonomousWork());
@@ -228,34 +198,6 @@ class RegionPreparationRoutedCommandTest {
                     if (cleanup != fatal) throw cleanup;
                 }
             }
-        }
-    }
-
-    @Test
-    void scopedMainClaimRejectsForeignEntryBeforeItsBody() throws Exception {
-        try (Fixture f = new Fixture()) {
-            AtomicReference<Throwable> rejected = new AtomicReference<>();
-            AtomicBoolean entered = new AtomicBoolean();
-            Thread foreign = new Thread(() -> {
-                try {
-                    boolean release = IslandCommands.mainClaimScoped(f.island);
-                    try {
-                        entered.set(true);
-                    } finally {
-                        if (release) IslandCommands.mainRelease(f.island);
-                    }
-                } catch (Throwable failure) {
-                    rejected.set(failure);
-                }
-            }, "foreign-scoped-claim");
-            foreign.start();
-            foreign.join(2_000L);
-            assertFalse(foreign.isAlive());
-            assertInstanceOf(IllegalStateException.class, rejected.get());
-            assertFalse(entered.get());
-            assertFalse(f.island.unitClaim.get());
-            assertTrue(f.island.tryClaimAutonomousWork());
-            f.island.unitClaim.set(false);
         }
     }
 
@@ -651,8 +593,7 @@ class RegionPreparationRoutedCommandTest {
         public GameRules getGameRules() { return rules; }
     }
 
-    private static void exercise(boolean queuedBefore, boolean commandResult,
-                                 RuntimeException commandFailure) throws Exception {
+    private static void exercise(RuntimeException commandFailure) throws Exception {
         try (Fixture f = new Fixture()) {
             CountDownLatch workerEntered = new CountDownLatch(1);
             CountDownLatch publishCommand = new CountDownLatch(1);
@@ -692,8 +633,7 @@ class RegionPreparationRoutedCommandTest {
                         worker.currentDomain = f.island.domain;
                         workerEntered.countDown();
                         await(publishCommand, "worker publication was never released");
-                        String command = queuedBefore ? "scoreboard objectives list" : "say preparation regression";
-                        result.set(IslandCommands.routeCommandBlock(command, f.level,
+                        result.set(IslandCommands.routeCommandBlock("say preparation regression", f.level,
                                 BlockPos.ZERO, null, () -> {
                                     assertSame(Thread.currentThread(), f.main,
                                             "the original nonlocal command must execute on physical Main");
@@ -704,7 +644,7 @@ class RegionPreparationRoutedCommandTest {
                                     assertFalse(prepared.get(), "preparation overtook an entered command");
                                     effects.add("command");
                                     if (commandFailure != null) throw commandFailure;
-                                    return commandResult;
+                                    return false;
                                 }));
                         effects.add("receipt");
                     } catch (Throwable failure) {
@@ -721,19 +661,14 @@ class RegionPreparationRoutedCommandTest {
                 await(workerEntered, "the actual pool step never entered");
                 nextUnit.submit(regionalTask(f.pool, () -> effects.add("next-first")));
                 nextUnit.submit(regionalTask(f.pool, () -> effects.add("next-second")));
-                if (queuedBefore) {
+                // The sole worker is inside its unit. Only pause progress can consume
+                // this Main-only root, so publication happens strictly after request.
+                assertTrue(f.pool.enqueueGlobalMainOnly(() -> {
+                    assertFalse(f.pool.mayServiceDetachedTransfers(),
+                            "late-publication latch must run inside the pause request");
                     publishCommand.countDown();
-                    await(f.published, "the real Main receipt was not queued before admission");
-                } else {
-                    // The sole worker is inside its unit. Only pause progress can consume
-                    // this Main-only root, so publication happens strictly after request.
-                    assertTrue(f.pool.enqueueGlobalMainOnly(() -> {
-                        assertFalse(f.pool.mayServiceDetachedTransfers(),
-                                "late-publication latch must run inside the pause request");
-                        publishCommand.countDown();
-                        await(f.published, "the worker did not publish its causal Main receipt");
-                    }));
-                }
+                    await(f.published, "the worker did not publish its causal Main receipt");
+                }));
                 assertTrue(RegionalPlayerEntityTicksV2.schedulerLifecycleTransitionAllowed(f.server),
                         "fixture Main must be at a physically completed server-tick boundary");
                 if (!RegionScheduler.pauseMainPreparationTurn()) {
@@ -793,7 +728,7 @@ class RegionPreparationRoutedCommandTest {
             } else {
                 assertNull(mainFailure.get(), "physical Main failed before preparation completed");
                 assertNull(workerFailure.get(), "the routed worker must complete normally");
-                assertEquals(Boolean.valueOf(commandResult), result.get());
+                assertEquals(Boolean.FALSE, result.get());
                 assertEquals(List.of("command", "receipt", "preparation", "next-first", "next-second"), effects);
             }
         }

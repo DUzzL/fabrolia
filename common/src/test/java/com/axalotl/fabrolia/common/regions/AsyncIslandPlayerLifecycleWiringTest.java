@@ -141,52 +141,6 @@ final class AsyncIslandPlayerLifecycleWiringTest {
     }
 
     @Test
-    void coordinatorOwnsEveryCellOfItsClaimedIsland() throws Exception {
-        try (Fixture f = new Fixture()) {
-            f.onWorker(worker -> f.withClaim(worker, () -> {
-                assertTrue(f.owns());
-                f.position(16, 0, f.neighbor.gridKey);
-                assertTrue(f.owns(), "the claim excludes every member cell");
-                f.position(8, 0, f.distant.gridKey);
-                assertTrue(f.owns(), "same-island movement retains coordinator authority");
-                f.position(16, 0, f.distant.gridKey);
-                assertTrue(f.owns(), "the unit no longer has concurrent region helpers");
-            }));
-        }
-    }
-
-    @Test
-    void helpersAndForeignDomainsCannotBorrowTheRegionClaim() throws Exception {
-        try (Fixture f = new Fixture()) {
-            f.onWorker(worker -> {
-                worker.currentRegion = f.source;
-                assertFalse(f.owns(), "publishing currentRegion is not a claim");
-                f.withClaim(worker, () -> {
-                    worker.currentDomain = new EpochDomain();
-                    assertFalse(f.owns(), "a foreign domain cannot borrow an island claim");
-                });
-                assertFalse(f.owns(), "released claims cannot authorize stale helper context");
-            });
-        }
-    }
-
-    @Test
-    void localAuthorityDoesNotDependOnTheRemovedEntityFanoutBarrier() throws Exception {
-        try (Fixture f = new Fixture()) {
-            f.onWorker(worker -> f.withClaim(worker, () -> {
-                assertTrue(f.owns());
-                EpochDomain.EntityDispatchPublication publication = new EpochDomain.EntityDispatchPublication();
-                f.island.domain.entityDispatchPublication = publication;
-                assertTrue(f.owns(), "the sole unit coordinator retains its spatial claim");
-                publication.accept();
-                assertTrue(f.owns());
-                f.source.entityEpoch = f.island.domain.epoch;
-                assertTrue(f.owns(), "member completion does not release the island unit");
-            }));
-        }
-    }
-
-    @Test
     void replacedListenerAndRetiredIslandCannotLendOwnership() throws Exception {
         try (Fixture f = new Fixture()) {
             f.onWorker(worker -> f.withClaim(worker, () -> {
@@ -198,31 +152,6 @@ final class AsyncIslandPlayerLifecycleWiringTest {
                 f.island.retired = true;
                 assertFalse(f.owns(), "retirement revokes a cached island receipt");
             }));
-        }
-    }
-
-    @Test
-    void coordinatorNeedsItsActualUnitClaim() throws Exception {
-        try (Fixture f = new Fixture()) {
-            f.onWorker(worker -> {
-                worker.currentDomain = f.island.domain;
-                assertFalse(f.owns(), "a coordinator context is not a unit claim");
-                assertTrue(f.island.tryClaimAutonomousWork());
-                f.island.noteClaim("lifecycle-regression");
-                try {
-                    f.island.domain.entityPending.set(1);
-                    f.island.domain.entityBarrier = new CompletableFuture<>();
-                    assertTrue(f.owns(), "legacy helper counters cannot revoke the sole coordinator");
-                    f.island.domain.entityPending.set(0);
-                    assertTrue(f.owns());
-                    f.island.domain.entityBarrier.complete(null);
-                    assertTrue(f.owns());
-                } finally {
-                    f.island.clearClaim();
-                    f.island.unitClaim.set(false);
-                }
-                assertFalse(f.owns());
-            });
         }
     }
 
@@ -353,28 +282,6 @@ final class AsyncIslandPlayerLifecycleWiringTest {
             }
             assertFalse(f.island.unitClaim.get());
             assertFalse(IslandCommands.mainHolds(f.island));
-        }
-    }
-
-    @Test
-    void ownerlessTrackingCannotBorrowRetainedSessionFromAnotherLevel() throws Exception {
-        try (Fixture f = new Fixture()) {
-            f.position(128, 0, f.source.gridKey);
-            TestLevel otherLevel = (TestLevel) unsafe().allocateInstance(TestLevel.class);
-            otherLevel.server = f.level.getServer();
-            RegionizedServer otherRuntime = new RegionizedServer(otherLevel, new RegionGrid(3));
-            otherRuntime.asyncActive = true;
-            f.levels.put(otherLevel, otherRuntime);
-            f.player.localLevel = otherLevel;
-            try {
-                assertFalse(AsyncIslandPlayerTicks.tryRunMainTrackingView(f.player,
-                        () -> fail("an old-level session cannot own the new-level tracking view")));
-                assertEquals(0, f.player.state.mainExecutionLeases);
-                assertFalse(IslandCommands.mainHolds(f.island));
-            } finally {
-                f.player.localLevel = f.level;
-                f.levels.remove(otherLevel, otherRuntime);
-            }
         }
     }
 

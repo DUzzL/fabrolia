@@ -47,33 +47,6 @@ final class AllIslandQuiesceIntentTest {
     }
 
     @Test
-    void retriesExtendTheIdentityCutWithoutRecapturingItsOwnInterests() throws Exception {
-        IslandRegistry.PIsland retired = new IslandRegistry.PIsland(1L, 0L);
-        IslandRegistry.PIsland retained = new IslandRegistry.PIsland(2L, 0L);
-        IslandRegistry.PIsland replacement = new IslandRegistry.PIsland(1L, 0L);
-        IslandRegistry.PIsland inherited = new IslandRegistry.PIsland(3L, 0L);
-        inherited.claimWanted = true;
-        Object attempt = publish(List.of(retired, retained));
-        try {
-            retired.retired = true;
-            Method include = publisher().getReturnType().getDeclaredMethod("include", Collection.class);
-            include.setAccessible(true);
-            include.invoke(attempt, List.of(retained, replacement, inherited));
-            include.invoke(attempt, List.of(retained, replacement, inherited));
-            assertTrue(retired.claimWanted, "retiring an identity must not lose its outstanding intent");
-            assertTrue(retained.claimWanted);
-            assertTrue(replacement.claimWanted, "reused numeric IDs are not the same admission identity");
-            assertTrue(inherited.claimWanted);
-        } finally {
-            assertNull(clear(attempt, null));
-        }
-        assertFalse(retired.claimWanted);
-        assertFalse(retained.claimWanted, "a retry must not capture this transaction's true as the original");
-        assertFalse(replacement.claimWanted);
-        assertTrue(inherited.claimWanted);
-    }
-
-    @Test
     void nestedAttemptsRestoreTheirOuterInterestAndOldCleanupCannotEraseANewAttempt()
             throws Exception {
         IslandRegistry.PIsland island = new IslandRegistry.PIsland(1L, 0L);

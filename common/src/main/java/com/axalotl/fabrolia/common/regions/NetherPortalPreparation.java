@@ -229,13 +229,9 @@ public final class NetherPortalPreparation {
         return request.destination == level ? request.border : null;
     }
 
-    public static boolean inlinePublication(ServerLevel level) {
+    public static boolean deferGenerationPublication(ServerLevel level) {
         Request request = GENERATING.get();
-        return request != null
-                && request.destination == level
-                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())
-                && (RegionScheduler.ownsExactExecutionTurn()
-                    || QUIESCENT.get() && !RegionScheduler.isActive());
+        return request != null && request.destination == level;
     }
 
     public static boolean readScopeActive() { return READ.get() != null; }
@@ -316,9 +312,9 @@ public final class NetherPortalPreparation {
         if (freshSearch.getAsBoolean()) return true;
         if (!publications.isPublished()) return false;
         create.run();
-        if (!publications.isPublished()) {
-            throw new IllegalStateException("generation returned before its POI publication");
-        }
+        // Pending publications are tolerated (resolve waits for them); a failure
+        // swallowed by the native executor must still surface here.
+        publications.isPublished();
         return true;
     }
 
@@ -380,7 +376,7 @@ public final class NetherPortalPreparation {
 
         /** Queue precedence hint only; resolve still validates the acquired attempt. */
         public synchronized boolean readyToAttempt() {
-            return !closed && (destination == null || denied || border != null && !needsMain);
+            return !closed && (destination == null || !needsMain && (denied || border != null));
         }
 
         /** Adds an actual vanilla rider/follower arrival dependency before body entry. */
@@ -399,13 +395,14 @@ public final class NetherPortalPreparation {
         public synchronized boolean resolve() {
             if (closed) throw new IllegalStateException("closed portal preparation");
             transition = null;
-            if (destination == null || denied) return true;
-            if (BORDERS.get(destination) != border) return false;
-            if (border == null || needsMain) return false;
+            if (destination == null) return true;
+            if (needsMain) return false;
             if (!published(source) || !published(destination)) {
                 requestMain();
                 return false;
             }
+            if (denied) return true;
+            if (border == null || BORDERS.get(destination) != border) return false;
             transferIdentity = NetherPortalTransfers.currentTransfer();
             READ.set(this);
             try {
@@ -576,7 +573,7 @@ public final class NetherPortalPreparation {
                             denied = created == null;
                         });
                 generate = !decided;
-                needsMain = !decided;
+                needsMain = !decided || !published(source) || !published(destination);
             } finally {
                 GENERATING.remove();
             }

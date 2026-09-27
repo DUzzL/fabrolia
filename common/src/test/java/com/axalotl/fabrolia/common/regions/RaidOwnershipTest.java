@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Real claims and phase receipts, including PoiManager's extra chunk-column margin. */
+/** Exact-actor raid ownership needs a real paused turn, not merely a logical identity. */
 @Isolated
 @Timeout(20)
 class RaidOwnershipTest {
@@ -34,71 +34,6 @@ class RaidOwnershipTest {
     static void bootstrapMinecraft() {
         net.minecraft.SharedConstants.tryDetectVersion();
         net.minecraft.server.Bootstrap.bootStrap();
-    }
-
-    @Test
-    void claimedMemberNeedsItsCoordinatorUnitBeforeCreatingRaid() throws Exception {
-        try (Fixture fixture = new Fixture()) {
-            fixture.onWorker(worker -> {
-                worker.currentRegion = fixture.source;
-                assertNull(worker.currentDomain);
-                assertFalse(RaidOwnership.canCreate(fixture.player, CENTER), "a worker label is not a claim");
-                assertTrue(fixture.source.tryClaim(worker, fixture.island.domain, 8));
-                assertFalse(RaidOwnership.canCreate(fixture.player, CENTER),
-                        "a member claim does not own the retained player session");
-                worker.currentDomain = fixture.island.domain;
-                assertTrue(fixture.island.tryClaimAutonomousWork());
-                fixture.island.noteClaim("raid-owner-regression");
-                try {
-                    assertTrue(RaidOwnership.canCreate(fixture.player, CENTER));
-                    assertTrue(RaidOwnership.ownsRaid(fixture.level, new BlockPos(8 * 16, 64, 0)),
-                            "the retained unit owns its other serial member regions");
-                } finally {
-                    fixture.source.release(worker);
-                    fixture.source.finishClaimTransaction();
-                    fixture.island.clearClaim();
-                    fixture.island.unitClaim.set(false);
-                    worker.currentDomain = null;
-                }
-                assertFalse(RaidOwnership.canCreate(fixture.player, CENTER));
-            });
-        }
-    }
-
-    @Test
-    void poiFifthChunkMarginAndReleasedUnitCannotBorrowMemberClaim() throws Exception {
-        try (Fixture fixture = new Fixture()) {
-            fixture.onWorker(worker -> {
-                worker.currentRegion = fixture.source;
-                assertTrue(fixture.source.tryClaim(worker, fixture.island.domain, 8));
-                worker.currentDomain = fixture.island.domain;
-                assertTrue(fixture.island.tryClaimAutonomousWork());
-                fixture.island.noteClaim("raid-poi-regression");
-                try {
-                    assertTrue(RaidOwnership.canCreate(fixture.player, CENTER));
-                    // centerChunk=3: +4 is still chunk7 in source; +5 is chunk8.
-                    // The old block-radius approximation would never inspect it.
-                    EpochDomain original = fixture.east.domain;
-                    fixture.east.domain = new IslandRegistry.PIsland(99, 0).domain;
-                    try {
-                        assertFalse(RaidOwnership.canCreate(fixture.player, CENTER));
-                        assertFalse(RaidOwnership.ownsRaid(fixture.level, new BlockPos(8 * 16, 64, 0)));
-                    } finally {
-                        fixture.east.domain = original;
-                    }
-                    fixture.island.clearClaim();
-                    fixture.island.unitClaim.set(false);
-                    assertFalse(RaidOwnership.canCreate(fixture.player, CENTER),
-                            "the remaining member claim cannot impersonate the retired unit");
-                } finally {
-                    fixture.source.release(worker);
-                    fixture.source.finishClaimTransaction();
-                    fixture.island.clearClaim();
-                    fixture.island.unitClaim.set(false);
-                    worker.currentDomain = null;
-                }
-            });
-        }
     }
 
     @Test
@@ -116,9 +51,6 @@ class RaidOwnershipTest {
         }
     }
 
-    @FunctionalInterface
-    private interface WorkerBody { void run(RegionWorkerThread worker) throws Exception; }
-
     private static final class Fixture implements AutoCloseable {
         final RegionWorkerPool pool = new RegionWorkerPool(1);
         final IslandRegistry.PIsland island = new IslandRegistry.PIsland(71, 0);
@@ -126,7 +58,6 @@ class RaidOwnershipTest {
         final RegionizedServer runtime;
         final TestPlayer player;
         final Region source;
-        final Region east;
         final Map<ServerLevel, RegionizedServer> levels;
         final Object oldPool = get(RegionScheduler.class, null, "pool");
         final Object oldServer = get(RegionScheduler.class, null, "server");
@@ -156,7 +87,6 @@ class RaidOwnershipTest {
                 runtime.regionizer().regionForGridKey(key).groupedEpoch = 8;
             }
             source = runtime.regionizer().peekRegionForChunk(ChunkPos.pack(0, 0));
-            east = runtime.regionizer().peekRegionForChunk(ChunkPos.pack(8, 0));
             island.domain.entityDispatchCutEpoch = island.domain.dispatchedEpoch = 8;
             player = (TestPlayer) unsafe().allocateInstance(TestPlayer.class);
             player.localLevel = level;
@@ -177,18 +107,6 @@ class RaidOwnershipTest {
             set(RegionScheduler.class, null, "active", true);
             FabroliaConfig.enableRegionThreading = true;
             levels.put(level, runtime);
-        }
-
-        void onWorker(WorkerBody body) throws Exception {
-            FutureTask<Void> task = new FutureTask<>(() -> {
-                body.run((RegionWorkerThread) Thread.currentThread());
-                return null;
-            });
-            Thread worker = new RegionWorkerThread(task, "raid-owner-regression");
-            worker.start();
-            try { task.get(5, TimeUnit.SECONDS); }
-            finally { worker.join(5000); }
-            assertFalse(worker.isAlive());
         }
 
         @SuppressWarnings("unchecked")

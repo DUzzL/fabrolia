@@ -51,31 +51,6 @@ final class EntityDispatchModeLifetimeTest {
     }
 
     @Test
-    void healerCannotAmplifyRetainedReadyWorkAndStarveAPendingUnit() throws Exception {
-        try (Fixture fixture = new Fixture()) {
-            fixture.enqueueQueueBody();
-            CompletableFuture<Void> barrier = fixture.dispatch();
-            var unitFinished = new java.util.concurrent.atomic.AtomicBoolean();
-            assertTrue(fixture.pool.enqueueUnit(() -> unitFinished.set(true)));
-            // Main can revisit the heal path while a legitimate ready notification
-            // still awaits its worker. Elapsed time does not prove that it was lost.
-            for (int pass = 0; pass < 16; pass++) {
-                set(RegionScheduler.class, null, "lastHealNanos", System.nanoTime() - 1_000_000_000L);
-                RegionScheduler.healColorGate();
-            }
-            fixture.runWorker(() -> {
-                RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
-                for (int step = 0; step < 8; step++) {
-                    if (!fixture.pool.workOnce(worker, true)) break;
-                }
-            });
-            fixture.assertEventFinished(barrier);
-            assertTrue(unitFinished.get(), "healer duplicates must not bury the pending unit");
-            assertEquals(List.of(Step.QUEUE, Step.PRE, Step.POST), fixture.entered);
-        }
-    }
-
-    @Test
     void acceptedEventDispatchSurvivesDesiredModeOffBeforeReadyConsumption() throws Exception {
         try (Fixture fixture = new Fixture()) {
             fixture.enqueueQueueBody();

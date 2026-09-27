@@ -40,7 +40,9 @@ public abstract class ServerGamePacketListenerIslandMixin implements AsyncIsland
         ServerGamePacketListenerImpl listener =
                 (ServerGamePacketListenerImpl) (Object) this;
         AsyncIslandPlayerTicks.runPhysicalMainDisconnect(
-                listener, listener.player.level().getServer(),
+                listener,
+                ((com.axalotl.fabrolia.common.mixin.network.ServerCommonPacketListenerAccessor) this)
+                        .fabrolia$getServer(),
                 () -> original.call(details));
     }
 

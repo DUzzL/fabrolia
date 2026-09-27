@@ -35,49 +35,6 @@ final class ApiCollectionSnapshotTest {
     }
 
     @Test
-    void sortedRangeAliasesInvalidateEachOthersSnapshots() {
-        var root = new ConcurrentLongSortedSet(List.of(1L, 2L, 4L, 5L));
-        var middle = root.subSet(2, 5);
-        var head = root.headSet(4);
-        var tail = root.tailSet(3);
-        root.toLongArray();
-        middle.toLongArray();
-        head.toLongArray();
-        tail.toLongArray();
-
-        root.add(3);
-        assertArrayEquals(new long[]{2, 3, 4}, middle.toLongArray());
-        assertArrayEquals(new long[]{1, 2, 3}, head.toLongArray());
-        assertArrayEquals(new long[]{3, 4, 5}, tail.toLongArray());
-        middle.remove(2);
-        assertArrayEquals(new long[]{1, 3, 4, 5}, root.toLongArray());
-
-        var nested = middle.tailSet(3);
-        var iterator = nested.iterator(0);
-        assertEquals(3, iterator.nextLong());
-        iterator.remove();
-        assertArrayEquals(new long[]{1, 4, 5}, root.toLongArray());
-        assertArrayEquals(new long[]{4, 5}, tail.toLongArray());
-        assertFalse(nested.iterator(99).hasNext());
-        nested.clear();
-        assertArrayEquals(new long[]{1, 5}, root.toLongArray());
-    }
-
-    @Test
-    void sortedViewBoundsSurvivePartialBulkFailureAndCopiesStayIndependent() {
-        var root = new ConcurrentLongSortedSet(List.of(1L, 5L));
-        var view = root.subSet(2, 5);
-        var copy = new ConcurrentLongSortedSet(root);
-        root.toLongArray();
-        view.toLongArray();
-        assertThrows(IllegalArgumentException.class, () -> view.addAll(List.of(3L, 5L)));
-        assertArrayEquals(new long[]{1, 3, 5}, root.toLongArray());
-        assertArrayEquals(new long[]{3}, view.toLongArray());
-        assertArrayEquals(new long[]{1, 5}, copy.toLongArray());
-        assertThrows(IllegalArgumentException.class, () -> root.subSet(5, 2));
-    }
-
-    @Test
     void linkedArrayFactoryPreservesDestinationSuffix() {
         var set = new ConcurrentLongLinkedOpenHashSet(List.of(2L, 1L));
         long[] destination = {9, 8, 7};

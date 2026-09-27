@@ -424,7 +424,8 @@ public abstract class PlayerListMixin {
                 IslandRegistry.PIsland owner =
                         rs.islandOwnerOfChunk(player.chunkPosition().pack());
                 if (owner != null) {
-                    com.axalotl.fabrolia.common.regions.IslandCommands.mainClaim(owner);
+                    boolean release =
+                            com.axalotl.fabrolia.common.regions.IslandCommands.mainClaimScoped(owner);
                     Throwable failure = null;
                     try {
                         // The claim wait can outlive this session.  Revalidate at
@@ -438,10 +439,12 @@ public abstract class PlayerListMixin {
                     } catch (Throwable thrown) {
                         failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
                     }
-                    try {
-                        com.axalotl.fabrolia.common.regions.IslandCommands.mainRelease(owner);
-                    } catch (Throwable cleanup) {
-                        failure = fabrolia$publishMergedFailure(failure, cleanup);
+                    if (release) {
+                        try {
+                            com.axalotl.fabrolia.common.regions.IslandCommands.mainRelease(owner);
+                        } catch (Throwable cleanup) {
+                            failure = fabrolia$publishMergedFailure(failure, cleanup);
+                        }
                     }
                     if (failure == null) {
                         try {

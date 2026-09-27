@@ -287,10 +287,25 @@ public abstract class PlayerInteractionOwnerMixin {
             RegionScheduler.runSuccessBodyIfHealthy(body);
             return;
         }
+        // The claim wait can outlive this session (disconnect, respawn, level
+        // change, island retire). Revalidate the exact player/listener/venue
+        // binding after the claim before running the body.
+        ServerPlayer expected = this.player;
+        long lifecycle = expected instanceof com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp s
+                ? s.fabrolia$playerLifecycleEpoch() : 0L;
         IslandCommands.mainClaim(owner);
         Throwable failure = null;
         try {
-            RegionScheduler.runSuccessBodyIfHealthy(body);
+            if (this.player == expected
+                    && expected.connection == (Object) this
+                    && expected.level() == sl
+                    && RegionScheduler.forLevel(sl) == runtime
+                    && runtime.islandOwnerOfChunk(chunkPos) == owner
+                    && !owner.retired
+                    && (expected instanceof com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp s2
+                    ? s2.fabrolia$playerLifecycleEpoch() : 0L) == lifecycle) {
+                RegionScheduler.runSuccessBodyIfHealthy(body);
+            }
         } catch (Throwable bodyFailure) {
             failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);
         }
