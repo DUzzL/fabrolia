@@ -1,6 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.regions.IslandCommands;
+import com.axalotl.fabrolia.common.mixin.server.PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.Pass;
 import com.axalotl.fabrolia.common.regions.IslandRegistry;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
@@ -122,7 +123,8 @@ final class EntityStatusOwnerTransactionTest {
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             statuses.offer(chunk.pack(), () -> manager.updateChunkStatus(chunk, Visibility.HIDDEN));
             statuses.drain((key, body) ->
-                    PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(owner, false, body), false);
+                    PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(owner, false, body),
+                    Pass.CALLBACK);
             assertTrue(manager.canPositionTick(chunk), "busy notification must leave all visibility untouched");
         } finally {
             moveNow.countDown();
@@ -131,7 +133,8 @@ final class EntityStatusOwnerTransactionTest {
         assertFalse(worker.isAlive());
         assertNull(moveFailure.get());
         statuses.drain((key, body) ->
-                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(owner, false, body), false);
+                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(owner, false, body),
+                    Pass.CALLBACK);
         assertFalse(manager.canPositionTick(chunk));
         assertEquals(Set.of(), tracked);
         assertEquals(2, transitions.stream().filter(s -> s.startsWith("start:")).count());
@@ -153,11 +156,13 @@ final class EntityStatusOwnerTransactionTest {
         });
         statuses.offer(1L, () -> events.add("ticking"));
         statuses.drain((key, body) ->
-                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(owner, false, body), false);
+                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(owner, false, body),
+                    Pass.CALLBACK);
         assertEquals(List.of(), events);
         owner.unitClaim.set(false);
         statuses.drain((key, body) ->
-                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(owner, false, body), false);
+                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(owner, false, body),
+                    Pass.CALLBACK);
         assertEquals(List.of("hidden", "ticking", "tracked"), events);
         assertFalse(owner.unitClaim.get());
         assertFalse(IslandCommands.mainHolds(owner));
@@ -172,7 +177,8 @@ final class EntityStatusOwnerTransactionTest {
         statuses.offer(1L, () -> { events.add("entered"); throw primary; });
         statuses.offer(1L, () -> events.add("successor"));
         assertSame(primary, assertThrows(Error.class, () -> statuses.drain((key, body) ->
-                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(owner, false, body), false)));
+                PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(owner, false, body),
+                    Pass.CALLBACK)));
         assertEquals(List.of("entered"), events);
         assertSame(primary, schedulerField("orphanFatalFailure").get(null));
         assertFalse(owner.unitClaim.get());
@@ -197,7 +203,7 @@ final class EntityStatusOwnerTransactionTest {
         });
         statuses.offer(1L, () -> events.add("busy:tracked"));
         statuses.offer(3L, () -> events.add("free3:hidden"));
-        statuses.drain(runner, false);
+        statuses.drain(runner, Pass.TICK_HEAD);
         assertEquals(List.of("free:hidden", "free3:hidden", "free:tracked"), events,
                 "a busy island's head must not block other islands' status changes");
         assertTrue(statuses.hasPending(1L));
@@ -205,12 +211,60 @@ final class EntityStatusOwnerTransactionTest {
         assertFalse(statuses.isEmpty());
         statuses.offer(1L, () -> events.add("busy:ticking"));
         busy.unitClaim.set(false);
-        statuses.drain(runner, false);
+        statuses.drain(runner, Pass.TICK_HEAD);
         assertEquals(List.of("free:hidden", "free3:hidden", "free:tracked",
                 "busy:hidden", "busy:tracked", "busy:ticking"), events,
                 "deferred entries of one chunk keep their order ahead of later offers");
         assertTrue(statuses.isEmpty());
         assertFalse(busy.unitClaim.get());
+        assertFalse(IslandCommands.mainHolds(busy));
+    }
+
+    @Test
+    void callbackDrainStopsAtTheFirstDeferredEntryAndTheTickHeadPassSkipsPastIt() throws Exception {
+        IslandRegistry.PIsland busy = owner(719L);
+        IslandRegistry.PIsland free = owner(720L);
+        var statuses = new PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions();
+        List<String> events = new ArrayList<>();
+        int[] attempts = {0};
+        PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.Runner runner = (key, body) -> {
+            attempts[0]++;
+            return PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(
+                    key == 1L ? busy : free, false, body);
+        };
+        busy.unitClaim.set(true);
+        statuses.offer(2L, () -> events.add("free:hidden"));
+        statuses.offer(1L, () -> events.add("busy:hidden"));
+        statuses.offer(3L, () -> events.add("free3:hidden"));
+        statuses.offer(1L, () -> events.add("busy:tracked"));
+        statuses.offer(2L, () -> events.add("free:tracked"));
+
+        statuses.drain(runner, Pass.CALLBACK);
+        assertEquals(List.of("free:hidden"), events,
+                "a status callback drain applies up to the first deferred entry only");
+        assertEquals(2, attempts[0], "entries behind the deferred head are not visited");
+        assertTrue(statuses.hasPending(1L));
+        assertTrue(statuses.hasPending(2L), "the later free-chunk entry stays queued behind the deferral");
+        assertTrue(statuses.hasPending(3L));
+
+        statuses.offer(3L, () -> events.add("free3:tracked"));
+        statuses.drain(runner, Pass.CALLBACK);
+        assertEquals(List.of("free:hidden"), events, "the deferred head still ends the callback pass");
+        assertEquals(3, attempts[0]);
+
+        statuses.drainAtTickHead(runner, key -> key == 1L ? busy : free);
+        assertEquals(List.of("free:hidden", "free3:hidden", "free:tracked", "free3:tracked"), events,
+                "the tick-head pass applies every other chunk in offer order");
+        assertTrue(statuses.hasPending(1L));
+        assertFalse(statuses.hasPending(2L));
+        assertFalse(statuses.hasPending(3L));
+
+        busy.unitClaim.set(false);
+        statuses.drain(runner, Pass.CALLBACK);
+        assertEquals(List.of("free:hidden", "free3:hidden", "free:tracked", "free3:tracked",
+                "busy:hidden", "busy:tracked"), events,
+                "the deferred chunk keeps its own order once its owner is free");
+        assertTrue(statuses.isEmpty());
         assertFalse(IslandCommands.mainHolds(busy));
     }
 
@@ -271,7 +325,7 @@ final class EntityStatusOwnerTransactionTest {
         statuses.offer(2L, () -> events.add("two"));
         for (int pass = 0; pass < threshold; pass++) {
             // Status-callback drains between ticks neither count nor escalate.
-            statuses.drain(runner, false);
+            statuses.drain(runner, Pass.CALLBACK);
             statuses.drainAtTickHead(runner, key -> busy);
         }
         assertTrue(busy.statusClaimWanted);
@@ -283,7 +337,7 @@ final class EntityStatusOwnerTransactionTest {
         busy.unitClaim.set(false);
         PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.Runner onlyChunkOne = (key, body) ->
                 key == 1L && PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(busy, false, body);
-        statuses.drain(onlyChunkOne, false);
+        statuses.drain(onlyChunkOne, Pass.CALLBACK);
         assertEquals(List.of("one"), events);
         assertTrue(busy.statusClaimWanted, "a non-tick-head drain never drops the interest");
         busy.unitClaim.set(true);
@@ -366,7 +420,7 @@ final class EntityStatusOwnerTransactionTest {
         List<String> effects = new ArrayList<>();
         statuses.offer(1L, () -> effects.add("hidden"));
         statuses.cancel();
-        statuses.drain((key, body) -> { body.run(); return true; }, true);
+        statuses.drain((key, body) -> { body.run(); return true; }, Pass.FLUSH);
         assertEquals(List.of(), effects);
     }
 

@@ -207,7 +207,8 @@ public abstract class PersistentEntityUnloadRetryMixin
         if (fabrolia$statusTransitions.isEmpty()) return;
         var runtime = com.axalotl.fabrolia.common.regions.RegionScheduler.forEntityManager(this);
         if (!fabrolia$onPhysicalMain(runtime, flush)) return;
-        fabrolia$statusTransitions.drain(fabrolia$statusRunner(runtime, flush), flush);
+        fabrolia$statusTransitions.drain(fabrolia$statusRunner(runtime, flush),
+                flush ? FabroliaStatusTransitions.Pass.FLUSH : FabroliaStatusTransitions.Pass.CALLBACK);
     }
 
     @Unique
@@ -247,13 +248,19 @@ public abstract class PersistentEntityUnloadRetryMixin
      * wait. Reentrant chunk services append behind the exact active body.
      *
      * <p>Order is a per-chunk contract, not a global one: two islands are
-     * independent timelines, so an entry whose owner claim is unavailable is
-     * deferred (kept, in place) together with every later entry of the same
-     * chunk, while other chunks keep draining. Stopping at the queue head
-     * instead let one persistently claimed island block every status change
-     * of every other island — including the FRESH→queued-for-load promotion
-     * that vanilla's areEntitiesLoaded/tickCheck needs — and gated all entity
-     * unloads level-wide (2026-09-27 island#55 3.4-minute hold).
+     * independent timelines, so the once-per-tick pass ({@link Pass#TICK_HEAD})
+     * defers an entry whose owner claim is unavailable (kept, in place) together
+     * with every later entry of the same chunk, while other chunks keep
+     * draining. Stopping at the queue head instead let one persistently claimed
+     * island block every status change of every other island — including the
+     * FRESH→queued-for-load promotion that vanilla's areEntitiesLoaded/tickCheck
+     * needs — and gated all entity unloads level-wide (2026-09-27 island#55
+     * 3.4-minute hold). The per-callback drain ({@link Pass#CALLBACK}) runs once
+     * per status notification and therefore stops at the first deferred entry:
+     * a full skip-past pass there made every callback O(queue) once thousands
+     * of downgrade callbacks of a claimed island sat in the queue (2026-09-27
+     * tick-fence hang), while the tick-head pass already resolves cross-island
+     * head-of-line blocking once per tick.
      *
      * <p>Self-starvation is fixed at its source, not tolerated: a non-flush
      * pass takes the owner claim with one non-blocking CAS, which a unit that
@@ -353,7 +360,7 @@ public abstract class PersistentEntityUnloadRetryMixin
         }
 
         /** The once-per-level-tick pass, entered only at the top level of the
-         * server tick on physical Main: drains like {@link #drain} (non-flush),
+         * server tick on physical Main: drains in {@link Pass#TICK_HEAD} mode,
          * counts each chunk whose head stayed deferred, raises the owner's
          * claim interest after {@link #ESCALATE_AFTER_PASSES} such passes and
          * drops it again for every escalated chunk that has settled. */
@@ -365,7 +372,7 @@ public abstract class PersistentEntityUnloadRetryMixin
                 if (runner.run(chunkPos, body)) return true;
                 noteDeferredPass(chunkPos, ownerOf.apply(chunkPos));
                 return false;
-            }, false);
+            }, Pass.TICK_HEAD);
             releaseSettledEscalations();
         }
 
@@ -430,7 +437,22 @@ public abstract class PersistentEntityUnloadRetryMixin
             deferredOwner.clear();
         }
 
-        void drain(Runner runner, boolean flush) {
+        /** How a pass treats an entry whose owner claim it could not enter. */
+        enum Pass {
+            /** Status-callback drain: stop at the first deferred entry and keep
+             * it at the head. Runs once per {@code updateChunkStatus}, so it
+             * must cost O(applied), never O(queue). */
+            CALLBACK,
+            /** Once-per-tick pass: skip past deferred chunks so one claimed
+             * island cannot block every other island's status changes. */
+            TICK_HEAD,
+            /** Blocking claim per entry; an unentered topology change is
+             * retried at the same head. */
+            FLUSH
+        }
+
+        void drain(Runner runner, Pass pass) {
+            boolean flush = pass == Pass.FLUSH;
             synchronized (this) {
                 if (draining) {
                     if (flush && !pendingByChunk.isEmpty()) {
@@ -458,19 +480,22 @@ public abstract class PersistentEntityUnloadRetryMixin
                         applied(next);
                         continue;
                     }
+                    if (pass != Pass.TICK_HEAD) {
+                        synchronized (this) {
+                            // FLUSH: unentered topology change, resolve the same head afresh.
+                            // CALLBACK: the head stays deferred and the pass ends here.
+                            pending.addFirst(next);
+                        }
+                        if (!flush) return;
+                        continue;
+                    }
                     synchronized (this) {
-                        if (flush) {
-                            pending.addFirst(next); // unentered topology change: resolve the same head afresh
-                        } else {
-                            retained.add(next);
-                        }
+                        retained.add(next);
                     }
-                    if (!flush) {
-                        if (deferredChunks == null) {
-                            deferredChunks = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
-                        }
-                        deferredChunks.add(next.chunkPos());
+                    if (deferredChunks == null) {
+                        deferredChunks = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
                     }
+                    deferredChunks.add(next.chunkPos());
                 }
             } catch (Throwable failure) {
                 Throwable winner = com.axalotl.fabrolia.common.regions.RegionScheduler

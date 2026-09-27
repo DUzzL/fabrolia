@@ -10,6 +10,15 @@
 
 ### Fixed
 
+- Region workers no longer tick an entity whose own chunk has already left
+  FULL (vanilla removes it from the tick list synchronously; here the removal
+  arrives asynchronously from C2ME). Ticking it forced a bridged chunk reload
+  while the unit held its island claim and Main waited for that claim inside
+  the per-tick function fence, a livelock of minutes per chunk under load.
+- Main's fence spin pumps the chunk executor like vanilla managedBlock
+  (bounded per call) instead of one task per 20 microsecond iteration.
+- Entity status callbacks no longer walk the whole deferred queue per call;
+  the full per-chunk pass runs once per tick.
 - A sleeping entity whose bed lies outside its island (teleported villager)
   ticks on Main under the global fence, so vanilla's remote bed write on
   waking no longer trips the cross-domain write detector and crashes.

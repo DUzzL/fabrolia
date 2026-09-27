@@ -911,6 +911,18 @@ public final class IslandCommands {
     }
 
     /**
+     * Per-call ceiling of the claim-spin chunk pump ({@link #drainMainChunkServices}):
+     * vanilla's {@code managedBlock} drains the executor to empty, but a claim spin
+     * must also keep re-testing the claim and the worker-failure flag, so the drain
+     * stops after {@value} tasks or {@link #FENCE_PUMP_MAX_NANOS}, whichever first.
+     * 256 tasks comfortably outruns the per-iteration production rate of downgrade
+     * callbacks on a unit's chunks while bounding one iteration to a few ms.
+     */
+    static final int FENCE_PUMP_MAX_TASKS = 256;
+    /** Wall-clock companion of {@link #FENCE_PUMP_MAX_TASKS}: 2 ms. */
+    static final long FENCE_PUMP_MAX_NANOS = 2_000_000L;
+
+    /**
      * DEADLOCK FIX (carpet-bots dump 2026-07-13): a unit coordinator may hold
      * its island claim while PARKED on a MAIN-SERVICED chunk load (vault
      * comparator update / border hopper reaching into an unloaded neighbor —
@@ -919,18 +931,49 @@ public final class IslandCommands {
      * executors or fence-vs-chunk-load is an ABBA deadlock (main spun in the
      * tick-tag fence while worker-18 parked in awaitMainThreadResult holding
      * the claim main wanted). Main thread only.
+     *
+     * <p>PUMP RATE (live hang 2026-09-27): the executor is drained like vanilla
+     * {@code managedBlock} — {@code pollTask()} until it returns false — rather
+     * than exactly ONE task per spin iteration. With thousands of c2me holder
+     * downgrade callbacks queued ahead of a worker's bridged load, one task per
+     * 20 µs park made the fence wait seconds for a load the worker holds the
+     * claim on. Bounded by {@link #FENCE_PUMP_MAX_TASKS}/{@link #FENCE_PUMP_MAX_NANOS}
+     * so the caller's claim test, failure check and park still run promptly;
+     * levels are served round-robin, one task per level per round, so a busy
+     * level cannot starve the others inside one call. {@code MinecraftServer
+     * .pollTask} is never pumped here (that runs whole-server main work).
+     *
+     * @return number of chunk-executor tasks run
      */
-    public static void drainMainChunkServices() {
+    public static int drainMainChunkServices() {
         var server = RegionScheduler.getServer();
         // TICKET-SAFETY (2026-07-13): pollTask runs runDistanceManagerUpdates
         // first — ticket ticking is server-thread-only (vanilla invariant;
         // VMP enforces it with a CME that kicks the triggering player). Any
         // future off-main caller of a claim spin gets a no-op, never a drain.
-        if (server == null || !server.isSameThread()) return;
-        for (net.minecraft.server.level.ServerLevel lvl : server.getAllLevels()) {
-            RegionScheduler.callSuccessBooleanIfHealthy(
-                    () -> lvl.getChunkSource().mainThreadProcessor.pollTask());
-        }
+        if (server == null || !server.isSameThread()) return 0;
+        return pumpChunkExecutors(server.getAllLevels(), System.nanoTime());
+    }
+
+    /** The bounded round-robin body of {@link #drainMainChunkServices}. */
+    static int pumpChunkExecutors(Iterable<net.minecraft.server.level.ServerLevel> levels,
+                                  long startNanos) {
+        int ran = 0;
+        boolean progressed;
+        do {
+            progressed = false;
+            for (net.minecraft.server.level.ServerLevel lvl : levels) {
+                if (RegionScheduler.callSuccessBooleanIfHealthy(
+                        () -> lvl.getChunkSource().mainThreadProcessor.pollTask())) {
+                    progressed = true;
+                    if (++ran >= FENCE_PUMP_MAX_TASKS
+                            || System.nanoTime() - startNanos >= FENCE_PUMP_MAX_NANOS) {
+                        return ran;
+                    }
+                }
+            }
+        } while (progressed);
+        return ran;
     }
 
     /** Rate limiter for the off-main misuse belts (task #25): loud, but a

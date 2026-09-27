@@ -3995,7 +3995,37 @@ public final class RegionizedServer {
             // drain queued main-thread chunk work before re-checking admission
         }
         return entity.level() == sourceLevel && !entity.isRemoved()
-                && source.chunkMap.getDistanceManager().inEntityTickingRange(chunkKey);
+                && source.chunkMap.getDistanceManager().inEntityTickingRange(chunkKey)
+                && fabrolia$ownChunkFull(source, chunkKey);
+    }
+
+    /**
+     * VANILLA INVARIANT: a ticked entity's OWN chunk is a FULL {@code LevelChunk}.
+     * Vanilla keeps this by construction — {@code PersistentEntitySectionManager
+     * .updateChunkStatus(pos, HIDDEN/TRACKED)} runs {@code stopTicking} on every
+     * entity of a chunk whose holder leaves {@code ENTITY_TICKING}, pulling it out
+     * of {@code entityTickList} BEFORE the chunk is detached; the guarded entity
+     * loop then never sees it and runs neither its tick nor {@code checkDespawn}.
+     * Under c2me that downgrade callback is delivered asynchronously, and under
+     * our owner-claim status-transition queue it is deferred while the island
+     * unit holds its claim — so the region tick list can still contain an entity
+     * whose holder already dropped below SERVER_ACCESSIBLE. Ticking it makes the
+     * entity {@code getChunk(load=true)} its own detached chunk from the worker,
+     * which parks in the chunk bridge holding the island claim that main's tick
+     * fence needs, while the bridged load sits FIFO behind the downgrade
+     * callbacks main is serving one per fence iteration (live hang, 2026-09-27).
+     *
+     * <p>This is a LIVE holder read per entity (never memoized): the per-task
+     * {@code fabrolia$chunkGate} memo is the ticket-level authority and stays
+     * as-is; this only re-establishes the tick-list membership vanilla would
+     * have. Deliberately NOT {@code getTickingChunk()} — see the BLOCK_TICKING
+     * flap note on {@code fabrolia$chunkGate}; {@code getChunkIfPresent(FULL)}
+     * is the same read the off-main {@code getChunkNow} path uses.
+     */
+    static boolean fabrolia$ownChunkFull(ServerChunkCache source, long packed) {
+        ChunkHolder h = source.getVisibleChunkIfPresent(packed);
+        return h != null && h.getChunkIfPresent(
+                net.minecraft.world.level.chunk.status.ChunkStatus.FULL) != null;
     }
 
     /** One entity through vanilla admission and tick on the region owner.
@@ -4039,6 +4069,12 @@ public final class RegionizedServer {
             // independent (player distance + own removal), safe under this
             // region's claim like the gate-passing path's call below.
             e.checkDespawn();
+            return;
+        }
+        // Own-chunk FULL invariant (see fabrolia$ownChunkFull): an entity whose
+        // chunk is already detached is not in vanilla's tick list at all — no
+        // tick AND no checkDespawn. Live read, after the ticket gate above.
+        if (!directPlayer && !fabrolia$ownChunkFull(lvl.getChunkSource(), packed)) {
             return;
         }
 
