@@ -777,7 +777,7 @@ public final class NetherPortalTransfers {
             synchronized (this) {
                 if (state.getAndSet(TERMINAL) == TERMINAL) return;
             }
-            if (bodyEntered && !denied) noteReleased(this);
+            if (bodyEntered && !denied && executeNanos != 0L) noteReleased(this);
             Throwable failure = null;
             for (Entity entity : entities) {
                 try {
@@ -799,8 +799,10 @@ public final class NetherPortalTransfers {
         private void releaseSource(Entity entity) {
             SyncItemPickup.Guard guard = SyncItemPickup.guard(entity);
             // Pending stays published while waiting, so every native entrant
-            // rechecks and leaves without work. No transfer/camera monitor or
-            // merge lane is held across this acquisition.
+            // rechecks and leaves without work. Lock order here is claims ->
+            // Reservation monitor -> guard (inline finish and the Main tail both
+            // release under the reservation monitor); guard holders never take
+            // a reservation monitor or an island claim, only the leaf CAMERAS.
             if (guard != null) guard.enterActivity();
             try {
                 if (SOURCES.remove(entity.getUUID(), this))

@@ -774,11 +774,15 @@ public final class NetherPortalPlayerAccess {
                 }
                 releaseSource = Objects.requireNonNull(releaseSourceReservations);
                 try {
-                    // Tail reservations always queue: even without a captured
-                    // builder their arrivals must settle on Main. Inline
-                    // reservations defer nothing and finish here, still under
-                    // the cohort claims (SOURCES cleared before either island
-                    // is released).
+                    // Inline reservations defer nothing and finish here, still
+                    // under the cohort claims (SOURCES cleared before either
+                    // island is released). A tail reservation whose body
+                    // captured nothing (no teleport happened) finishes the same
+                    // way; one with arrivals or builders settles on Main.
+                    if (inline && !(outbox.isEmpty() && metadataArrivals.isEmpty())) {
+                        throw new IllegalStateException(
+                                "inline Nether reservation captured deferred metadata");
+                    }
                     if (players.isEmpty() && outbox.isEmpty() && metadataArrivals.isEmpty()) {
                         RegionScheduler.runSuccessBodyIfHealthy(() -> {
                             finish();
