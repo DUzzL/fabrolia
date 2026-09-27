@@ -10,6 +10,12 @@
 
 ### Fixed
 
+- A due redstone (pulse-sensitive) scheduled tick in a chunk on the
+  simulation-distance edge (block-ticking but not entity-ticking) no longer
+  holds the whole island: vanilla never runs such a container either, so it
+  is skipped; the island now waits only for chunks the distance manager
+  already places in entity-ticking range. A stationary player near such a
+  contraption saw their island at 0 TPS for minutes.
 - Worldgen no longer crashes the server with "success-only body refused by a
   closed or exclusive pool generation" when a structure piece or spawn
   finalizer mounts entities that are not yet published to the level (ocean

@@ -635,17 +635,30 @@ public final class IslandScheduledTicks {
                 }
 
 
-                boolean blockDmBefore = rs.level.shouldTickBlocksAt(chunkPos);
+                boolean entityDmBefore = inEntityTickingRange(rs.level, chunkPos);
                 boolean exact = access.fabrolia$tickCheck().test(chunkPos);
                 if (exact) continue;
-                boolean blockDmAfter = rs.level.shouldTickBlocksAt(chunkPos);
-                if (blockDmBefore || blockDmAfter) {
+                boolean entityDmAfter = inEntityTickingRange(rs.level, chunkPos);
+                if (entityDmBefore || entityDmAfter) {
                     return new CausalPreflightHold(chunkPos, head,
                             "pulse-sensitive-head-preflight/exact-refusal/dm-true");
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * Vanilla's LevelTicks tickCheck ({@code isPositionTickingWithEntitiesLoaded})
+     * is false forever for the block-ticking ring at the simulation-distance edge:
+     * vanilla simply never runs those containers. Only a chunk the distance manager
+     * already places in ENTITY-ticking range can be a transient readiness hole
+     * worth holding the island for; the block-ticking ring is a stable dormant
+     * fringe and takes vanilla's per-container refusal. Holding on the block
+     * range froze a stationary player's island for minutes (2026-09-27).
+     */
+    private static boolean inEntityTickingRange(ServerLevel level, long chunkPos) {
+        return level.getChunkSource().chunkMap.getDistanceManager().inEntityTickingRange(chunkPos);
     }
 
     /** Unit coordinator, FIRST unit segment (before block events): the
@@ -1001,10 +1014,11 @@ public final class IslandScheduledTicks {
 
 
             // Within the closed write frontier, exact tickCheck remains the
-            // readiness authority. The completed DM snapshot is sampled before it and,
-            // on refusal, once after it solely to distinguish stable dormant
-            // fringe from a transient readiness/publication hole.
-            boolean blockDmBefore = level.shouldTickBlocksAt(chunkPos);
+            // readiness authority. The completed DM entity-ticking snapshot is
+            // sampled before it and, on refusal, once after it solely to
+            // distinguish stable dormant fringe (block-ticking ring, never
+            // exact in vanilla either) from a transient readiness/publication hole.
+            boolean entityDmBefore = inEntityTickingRange(level, chunkPos);
             boolean exact = tickCheck.test(chunkPos);
             if (exact) {
                 lane.prepared.add(new PreparedChunk<>(chunkPos, container, peek, true));
@@ -1016,13 +1030,13 @@ public final class IslandScheduledTicks {
                 continue;
             }
             lane.prepared.add(new PreparedChunk<>(chunkPos, container, peek, false));
-            boolean blockDmAfter = level.shouldTickBlocksAt(chunkPos);
-            boolean blockDmReady = blockDmBefore || blockDmAfter;
-            boolean pulseCoherenceRequired = blockDmReady
+            boolean entityDmAfter = inEntityTickingRange(level, chunkPos);
+            boolean entityDmReady = entityDmBefore || entityDmAfter;
+            boolean pulseCoherenceRequired = entityDmReady
                     && hasDuePulseSensitiveTick(container, peek, gameTime);
             ScheduledTickIslandAdmission.Decision decision =
                     ScheduledTickIslandAdmission.classify(
-                            false, blockDmReady, pulseCoherenceRequired);
+                            false, entityDmReady, pulseCoherenceRequired);
             if (decision == ScheduledTickIslandAdmission.Decision.HOLD) {
                 markHold(lane, chunkPos, peek,
                         "pulse-sensitive-exact-refusal/dm-true");

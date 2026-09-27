@@ -50,10 +50,13 @@ public final class ScheduledTickIslandAdmission {
 
     private ScheduledTickIslandAdmission() {}
 
-    static Decision classify(boolean exactTickCheck, boolean blockDistanceManager,
+    /** {@code entityTickingRange}: the distance manager already places the chunk
+     *  in ENTITY-ticking range, so a false exact tickCheck is a transient hole.
+     *  The block-ticking ring is never exact in vanilla and stays DORMANT. */
+    static Decision classify(boolean exactTickCheck, boolean entityTickingRange,
                              boolean pulseCoherenceRequired) {
         if (exactTickCheck) return Decision.ADMIT;
-        return blockDistanceManager && pulseCoherenceRequired
+        return entityTickingRange && pulseCoherenceRequired
                 ? Decision.HOLD : Decision.DORMANT;
     }
 
