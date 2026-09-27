@@ -49,6 +49,39 @@ public final class NetherPortalTransfers {
     private static final ConcurrentHashMap<IslandRegistry.PIsland, Set<Transfer>> PRELUDES = new ConcurrentHashMap<>();
     private static final ThreadLocal<Boolean> CLAIMING = new ThreadLocal<>();
     private static volatile MinecraftServer server;
+    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger("Fabrolia-Nether");
+    /** Per-transfer trace (submit -> teleport -> release wall latency), off by default. */
+    private static final boolean TRACE = Boolean.getBoolean("fabrolia.netherTransferTrace");
+    private static final java.util.concurrent.atomic.LongAdder RELEASED = new java.util.concurrent.atomic.LongAdder();
+    private static final java.util.concurrent.atomic.LongAdder RELEASED_NANOS = new java.util.concurrent.atomic.LongAdder();
+    private static final java.util.concurrent.atomic.LongAccumulator MAX_TELEPORT_NANOS =
+            new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
+    private static final java.util.concurrent.atomic.LongAccumulator MAX_RELEASE_NANOS =
+            new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
+
+    private static void noteReleased(Transfer transfer) {
+        long now = System.nanoTime();
+        long toTeleport = transfer.executeNanos - transfer.submitNanos;
+        long total = now - transfer.submitNanos;
+        RELEASED.increment();
+        RELEASED_NANOS.add(total);
+        MAX_TELEPORT_NANOS.accumulate(toTeleport);
+        MAX_RELEASE_NANOS.accumulate(total);
+        if (TRACE) {
+            LOGGER.info("[nether-transfer] {} {} submit->teleport={}ms teleport->release={}ms thread={}",
+                    transfer.root.getType().builtInRegistryHolder().key().identifier(), transfer.root.getUUID(),
+                    toTeleport / 1_000_000, (now - transfer.executeNanos) / 1_000_000,
+                    Thread.currentThread().getName());
+        }
+    }
+
+    /** One-line summary for {@code /fabrolia regions debug flightrec}. */
+    public static String status() {
+        long n = RELEASED.sum();
+        return "netherTransfers=" + n + " avgMs=" + (n == 0 ? 0 : RELEASED_NANOS.sum() / n / 1_000_000)
+                + " maxTeleportMs=" + MAX_TELEPORT_NANOS.get() / 1_000_000
+                + " maxReleaseMs=" + MAX_RELEASE_NANOS.get() / 1_000_000;
+    }
 
     private NetherPortalTransfers() {}
 
@@ -428,6 +461,9 @@ public final class NetherPortalTransfers {
         private boolean attempting;
         private boolean capturing;
         private Throwable cancellationFailure;
+        /** Wall nanos at submit and at the vanilla teleport; release computes the latency. */
+        final long submitNanos = System.nanoTime();
+        long executeNanos;
 
         synchronized boolean beginAttempt() {
             if (capturing || state.get() != WAITING) return false;
@@ -699,6 +735,7 @@ public final class NetherPortalTransfers {
                     bodyEntered = true;
                 }
                 result = root.teleport(transition);
+                executeNanos = System.nanoTime();
                 root.portalProcess = null;
                 captureMetadataLocations();
             } finally {
@@ -740,6 +777,7 @@ public final class NetherPortalTransfers {
             synchronized (this) {
                 if (state.getAndSet(TERMINAL) == TERMINAL) return;
             }
+            if (bodyEntered && !denied) noteReleased(this);
             Throwable failure = null;
             for (Entity entity : entities) {
                 try {

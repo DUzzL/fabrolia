@@ -55,6 +55,7 @@ public final class FlightRecorder {
                     + " dormantMaxAge=" + DORMANT_MAX_AGE.get()
                     + " scheduledHolds=" + SCHEDULED_HOLDS.sum()
                     + " ownChunkGateSkips=" + OWN_CHUNK_GATE_SKIPS.sum()
+                    + " | " + NetherPortalTransfers.status()
                     + " | " + "delivery: see chunksender status";
         }
     }

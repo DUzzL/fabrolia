@@ -13,12 +13,27 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-/** Exact listener FIFO exclusion and ordered metadata for a core-owned Nether transfer. */
+/**
+ * Exact listener FIFO exclusion and ordered metadata for a core-owned Nether transfer.
+ *
+ * <p>A reservation runs in one of two modes, fixed in {@link #reserve}:
+ * <ul>
+ *   <li><b>tail</b> - the cohort carries a player (root, passenger, spectating
+ *       follower) or a transmitting waypoint. Main-only metadata (camera,
+ *       disconnects, waypoints, viewer pairing) is deferred to the ordered
+ *       Main tail; arrivals stay {@code arrivalPending} until it drains.</li>
+ *   <li><b>inline</b> - no player and no waypoint anywhere in custody (mobs,
+ *       items, carts). Nothing is deferred: the worker holding both island
+ *       claims finishes the reservation right after the vanilla teleport, so
+ *       the arrival ticks on the destination island's next unit without Main
+ *       (the farm case: Main lag must not delay a mob's portal crossing).</li>
+ * </ul>
+ */
 public final class NetherPortalPlayerAccess {
     private static final ThreadLocal<Reservation> CURRENT = new ThreadLocal<>();
     public static boolean capturesMetadata() {
         Reservation current = CURRENT.get();
-        return current != null && !current.metadata;
+        return current != null && !current.metadata && !current.inline;
     }
     private static final ConcurrentLinkedQueue<Reservation> METADATA = new ConcurrentLinkedQueue<>();
     /** Identity and level are published by the lifecycle owner; position requires indexed-owner claims. */
@@ -198,13 +213,14 @@ public final class NetherPortalPlayerAccess {
     /** Resolve before allocating a builder; null leaves ordinary waypoint calls unchanged. */
     public static Reservation metadataOwner(Object identity) {
         Reservation current = CURRENT.get();
-        if (current != null) return current.metadata ? null : current;
+        if (current != null && !current.inline) return current.metadata ? null : current;
         synchronized (CAMERAS) { return ARRIVAL_METADATA.get(identity); }
     }
 
     static void captureArrivalMetadata(Entity entity) {
         Reservation current = Objects.requireNonNull(CURRENT.get(), "Nether arrival metadata owner");
         current.requireWorker();
+        if (current.inline) return;
         synchronized (current) {
             synchronized (CAMERAS) {
                 Reservation previous = ARRIVAL_METADATA.get(entity);
@@ -447,6 +463,7 @@ public final class NetherPortalPlayerAccess {
                         }
                     }
                 }
+                reservation.inline = reservation.players.isEmpty() && !reservation.transmitsWaypoint();
                 return reservation;
             }
         } catch (Throwable failure) {
@@ -468,7 +485,7 @@ public final class NetherPortalPlayerAccess {
     /** Capture a Main-only builder at its vanilla position, before evaluating it. */
     public static boolean deferMetadata(Runnable operation) {
         Reservation current = CURRENT.get();
-        if (current == null || current.metadata) return false;
+        if (current == null || current.metadata || current.inline) return false;
         return current.deferMetadata(operation);
     }
 
@@ -555,6 +572,8 @@ public final class NetherPortalPlayerAccess {
         private boolean executionReserved;
         private boolean active;
         private boolean metadata;
+        /** Fixed by {@link #reserve}: no player and no transmitting waypoint in custody. */
+        private boolean inline;
         private boolean queued;
         private boolean cancellationQueued;
         private boolean canceled;
@@ -596,6 +615,19 @@ public final class NetherPortalPlayerAccess {
             sourceReferences = List.copyOf(custody.keySet());
             sourceLocations = List.copyOf(custody.values());
             return true;
+        }
+
+        /**
+         * Waypoint untracking happens in the source removal, before any arrival
+         * exists, so the mode is decided on the source tree. The copy inherits
+         * the attribute, so this equals the arrival-side answer.
+         */
+        private boolean transmitsWaypoint() {
+            for (Entity entity : custody.keySet()) {
+                if (entity instanceof net.minecraft.world.waypoints.WaypointTransmitter transmitter
+                        && transmitter.isTransmittingWaypoint()) return true;
+            }
+            return false;
         }
 
         /** Exact source custody, including vehicles/co-passengers which vanilla does not teleport. */
@@ -742,7 +774,11 @@ public final class NetherPortalPlayerAccess {
                 }
                 releaseSource = Objects.requireNonNull(releaseSourceReservations);
                 try {
-                    // Arrivals must use the metadata tail even when no vanilla builder was captured.
+                    // Tail reservations always queue: even without a captured
+                    // builder their arrivals must settle on Main. Inline
+                    // reservations defer nothing and finish here, still under
+                    // the cohort claims (SOURCES cleared before either island
+                    // is released).
                     if (players.isEmpty() && outbox.isEmpty() && metadataArrivals.isEmpty()) {
                         RegionScheduler.runSuccessBodyIfHealthy(() -> {
                             finish();

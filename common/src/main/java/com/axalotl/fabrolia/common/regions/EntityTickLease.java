@@ -21,7 +21,7 @@ public final class EntityTickLease extends AtomicReference<Object> {
         return arrivalPending;
     }
 
-    /** Published before destination insertion; cleared after source retirement. */
+    /** Tail-mode arrivals only: published before destination insertion; cleared after source retirement. */
     void setArrivalPending(boolean pending) {
         arrivalPending = pending;
     }

@@ -127,7 +127,7 @@ class NetherArrivalReadinessTest {
                         fixture.arrival, publication(published, unexpectedCancel)));
                 events.add("retired");
             });
-            assertTrue(events.isEmpty(), "an arrival without players or builders must not finish under cohort claims");
+            assertTrue(events.isEmpty(), "a tail-mode arrival without players or builders must not finish under cohort claims");
             assertTrue(fixture.reservation.deferMetadata(() -> events.add("drained")));
             fixture.drainOutbox();
             assertEquals(List.of("drained"), events);
