@@ -10,6 +10,9 @@
 
 ### Fixed
 
+- A sleeping entity whose bed lies outside its island (teleported villager)
+  ticks on Main under the global fence, so vanilla's remote bed write on
+  waking no longer trips the cross-domain write detector and crashes.
 - Deferred entity-chunk status transitions no longer block head-of-line: one
   island whose claim Main cannot take stalled every other island's chunk
   loading (entities never marked loaded, scheduled ticks held, chunk delivery

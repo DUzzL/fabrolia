@@ -3985,13 +3985,16 @@ public final class RegionizedServer {
                 || islandOwnerOfChunk(owner.chunkPosition().pack()) != hookIsland;
     }
 
-    private boolean fabrolia$admitFencedFishingTick(Entity hook, ServerLevel sourceLevel) {
+    /** Admission for a globally fenced cross-owner entity body: re-check the live
+     *  ticking gate after every island quiesced (the region task's per-chunk memo
+     *  predates the fence). */
+    private boolean fabrolia$admitFencedTick(Entity entity, ServerLevel sourceLevel) {
         ServerChunkCache source = sourceLevel.getChunkSource();
-        long chunkKey = hook.chunkPosition().pack();
+        long chunkKey = entity.chunkPosition().pack();
         while (source.mainThreadProcessor.pollTask()) {
             // drain queued main-thread chunk work before re-checking admission
         }
-        return hook.level() == sourceLevel && !hook.isRemoved()
+        return entity.level() == sourceLevel && !entity.isRemoved()
                 && source.chunkMap.getDistanceManager().inEntityTickingRange(chunkKey);
     }
 
@@ -4079,7 +4082,15 @@ public final class RegionizedServer {
         if (e instanceof net.minecraft.world.entity.projectile.FishingHook hook
                 && hook.getPlayerOwner() instanceof ServerPlayer serverOwner
                 && fabrolia$fishingOwnerIsRemote(region, serverOwner)) {
-            RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedFishingTick(e, lvl), null);
+            RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
+            return;
+        }
+        // A sleeper whose bed lies in another island's domain: vanilla's own tick
+        // reads (checkBedExists) and writes (stopSleeping → BedBlock.OCCUPIED) that
+        // remote bed. The plain MAIN_SYNC lane claims only THIS island; the write
+        // needs the bed's owner quiescent too, so tick under the global fence.
+        if (ParallelProcessor.sleepsOutsideIsland(e, this, region.domain.owner)) {
+            RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
             return;
         }
         if (containsPlayerTick || ParallelProcessor.requiresMainThread(e)) {

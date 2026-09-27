@@ -481,6 +481,36 @@ public final class ParallelProcessor {
         return false;
     }
 
+    /**
+     * True when {@code entity} or any passenger is asleep in a bed whose chunk is not
+     * owned by {@code owner} (the island whose unit is ticking the tree). Vanilla
+     * {@code LivingEntity.tick} reads the remembered bed ({@code checkBedExists}) and
+     * {@code LivingEntity.stopSleeping} — reached from Brain {@code SleepInBed.stop},
+     * {@code hurtServer} and {@code die} — writes {@code BedBlock.OCCUPIED=false}
+     * there, filtered only by {@code getSleepingPos().filter(level::hasChunkAt)}. A
+     * villager teleported away from its bed therefore mutates a foreign island's chunk
+     * from its own tick; that tick must run under the global fence
+     * ({@link RegionScheduler#queueMainSyncFencedTick}) exactly like any other
+     * cross-owner entity body. Only a present sleeping position pays the owner lookup;
+     * {@code getSleepingPos()} returns the stored Optional without allocating.
+     */
+    public static boolean sleepsOutsideIsland(Entity entity,
+                                              com.axalotl.fabrolia.common.regions.RegionizedServer runtime,
+                                              com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland owner) {
+        if (runtime == null) return false;
+        if (entity instanceof net.minecraft.world.entity.LivingEntity living) {
+            java.util.Optional<net.minecraft.core.BlockPos> bed = living.getSleepingPos();
+            if (bed.isPresent()
+                    && runtime.islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(bed.get())) != owner) {
+                return true;
+            }
+        }
+        for (Entity passenger : entity.getPassengers()) {
+            if (sleepsOutsideIsland(passenger, runtime, owner)) return true;
+        }
+        return false;
+    }
+
     public static boolean shouldTickSynchronously(Entity entity) {
         if (isShuttingDown || FabroliaConfig.disabled) return true;
         if (containsMainOwnedTrackingEntity(entity)) return true;
