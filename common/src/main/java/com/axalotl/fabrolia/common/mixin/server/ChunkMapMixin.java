@@ -463,6 +463,32 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
         return this.pendingUnloads.values();
     }
 
+    /**
+     * The players {@code DistanceManager.playersPerChunk} counts for natural
+     * spawning — the source of {@code naturalSpawnChunkCounter}: every PlayerMap
+     * member whose ignored bit is clear ({@code skipPlayer}: spectators without
+     * the spectatorsGenerateChunks rule). Each is visited with the chunk of its
+     * last section position — exactly the key {@code addPlayer} registered.
+     * Reads only the PlayerMap's detached snapshot and monitor: safe off-main.
+     */
+    @Override
+    public void fabrolia$forEachSpawnCountedPlayer(
+            java.util.function.ObjLongConsumer<ServerPlayer> action) {
+        for (ServerPlayer player : this.playerMap.getAllPlayers()) {
+            if (this.playerMap.ignored(player)) continue;
+            SectionPos section = player.getLastSectionPos();
+            action.accept(player, ChunkPos.pack(section.x(), section.z()));
+        }
+    }
+
+    @Shadow
+    protected abstract boolean playerIsCloseEnoughForSpawning(ServerPlayer player, ChunkPos pos);
+
+    @Override
+    public boolean fabrolia$playerCloseEnoughForSpawning(ServerPlayer player, ChunkPos pos) {
+        return this.playerIsCloseEnoughForSpawning(player, pos);
+    }
+
     // ENTITY_TICKING transition tracking MOVED to SimulationChunkTrackerMixin.setLevel.
     // The old updateChunkScheduling hook here fired asymmetrically under c2me's rewritten
     // ticket system — the ENTITY_TICKING-loss transition was lost, so the incremental list
@@ -723,6 +749,60 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
         // getAllPlayers snapshot and builds an ImmutableList; VMP's component index has
         // its own shared snapshot lease. ChunkMap must never be a viewer-read lock.
         return List.copyOf(original.call(pos));
+    }
+
+    /**
+     * Async islands: Main's spawn pass covers only the GLOBAL LANE (chunks with
+     * no island owner — each island runs its own pass, IslandTickUnit). Drop
+     * island-owned candidates at the source so Main never resolves, shuffles,
+     * gates or ticks them. Candidates cluster by region, so the owner lookup is
+     * memoised per grid cell.
+     */
+    @WrapOperation(method = "collectSpawningChunks",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/DistanceManager;getSpawnCandidateChunks()Lit/unimi/dsi/fastutil/longs/LongIterator;"))
+    private it.unimi.dsi.fastutil.longs.LongIterator fabrolia$globalLaneSpawnCandidates(
+            net.minecraft.server.level.DistanceManager instance,
+            Operation<it.unimi.dsi.fastutil.longs.LongIterator> original) {
+        it.unimi.dsi.fastutil.longs.LongIterator all = original.call(instance);
+        com.axalotl.fabrolia.common.regions.RegionizedServer rs =
+                com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(this.level);
+        if (rs == null || !rs.asyncActive) return all;
+        com.axalotl.fabrolia.common.regions.RegionGrid grid = rs.regionizer().grid;
+        return new it.unimi.dsi.fastutil.longs.LongIterator() {
+            private long memoCell = Long.MIN_VALUE;
+            private boolean memoGlobal;
+            private boolean ready;
+            private long next;
+
+            private boolean advance() {
+                while (!ready && all.hasNext()) {
+                    long key = all.nextLong();
+                    long cell = grid.keyFor(key);
+                    if (cell != memoCell) {
+                        memoCell = cell;
+                        memoGlobal = rs.islandOwnerOfCell(cell) == null;
+                    }
+                    if (memoGlobal) {
+                        next = key;
+                        ready = true;
+                    }
+                }
+                return ready;
+            }
+
+            @Override
+            public boolean hasNext() {
+                return advance();
+            }
+
+            @Override
+            public long nextLong() {
+                if (!advance()) throw new java.util.NoSuchElementException();
+                ready = false;
+                return next;
+            }
+        };
     }
 
     @Unique

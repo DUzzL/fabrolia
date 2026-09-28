@@ -2,6 +2,22 @@
 
 ### Changed
 
+- Async islands: natural spawning, thunder and random/fluid block ticks for
+  island-owned chunks now run inside the island's own tick unit at the
+  island's cadence on its logical clock (vanilla's chunkSource.tick slot:
+  after the island's scheduled ticks and raids, before its block events).
+  Main no longer arms island regions once per Main tick (the ArmGate is
+  gone) and no longer builds the level-wide spawn census; it censuses and
+  ticks only chunks with no island owner. The global mob cap is the sum of
+  every lane's published census (`SpawnCapLanes`), so a saturated island
+  blocks the others exactly like vanilla's level total. Deviations from
+  vanilla, all bounded: the spawn-potential calculator is island-local
+  (other islands' charges are ≥256 blocks away); `inhabitedTime` and the
+  400-tick persistent-category phase follow island time instead of wall
+  time; another lane's census contribution can be up to one of that lane's
+  periods old; a chunk whose owner changes at a topology rebuild can miss or
+  repeat at most one chunk cycle. Full table: docs/ASYNC-ISLANDS.md §13.
+
 - Roll the region runtime back to the stable 0.2.38 behavior (the compiled
   reference build). The uncommitted "native admission" rewrite that routed
   most entity, block-entity and player work through the Main thread is

@@ -284,14 +284,15 @@ public final class ParallelSpawnHelper {
             }
             ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(winner);
         }
-        // SHADOW-SEED the Java maps on the producer owner:
-        // this cookie outlives its arena — the handle is detached at the NEXT
-        // tick's build, while async-island gate-1 spawn arms legitimately consume
-        // the cookie one-or-more ticks late. Post-detach canSpawn/addMob fall
-        // back to the Java maps; empty maps mean vanilla canSpawn approves every
-        // near player (no counts entry ⇒ "under cap") — the per-player LOCAL cap
-        // silently vanished for island-armed chunks and the whole level's
-        // per-category budget concentrated around single players. The shadow
+        // SHADOW-SEED the Java maps on the producer owner: this cookie can
+        // outlive its arena — the handle is detached at the NEXT tick's build
+        // while lastSpawnState (debug probes, mods) keeps reading the
+        // calculator. Post-detach canSpawn/addMob fall back to the Java maps;
+        // empty maps mean vanilla canSpawn approves every near player (no
+        // counts entry ⇒ "under cap"), which once silently disabled the
+        // per-player LOCAL cap for chunk work consumed a tick late (the task
+        // #32 cod runaway; island lanes now build their own SpawnState on the
+        // plain Java calculator and never consume Main's cookie). The shadow
         // replay finishes before publication; SEED_BYPASS keeps it out of
         // native routing (the arena already holds these counts). Intra-tick
         // addMob traffic still routes native-only, so a mid-life detach sees
@@ -674,8 +675,34 @@ public final class ParallelSpawnHelper {
             });
             return probe;
         }
-        // Potential charges: only cost-bearing types can contribute; evaluate
-        // their exact position/biome now (vanilla-identical), tiny N.
+        PotentialCalculator potential = fabrolia$potentialCharges(level, chunkGetter);
+        // Keep the census seed weighted through provider/capability decline.
+        // An accepted arena marshals it directly into the reusable primitive
+        // ABI buffers; the Java fallback remains count-weighted as well.
+        boolean arenaSeeded = RegionScheduler.callSuccessBooleanIfHealthy(
+                () -> fabrolia$buildLocalCapArenaWeighted(
+                        level, localMobCap, red.mobSeed(), red.totalMobs()));
+        if (!arenaSeeded) {
+            fabrolia$seedJavaCountWeighted(localMobCap, red.mobSeed());
+        }
+        NaturalSpawner.SpawnState[] result = new NaturalSpawner.SpawnState[1];
+        RegionScheduler.runSuccessBodyIfHealthy(() ->
+                result[0] = new NaturalSpawner.SpawnState(
+                        spawnableChunkCount, red.counts(), potential, localMobCap));
+        long elapsed = System.nanoTime() - t0;
+        RegionScheduler.commitSuccessIfHealthy(() -> {
+            SpawnCensusDiag.CENSUS_FAST.incrementAndGet();
+            SpawnCensusDiag.addReduceNanos(elapsed);
+        });
+        return result[0];
+    }
+
+    /** Potential charges: only cost-bearing types can contribute; evaluate
+     *  their exact position/biome now (vanilla-identical), tiny N. The
+     *  {@code chunkGetter} decides lane membership exactly as it does for
+     *  the census. */
+    private static PotentialCalculator fabrolia$potentialCharges(
+            ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter) {
         PotentialCalculator[] potentialSlot = new PotentialCalculator[1];
         RegionScheduler.runSuccessBodyIfHealthy(
                 () -> potentialSlot[0] = new PotentialCalculator());
@@ -707,25 +734,42 @@ public final class ParallelSpawnHelper {
                         potential.addCharge(charge.pos(), charge.charge()));
             }
         }
-        // Keep the census seed weighted through provider/capability decline.
-        // An accepted arena marshals it directly into the reusable primitive
-        // ABI buffers; the Java fallback remains count-weighted as well.
-        boolean arenaSeeded = RegionScheduler.callSuccessBooleanIfHealthy(
-                () -> fabrolia$buildLocalCapArenaWeighted(
-                        level, localMobCap, red.mobSeed(), red.totalMobs()));
-        if (!arenaSeeded) {
-            fabrolia$seedJavaCountWeighted(localMobCap, red.mobSeed());
-        }
-        NaturalSpawner.SpawnState[] result = new NaturalSpawner.SpawnState[1];
-        RegionScheduler.runSuccessBodyIfHealthy(() ->
-                result[0] = new NaturalSpawner.SpawnState(
-                        spawnableChunkCount, red.counts(), potential, localMobCap));
-        long elapsed = System.nanoTime() - t0;
-        RegionScheduler.commitSuccessIfHealthy(() -> {
-            SpawnCensusDiag.CENSUS_FAST.incrementAndGet();
-            SpawnCensusDiag.addReduceNanos(elapsed);
-        });
-        return result[0];
+        return potential;
+    }
+
+    /** One lane's census: category counts and potential charges over the
+     *  chunks {@code laneGetter} admits, with {@code localMobCap}'s Java maps
+     *  seeded count-weighted. */
+    public record LaneCensus(Object2IntOpenHashMap<MobCategory> counts,
+                             PotentialCalculator potential) {}
+
+    /**
+     * Island chunk-pass census, run by the island's coordinator on its own
+     * thread. {@code laneKeys} pre-selects the island's chunk keys out of the
+     * level ledger; {@code laneGetter} admits exactly the island's FULL chunks, so
+     * the ledger reduce, the potential charges and the local-cap seed are all
+     * the island's own — vanilla's createState restricted to one island.
+     *
+     * <p>The local cap stays on the plain Java {@code LocalMobCapCalculator}:
+     * the island's chunk pass is sequential (one coordinator), which is
+     * exactly the setting vanilla's calculator is correct in; the native
+     * pack-reservation arena exists for Main's parallel lane only. The
+     * incremental ledger is the sole census source here (no entity scan, no
+     * pool fan-out); its 256-gt ground-truth audit remains Main's.
+     */
+    public static LaneCensus censusIslandLane(ServerLevel level,
+                                              NaturalSpawner.ChunkGetter laneGetter,
+                                              java.util.function.LongPredicate laneKeys,
+                                              LocalMobCapCalculator localMobCap) {
+        RegionScheduler.throwWorkerFailureIfAny();
+        SpawnCensus.Reduced[] reducedSlot = new SpawnCensus.Reduced[1];
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> reducedSlot[0] = SpawnCensus.reduceSerial(level, laneGetter, laneKeys));
+        SpawnCensus.Reduced red = reducedSlot[0];
+        PotentialCalculator potential = fabrolia$potentialCharges(level, laneGetter);
+        fabrolia$seedJavaCountWeighted(localMobCap, red.mobSeed());
+        RegionScheduler.commitSuccessIfHealthy(SpawnCensusDiag.CENSUS_FAST::incrementAndGet);
+        return new LaneCensus(red.counts(), potential);
     }
 
     /** A periodic reconciliation is correctness work, not telemetry. Its exact
@@ -750,6 +794,22 @@ public final class ParallelSpawnHelper {
             }
             ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
         }
+    }
+
+    /** Whether Main's createState runs the incremental ledger path — and with it
+     *  the 256-gt ground-truth audit that keeps the island lanes' census honest. */
+    public static boolean incrementalCensusActive() {
+        return !FabroliaConfig.disabled && FabroliaConfig.enableFabroliaSpawn
+                && ParallelProcessor.executor != null
+                && FabroliaConfig.fabroliaIncrementalSpawnCensus;
+    }
+
+    /** Main-only ledger audit for the island lanes when Main's own census does
+     *  not take the incremental path (vanilla / legacy scan): the islands still
+     *  census from the ledger, so its self-heal must still run on Main's
+     *  single-entry cadence. */
+    public static void auditLedgerForIslandLanes(ServerLevel level) {
+        fabrolia$auditFailStop(level);
     }
 
     private static void fabrolia$seedJavaCountWeighted(LocalMobCapCalculator calc,

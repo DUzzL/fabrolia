@@ -18,13 +18,18 @@ import java.util.concurrent.locks.LockSupport;
  * its L-clock via the getGameTime redirect):
  *
  * <ol>
+ *   <li><b>chunk pass</b> — after this island's scheduled ticks and raids,
+ *       before its block events (vanilla's chunkSource.tick slot): natural
+ *       spawning for the island's spawnable chunks, then random/fluid/thunder
+ *       ticks for its entity-ticking chunks, at the island's cadence on its
+ *       L-clock ({@link IslandChunkPassAccess}). Main never arms island-owned
+ *       regions; the global mob cap reads the summed {@link SpawnCapLanes}.</li>
  *   <li><b>entity phase</b> — member-region dispatch through the exact R5
  *       event-scheduler machinery (ColorGate eligibility, worker claims, owed
- *       phases, barrier contributions); region queues drain inside, so the
- *       spawn/random/block-tick tasks the chunk phase armed are covered. The
- *       coordinator consumes its own accepted member-region obligations.
- *       Independent island roots run concurrently; a nonlocal producer
- *       retains its source claim while its exact Main fallback completes.</li>
+ *       phases, barrier contributions). The coordinator consumes its own
+ *       accepted member-region obligations. Independent island roots run
+ *       concurrently; a nonlocal producer retains its source claim while its
+ *       exact Main fallback completes.</li>
  *   <li><b>deferred cross-region replay</b> — effects that crossed member
  *       region borders during the phase, routed here by target; replayed
  *       single-threaded with every member region quiescent — the exact
@@ -38,9 +43,8 @@ import java.util.concurrent.locks.LockSupport;
  *       claim release.</li>
  * </ol>
  *
- * <p>Increments 3–4 move block events and scheduled block/fluid ticks (then
- * spawn/random collection) into the sequence; the deadline drive then selects
- * WHICH islands run instead of running all every level tick.
+ * <p>The deadline drive selects WHICH islands run instead of running all
+ * every level tick.
  */
 public final class IslandTickUnit {
 
@@ -1004,6 +1008,15 @@ public final class IslandTickUnit {
                     RegionScheduler.throwWorkerFailureIfAny();
                     RaidIslandDispatch.service(rs, island, rs.level);
                     RegionScheduler.throwWorkerFailureIfAny();
+                    // CHUNK PASS — vanilla's exact slot (ServerLevel.tick:
+                    // raids → chunkSource.tick → runBlockEvents): natural
+                    // spawning for this island's spawnable chunks, then
+                    // random/fluid/thunder ticks for its entity-ticking
+                    // chunks, on this island's L, serially on the coordinator.
+                    // Main arms only regions with no island owner.
+                    ((IslandChunkPassAccess) rs.level.getChunkSource())
+                            .fabrolia$tickIslandChunks(rs, island, d.unitGameTime);
+                    RegionScheduler.throwWorkerFailureIfAny();
                     // Block events routed to this island by the main slot's
                     // partition — BEFORE the entity phase.
                     IslandBlockEvents.runIslandEvents(rs, island, d);
@@ -1797,11 +1810,6 @@ public final class IslandTickUnit {
             // Fixed-object atomic/field writes only: no allocation, logging,
             // collection mutation or task publication is permitted here.
             if (temporal != null) temporal.commit();
-            // Do not consume a stamp while a gate-1 task admitted for it is
-            // still queued/running. That late task belongs to the next unit;
-            // retaining the owed stamp makes later wall ticks skip instead of
-            // accumulating a second spawn/random cycle over it.
-            island.consumeChunkArmIfQuiescent();
             island.costNanos = cost;
             island.emaUnitNanos = nextEma;
             island.maxUnitNanos = nextMax;

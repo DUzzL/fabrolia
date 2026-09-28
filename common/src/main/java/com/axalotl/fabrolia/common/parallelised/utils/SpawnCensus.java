@@ -292,13 +292,30 @@ public final class SpawnCensus {
      * snapshotted. Chunk spawnability ({@code chunkGetter.query}), live/corpse
      * vectors, and the corpse entity-ticking predicate are still read together
      * at the exact per-key census body, never cached ahead of that query.
+     * Large key sets fan out over the shared pool (Main's level census).
      */
     public static Reduced reduce(ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter) {
+        return reduce(level, chunkGetter, false, null);
+    }
+
+    /** Same census, strictly on the calling thread — an island coordinator's
+     *  lane census: island concurrency never authorizes foreign-executor
+     *  fan-out. {@code laneKeys} pre-selects the lane's chunk keys before any
+     *  admitted body (the level ledger holds every lane's chunks);
+     *  {@code chunkGetter} remains the authoritative per-key membership and
+     *  spawnability rule inside the body. */
+    public static Reduced reduceSerial(ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter,
+                                       java.util.function.LongPredicate laneKeys) {
+        return reduce(level, chunkGetter, true, laneKeys);
+    }
+
+    private static Reduced reduce(ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter,
+                                  boolean serial, java.util.function.LongPredicate laneKeys) {
         LevelCensus c = census(level);
         Long2IntConcurrentHashMap ticking = ((TickingChunksAccess)
                 ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor) level)
                         .fabrolia$entityManager()).fabrolia$tickingChunks();
-        long[] keys = fabrolia$snapshotKeys(c);
+        long[] keys = fabrolia$snapshotKeys(c, laneKeys);
         if (keys.length == 0) {
             Reduced[] empty = new Reduced[1];
             RegionScheduler.runSuccessBodyIfHealthy(() -> empty[0] = new Reduced(
@@ -307,7 +324,8 @@ public final class SpawnCensus {
             return empty[0];
         }
 
-        if (keys.length >= 1024
+        if (!serial
+                && keys.length >= 1024
                 && ParallelProcessor.executor instanceof ForkJoinPool fjp
                 && ParallelProcessor.getPoolSize() > 1) {
             int batchSize = fabrolia$reduceBatchSize(keys.length, ParallelProcessor.getPoolSize());
@@ -342,13 +360,14 @@ public final class SpawnCensus {
         return fabrolia$mergeParts(keys, new CensusPart[] {part});
     }
 
-    private static long[] fabrolia$snapshotKeys(LevelCensus census) {
+    private static long[] fabrolia$snapshotKeys(LevelCensus census,
+                                                java.util.function.LongPredicate keyFilter) {
         long[][] snapshot = new long[1][];
         RegionScheduler.runSuccessBodyIfHealthy(
                 () -> {
                     LongOpenHashSet union = new LongOpenHashSet();
-                    union.addAll(census.live.keySet());
-                    union.addAll(census.corpse.keySet());
+                    fabrolia$addKeys(union, census.live.keySet(), keyFilter);
+                    fabrolia$addKeys(union, census.corpse.keySet(), keyFilter);
                     long[] keys = union.toLongArray();
                     // CHM iteration order is deliberately unspecified. Sorting
                     // gives stable ranges and a stable serial merge order.
@@ -356,6 +375,18 @@ public final class SpawnCensus {
                     snapshot[0] = keys;
                 });
         return snapshot[0];
+    }
+
+    private static void fabrolia$addKeys(LongOpenHashSet into, Set<Long> keys,
+                                         java.util.function.LongPredicate keyFilter) {
+        if (keyFilter == null) {
+            into.addAll(keys);
+            return;
+        }
+        for (Long key : keys) {
+            long k = key;
+            if (keyFilter.test(k)) into.add(k);
+        }
     }
 
     static void fabrolia$reduceRange(

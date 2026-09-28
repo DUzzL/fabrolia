@@ -403,10 +403,10 @@ construction — one global EpochDomain everywhere):
   vanilla's relative/re-anchored persistence makes restart clock-wipe
   equivalent to "chunks were unloaded a while".
 - **Deadline drive** — main submits only DUE islands (10 ms slack), awaits
-  ONLY the global remainder lane. Chunk-phase arming (spawn/random/block
-  ticks) routes per region through armGate: island work is never awaited by
-  main and never accumulates (arm-stamp gate = missed cycles under lag,
-  vanilla-lag semantics).
+  ONLY the global remainder lane. The chunk phase (natural spawning, thunder,
+  random/fluid ticks) is NOT armed from main for island-owned regions: each
+  island unit runs its own chunk pass (§13); main arms + awaits only regions
+  with no island owner.
 - **Integrity** — rebuild and save-all quiesce every unit claim
   (mainHoldsAllClaims reentrancy for nested save paths); incremental chunk
   saves take the owner island's claim opportunistically (vanilla cooldown
@@ -504,3 +504,83 @@ through merges (coalesce, never replay committed shards) and splits
 (repartition pending shards, preserve invocation identity, validate target
 generation before commit, redirect on mismatch). The Phase-1 fence remains
 the fallback for unpartitionable commands.
+
+## 13. Island chunk pass — spawning + random ticks at island cadence (2026-09-28)
+
+Before: main armed every island's spawn/random-tick cycle once per MAIN tick
+(ArmGate: skip while the island still owed the previous arm), built the
+level-wide `SpawnState` on main (createState ≈ 4.7 % of main at production
+load) and took the spawnable-chunk set from `DistanceManager`. A lagging main
+(10 TPS) therefore gave every 20 TPS island 10 spawn cycles/s.
+
+Now (`IslandTickUnit` → `ServerChunkCacheMixin.fabrolia$tickIslandChunks`):
+the unit runs vanilla `ServerChunkCache.tickChunks` restricted to the island,
+at vanilla's exact slot (after the island's scheduled ticks and raids, before
+its block events), serially on the coordinator, on island L. The ArmGate and
+its reservation accounting are gone; main's lane decision is the pure
+ownership test `RegionizedServer.islandOwned(region)`.
+
+| vanilla level-wide input | island lane |
+|---|---|
+| `naturalSpawnChunkCounter` (chunks within Chebyshev 8 of a counted player, loaded or not) | `NaturalSpawnChunks.candidates` over the island's own counted players (`ChunkMap.fabrolia$forEachSpawnCountedPlayer`: PlayerMap members with the ignored bit clear, keyed by last section pos). Islands are ≥16 chunks apart, so the per-lane sets partition vanilla's set exactly and their sizes add to vanilla's count. |
+| `collectSpawningChunks` (candidate ∧ ticking chunk ∧ non-spectator player <128 blocks) + `Util.shuffle(level.random)` | same predicate (`playerIsCloseEnoughForSpawning`, mod wraps apply) over the island's candidates, restricted to chunks the island owns; shuffled with the level RNG. |
+| `createState` census over all FULL chunks | `SpawnCensus.reduceSerial` through a lane `ChunkGetter` that admits only the island's FULL chunks (same rule for the ledger reduce, potential charges and local-cap seed). |
+| `LocalMobCapCalculator` | vanilla's level `LocalMobCapCalculator` (over `ChunkMap.getPlayersCloseForSpawning`), seeded island-locally with the island's census — exact, because the closest two cross-island points are ≥ 2·8·16+16 = 272 blocks apart, beyond the 128-block cap radius. The native pack-reservation arena stays on main's parallel lane only (an island pass is sequential, vanilla's own setting). |
+| `PotentialCalculator` | island-local — **accepted deviation**: another island's charges are ≥256 blocks away (vanilla contribution ≈ charge/256 at that range). |
+| `canSpawnForCategoryGlobal` (level count < cap × level chunks / 289) | `SpawnCapLanes`: each lane publishes `[counts per category, spawnable chunk count]` as one immutable slot (island: `PIsland.spawnCapSlot`; main's remainder lane: `SpawnCapLanes.globalLane`), and every lane's `SpawnState` is built from the SUM. Staleness ≤ one period of the other lane; no lane ever waits on another or on main. |
+| `getGameTime() % 400` persistent categories; `timeDiff` for inhabitedTime | island L; `PIsland.lastInhabitedUpdateL` (anchored at birth). |
+| `forEachBlockTickingChunk → level.tickChunk` | the island's entity-ticking chunks (its cells + adopted halo cells, completed simulation view) through vanilla `tickChunk`. Under ServerCore's `chunkTickDistanceAffectsRandomTicks` the source is ServerCore's Main-mutated ChunkTickManager: Main partitions the real `forEachBlockTickingChunk` result by owner once per Main tick (`PIsland.servercoreRandomTickChunks`) and the island re-resolves that snapshot (≤1 Main tick stale). |
+| `customSpawners` | unchanged: level-wide, on main. |
+
+Main's own createState now censuses only the global lane (the lane getter),
+publishes its slot, folds the island slots into its counts, and is built with
+the summed chunk count — `lastSpawnState` still reads as the level total.
+Main's global-lane spawnable count comes from the same player rule
+(`NaturalSpawnChunks`), not from `getNaturalSpawnChunkCount`; its candidate
+list is filtered to the global lane at `getSpawnCandidateChunks`
+(ChunkMapMixin), so Main never resolves/shuffles/gates island chunks. Main
+runs `rebuildIslandsIfDirty` before the deferred chunk-work arm, so a region
+populated during the chunk phase is adopted before a lane is chosen.
+
+**Serial by design.** The whole island pass runs on the coordinator. The only
+in-unit parallel executor is the entity-phase dispatch: island regions are
+claimable exclusively inside the dispatched entity window
+(`ColorGate.inUnitWindow`: `groupedEpoch == epoch && doneEpoch < epoch`),
+help-queue detachment requires the same eligibility plus a live claim holder
+(`RegionWorkerPool.detachHelpForLiveClaim`), and the queue-only dispatch
+variant (`tickEntities=false`) is hard-wired to the global domain
+(`queueOnlyEntityEpoch` / `isQueueOnlyEntityEpoch`). Hosting random ticks
+before the island's block events in parallel would need a second epoch per
+unit (entity tick-token dedup, dispatch cut, ColorGate completion, receipts)
+— a new scheduler layer. Putting them in the entity-phase queues instead would
+be cheap but reverses vanilla's random-ticks-before-block-events order within
+the island (the pre-A2 relaxation this pass removes). A large single island
+therefore pays vanilla's own single-threaded chunk-pass cost at its own TPS.
+
+Not bit-exact vs. vanilla (all bounded, none accumulating):
+
+- iteration order of the candidate/ticking sets before the shuffle (vanilla's
+  is hash order too); RNG draw sequence is per island rather than level-wide;
+- a chunk changing lane at a topology rebuild can miss or repeat ≤1 chunk
+  cycle (main arms before the pre-dispatch rebuild);
+- the global cap is evaluated per lane against its own fresh census plus the
+  other lanes' last slots: overshoot is bounded by one pack per lane per
+  period instead of vanilla's one level-wide evaluation per tick; a lane whose
+  unit is held (HOLD, portal fence, long TemporalControl period) keeps its
+  last slot pinned for the others until it runs again;
+- `inhabitedTime` accrues island ticks (L), not wall ticks — a slowed island's
+  local difficulty grows at its own rate; the island anchor also removes
+  vanilla's first-tick jump (`lastInhabitedUpdate = 0`) for island chunks;
+- the island's 128-block player test iterates only the island's counted
+  players (vanilla iterates every PlayerMap member, ignored spectators
+  included — identical under vanilla's predicate, which rejects spectators);
+- the island census always comes from the incremental ledger (its 256-gt
+  ground-truth audit stays on main: main runs it from its own incremental
+  path, or explicitly from the createState wrap when main takes the
+  vanilla/legacy scan); the `SpawnRateDiag` pass counter now counts island
+  passes too;
+- mod wraps on `collectSpawningChunks` / `getSpawnCandidateChunks` /
+  `getNaturalSpawnChunkCount` (and the VMP candidate shortcut, which is a
+  pure optimisation of the same predicate) do not see island passes;
+  ServerCore's `chunkTickDistanceAffectsRandomTicks` is honoured on both
+  lanes (the island filters the real `forEachBlockTickingChunk`).
