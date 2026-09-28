@@ -1360,8 +1360,9 @@ public final class RegionScheduler {
     // Main drains this inside the barrier pump, overlapping the region work.
     // ---------------------------------------------------------------------
 
-    private static final ConcurrentLinkedQueue<MainSyncTask> MAIN_SYNC =
-            new ConcurrentLinkedQueue<>();
+    /** Deque: a non-blocking drain returns still-busy islands' tasks to the head in order. */
+    private static final java.util.concurrent.ConcurrentLinkedDeque<MainSyncTask> MAIN_SYNC =
+            new java.util.concurrent.ConcurrentLinkedDeque<>();
 
     private record MainSyncTask(Entity entity, RegionWorkerPool.ExternalPermit permit,
                                 BooleanSupplier admission, Runnable completion,
@@ -1725,6 +1726,20 @@ public final class RegionScheduler {
      * @return true if at least one entity was ticked.
      */
     public static boolean drainMainSyncTicks() {
+        return drainMainSyncTicks(true);
+    }
+
+    /**
+     * Non-blocking variant for Main's barrier pump: islands still running a
+     * unit keep their tasks queued (head, same order) for a later iteration,
+     * so Main services what is idle now instead of parking behind a unit that
+     * will end anyway before the barrier completes.
+     */
+    public static boolean drainReadyMainSyncTicks() {
+        return drainMainSyncTicks(false);
+    }
+
+    private static boolean drainMainSyncTicks(boolean complete) {
         if (MAIN_SYNC.isEmpty()) return false;
         if (!MAIN_CLAIM_BATCHING) {
             MainSyncTask queued;
@@ -1738,17 +1753,26 @@ public final class RegionScheduler {
                     return current == null ? failure
                             : current.cancelQueuedPermit(task.permit(), failure);
                 });
+        boolean ran = false;
         MainSyncTask queued;
         while ((queued = MAIN_SYNC.poll()) != null) {
             if (queued.allIslandsFenced()) {
                 buckets.flush();
                 runOneMainSync(queued);
+                ran = true;
                 continue;
             }
             buckets.add(mainClaimOwnerOf(queued.entity()), queued);
         }
-        buckets.flush();
-        return true;
+        if (complete) {
+            buckets.flush();
+            return true;
+        }
+        ran |= buckets.flushReady();
+        // Busy islands: back to the head, bucket order = queue order.
+        java.util.ArrayList<MainSyncTask> busy = buckets.drainRemaining();
+        for (int i = busy.size() - 1; i >= 0; i--) MAIN_SYNC.addFirst(busy.get(i));
+        return ran;
     }
 
     /**
@@ -1783,24 +1807,68 @@ public final class RegionScheduler {
             return unclaimed.isEmpty() && buckets.isEmpty();
         }
 
+        /** Pass 1 only: run what is idle now; busy islands stay registered. @return ran anything */
+        boolean flushReady() {
+            if (isEmpty()) return false;
+            Throwable failure = null;
+            boolean ran = false;
+            try {
+                ran = !unclaimed.isEmpty();
+                runQueue(unclaimed);
+                ran |= runIdle();
+            } catch (Throwable thrown) {
+                failure = publishFatalAndSelectWinner(thrown);
+            }
+            if (failure != null) abort(failure);
+            return ran;
+        }
+
+        /** Remove and return every still-registered task in bucket order. */
+        java.util.ArrayList<T> drainRemaining() {
+            java.util.ArrayList<T> out = new java.util.ArrayList<>();
+            for (java.util.ArrayDeque<T> queue : buckets.values()) out.addAll(queue);
+            buckets.clear();
+            out.addAll(unclaimed);
+            unclaimed.clear();
+            return out;
+        }
+
+        private boolean runIdle() {
+            boolean ran = false;
+            var it = buckets.entrySet().iterator();
+            while (it.hasNext()) {
+                var entry = it.next();
+                IslandRegistry.PIsland owner = entry.getKey();
+                if (inherits(owner)) {
+                    runQueue(entry.getValue());
+                } else if (IslandCommands.tryMainClaim(owner)) {
+                    runClaimed(owner, entry.getValue());
+                } else {
+                    continue;
+                }
+                it.remove();
+                ran = true;
+            }
+            return ran;
+        }
+
+        private void abort(Throwable failure) {
+            for (java.util.ArrayDeque<T> queue : buckets.values()) {
+                for (T item : queue) failure = cancel.apply(item, failure);
+            }
+            buckets.clear();
+            for (T item : unclaimed) failure = cancel.apply(item, failure);
+            unclaimed.clear();
+            RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(failure));
+        }
+
         void flush() {
             if (isEmpty()) return;
             Throwable failure = null;
             try {
                 runQueue(unclaimed);
                 // Pass 1: whatever is idle right now, no waiting.
-                var it = buckets.entrySet().iterator();
-                while (it.hasNext()) {
-                    var entry = it.next();
-                    IslandRegistry.PIsland owner = entry.getKey();
-                    if (inherits(owner)) {
-                        runQueue(entry.getValue());
-                        it.remove();
-                    } else if (IslandCommands.tryMainClaim(owner)) {
-                        runClaimed(owner, entry.getValue());
-                        it.remove();
-                    }
-                }
+                runIdle();
                 if (buckets.isEmpty()) return;
                 // Pass 2: announce to every remaining island at once so their
                 // units yield concurrently, then keep polling all of them: each
@@ -1874,15 +1942,7 @@ public final class RegionScheduler {
             } catch (Throwable thrown) {
                 failure = publishFatalAndSelectWinner(thrown);
             }
-            if (failure != null) {
-                for (java.util.ArrayDeque<T> queue : buckets.values()) {
-                    for (T item : queue) failure = cancel.apply(item, failure);
-                }
-                buckets.clear();
-                for (T item : unclaimed) failure = cancel.apply(item, failure);
-                unclaimed.clear();
-                RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(failure));
-            }
+            if (failure != null) abort(failure);
         }
 
         private static boolean inherits(IslandRegistry.PIsland owner) {
