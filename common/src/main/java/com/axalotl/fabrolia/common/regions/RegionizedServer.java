@@ -407,6 +407,11 @@ public final class RegionizedServer {
      *  region freshly loaded mid-tick is adjacent to at most ONE island. */
     public record Island(int id, ArrayList<Region> members, long entityLoad) {}
 
+    /** Island BFS joins populated cells within this Chebyshev cell distance;
+     *  distinct islands therefore have populated cells ≥ {@code RADIUS + 1}
+     *  cells apart — at least {@code RADIUS} empty cells between them. */
+    public static final int ISLAND_BFS_RADIUS = 2;
+
     private volatile boolean islandsDirty = true;
     private volatile List<Island> islands = List.of();
 
@@ -1700,8 +1705,8 @@ public final class RegionizedServer {
                 load += cur.entityCount.get();
                 int rx = (int) cur.gridKey;
                 int rz = (int) (cur.gridKey >>> 32);
-                for (int dx = -2; dx <= 2; dx++) {
-                    for (int dz = -2; dz <= 2; dz++) {
+                for (int dx = -ISLAND_BFS_RADIUS; dx <= ISLAND_BFS_RADIUS; dx++) {
+                    for (int dz = -ISLAND_BFS_RADIUS; dz <= ISLAND_BFS_RADIUS; dz++) {
                         if (dx == 0 && dz == 0) continue;
                         long nKey = ((rx + dx) & 0xFFFFFFFFL) | (((long) (rz + dz) & 0xFFFFFFFFL) << 32);
                         Region nb = byGrid.get(nKey);   // box-free; only populated regions present

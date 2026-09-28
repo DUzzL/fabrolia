@@ -751,6 +751,60 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
         return List.copyOf(original.call(pos));
     }
 
+    /**
+     * Async islands: Main's spawn pass covers only the GLOBAL LANE (chunks with
+     * no island owner — each island runs its own pass, IslandTickUnit). Drop
+     * island-owned candidates at the source so Main never resolves, shuffles,
+     * gates or ticks them. Candidates cluster by region, so the owner lookup is
+     * memoised per grid cell.
+     */
+    @WrapOperation(method = "collectSpawningChunks",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/DistanceManager;getSpawnCandidateChunks()Lit/unimi/dsi/fastutil/longs/LongIterator;"))
+    private it.unimi.dsi.fastutil.longs.LongIterator fabrolia$globalLaneSpawnCandidates(
+            net.minecraft.server.level.DistanceManager instance,
+            Operation<it.unimi.dsi.fastutil.longs.LongIterator> original) {
+        it.unimi.dsi.fastutil.longs.LongIterator all = original.call(instance);
+        com.axalotl.fabrolia.common.regions.RegionizedServer rs =
+                com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(this.level);
+        if (rs == null || !rs.asyncActive) return all;
+        com.axalotl.fabrolia.common.regions.RegionGrid grid = rs.regionizer().grid;
+        return new it.unimi.dsi.fastutil.longs.LongIterator() {
+            private long memoCell = Long.MIN_VALUE;
+            private boolean memoGlobal;
+            private boolean ready;
+            private long next;
+
+            private boolean advance() {
+                while (!ready && all.hasNext()) {
+                    long key = all.nextLong();
+                    long cell = grid.keyFor(key);
+                    if (cell != memoCell) {
+                        memoCell = cell;
+                        memoGlobal = rs.islandOwnerOfCell(cell) == null;
+                    }
+                    if (memoGlobal) {
+                        next = key;
+                        ready = true;
+                    }
+                }
+                return ready;
+            }
+
+            @Override
+            public boolean hasNext() {
+                return advance();
+            }
+
+            @Override
+            public long nextLong() {
+                if (!advance()) throw new java.util.NoSuchElementException();
+                ready = false;
+                return next;
+            }
+        };
+    }
+
     @Unique
     private static Throwable fabrolia$mergeSaveFailure(
             Throwable primary, Throwable secondary) {

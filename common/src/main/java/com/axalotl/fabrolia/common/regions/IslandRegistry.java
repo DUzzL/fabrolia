@@ -59,6 +59,9 @@ public final class IslandRegistry {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("Fabrolia-Islands");
     private static final long TICK_BUDGET_NANOS = 50_000_000L;
+    /** Shared empty snapshot for {@link PIsland#servercoreRandomTickChunks}. */
+    public static final it.unimi.dsi.fastutil.longs.LongArrayList NO_CHUNKS =
+            new it.unimi.dsi.fastutil.longs.LongArrayList(0);
 
     /** Persistent island state. */
     public static final class PIsland {
@@ -407,6 +410,14 @@ public final class IslandRegistry {
          *  anchored at birth so a new island never replays the wall counter
          *  into {@code inhabitedTime}. Coordinator-only under unitClaim. */
         public long lastInhabitedUpdateL;
+        /**
+         * ServerCore random-tick mode only: Main's last per-tick snapshot of
+         * this island's random-tick chunk positions from ServerCore's chunk
+         * source (ChunkTickManager is Main-mutated; never walked off-main).
+         * Null outside that mode → the unit walks the completed simulation
+         * view. Replaced whole, never mutated after publication.
+         */
+        public volatile it.unimi.dsi.fastutil.longs.LongArrayList servercoreRandomTickChunks;
         /** Island-dispatched work (tick-tag functions and navigation updates),
          *  serviced only at this island's cadence under its coordinator claim. */
         public final java.util.ArrayList<Runnable> pendingIslandTasks = new java.util.ArrayList<>(2);
