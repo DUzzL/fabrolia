@@ -774,9 +774,9 @@ class PlayerTickV2WiringTest {
                         .mapToInt(candidate -> callCount(candidate,
                                 "com/axalotl/fabrolia/common/parallelised/advancement/"
                                         + "AdvancementBuffer",
-                                "drainMainFrameless"))
+                                "beginTickHeadWindow"))
                         .sum(),
-                "the pre-function advancement drain must itself be admitted");
+                "the pre-function advancement window must itself be admitted");
         assertEquals(1, functionMixin.methods.stream()
                         .filter(candidate -> candidate.name.startsWith(
                                 "lambda$fabrolia$markTickTag$"))

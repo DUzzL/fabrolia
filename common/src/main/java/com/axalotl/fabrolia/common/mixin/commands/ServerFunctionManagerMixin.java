@@ -46,6 +46,13 @@ public abstract class ServerFunctionManagerMixin {
     @org.spongepowered.asm.mixin.Unique
     private boolean fabrolia$inTickTag;
 
+    @org.spongepowered.asm.mixin.Shadow @org.spongepowered.asm.mixin.Final
+    private MinecraftServer server;
+    @org.spongepowered.asm.mixin.Shadow
+    private java.util.List<CommandFunction<CommandSourceStack>> ticking;
+    @org.spongepowered.asm.mixin.Shadow
+    private boolean postReload;
+
     /** Initial boot installs an already-sealed candidate library. */
     @Inject(method = "<init>", at = @At("TAIL"))
     private void fabrolia$activateInitialFunctionAnalysis(
@@ -72,21 +79,27 @@ public abstract class ServerFunctionManagerMixin {
 
     /** Tick-tag window marker (main-confined): execute() calls inside tick()
      *  start from a clean Main stack and may wait for an unbounded fence.
-     *  Also the once-per-tick main belt for the advancement drain: frameless
-     *  main awards + worker-side direct mutations apply here (tick head,
-     *  no monitors held) if the scheduled pump missed them. */
+     *  Also the once-per-tick advancement window: frameless main awards,
+     *  worker-side direct mutations and the island worker lane apply here
+     *  (tick head, no monitors held) under ONE sticky fence which the tick
+     *  functions then share instead of each quiescing every island again. */
     @WrapMethod(method = "tick")
     private void fabrolia$markTickTag(Operation<Void> original) {
-        // drainMainFrameless clears its scheduled marker before applying the
-        // drained batch. Its own leading health read cannot linearize that
-        // mutation against a peer W, so admit the complete drain here.
-        RegionScheduler.runSuccessBodyIfHealthy(() ->
-                com.axalotl.fabrolia.common.parallelised.advancement
-                        .AdvancementBuffer.drainMainFrameless());
-        fabrolia$inTickTag = true;
+        boolean[] window = new boolean[1];
         Throwable failure = null;
         try {
-            // The frameless drain may return through its empty fast path while a
+            // The window drain clears its scheduled marker before applying the
+            // drained batch. Its own leading health read cannot linearize that
+            // mutation against a peer W, so admit the complete drain here.
+            // Mirrors vanilla tick(): functions run only while the tick rate
+            // runs normally; the load tag runs once after a reload.
+            boolean functionsQueued = this.server.tickRateManager().runsNormally()
+                    && (this.postReload || !this.ticking.isEmpty());
+            RegionScheduler.runSuccessBodyIfHealthy(() -> window[0] =
+                    com.axalotl.fabrolia.common.parallelised.advancement
+                            .AdvancementBuffer.beginTickHeadWindow(functionsQueued));
+            fabrolia$inTickTag = true;
+            // The window drain may return through its empty fast path while a
             // peer worker is selecting W.  Treat the tick-tag invocation as its
             // own vanilla body: either this admission wins first and the entered
             // call finishes its cleanup chain, or W wins and original is never
@@ -98,6 +111,12 @@ public abstract class ServerFunctionManagerMixin {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         }
         fabrolia$inTickTag = false;
+        if (window[0]) {
+            // Mandatory pair: settles function-raised cascades in the held
+            // window and releases the sticky fence exactly once.
+            failure = com.axalotl.fabrolia.common.parallelised.advancement
+                    .AdvancementBuffer.endTickHeadWindow(failure);
+        }
         if (failure == null) {
             try {
                 // Marker restoration is mandatory cleanup outside the body's

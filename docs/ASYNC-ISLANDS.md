@@ -44,11 +44,33 @@ caller lacks owner authority.
 
 `AdvancementBuffer` resolves each trigger's matcher at the trigger call under the
 player's advancements monitor; the retained instances, their player condition and
-the awards are evaluated at the surrounding monitor-free Main drain against the
-loot context captured at fire time. Per-drain criterion deduplication is scoped
-to each player/key. The buffer cannot transport an entered callback or acquire a
-global fence while its caller holds arbitrary monitors and claims. Worker triggers
-outside a buffering frame publish directly to the retained Main lane.
+the awards are evaluated at a monitor-free Main drain against the loot context
+captured at fire time. Under the drain's held global fence the player conditions
+are fanned over the idle tick pool (`AdvancementPredicateEval`: every pending of one
+player in one task, results keyed by pending index) and the awards then apply
+serially on Main in vanilla order. Those tick-pool reads are legitimate only
+because physical Main holds every claim and stays parked in the fan-in until the
+last task terminated — a task never outlives the window. Vanilla evaluates each
+trigger call after the previous call's awards; the fan-out sees one pre-award
+snapshot, so a player's later pendings are re-evaluated inline once that player
+received an award in the pass. A `random_chance` player condition draws from the
+level RNG's worker stripe on those threads (the same striping every worker uses).
+Per-drain criterion deduplication is scoped to each player/key. The buffer cannot
+transport an entered callback or acquire a global fence while its caller holds
+arbitrary monitors and claims. Worker triggers outside a buffering frame publish
+directly to the retained Main lane.
+
+Drain points: Main-ticked players' parked batch applies at that level's entity-batch
+end (vanilla awards them inside the entity phase). The worker lane (island players,
+whose ticks have no Main-phase anchor) applies once per tick at the tick head, in
+the window `ServerFunctionManager.tick` opens before the `#minecraft:tick`
+functions: the worker lane, then frameless Main awards and direct replays, share
+ONE sticky fence which the tick functions then run inside (`fenceWindowHeld` →
+inline; with functions queued the window takes that fence even without pending
+awards), and cascades the functions raise settle before the window releases. A
+batch end drains the worker lane only when it already holds the fence (or none is
+required); the scheduled inter-tick belt likewise runs only under a free fence
+while islands are live; the shutdown pass drains every lane unconditionally.
 
 **Cost:** Main-only native bodies and unknown dependencies still fall back to
 physical Main. Independent clocks and concurrent admission do not establish a
@@ -487,8 +509,14 @@ either inline on the owner or on the fenced main batch with happens-before
 via the result future.
 
 **Datapacks (Phase 1).** Tick/schedule functions keep vanilla W-cadence and
-main execution, fenced per function body; /schedule stays on the vanilla
-game-time queue. Exactly-once holds trivially (vanilla's single invocation,
+main execution, fenced per function body; the `#minecraft:tick` functions run
+inside the tick-head advancement window (§0) and reuse its sticky fence when that
+window took one, so a tick with island awards pending quiesces once for both.
+Scheduled functions (overworld `tickTime`) are separated from that window by the
+clock/border/weather stages and keep their own fence; a `TimerQueue` tick with two
+or more due function callbacks takes one fence around the whole dispatch instead
+of one per callback (`TimerQueueMixin`). /schedule stays on the
+vanilla game-time queue. Exactly-once holds trivially (vanilla's single invocation,
 only fenced). Phase 3 decomposes proven-island-local bodies to island lanes
 at island cadence via FabroliaFunctionScopes metadata (MCFC emits it;
 runtime validation is mandatory for dynamic selectors/macros/storage/

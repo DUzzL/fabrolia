@@ -85,6 +85,8 @@ public final class IslandCommands {
     public static final LongAdder ROUTED_GLOBAL = new LongAdder();
     public static final LongAdder MAIN_FENCED = new LongAdder();
     public static final LongAdder FUNCTION_FENCED = new LongAdder();
+    /** One fence taken around a TimerQueue tick with ≥2 due function callbacks. */
+    public static final LongAdder SCHEDULED_WINDOWS = new LongAdder();
     static final LongAdder ROUTE_WAIT_NANOS = new LongAdder();
     static final LongAdder QUIESCE_NANOS = new LongAdder();
     public static final LongAdder LOCAL_FN_INLINE = new LongAdder();
@@ -100,6 +102,7 @@ public final class IslandCommands {
                 + " routed=" + ROUTED_GLOBAL.sum()
                 + " mainFenced=" + MAIN_FENCED.sum()
                 + " fnFenced=" + FUNCTION_FENCED.sum()
+                + " schedWindows=" + SCHEDULED_WINDOWS.sum()
                 + " waitMs=" + ROUTE_WAIT_NANOS.sum() / 1_000_000
                 + " quiesceMs=" + QUIESCE_NANOS.sum() / 1_000_000
                 + " dupExec=" + DUPLICATE_EXEC_ATTEMPTS.sum();
