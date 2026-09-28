@@ -8,6 +8,16 @@ that cannot run on its island owner (MAIN_SYNC entity bodies, routed commands,
 Main-only listener work) retains its source claim while its exact Main fallback
 completes.
 
+Main-owned entity bodies (MAIN_SYNC) and Main tracker publications are drained
+per island, not per entity (`RegionScheduler.IslandBuckets`): Main takes each
+island's claim once for all of that island's queued work, runs the bucket in
+queue order and releases. In async mode the entity-barrier pump and the
+publication drain are non-blocking: a busy island's work stays queued (same
+order) for the next pump, and only an entry older than 50 ms raises the
+island's `claimWanted` so a back-to-back chaining unit yields. Exact-turn,
+sprint and shutdown drains are complete (blocking). Islands never observe
+each other within a tick, so reordering between islands is not observable.
+
 Nether transfers retain worker-owned endpoint claims with serialized Main
 preparation (§5, A6). Execution remains configuration-gated; historical stage
 descriptions retain their original design gates only where not superseded here.

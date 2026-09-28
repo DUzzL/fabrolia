@@ -15,8 +15,35 @@
   (other islands' charges are ≥256 blocks away); `inhabitedTime` and the
   400-tick persistent-category phase follow island time instead of wall
   time; another lane's census contribution can be up to one of that lane's
-  periods old; a chunk whose owner changes at a topology rebuild can miss or
-  repeat at most one chunk cycle. Full table: docs/ASYNC-ISLANDS.md §13.
+  periods old; a chunk whose owner changes between two islands at a
+  topology rebuild can miss or repeat at most one chunk cycle. Full table:
+  docs/ASYNC-ISLANDS.md §13.
+- Main takes one island claim per drain instead of one per entity for its
+  Main-owned entity ticks (item frames, wither, dragon, player fallbacks) and
+  Main tracker publications, and never parks for them in async mode: idle
+  islands are served at once, busy ones stay queued for Main's next barrier
+  pump (same order per island), and an island whose oldest queued entry is
+  older than 50 ms is asked to yield its next unit. Before, Main parked
+  behind every island's running unit per entity (33-60 % of Main on the
+  production profiles) and each wait made that island yield a unit.
+  Fixture (100 bots, 4000 item frames, 4000 zombies): Main 23.9 -> 18.4
+  ms/tick, islands 20 TPS in both. `-Dfabrolia.mainClaimBatching=false`
+  restores the per-entity drains; `flightrec status` shows claim counts,
+  contention, wait time and Main's average tick time.
+- Deferred advancement predicates are evaluated in parallel on the tick pool
+  while Main holds the award fence (one task per player, awards applied
+  serially in the original order, later pendings re-evaluated after a real
+  grant). Island players' deferred awards, frameless Main awards and the
+  `#minecraft:tick` functions share one fence window at the function tick
+  head instead of quiescing every island once per level and once more for
+  the functions. Island players' awards therefore apply at the next tick
+  head, before that tick's functions - the same point where vanilla's tick
+  functions first observe an award made during the previous tick's level
+  pass.
+- Region workers: removing or re-pairing a viewer on a tracked entity is
+  O(1) (identity-keyed ordered map instead of a list scan), and the
+  portal-custody check on every entity push/collision no longer takes a
+  global monitor when the entity is not in a portal transfer.
 
 - Roll the region runtime back to the stable 0.2.38 behavior (the compiled
   reference build). The uncommitted "native admission" rewrite that routed
