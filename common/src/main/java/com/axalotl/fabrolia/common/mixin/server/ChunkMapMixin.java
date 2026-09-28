@@ -760,9 +760,9 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
      */
     @WrapOperation(method = "collectSpawningChunks",
             at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/level/DistanceManager;getSpawnCandidateChunks()Lit/unimi/dsi/fastutil/longs/LongIterator;"))
+                    target = "Lnet/minecraft/server/level/ChunkMap$DistanceManager;getSpawnCandidateChunks()Lit/unimi/dsi/fastutil/longs/LongIterator;"))
     private it.unimi.dsi.fastutil.longs.LongIterator fabrolia$globalLaneSpawnCandidates(
-            net.minecraft.server.level.DistanceManager instance,
+            net.minecraft.server.level.ChunkMap.DistanceManager instance,
             Operation<it.unimi.dsi.fastutil.longs.LongIterator> original) {
         it.unimi.dsi.fastutil.longs.LongIterator all = original.call(instance);
         com.axalotl.fabrolia.common.regions.RegionizedServer rs =
