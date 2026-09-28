@@ -47,6 +47,13 @@ public final class FlightRecorder {
         DORMANT_MAX_AGE.accumulate(age);
     }
 
+    /** Vanilla 100-tick average Main tick time in ms (one decimal), or n/a without a server. */
+    private static String mainMspt() {
+        net.minecraft.server.MinecraftServer server = RegionScheduler.getServer();
+        if (server == null) return "n/a";
+        return String.format(java.util.Locale.ROOT, "%.1f", server.getAverageTickTimeNanos() / 1_000_000.0);
+    }
+
     /** One-line summary for the status command. */
     public static String status() {
         synchronized (RING) {
@@ -56,6 +63,8 @@ public final class FlightRecorder {
                     + " scheduledHolds=" + SCHEDULED_HOLDS.sum()
                     + " ownChunkGateSkips=" + OWN_CHUNK_GATE_SKIPS.sum()
                     + " | " + NetherPortalTransfers.status()
+                    + " | " + IslandCommands.claimStatus()
+                    + " | mainMspt=" + mainMspt()
                     + " | " + "delivery: see chunksender status";
         }
     }

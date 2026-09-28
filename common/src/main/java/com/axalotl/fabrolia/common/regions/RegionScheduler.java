@@ -4,6 +4,7 @@ import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
@@ -1359,8 +1360,9 @@ public final class RegionScheduler {
     // Main drains this inside the barrier pump, overlapping the region work.
     // ---------------------------------------------------------------------
 
-    private static final ConcurrentLinkedQueue<MainSyncTask> MAIN_SYNC =
-            new ConcurrentLinkedQueue<>();
+    /** Deque: a non-blocking drain returns still-busy islands' tasks to the head in order. */
+    private static final java.util.concurrent.ConcurrentLinkedDeque<MainSyncTask> MAIN_SYNC =
+            new java.util.concurrent.ConcurrentLinkedDeque<>();
 
     private record MainSyncTask(Entity entity, RegionWorkerPool.ExternalPermit permit,
                                 BooleanSupplier admission, Runnable completion,
@@ -1645,59 +1647,389 @@ public final class RegionScheduler {
         runWithMainEntityClaim(e, queued);
     }
 
-    /** Main thread only. @return true if at least one entity was ticked. */
-    public static boolean drainMainSyncTicks() {
-        MainSyncTask queued = MAIN_SYNC.poll();
-        if (queued == null) return false;
-        do {
-            MainSyncTask task = queued;
-            Throwable failure = null;
-            boolean permitStarted = false;
-            try {
-                if (!queued.permit().beginMainSync()) {
-                    throw new IllegalStateException("MAIN_SYNC entry executed more than once");
+    /**
+     * Runs one accepted MAIN_SYNC task: permit begin/finish, body, completion.
+     * Called from the island bucket runner (Main already holds the entity's
+     * island claim, so {@link #runWithMainEntityClaim} inherits it) or, for
+     * fenced tasks, in queue order under the global fence.
+     */
+    private static void runOneMainSync(MainSyncTask queued) {
+        Throwable failure = null;
+        boolean permitStarted = false;
+        try {
+            if (!queued.permit().beginMainSync()) {
+                throw new IllegalStateException("MAIN_SYNC entry executed more than once");
+            }
+            permitStarted = true;
+            if (queued.allIslandsFenced()) {
+                AsyncIslandPlayerTicks.runFencedMainMutation(
+                        "globally fenced MAIN_SYNC entity tick",
+                        () -> runMainSyncEntityTask(queued));
+            } else {
+                runMainSyncEntityTask(queued);
+            }
+        } catch (Throwable thrown) {
+            failure = publishFatalAndSelectWinner(thrown);
+        } finally {
+            // This is a success continuation, not resource cleanup.  In
+            // particular A5's callback reopens/schedules the listener lane;
+            // running it after a partial entity mutation would consume the
+            // failed turn as if vanilla had completed it.  The pool permit is
+            // the actual resource and is released below for both outcomes.
+            if (permitStarted) {
+                if (failure == null && queued.completion() != null) {
+                    try {
+                        // Completion reopens/schedules a successor lane. A worker
+                        // fatal which won while the claimed body was running must
+                        // stop it atomically at the last possible point before entry;
+                        // a health read followed by Runnable.run has a W race.
+                        runSuccessBodyIfHealthy(queued.completion());
+                    } catch (Throwable completionFailure) {
+                        failure = publishFatalAndSelectWinner(
+                                mergeFailure(failure, completionFailure));
+                    }
                 }
-                permitStarted = true;
-                if (task.allIslandsFenced()) {
-                    AsyncIslandPlayerTicks.runFencedMainMutation(
-                            "globally fenced MAIN_SYNC entity tick",
-                            () -> runMainSyncEntityTask(task));
+                failure = queued.permit().finish(failure);
+                if (failure != null) {
+                    failure = publishFatalAndSelectWinner(failure);
+                }
+            }
+        }
+        if (failure != null) {
+            RegionScheduler.<RuntimeException>rethrow(
+                    publishFatalAndSelectWinner(failure));
+        }
+    }
+
+    /** A/B switch for the island-bucketed Main claim drains (per-entity claims when false). */
+    private static final boolean MAIN_CLAIM_BATCHING =
+            !"false".equalsIgnoreCase(System.getProperty("fabrolia.mainClaimBatching", "true"));
+
+    /** Main-side island owner of an entity for bucket keying; null = no island claim needed. */
+    static IslandRegistry.PIsland mainClaimOwnerOf(Entity entity) {
+        if (!(entity.level() instanceof ServerLevel level)) return null;
+        RegionizedServer runtime = publishedForLevel(level);
+        if (runtime == null) return null;
+        return runtime.islandOwnerOfChunk(entity.chunkPosition().pack());
+    }
+
+    /**
+     * Main thread only. Ticks every queued MAIN_SYNC entity this call, grouped by
+     * island so Main takes each island's claim once per drain instead of once
+     * per entity (a per-entity claim parked Main behind every island's running
+     * unit and stalled the island through {@code claimWanted}; 33-38% of Main on
+     * the 2026-09-27 production profiles). Same-island order is the queue order;
+     * islands are independent within a tick by the separation invariant, so
+     * cross-island reordering is unobservable. Fenced tasks keep queue order:
+     * the buckets are flushed before one runs.
+     *
+     * @return true if at least one entity was ticked.
+     */
+    public static boolean drainMainSyncTicks() {
+        return drainMainSyncTicks(true);
+    }
+
+    /**
+     * Non-blocking variant for Main's barrier pump: islands still running a
+     * unit keep their tasks queued (head, same order) for a later iteration,
+     * so Main services what is idle now instead of parking behind a unit that
+     * will end anyway before the barrier completes.
+     */
+    public static boolean drainReadyMainSyncTicks() {
+        return drainMainSyncTicks(false);
+    }
+
+    private static boolean drainMainSyncTicks(boolean complete) {
+        if (MAIN_SYNC.isEmpty()) return false;
+        if (!MAIN_CLAIM_BATCHING) {
+            MainSyncTask queued;
+            while ((queued = MAIN_SYNC.poll()) != null) runOneMainSync(queued);
+            return true;
+        }
+        IslandBuckets<MainSyncTask> buckets = new IslandBuckets<>(
+                RegionScheduler::runOneMainSync,
+                (task, failure) -> {
+                    RegionWorkerPool current = pool;
+                    return current == null ? failure
+                            : current.cancelQueuedPermit(task.permit(), failure);
+                });
+        boolean ran = false;
+        MainSyncTask queued;
+        while ((queued = MAIN_SYNC.poll()) != null) {
+            if (queued.allIslandsFenced()) {
+                buckets.flush();
+                runOneMainSync(queued);
+                ran = true;
+                continue;
+            }
+            buckets.add(mainClaimOwnerOf(queued.entity()), queued);
+        }
+        if (complete) {
+            buckets.flush();
+            return true;
+        }
+        ran |= buckets.flushReady();
+        // Busy islands: back to the head, bucket order = queue order.
+        java.util.ArrayList<MainSyncTask> busy = buckets.drainRemaining();
+        for (int i = busy.size() - 1; i >= 0; i--) MAIN_SYNC.addFirst(busy.get(i));
+        return ran;
+    }
+
+    /**
+     * Main-confined island-keyed work list. {@link #flush} runs every body under
+     * one Main claim per island: a non-blocking pass first (try-claim; bodies
+     * whose island is idle run immediately), then, for islands still busy, one
+     * {@code claimWanted} announcement to all of them at once and a blocking
+     * claim per island (Main waits for the longest running unit, not the sum).
+     * Bodies whose island is already Main-owned (all-claims window, nested
+     * drain under a held claim, no fence required) run inline. A failure
+     * cancels every not-yet-started body through {@code cancel} and rethrows.
+     */
+    static final class IslandBuckets<T> {
+        private final java.util.function.Consumer<T> body;
+        private final java.util.function.BiFunction<T, Throwable, Throwable> cancel;
+        private final java.util.LinkedHashMap<IslandRegistry.PIsland, java.util.ArrayDeque<T>> buckets =
+                new java.util.LinkedHashMap<>();
+        private final java.util.ArrayDeque<T> unclaimed = new java.util.ArrayDeque<>();
+
+        IslandBuckets(java.util.function.Consumer<T> body,
+                      java.util.function.BiFunction<T, Throwable, Throwable> cancel) {
+            this.body = body;
+            this.cancel = cancel;
+        }
+
+        void add(IslandRegistry.PIsland owner, T item) {
+            if (owner == null) unclaimed.add(item);
+            else buckets.computeIfAbsent(owner, ignored -> new java.util.ArrayDeque<>()).add(item);
+        }
+
+        boolean isEmpty() {
+            return unclaimed.isEmpty() && buckets.isEmpty();
+        }
+
+        /** Pass 1 only: run what is idle now; busy islands stay registered. @return ran anything */
+        boolean flushReady() {
+            if (isEmpty()) return false;
+            Throwable failure = null;
+            boolean ran = false;
+            try {
+                ran = !unclaimed.isEmpty();
+                runQueue(unclaimed);
+                ran |= runIdle();
+            } catch (Throwable thrown) {
+                failure = publishFatalAndSelectWinner(thrown);
+            }
+            if (failure != null) abort(failure);
+            return ran;
+        }
+
+        /** Remove and return every still-registered task in bucket order. */
+        java.util.ArrayList<T> drainRemaining() {
+            java.util.ArrayList<T> out = new java.util.ArrayList<>();
+            for (java.util.ArrayDeque<T> queue : buckets.values()) out.addAll(queue);
+            buckets.clear();
+            out.addAll(unclaimed);
+            unclaimed.clear();
+            return out;
+        }
+
+        private boolean runIdle() {
+            boolean ran = false;
+            var it = buckets.entrySet().iterator();
+            while (it.hasNext()) {
+                var entry = it.next();
+                IslandRegistry.PIsland owner = entry.getKey();
+                if (inherits(owner)) {
+                    runQueue(entry.getValue());
+                } else if (IslandCommands.tryMainClaim(owner)) {
+                    runClaimed(owner, entry.getValue());
                 } else {
-                    runMainSyncEntityTask(task);
+                    continue;
+                }
+                it.remove();
+                ran = true;
+            }
+            return ran;
+        }
+
+        private void abort(Throwable failure) {
+            for (java.util.ArrayDeque<T> queue : buckets.values()) {
+                for (T item : queue) failure = cancel.apply(item, failure);
+            }
+            buckets.clear();
+            for (T item : unclaimed) failure = cancel.apply(item, failure);
+            unclaimed.clear();
+            RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(failure));
+        }
+
+        void flush() {
+            if (isEmpty()) return;
+            Throwable failure = null;
+            try {
+                runQueue(unclaimed);
+                // Pass 1: whatever is idle right now, no waiting.
+                runIdle();
+                if (buckets.isEmpty()) return;
+                // Pass 2: announce to every remaining island at once so their
+                // units yield concurrently, then keep polling all of them: each
+                // is claimed the moment its unit ends, whichever ends first.
+                // Between rounds Main performs the same services as the blocking
+                // mainClaim spin (routed batches an island coordinator may be
+                // waiting on, chunk executors, forensics).
+                java.util.ArrayList<IslandRegistry.PIsland> remaining =
+                        new java.util.ArrayList<>(buckets.keySet());
+                boolean[] prior = new boolean[remaining.size()];
+                for (int i = 0; i < prior.length; i++) {
+                    prior[i] = remaining.get(i).claimWanted;
+                    remaining.get(i).claimWanted = true;
+                }
+                try {
+                    long spinStart = System.nanoTime();
+                    long waitStart = spinStart;
+                    IslandCommands.MAIN_CLAIMS_CONTENDED.increment();
+                    try {
+                        while (!buckets.isEmpty()) {
+                            boolean progressed = false;
+                            var round = buckets.entrySet().iterator();
+                            while (round.hasNext()) {
+                                var entry = round.next();
+                                IslandRegistry.PIsland owner = entry.getKey();
+                                if (inherits(owner)) {
+                                    runQueue(entry.getValue());
+                                } else if (IslandCommands.tryMainClaim(owner)) {
+                                    runClaimed(owner, entry.getValue());
+                                } else {
+                                    continue;
+                                }
+                                // Registered until it completed: an abort cancels the rest.
+                                round.remove();
+                                progressed = true;
+                            }
+                            if (buckets.isEmpty()) break;
+                            if (!progressed) {
+                                throwWorkerFailureIfAny();
+                                boolean routed = IslandCommands.hasRoutedPending();
+                                if (!routed) {
+                                    for (IslandRegistry.PIsland owner : buckets.keySet()) {
+                                        if (owner.waitingOnRoutedCommand) { routed = true; break; }
+                                    }
+                                }
+                                if (routed) {
+                                    IslandCommands.drainRoutedBatch();
+                                    continue;
+                                }
+                                if (!poolRunning()) {
+                                    throw new IllegalStateException(
+                                            "island bucket drain found retained island claims after the worker pool stopped");
+                                }
+                                if (System.nanoTime() - spinStart > 5_000_000_000L) {
+                                    spinStart = System.nanoTime();
+                                    for (IslandRegistry.PIsland owner : buckets.keySet()) {
+                                        LOGGER.error("[async-islands] island bucket drain stuck 5s — retained-claim forensics: {}",
+                                                IslandCommands.claimForensics(owner));
+                                    }
+                                }
+                                IslandCommands.drainMainChunkServices();
+                                java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
+                            }
+                        }
+                    } finally {
+                        IslandCommands.MAIN_CLAIM_WAIT_NANOS.add(System.nanoTime() - waitStart);
+                    }
+                } finally {
+                    for (int i = 0; i < prior.length; i++) remaining.get(i).claimWanted = prior[i];
                 }
             } catch (Throwable thrown) {
                 failure = publishFatalAndSelectWinner(thrown);
+            }
+            if (failure != null) abort(failure);
+        }
+
+        private static boolean inherits(IslandRegistry.PIsland owner) {
+            if (IslandCommands.mainHolds(owner) || owner.retired) return true;
+            ServerLevel level = owner.level;
+            RegionizedServer runtime = level == null ? null : publishedForLevel(level);
+            return runtime == null || runtime.currentThreadHoldsAllClaims()
+                    || !IslandCommands.requiresMainFence(runtime);
+        }
+
+        private void runClaimed(IslandRegistry.PIsland owner, java.util.ArrayDeque<T> queue) {
+            Throwable failure = null;
+            try {
+                runQueue(queue);
+            } catch (Throwable thrown) {
+                failure = publishFatalAndSelectWinner(thrown);
             } finally {
-                // This is a success continuation, not resource cleanup.  In
-                // particular A5's callback reopens/schedules the listener lane;
-                // running it after a partial entity mutation would consume the
-                // failed turn as if vanilla had completed it.  The pool permit is
-                // the actual resource and is released below for both outcomes.
-                if (permitStarted) {
-                    if (failure == null && queued.completion() != null) {
-                        try {
-                            // Completion reopens/schedules a successor lane. A worker
-                            // fatal which won while the claimed body was running must
-                            // stop it atomically at the last possible point before entry;
-                            // a health read followed by Runnable.run has a W race.
-                            runSuccessBodyIfHealthy(queued.completion());
-                        } catch (Throwable completionFailure) {
-                            failure = publishFatalAndSelectWinner(
-                                    mergeFailure(failure, completionFailure));
-                        }
-                    }
-                    failure = queued.permit().finish(failure);
-                    if (failure != null) {
-                        failure = publishFatalAndSelectWinner(failure);
-                    }
+                try {
+                    IslandCommands.mainRelease(owner);
+                } catch (Throwable releaseFailure) {
+                    failure = publishFatalAndSelectWinner(mergeFailure(failure, releaseFailure));
                 }
             }
-            if (failure != null) {
-                RegionScheduler.<RuntimeException>rethrow(
-                        publishFatalAndSelectWinner(failure));
-            }
-        } while ((queued = MAIN_SYNC.poll()) != null);
-        return true;
+            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        }
+
+        private void runQueue(java.util.ArrayDeque<T> queue) {
+            T item;
+            while ((item = queue.poll()) != null) body.accept(item);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Main-owned tracker publications (IslandEntityTracking.MainTrackingTask).
+    // One TickTask per publication took the island claim per entity; here the
+    // publications accumulate and one TickTask drains them island-bucketed.
+    // ---------------------------------------------------------------------
+
+    private static final ConcurrentLinkedQueue<MainTrackingPublication> MAIN_TRACKING =
+            new ConcurrentLinkedQueue<>();
+    private static final java.util.concurrent.atomic.AtomicBoolean MAIN_TRACKING_DRAIN_SCHEDULED =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** A Main publication body with its abort path. */
+    public interface MainTrackingPublication extends Runnable {
+        Entity trackedEntity();
+        /** Called instead of {@link #run} when a Main drain aborts before this body. */
+        void cancelUnrun();
+    }
+
+    /**
+     * Queue a Main-owned tracker publication for the next drain of this tick
+     * (or the next tick when Main is past its deadline - the same carry-over a
+     * TickTask had). Never executes inline: the caller may still be unwinding a
+     * tracker scope, and island claims are taken by the drain.
+     */
+    public static void publishMainTracking(MinecraftServer server, MainTrackingPublication publication) {
+        if (!MAIN_CLAIM_BATCHING) {
+            server.schedule(new TickTask(server.getTickCount(), publication));
+            return;
+        }
+        MAIN_TRACKING.add(publication);
+        if (MAIN_TRACKING_DRAIN_SCHEDULED.compareAndSet(false, true)) {
+            server.schedule(new TickTask(server.getTickCount(), RegionScheduler::drainMainTracking));
+        }
+    }
+
+    /** Main thread only: the scheduled drain body. */
+    private static void drainMainTracking() {
+        // Cleared first: publications arriving after this poll get a new drain.
+        MAIN_TRACKING_DRAIN_SCHEDULED.set(false);
+        if (MAIN_TRACKING.isEmpty()) return;
+        IslandBuckets<MainTrackingPublication> buckets = new IslandBuckets<>(
+                Runnable::run,
+                (publication, failure) -> {
+                    try {
+                        publication.cancelUnrun();
+                    } catch (Throwable cleanup) {
+                        return mergeFailure(failure, cleanup);
+                    }
+                    return failure;
+                });
+        MainTrackingPublication queued;
+        while ((queued = MAIN_TRACKING.poll()) != null) {
+            buckets.add(mainClaimOwnerOf(queued.trackedEntity()), queued);
+        }
+        buckets.flush();
     }
 
     /** Generic submit at (level, chunk). Inline under authenticated existing ownership. */

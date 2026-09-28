@@ -350,7 +350,7 @@ public final class ParallelProcessor {
                     // API-contract, UUID blacklist) WHILE the regions run — same overlap
                     // the old syncDeferred loop had, just demand-driven. No-op (one CLQ
                     // poll) when the queue is empty or regions are off.
-                    boolean drained = RegionScheduler.drainMainSyncTicks();
+                    boolean drained = RegionScheduler.drainReadyMainSyncTicks();
                     // Main pump: service one explicit Main-only/main-safe job instead of
                     // parking through it. Autonomous ready/help entries stay worker-owned;
                     // letting physical Main detach those long poles made its own tick time

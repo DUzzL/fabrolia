@@ -1043,18 +1043,32 @@ public final class IslandCommands {
      *  interaction wraps entered on the Netty event loop BEFORE vanilla's
      *  ensureRunningOnSameThread requeue — now passes through in the mixin;
      *  any new off-main entry is a bug and trips the belt log. */
+    /** Main claim accounting: claims taken, contended claims, parked nanos (flightrec status). */
+    static final java.util.concurrent.atomic.LongAdder MAIN_CLAIMS = new java.util.concurrent.atomic.LongAdder();
+    static final java.util.concurrent.atomic.LongAdder MAIN_CLAIMS_CONTENDED = new java.util.concurrent.atomic.LongAdder();
+    static final java.util.concurrent.atomic.LongAdder MAIN_CLAIM_WAIT_NANOS = new java.util.concurrent.atomic.LongAdder();
+
+    public static String claimStatus() {
+        return "mainClaims=" + MAIN_CLAIMS.sum() + " contended=" + MAIN_CLAIMS_CONTENDED.sum()
+                + " waitMs=" + MAIN_CLAIM_WAIT_NANOS.sum() / 1_000_000;
+    }
+
     public static void mainClaim(IslandRegistry.PIsland owner) {
         offMainBelt("mainClaim");
+        MAIN_CLAIMS.increment();
         boolean priorClaimWanted = owner.claimWanted;
         owner.claimWanted = true; // rate/sprint chaining + pacer yield to us
         long spinStart = 0L;
+        long waitStart = 0L;
         boolean contended = false;
         int stuck = 0;
         try {
             while (!owner.unitClaim.compareAndSet(false, true)) {
                 if (!contended) {
                     spinStart = System.nanoTime();
+                    waitStart = spinStart;
                     contended = true;
+                    MAIN_CLAIMS_CONTENDED.increment();
                 }
                 if (owner.waitingOnRoutedCommand) {
                     drainRoutedBatch();
@@ -1086,6 +1100,7 @@ public final class IslandCommands {
             }
         } finally {
             owner.claimWanted = priorClaimWanted;
+            if (contended) MAIN_CLAIM_WAIT_NANOS.add(System.nanoTime() - waitStart);
         }
         // ACQUIRED. Publication must be leak-proof: every caller arms its
         // release try/finally only AFTER this method returns, so any throw
@@ -1120,6 +1135,7 @@ public final class IslandCommands {
                 || !owner.unitClaim.compareAndSet(false, true)) {
             return false;
         }
+        MAIN_CLAIMS.increment();
         try {
             RegionScheduler.commitSuccessIfHealthy(() -> {
                 owner.noteClaim("tryMainClaim");
