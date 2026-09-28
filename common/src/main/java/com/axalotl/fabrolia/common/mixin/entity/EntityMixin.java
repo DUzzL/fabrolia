@@ -81,6 +81,24 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
         fabrolia$portalPending = pending;
     }
 
+    /**
+     * True from before CAPTURED.put until after CAPTURED.remove, both written
+     * under CAMERAS by NetherPortalPlayerAccess; the volatile read orders a
+     * false answer after the remove that made it false.
+     */
+    @org.spongepowered.asm.mixin.Unique
+    private volatile boolean fabrolia$portalCaptured;
+
+    @Override
+    public boolean fabrolia$mayBePortalCaptured() {
+        return fabrolia$portalCaptured;
+    }
+
+    @Override
+    public void fabrolia$setPortalCaptured(boolean captured) {
+        fabrolia$portalCaptured = captured;
+    }
+
     @Override
     public boolean fabrolia$isPortalResolutionOwner() {
         return com.axalotl.fabrolia.common.regions.NetherPortalTransfers.isResolvingSource(this);

@@ -57,6 +57,14 @@ public final class ParallelProcessor {
         default void fabrolia$setPortalPending(boolean pending) {}
         @Override
         default boolean fabrolia$isPortalResolutionOwner() { return false; }
+        /**
+         * Negative cache for NetherPortalPlayerAccess custody: false proves the
+         * entity is not in CAPTURED, so every entity-pair push can answer
+         * without the global CAMERAS monitor; true means "consult the map".
+         * Guards that keep no flag must therefore answer true.
+         */
+        default boolean fabrolia$mayBePortalCaptured() { return true; }
+        default void fabrolia$setPortalCaptured(boolean captured) {}
 
         /** task #26 stuck-in-portal probe: {@code System.nanoTime()} of this
          *  entity's most recent tick (setOldPosAndRot head), so `regions debug

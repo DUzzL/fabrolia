@@ -96,7 +96,15 @@ public final class NetherPortalPlayerAccess {
         }
     }
 
+    /**
+     * Push/collision gates call this for every entity pair on every worker.
+     * The per-entity flag is set before CAPTURED.put and cleared after
+     * CAPTURED.remove (both under CAMERAS), so a false flag proves absence and
+     * only a captured (or capture-transient) identity pays for the monitor.
+     */
     private static Reservation captured(Entity entity) {
+        if (entity instanceof ParallelProcessor.TickGuard guard
+                && !guard.fabrolia$mayBePortalCaptured()) return null;
         synchronized (CAMERAS) { return CAPTURED.get(entity); }
     }
 
@@ -451,7 +459,11 @@ public final class NetherPortalPlayerAccess {
                         if (CAPTURED.containsKey(entity) || ENTITY_SAVES.containsKey(entity)
                                 || entity instanceof ServerPlayer player && CHUNK_SENDS.containsKey(player)) return null;
                     }
-                    for (Entity entity : reservation.custody.keySet()) CAPTURED.put(entity, reservation);
+                    for (Entity entity : reservation.custody.keySet()) {
+                        // Flag before map: a false flag must prove absence.
+                        if (entity instanceof ParallelProcessor.TickGuard guard) guard.fabrolia$setPortalCaptured(true);
+                        CAPTURED.put(entity, reservation);
+                    }
                 }
                 for (Entity entity : reservation.custody.keySet()) {
                     if (entity instanceof ServerPlayer player) {
@@ -1030,7 +1042,11 @@ public final class NetherPortalPlayerAccess {
 
         private void unregisterCaptured() {
             synchronized (CAMERAS) {
-                for (Entity entity : custody.keySet()) CAPTURED.remove(entity, this);
+                for (Entity entity : custody.keySet()) {
+                    // Map before flag: the flag may only turn false once the map cannot answer.
+                    if (CAPTURED.remove(entity, this) && entity instanceof ParallelProcessor.TickGuard guard)
+                        guard.fabrolia$setPortalCaptured(false);
+                }
                 metadataClosed = true;
                 unregisterArrivalMetadata();
             }

@@ -6,6 +6,7 @@ import com.axalotl.fabrolia.common.regions.IslandTrackedEntityAccess;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import it.unimi.dsi.fastutil.objects.Reference2ReferenceLinkedOpenHashMap;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerEntity;
 import net.minecraft.server.level.ServerLevel;
@@ -21,7 +22,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -54,8 +54,15 @@ public abstract class ChunkMapTrackedEntityMixin
     @Unique
     private long fabrolia$islandTrackingPublicationGeneration;
 
+    /**
+     * Insertion-ordered FIFO of at most one staged obligation per viewer
+     * identity (never by Entity.equals: a respawned ServerPlayer keeps its id).
+     * Membership is coalesced per identity, so viewer removal must be O(1);
+     * one player in a dense mob crowd removes from thousands of trackers.
+     */
     @Unique
-    private ArrayList<com.axalotl.fabrolia.common.regions.IslandPendingPairing>
+    private Reference2ReferenceLinkedOpenHashMap<ServerPlayer,
+            com.axalotl.fabrolia.common.regions.IslandPendingPairing>
             fabrolia$pendingIslandPairings;
 
     @Shadow
@@ -88,7 +95,7 @@ public abstract class ChunkMapTrackedEntityMixin
         this.fabrolia$islandTrackingState =
                 IslandTrackedEntityAccess.TRACKING_ACTIVE;
         this.fabrolia$lastMainTrackingServerTick = Integer.MIN_VALUE;
-        this.fabrolia$pendingIslandPairings = new ArrayList<>(2);
+        this.fabrolia$pendingIslandPairings = new Reference2ReferenceLinkedOpenHashMap<>(2);
         IslandEntityTracking.registerPlayerTracker(this);
     }
 
@@ -131,21 +138,24 @@ public abstract class ChunkMapTrackedEntityMixin
                 this.seenBy.contains(player.connection)
                         ? com.axalotl.fabrolia.common.regions.IslandPendingPairing.Intent.REVALIDATE
                         : com.axalotl.fabrolia.common.regions.IslandPendingPairing.Intent.ADD;
-        for (int i = 0; i < this.fabrolia$pendingIslandPairings.size(); i++) {
-            com.axalotl.fabrolia.common.regions.IslandPendingPairing pending =
-                    this.fabrolia$pendingIslandPairings.get(i);
-            if (pending.matchesExactly(player)) {
-                if (pending.intent() != intent) {
-                    this.fabrolia$pendingIslandPairings.set(i,
-                            new com.axalotl.fabrolia.common.regions.IslandPendingPairing(
-                                    player, player.connection, intent));
-                }
-                return true;
-            }
+        com.axalotl.fabrolia.common.regions.IslandPendingPairing staged =
+                this.fabrolia$pendingIslandPairings.get(player);
+        if (staged == null || !staged.matchesExactly(player)) {
+            // Defensive only: vanilla assigns ServerPlayer.connection once per
+            // instance and every stager authenticates connection.player, so a
+            // record of another session for this identity is not reachable
+            // from vanilla. Should a mod rebind the listener in place, the
+            // stale record would be dropped at commit anyway; the fresh
+            // session takes the tail like any new obligation.
+            this.fabrolia$pendingIslandPairings.putAndMoveToLast(player,
+                    new com.axalotl.fabrolia.common.regions.IslandPendingPairing(
+                            player, player.connection, intent));
+        } else if (staged.intent() != intent) {
+            // Same queue position: the session's obligation was already ordered.
+            this.fabrolia$pendingIslandPairings.put(player,
+                    new com.axalotl.fabrolia.common.regions.IslandPendingPairing(
+                            player, player.connection, intent));
         }
-        this.fabrolia$pendingIslandPairings.add(
-                new com.axalotl.fabrolia.common.regions.IslandPendingPairing(
-                        player, player.connection, intent));
         return true;
     }
 
@@ -154,10 +164,9 @@ public abstract class ChunkMapTrackedEntityMixin
         if (this.fabrolia$islandTrackingState
                 == IslandTrackedEntityAccess.TRACKING_RETIRED
                 || player == null || player.connection == null) return false;
-        this.fabrolia$pendingIslandPairings.removeIf(
-                pending -> pending.player() == player);
+        this.fabrolia$pendingIslandPairings.remove(player);
         if (!this.seenBy.contains(player.connection)) return true;
-        this.fabrolia$pendingIslandPairings.add(
+        this.fabrolia$pendingIslandPairings.put(player,
                 new com.axalotl.fabrolia.common.regions.IslandPendingPairing(
                         player, player.connection,
                         com.axalotl.fabrolia.common.regions.IslandPendingPairing.Intent.REMOVE));
@@ -166,8 +175,7 @@ public abstract class ChunkMapTrackedEntityMixin
 
     @Override
     public synchronized void fabrolia$cancelIslandPairing(ServerPlayer player) {
-        this.fabrolia$pendingIslandPairings.removeIf(
-                pending -> pending.player() == player);
+        this.fabrolia$pendingIslandPairings.remove(player);
     }
 
     @Override
@@ -203,7 +211,7 @@ public abstract class ChunkMapTrackedEntityMixin
                 // one admission. commitPairingInAdmittedBody deliberately has
                 // no nested W gate which could refuse this already-owned item.
                 com.axalotl.fabrolia.common.regions.IslandPendingPairing pending =
-                        this.fabrolia$pendingIslandPairings.remove(0);
+                        this.fabrolia$pendingIslandPairings.removeFirst();
                 boolean removal = pending.intent()
                         == com.axalotl.fabrolia.common.regions.IslandPendingPairing.Intent.REMOVE;
                 if (removal) {
@@ -238,11 +246,26 @@ public abstract class ChunkMapTrackedEntityMixin
                     // This is a post-body successor, not cleanup. A peer W
                     // selected while the transformed body ran forbids re-arm.
                     RegionScheduler.runSuccessBodyIfHealthy(
-                            () -> this.fabrolia$pendingIslandPairings.add(pending));
+                            () -> this.fabrolia$restagePairing(pending));
                 }
                 return true;
             });
             if (!consumed) break;
+        }
+    }
+
+    /**
+     * Re-arms a detached REMOVE at the tail. Every stager validates that the
+     * viewer's session is current, and a staged ADD never re-enters seenBy, so
+     * a second record for the retried identity is a broken invariant.
+     */
+    @Unique
+    private void fabrolia$restagePairing(
+            com.axalotl.fabrolia.common.regions.IslandPendingPairing pending) {
+        if (this.fabrolia$pendingIslandPairings.putIfAbsent(
+                pending.player(), pending) != null) {
+            throw new IllegalStateException(
+                    "island pairing retry found a second record for its viewer identity");
         }
     }
 
