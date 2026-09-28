@@ -1761,6 +1761,7 @@ public final class IslandEntityTracking {
         private final MainPublicationReceipt publication;
         private boolean arrivalHeldUnderTracker;
         private boolean scheduleReleasedUnderTracker;
+        private long publishedNanos;
 
         private MainTrackingTask(IslandTrackedEntityAccess tracker, Entity entity,
                                  ServerLevel scheduledLevel, long scheduleToken,
@@ -1778,6 +1779,11 @@ public final class IslandEntityTracking {
         }
 
         @Override
+        public long publishedNanos() {
+            return publishedNanos;
+        }
+
+        @Override
         public void cancelUnrun() {
             cancel();
         }
@@ -1789,6 +1795,7 @@ public final class IslandEntityTracking {
                 // Never execute inline: settlement can still be unwinding the
                 // caller's tracker scope, and entity claims are acquired by the
                 // island-bucketed Main drain (one claim per island per drain).
+                publishedNanos = System.nanoTime();
                 RegionScheduler.publishMainTracking(server, this);
             } catch (Throwable thrown) {
                 Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);

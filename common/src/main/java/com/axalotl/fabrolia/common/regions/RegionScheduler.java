@@ -142,6 +142,7 @@ public final class RegionScheduler {
         if (mcServer == null) throw new NullPointerException("mcServer");
         requireDeferredLifecycleBoundary(mcServer);
         NetherPortalTransfers.serviceMain(mcServer);
+        drainReadyMainTracking();
         while (true) {
             DeferredLifecycleTransition task;
             synchronized (DEFERRED_LIFECYCLE_LOCK) {
@@ -719,6 +720,7 @@ public final class RegionScheduler {
                     while (drainMainSyncTicks()) {
                         // One root can publish another main-owned root.
                     }
+                    drainMainTrackingCompletely();
                     healColorGate();
                     rearmPendingRegionWork(stoppingPool, drainLevels);
                     IslandCommands.drainRoutedBatch();
@@ -905,6 +907,11 @@ public final class RegionScheduler {
             while ((mainTask = MAIN_SYNC.poll()) != null) {
                 failure = expectedPool.cancelQueuedPermit(mainTask.permit(), failure);
             }
+        } catch (Throwable cleanup) {
+            failure = expectedPool.mergeCancellationFailure(failure, cleanup);
+        }
+        try {
+            failure = cancelQueuedMainTracking(failure);
         } catch (Throwable cleanup) {
             failure = expectedPool.mergeCancellationFailure(failure, cleanup);
         }
@@ -1174,6 +1181,7 @@ public final class RegionScheduler {
             // immediately before the exact-turn request. External permits keep the
             // fixed point open until physical main finishes those accepted entries.
             drainMainSyncTicks();
+            drainMainTrackingCompletely();
             if (!retainQueuedRegions) {
                 IslandCommands.drainRoutedBatch();
             }
@@ -1366,7 +1374,8 @@ public final class RegionScheduler {
 
     private record MainSyncTask(Entity entity, RegionWorkerPool.ExternalPermit permit,
                                 BooleanSupplier admission, Runnable completion,
-                                boolean vanillaGuarded, boolean allIslandsFenced) implements Runnable {
+                                boolean vanillaGuarded, boolean allIslandsFenced,
+                                long publishedNanos) implements Runnable {
         @Override
         public void run() {
             // runWithMainEntityClaim has established this entity's current level
@@ -1438,7 +1447,7 @@ public final class RegionScheduler {
         }
         if (!owner.publishExternalRoot(permit ->
                 MAIN_SYNC.add(new MainSyncTask(e, permit, admission, completion,
-                        vanillaGuarded, allIslandsFenced)))) {
+                        vanillaGuarded, allIslandsFenced, System.nanoTime())))) {
             throw new IllegalStateException("MAIN_SYNC publication rejected by worker-pool lifecycle");
         }
     }
@@ -1752,7 +1761,8 @@ public final class RegionScheduler {
                     RegionWorkerPool current = pool;
                     return current == null ? failure
                             : current.cancelQueuedPermit(task.permit(), failure);
-                });
+                },
+                MainSyncTask::publishedNanos);
         boolean ran = false;
         MainSyncTask queued;
         while ((queued = MAIN_SYNC.poll()) != null) {
@@ -1795,16 +1805,35 @@ public final class RegionScheduler {
      * cancels every not-yet-started body through {@code cancel} and rethrows.
      */
     static final class IslandBuckets<T> {
+        /** A non-blocking pass announces interest to an island whose oldest queued task is this old. */
+        static final long STALE_NANOS = 50_000_000L;
+        /** Main-confined: islands whose {@code claimWanted} a non-blocking pass raised for a stale task. */
+        private static final java.util.IdentityHashMap<IslandRegistry.PIsland, Boolean> STALE_ANNOUNCED =
+                new java.util.IdentityHashMap<>();
         private final java.util.function.Consumer<T> body;
         private final java.util.function.BiFunction<T, Throwable, Throwable> cancel;
+        private final java.util.function.ToLongFunction<T> publishedNanos;
         private final java.util.LinkedHashMap<IslandRegistry.PIsland, java.util.ArrayDeque<T>> buckets =
                 new java.util.LinkedHashMap<>();
         private final java.util.ArrayDeque<T> unclaimed = new java.util.ArrayDeque<>();
 
         IslandBuckets(java.util.function.Consumer<T> body,
                       java.util.function.BiFunction<T, Throwable, Throwable> cancel) {
+            this(body, cancel, null);
+        }
+
+        /** {@code publishedNanos} (nullable) enables stale-task interest in {@link #flushReady}. */
+        IslandBuckets(java.util.function.Consumer<T> body,
+                      java.util.function.BiFunction<T, Throwable, Throwable> cancel,
+                      java.util.function.ToLongFunction<T> publishedNanos) {
             this.body = body;
             this.cancel = cancel;
+            this.publishedNanos = publishedNanos;
+        }
+
+        /** Main raised this island's interest for a stale task and now owns it: withdraw. */
+        private static void withdrawStaleInterest(IslandRegistry.PIsland owner) {
+            if (STALE_ANNOUNCED.remove(owner) != null) owner.claimWanted = false;
         }
 
         void add(IslandRegistry.PIsland owner, T item) {
@@ -1844,15 +1873,26 @@ public final class RegionScheduler {
 
         private boolean runIdle() {
             boolean ran = false;
+            long now = publishedNanos == null ? 0L : System.nanoTime();
             var it = buckets.entrySet().iterator();
             while (it.hasNext()) {
                 var entry = it.next();
                 IslandRegistry.PIsland owner = entry.getKey();
                 if (inherits(owner)) {
+                    withdrawStaleInterest(owner);
                     runQueue(entry.getValue());
                 } else if (IslandCommands.tryMainClaim(owner)) {
+                    withdrawStaleInterest(owner);
                     runClaimed(owner, entry.getValue());
                 } else {
+                    // A back-to-back chaining island never shows an idle
+                    // instant to a poll; once its oldest task is stale, ask it
+                    // to yield its next unit (withdrawn as soon as Main claims).
+                    if (publishedNanos != null
+                            && now - publishedNanos.applyAsLong(entry.getValue().peekFirst()) > STALE_NANOS
+                            && STALE_ANNOUNCED.putIfAbsent(owner, Boolean.TRUE) == null) {
+                        owner.claimWanted = true;
+                    }
                     continue;
                 }
                 it.remove();
@@ -1890,7 +1930,8 @@ public final class RegionScheduler {
                 java.util.IdentityHashMap<IslandRegistry.PIsland, Boolean> prior =
                         new java.util.IdentityHashMap<>(remaining.size() * 2);
                 for (IslandRegistry.PIsland owner : remaining) {
-                    prior.put(owner, owner.claimWanted);
+                    // Interest Main itself raised for a stale task is ours to withdraw.
+                    prior.put(owner, STALE_ANNOUNCED.remove(owner) == null && owner.claimWanted);
                     owner.claimWanted = true;
                 }
                 try {
@@ -1995,8 +2036,8 @@ public final class RegionScheduler {
     // publications accumulate and one TickTask drains them island-bucketed.
     // ---------------------------------------------------------------------
 
-    private static final ConcurrentLinkedQueue<MainTrackingPublication> MAIN_TRACKING =
-            new ConcurrentLinkedQueue<>();
+    private static final java.util.concurrent.ConcurrentLinkedDeque<MainTrackingPublication> MAIN_TRACKING =
+            new java.util.concurrent.ConcurrentLinkedDeque<>();
     private static final java.util.concurrent.atomic.AtomicBoolean MAIN_TRACKING_DRAIN_SCHEDULED =
             new java.util.concurrent.atomic.AtomicBoolean();
 
@@ -2005,6 +2046,8 @@ public final class RegionScheduler {
         Entity trackedEntity();
         /** Called instead of {@link #run} when a Main drain aborts before this body. */
         void cancelUnrun();
+        /** Wall nanos at publication; a stale publication asks its island to yield. */
+        long publishedNanos();
     }
 
     /**
@@ -2024,12 +2067,15 @@ public final class RegionScheduler {
         }
     }
 
-    /** Main thread only: the scheduled drain body. */
+    /** Main thread only: the scheduled drain body (non-blocking; busy islands stay queued). */
     private static void drainMainTracking() {
         // Cleared first: publications arriving after this poll get a new drain.
         MAIN_TRACKING_DRAIN_SCHEDULED.set(false);
-        if (MAIN_TRACKING.isEmpty()) return;
-        IslandBuckets<MainTrackingPublication> buckets = new IslandBuckets<>(
+        drainReadyMainTracking();
+    }
+
+    private static IslandBuckets<MainTrackingPublication> trackingBuckets() {
+        return new IslandBuckets<>(
                 Runnable::run,
                 (publication, failure) -> {
                     try {
@@ -2038,12 +2084,52 @@ public final class RegionScheduler {
                         return mergeFailure(failure, cleanup);
                     }
                     return failure;
-                });
+                },
+                MainTrackingPublication::publishedNanos);
+    }
+
+    /**
+     * Main thread only. Publishes for every island that is idle now; publications
+     * of busy islands stay queued (head, same order) for the next call - the
+     * barrier pump, the next drain task or the post-tick boundary. A stale
+     * publication raises the island's claim interest so a chaining island yields.
+     * @return true if anything was published.
+     */
+    public static boolean drainReadyMainTracking() {
+        if (MAIN_TRACKING.isEmpty()) return false;
+        IslandBuckets<MainTrackingPublication> buckets = trackingBuckets();
+        MainTrackingPublication queued;
+        while ((queued = MAIN_TRACKING.poll()) != null) {
+            buckets.add(mainClaimOwnerOf(queued.trackedEntity()), queued);
+        }
+        boolean ran = buckets.flushReady();
+        java.util.ArrayList<MainTrackingPublication> busy = buckets.drainRemaining();
+        for (int i = busy.size() - 1; i >= 0; i--) MAIN_TRACKING.addFirst(busy.get(i));
+        return ran;
+    }
+
+    /** Main thread only: publish everything, waiting for busy islands (exact-turn, shutdown). */
+    public static void drainMainTrackingCompletely() {
+        if (MAIN_TRACKING.isEmpty()) return;
+        IslandBuckets<MainTrackingPublication> buckets = trackingBuckets();
         MainTrackingPublication queued;
         while ((queued = MAIN_TRACKING.poll()) != null) {
             buckets.add(mainClaimOwnerOf(queued.trackedEntity()), queued);
         }
         buckets.flush();
+    }
+
+    /** Fail-stop/stop sweep: every queued publication releases its token without publishing. */
+    static Throwable cancelQueuedMainTracking(Throwable failure) {
+        MainTrackingPublication queued;
+        while ((queued = MAIN_TRACKING.poll()) != null) {
+            try {
+                queued.cancelUnrun();
+            } catch (Throwable cleanup) {
+                failure = mergeFailure(failure, cleanup);
+            }
+        }
+        return failure;
     }
 
     /** Generic submit at (level, chunk). Inline under authenticated existing ownership. */

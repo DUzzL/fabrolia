@@ -359,6 +359,7 @@ public final class ParallelProcessor {
                     // the old syncDeferred loop had, just demand-driven. No-op (one CLQ
                     // poll) when the queue is empty or regions are off.
                     boolean drained = RegionScheduler.drainReadyMainSyncTicks();
+                    if (RegionScheduler.drainReadyMainTracking()) drained = true;
                     // Main pump: service one explicit Main-only/main-safe job instead of
                     // parking through it. Autonomous ready/help entries stay worker-owned;
                     // letting physical Main detach those long poles made its own tick time

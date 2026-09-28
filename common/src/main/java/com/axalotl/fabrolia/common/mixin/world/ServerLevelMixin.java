@@ -750,7 +750,13 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             ParallelProcessor.pumpUntilDone(regionAll);
             // Ordinary region producers are now quiescent. Drain the established
             // main-owned entity lane before acquiring the exact-turn pool fence.
-            RegionScheduler.drainMainSyncTicks();
+            // In async mode islands chain ahead of Main and keep publishing:
+            // Main services the islands that are idle now and leaves the rest
+            // queued for its next barrier pump instead of parking behind a
+            // unit that ends anyway; the exact-turn pool fence needs the
+            // complete lane.
+            if (exactPlayerOrder) RegionScheduler.drainMainSyncTicks();
+            else RegionScheduler.drainReadyMainSyncTicks();
             if (exactPlayerOrder) {
                 Throwable exactFailure = null;
                 boolean opened = false;
@@ -823,7 +829,8 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 }
             }
             // Tail entries queued just before the last region task completed.
-            RegionScheduler.drainMainSyncTicks();
+            if (exactPlayerOrder) RegionScheduler.drainMainSyncTicks();
+            else RegionScheduler.drainReadyMainSyncTicks();
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> ParallelProcessor.onEntityTickBatchEnd(batchStart));
             return;

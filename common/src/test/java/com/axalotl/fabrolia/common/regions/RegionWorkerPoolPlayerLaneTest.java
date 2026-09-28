@@ -1905,14 +1905,15 @@ class RegionWorkerPoolPlayerLaneTest {
                     java.util.function.BooleanSupplier.class,
                     Runnable.class,
                     boolean.class,
-                    boolean.class);
+                    boolean.class,
+                    long.class);
             constructor.setAccessible(true);
             java.util.function.BooleanSupplier admission = () -> {
                 admissionRuns.incrementAndGet();
                 return true;
             };
             return constructor.newInstance(null, permit, admission,
-                    (Runnable) completionRuns::incrementAndGet, false, false);
+                    (Runnable) completionRuns::incrementAndGet, false, false, System.nanoTime());
         } catch (ReflectiveOperationException reflectionFailure) {
             throw new AssertionError(reflectionFailure);
         }

@@ -56,6 +56,33 @@ class IslandBucketsTest {
     }
 
     @Test
+    void nonBlockingPassAnnouncesInterestOnlyForStaleTasksAndWithdrawsItOnClaim() throws Exception {
+        try (Fixture f = new Fixture()) {
+            List<String> ran = new ArrayList<>();
+            long fresh = System.nanoTime();
+            long stale = fresh - RegionScheduler.IslandBuckets.STALE_NANOS * 2;
+            RegionScheduler.IslandBuckets<long[]> buckets = new RegionScheduler.IslandBuckets<>(
+                    item -> ran.add(Long.toString(item[1])), (item, failure) -> fail("no abort expected"),
+                    item -> item[0]);
+            f.busy.unitClaim.set(true);
+            buckets.add(f.busy, new long[]{fresh, 1});
+            assertFalse(buckets.flushReady());
+            assertFalse(f.busy.claimWanted, "a fresh task announces nothing");
+            buckets.drainRemaining();
+            buckets.add(f.busy, new long[]{stale, 2});
+            assertFalse(buckets.flushReady());
+            assertTrue(f.busy.claimWanted, "a stale task asks the chaining island to yield");
+            List<long[]> carried = buckets.drainRemaining();
+            f.busy.unitClaim.set(false);
+            for (long[] item : carried) buckets.add(f.busy, item);
+            assertTrue(buckets.flushReady());
+            assertEquals(List.of("2"), ran);
+            assertFalse(f.busy.claimWanted, "interest withdrawn once Main claimed the island");
+            assertFalse(f.busy.unitClaim.get());
+        }
+    }
+
+    @Test
     void flushWaitsForTheBusyIslandAndRestoresItsInterestBeforeTheBody() throws Exception {
         try (Fixture f = new Fixture()) {
             List<String> ran = new ArrayList<>();
