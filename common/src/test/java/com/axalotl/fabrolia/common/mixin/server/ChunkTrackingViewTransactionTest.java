@@ -168,6 +168,7 @@ final class ChunkTrackingViewTransactionTest {
     private static final class ViewMap extends ChunkMapMixin {
         private ViewMap() { super(null, null, null, false, null); }
         @Override protected boolean skipPlayer(ServerPlayer player) { return false; }
+        @Override protected boolean playerIsCloseEnoughForSpawning(ServerPlayer player, ChunkPos pos) { return false; }
         @Override public java.util.List<ServerPlayer> getPlayers(ChunkPos pos, boolean borderOnly) {
             throw new AssertionError("view diff must not enumerate entity-tracking viewers");
         }

@@ -60,46 +60,6 @@ public final class IslandRegistry {
     private static final Logger LOGGER = LoggerFactory.getLogger("Fabrolia-Islands");
     private static final long TICK_BUDGET_NANOS = 50_000_000L;
 
-    /**
-     * Allocation-free result of the main-side chunk-phase arm gate.  GLOBAL and
-     * SKIP are process singletons; every island owns one stable token carrying
-     * its exact identity.  A queued task retains that token across topology
-     * replacement, so its terminal always closes the reservation on the island
-     * which admitted it rather than whichever island owns the cell later.
-     */
-    public static final class ArmGate {
-        private static final ArmGate GLOBAL = new ArmGate(null, false);
-        private static final ArmGate SKIP = new ArmGate(null, true);
-
-        private final PIsland owner;
-        private final boolean skip;
-
-        private ArmGate(PIsland owner, boolean skip) {
-            this.owner = owner;
-            this.skip = skip;
-        }
-
-        static ArmGate global() {
-            return GLOBAL;
-        }
-
-        static ArmGate skip() {
-            return SKIP;
-        }
-
-        public boolean isSkipped() {
-            return skip;
-        }
-
-        public boolean isIslandArm() {
-            return owner != null;
-        }
-
-        PIsland owner() {
-            return owner;
-        }
-    }
-
     /** Persistent island state. */
     public static final class PIsland {
         public final long id;
@@ -429,12 +389,6 @@ public final class IslandRegistry {
         }
         /** Real missed-deadline count once async is live (diagnostics). */
         public volatile long missedDeadlines;
-        /** A2 deadline drive, arm gate: game time of the last chunk-phase arm
-         *  targeting this island (main-written), and the arm the last unit
-         *  consumed (coordinator-written). Gate: arm again only same-tick
-         *  (second phase of one tick) or once the previous arm was consumed —
-         *  a lagging island MISSES spawn/random cycles exactly like a lagging
-         *  vanilla server instead of accumulating them. */
         /** Ticket-purge progress memo (main-only; TicketStorageMixin): the
          *  island's L at the last purge pass + whether it advanced — expiry
          *  decrements only on island-tick progress, so timeouts count the
@@ -442,27 +396,17 @@ public final class IslandRegistry {
         public long purgeSeenL;
         public long purgeSeenWall;
         public boolean purgeAdvanced = true;
-        public volatile long armStampGameTime;
-        public volatile long armConsumedGameTime;
         /**
-         * Exact gate-1 reservation accounting.  Queue admission can land after
-         * an entity-dispatch snapshot; until every task admitted for the arm has
-         * reached a run/cancel terminal, a unit must not consume the stamp and a
-         * later physical game-time must not arm another chunk cycle.  All three
-         * fields are authoritative only under {@link #armReservationLock}.
+         * This island's last published global-cap census ({@link SpawnCapLanes}
+         * slot layout). Written once per unit by the island's own chunk pass,
+         * read by every lane's cap check. Null until the first pass.
          */
-        final Object armReservationLock = new Object();
-        int armReservations;
-        /**
-         * Monotonic arm debt. A same-gameTime phase may arrive after a unit has
-         * already consumed an earlier cohort with the same stamp, so the stamp
-         * pair alone cannot distinguish "still consumed" from "owed again".
-         * Every gate-1 admission advances the reservation generation; only a
-         * successful unit commit with no live tasks catches consumption up.
-         */
-        long armReservationGeneration;
-        long armConsumedGeneration;
-        private final ArmGate armGate = new ArmGate(this, false);
+        public volatile int[] spawnCapSlot;
+        /** Island-L of the previous chunk pass — vanilla's
+         *  {@code ServerChunkCache.lastInhabitedUpdate} on this island's clock,
+         *  anchored at birth so a new island never replays the wall counter
+         *  into {@code inhabitedTime}. Coordinator-only under unitClaim. */
+        public long lastInhabitedUpdateL;
         /** Island-dispatched work (tick-tag functions and navigation updates),
          *  serviced only at this island's cadence under its coordinator claim. */
         public final java.util.ArrayList<Runnable> pendingIslandTasks = new java.util.ArrayList<>(2);
@@ -554,62 +498,8 @@ public final class IslandRegistry {
             // takes over getGameTime for its members. A healthy island keeps
             // L == gameTime; only real overruns open a gap (per-island TPS).
             this.logicalTick = bornGameTime;
+            this.lastInhabitedUpdateL = bornGameTime;
             this.domain.owner = this;
-        }
-
-        /** Main-side arm decision for one target region at {@code gameTime}. */
-        ArmGate reserveChunkArm(long gameTime) {
-            synchronized (armReservationLock) {
-                // Several per-region/per-phase tasks from one physical level
-                // tick share the stamp and are all admitted independently.
-                if (armStampGameTime == gameTime) {
-                    armReservations++;
-                    armReservationGeneration++;
-                    return armGate;
-                }
-                // A later wall tick may not stack another chunk cycle over an
-                // unconsumed stamp or over a late task retained for the next unit.
-                if (armReservations != 0
-                        || armReservationGeneration != armConsumedGeneration
-                        || armStampGameTime != armConsumedGameTime) {
-                    return ArmGate.skip();
-                }
-                armStampGameTime = gameTime;
-                armReservations++;
-                armReservationGeneration++;
-                return armGate;
-            }
-        }
-
-        /** Run/cancel terminal for exactly one accepted gate-1 task. */
-        void finishChunkArm() {
-            synchronized (armReservationLock) {
-                if (armReservations <= 0) {
-                    throw new IllegalStateException(
-                            "island chunk-arm reservation completed twice or without admission");
-                }
-                armReservations--;
-            }
-        }
-
-        /**
-         * Unit success publication.  A task admitted after the dispatch snapshot
-         * remains represented by {@code armReservations}; leave the stamp owed so
-         * main cannot publish the next physical cycle before that task drains.
-         */
-        void consumeChunkArmIfQuiescent() {
-            synchronized (armReservationLock) {
-                if (armReservations == 0) {
-                    armConsumedGameTime = armStampGameTime;
-                    armConsumedGeneration = armReservationGeneration;
-                }
-            }
-        }
-
-        int chunkArmReservations() {
-            synchronized (armReservationLock) {
-                return armReservations;
-            }
         }
 
         /** Shadow effective TPS at current cost (20 when under budget). */
@@ -811,6 +701,10 @@ public final class IslandRegistry {
                         if (src != null) { // fragments inherit the source clock
                             p.logicalTick = src.logicalTick;
                             p.lagNanos = src.lagNanos;
+                            // The chunk pass measures inhabitedTime as L since
+                            // its previous pass; the source's chunks were last
+                            // credited on the SOURCE clock, never on wall time.
+                            p.lastInhabitedUpdateL = src.lastInhabitedUpdateL;
                             // A split can land between a fail-closed HOLD and
                             // its same-L retry. Carry the unit-head stamp with
                             // the inherited clock so the fresh fragment cannot

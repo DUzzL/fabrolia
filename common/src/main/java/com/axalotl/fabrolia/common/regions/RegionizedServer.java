@@ -596,89 +596,19 @@ public final class RegionizedServer {
     final java.util.concurrent.atomic.AtomicInteger fluidTickBudget =
             new java.util.concurrent.atomic.AtomicInteger();
 
-    /** A2 deadline drive — arm-seam decision for chunk-phase work targeting
-     *  {@code r} (ServerChunkCacheMixin.groupAndSubmit). GLOBAL = arm + main
-     *  awaits the task future (global lane / async off — the pre-A2 behavior);
-     *  an island token = arm without a main wait (the unit is the barrier);
-     *  SKIP = the island still owes the previous arm (vanilla-lag semantics).
-     *  Main thread only. The returned island token is stable and allocation-free. */
-    public IslandRegistry.ArmGate armGate(Region r) {
-        if (!asyncActive) return IslandRegistry.ArmGate.global();
+    /** Global mob-cap aggregate across this level's lanes (islands + Main's
+     *  remainder lane); see {@link SpawnCapLanes}. */
+    public final SpawnCapLanes spawnCapLanes = new SpawnCapLanes();
+
+    /** Main's chunk-phase lane decision for region {@code r}: an island-owned
+     *  region is ticked (spawn, thunder, random/fluid ticks) by its island's
+     *  own unit at the island's cadence on the island's clock — Main neither
+     *  arms nor awaits it. Everything else (global lane / async off) keeps the
+     *  pre-A2 arm + await. Main thread only. */
+    public boolean islandOwned(Region r) {
+        if (!asyncActive) return false;
         EpochDomain d = r.domain;
-        IslandRegistry.PIsland owner = d != null ? d.owner : null;
-        if (owner == null) return IslandRegistry.ArmGate.global();
-        return owner.reserveChunkArm(level.getGameTime());
-    }
-
-    /**
-     * Attach one exact island-arm reservation to a region task. The pool's
-     * failed-generation sweep calls the cancellation hook without entering the
-     * vanilla body; a started body releases in its terminal path. Either edge
-     * closes the same reservation exactly once.
-     */
-    public static Runnable armReservedTask(IslandRegistry.ArmGate gate, Runnable body) {
-        if (gate == null || !gate.isIslandArm() || body == null) {
-            throw new IllegalArgumentException("island arm task requires an island gate and body");
-        }
-        return new ArmReservedTask(gate.owner(), body);
-    }
-
-    private static final class ArmReservedTask
-            implements Runnable, RegionTaskFanIn.CancellableQueueEntry {
-        private static final int QUEUED = 0;
-        private static final int RUNNING = 1;
-        private static final int TERMINAL = 2;
-        private static final int CANCELLED = 3;
-
-        private final IslandRegistry.PIsland owner;
-        private final Runnable body;
-        private int state = QUEUED;
-
-        private ArmReservedTask(IslandRegistry.PIsland owner, Runnable body) {
-            this.owner = owner;
-            this.body = body;
-        }
-
-        @Override
-        public void run() {
-            synchronized (this) {
-                if (state == CANCELLED) return;
-                if (state != QUEUED) {
-                    throw new IllegalStateException(
-                            "island chunk-arm task executed more than once");
-                }
-                state = RUNNING;
-            }
-            try {
-                body.run();
-            } finally {
-                try {
-                    owner.finishChunkArm();
-                } finally {
-                    synchronized (this) {
-                        state = TERMINAL;
-                    }
-                }
-            }
-        }
-
-        @Override
-        public void cancelQueuedBeforeStart() {
-            cancel();
-        }
-
-        @Override
-        public void cancelQueuedBeforeStartWithFailure(Throwable primary) {
-            cancel();
-        }
-
-        private void cancel() {
-            synchronized (this) {
-                if (state != QUEUED) return;
-                state = CANCELLED;
-            }
-            owner.finishChunkArm();
-        }
+        return d != null && d.owner != null;
     }
 
     /** A2: exclusive claim of EVERY island's unit (topology rebuilds, save-all).
@@ -1344,7 +1274,11 @@ public final class RegionizedServer {
      * remain authoritative through transitions; absent cells use the immutable
      * creation-domain snapshot without materializing a Region. */
     public IslandRegistry.PIsland islandOwnerOfChunk(long packedChunkPos) {
-        long gridKey = regionizer.grid.keyFor(packedChunkPos);
+        return islandOwnerOfCell(regionizer.grid.keyFor(packedChunkPos));
+    }
+
+    /** {@link #islandOwnerOfChunk} for a grid cell key. */
+    public IslandRegistry.PIsland islandOwnerOfCell(long gridKey) {
         Region r = regionizer.peekByGridKey(gridKey);
         if (r != null) {
             EpochDomain d = r.domain;

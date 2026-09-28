@@ -62,10 +62,16 @@ import com.axalotl.fabrolia.common.regions.RegionGrid;
 import com.axalotl.fabrolia.common.regions.Region;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.axalotl.fabrolia.common.regions.RegionTaskFanIn;
+import com.axalotl.fabrolia.common.regions.IslandChunkPassAccess;
+import com.axalotl.fabrolia.common.regions.NaturalSpawnChunks;
+import com.axalotl.fabrolia.common.regions.SpawnCapLanes;
+import com.axalotl.fabrolia.common.parallelised.utils.ParallelSpawnHelper;
+import com.axalotl.fabrolia.api.spawn.FabroliaSpawnStateView;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 
 @Mixin(value = ServerChunkCache.class, priority = 1500)
 public abstract class ServerChunkCacheMixin extends ChunkSource implements SpawnFutureTaker,
-        IslandBlockUpdateAccess, ChunkTicketDebugAccess {
+        IslandBlockUpdateAccess, ChunkTicketDebugAccess, IslandChunkPassAccess {
 
     @Shadow @Final public ChunkMap chunkMap;
     @Shadow @Final
@@ -82,6 +88,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     @Shadow public abstract @Nullable ChunkHolder getVisibleChunkIfPresent(long key);
     @Shadow protected abstract CompletableFuture<ChunkResult<ChunkAccess>> getChunkFutureMainThread(int x, int z, ChunkStatus targetStatus, boolean loadOrGenerate);
     @Shadow public abstract void tickSpawningChunk(LevelChunk chunk, long timeDiff, List<MobCategory> spawningCategories, NaturalSpawner.SpawnState spawnCookie);
+    @Shadow protected abstract void getFullChunk(long chunkKey, Consumer<LevelChunk> output);
 
 
     @Inject(method = "<init>", at = @At("TAIL"))
@@ -588,9 +595,10 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
      * Vanilla 26.2 {@code tickSpawningChunk} gates {@code spawnForChunk} on
      * {@code level.canSpawnEntitiesInChunk} (world border + entity-manager position-tickable).
      * That reads plain PESM maps which main mutates while pumping the spawn barrier, so
-     * evaluate it ON MAIN here and hand the workers an immutable position set (published
-     * through the task submission). {@code null} = spawning categories empty — vanilla skips
-     * spawning entirely that tick (thunder still runs).
+     * evaluate it once per pass here — on Main for the global lane, on the island
+     * coordinator for an island pass — over the lock-free ticking-chunk mirror, and hand
+     * the chunk bodies an immutable position set. {@code null} = spawning categories
+     * empty — vanilla skips spawning entirely that tick (thunder still runs).
      *
      * <p>The vanilla body is replicated inline ({@code entityManager.canPositionTick(pos)
      * && worldBorder.isWithinBounds(pos)}) instead of calling {@code canSpawnEntitiesInChunk}
@@ -724,25 +732,13 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         ArrayList<CompletableFuture<Void>> futures = new ArrayList<>(byKey.size());
         for (var entry : Long2ObjectMaps.fastIterable(byKey)) {
             Region r = rs.regionizer().regionForGridKey(entry.getLongKey());
-            // A2 deadline drive (rs.armGate): global = arm + main awaits;
-            // island token = arm, unit is the barrier; skipped = the prior arm
-            // is still owed.  The island token also reserves this exact task
-            // until its run/cancel terminal, so a late dispatch-snapshot arrival
-            // cannot be followed by a second physical arm.
-            IslandRegistry.ArmGate gate = rs.armGate(r);
-            if (gate.isSkipped()) {
+            // Island-owned regions are ticked by their island's own unit at
+            // the island's cadence (IslandTickUnit chunk pass); Main arms and
+            // awaits only the global remainder lane.
+            if (rs.islandOwned(r)) {
                 continue;
             }
             ArrayList<LevelChunk> list = entry.getValue();
-            if (gate.isIslandArm()) {
-                Runnable body = serialChunks
-                        ? () -> fabrolia$runChunksSerial(list, action)
-                        : () -> fabrolia$runChunksMaybeParallel(r, list, action);
-                Runnable regionTask = RegionizedServer.armReservedTask(gate, body);
-                fabrolia$enqueueIslandArmTask(r, regionTask,
-                        "island chunk task rejected at scheduler drain boundary");
-                continue;
-            }
             CompletableFuture<Void> cf = new CompletableFuture<>();
             if (!RegionScheduler.enqueueRegionTask(r, () -> {
                 try {
@@ -817,24 +813,13 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         for (var entry : Long2ObjectMaps.fastIterable(byKey)) {
             Region r = rs.regionizer().regionForGridKey(entry.getLongKey());
             it.unimi.dsi.fastutil.longs.LongArrayList posList = entry.getValue();
-            // A2 gate (2026-07-13 wedge fix): block ticks get the SAME island
-            // treatment as the spawn path above. This dispatch used to submit
-            // cf-wrapped tasks into ISLAND region queues and main AWAITED the
-            // cf — which silently depended on out-of-unit claim-drains (the
-            // exact ownership race the 2026-07-13 fixes close: island random
-            // ticks ran at MAIN cadence, claim-free reroutes tripped the
-            // cross-domain detector on vanilla snow/vine/amethyst ticks, and
-            // once refused, main wedged on the cf until the watchdog fired).
-            // Island token: futureless — the island's next unit drains it in queue
-            // FIFO ([spawn][random ticks] before entities) at ITS cadence on
-            // ITS clock. Skipped: the island still owes its previous arm.
-            // Global: pre-A2 await.
-            IslandRegistry.ArmGate gate = rs.armGate(r);
-            if (gate.isSkipped()) {
+            // Island-owned regions: random/fluid/thunder ticks run inside the
+            // island unit's chunk pass on ITS clock (IslandTickUnit). Main only
+            // arms and awaits the global remainder lane.
+            if (rs.islandOwned(r)) {
                 continue;
             }
-            final CompletableFuture<Void> cf = gate.isIslandArm()
-                    ? null : new CompletableFuture<>();
+            final CompletableFuture<Void> cf = new CompletableFuture<>();
             Runnable body = () -> {
                 try {
                     // Resolve ticking chunks ON THE WORKER (loadedChunk is server-thread-only;
@@ -849,61 +834,22 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                     }
                     fabrolia$runChunksMaybeParallel(r, list, action);
                 } catch (Throwable failure) {
-                    Throwable winner = cf == null
-                            ? fabrolia$publishFatalAndSelectWinner(failure)
-                            : fabrolia$completeFutureAfterFatalPublication(cf, failure);
+                    Throwable winner = fabrolia$completeFutureAfterFatalPublication(cf, failure);
                     ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(winner);
                 }
-                if (cf != null) {
-                    fabrolia$completeFutureAfterHealthyCommit(
-                            cf, null,
-                            "region random-tick work completed more than once");
-                }
+                fabrolia$completeFutureAfterHealthyCommit(
+                        cf, null,
+                        "region random-tick work completed more than once");
             };
-            Runnable regionTask = gate.isIslandArm()
-                    ? RegionizedServer.armReservedTask(gate, body) : body;
-            if (gate.isIslandArm()) {
-                fabrolia$enqueueIslandArmTask(r, regionTask,
-                        "random-tick task rejected at scheduler drain boundary");
-            } else if (!RegionScheduler.enqueueRegionTask(r, regionTask)) {
+            if (!RegionScheduler.enqueueRegionTask(r, body)) {
                 throw new IllegalStateException(
                         "random-tick task rejected at scheduler drain boundary");
             }
-            if (cf != null) futures.add(cf);
+            futures.add(cf);
         }
         RegionScheduler.wakeWorkers();
         return futures.isEmpty() ? null
                 : CompletableFuture.allOf(futures.toArray(new CompletableFuture<?>[0]));
-    }
-
-    /**
-     * Publish a gate-1 task or close its exact reservation before propagating
-     * the rejection.  This helper is private because static mixin helpers are
-     * merged into the target class and Mixin forbids non-private static methods.
-     */
-    @Unique
-    private static void fabrolia$enqueueIslandArmTask(
-            Region region, Runnable task, String rejectionMessage) {
-        Throwable failure = null;
-        boolean accepted = false;
-        try {
-            accepted = RegionScheduler.enqueueRegionTask(region, task);
-        } catch (Throwable publicationFailure) {
-            failure = publicationFailure;
-        }
-        if (accepted) return;
-        if (failure == null) failure = new IllegalStateException(rejectionMessage);
-        if (task instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
-            try {
-                cancellable.cancelQueuedBeforeStartWithFailure(failure);
-            } catch (Throwable terminalFailure) {
-                failure = fabrolia$mergeFailure(failure, terminalFailure);
-            }
-        } else {
-            failure = fabrolia$mergeFailure(failure, new IllegalStateException(
-                    "island arm task lost its cancellation terminal"));
-        }
-        ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(failure);
     }
 
 
@@ -1348,7 +1294,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             ProfilerFiller profiler, long timeDiff) {
         fabrolia$capturedTimeDiff = timeDiff;
         fabrolia$spawnLaunchedThisTick = false;
-        fabrolia$lastChunkGetter = chunkGetter;
         // Belt-and-suspenders: with enableSpawnBarrierOverlap the previous tick's spawn
         // future is normally taken (and awaited) by ServerLevelMixin's entity barrier.
         // If some path skipped the entity phase, don't let last tick's spawn run
@@ -1367,16 +1312,66 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         // drop them; last tick's chunk work must never fire into this tick's phases.
         fabrolia$deferredSpawnArm = null;
         fabrolia$deferredBlockTicksArm = null;
+
+        // ASYNC ISLANDS — Main's census covers only the GLOBAL LANE (chunks
+        // with no island owner): every island takes its own census in its own
+        // chunk pass. The lane getter is the single membership rule for the
+        // ledger reduce, the legacy entity scan, the potential charges and the
+        // local-cap seed. The global-cap check then reads the SUM of all lane
+        // slots (SpawnCapLanes): this state is built with the summed
+        // spawnable-chunk count, publishes Main's own lane, then folds the
+        // island slots into its counts — vanilla's level total, each island's
+        // share at most one island period old.
+        RegionizedServer rs = RegionScheduler.forLevel(this.level);
+        boolean lanes = rs != null && rs.asyncActive;
+        NaturalSpawner.ChunkGetter getter = chunkGetter;
+        int stateChunkCount = spawnableChunkCount;
+        int laneChunkCount = spawnableChunkCount;
+        int[] islandSlots = null;
+        if (lanes) {
+            // The islands always census from the incremental ledger. Its
+            // 256-gt ground-truth audit normally rides Main's incremental
+            // createState; when Main takes the vanilla/legacy scan instead,
+            // keep the audit on Main's single-entry cadence here.
+            if (!ParallelSpawnHelper.incrementalCensusActive()
+                    && (this.level.getGameTime() & 255) == 0) {
+                ParallelSpawnHelper.auditLedgerForIslandLanes(this.level);
+            }
+            getter = (key, output) -> {
+                if (rs.islandOwnerOfChunk(key) == null) chunkGetter.query(key, output);
+            };
+            it.unimi.dsi.fastutil.longs.LongArrayList lanePlayerChunks =
+                    new it.unimi.dsi.fastutil.longs.LongArrayList();
+            ((com.axalotl.fabrolia.common.regions.RegionTickingAccess) this.chunkMap)
+                    .fabrolia$forEachSpawnCountedPlayer((player, chunkKey) -> {
+                        if (rs.islandOwnerOfChunk(chunkKey) == null) lanePlayerChunks.add(chunkKey);
+                    });
+            laneChunkCount = com.axalotl.fabrolia.common.regions.NaturalSpawnChunks
+                    .candidates(lanePlayerChunks.iterator()).size();
+            islandSlots = rs.spawnCapLanes.sum(rs.islandRegistry().identitySnapshot(), null, false);
+            stateChunkCount = laneChunkCount + islandSlots[SpawnCapLanes.CHUNKS];
+        }
+        // The tick-head precompute (legacy census) must count with the same
+        // lane rule as this build, or its bit-identity claim is void.
+        fabrolia$lastChunkGetter = getter;
         // Surface the level to ParallelSpawnHelper so it can read the incremental SpawnIndex
         // instead of iterating the c2me-notickvd-filtered entity stream — the section walk
         // dominates fillBuffer (4.14% of server thread in R5FaKJnHJg).
         FabroliaSpawnContext.currentLevel = this.level;
+        NaturalSpawner.SpawnState state;
         try {
-            return original.call(spawnableChunkCount, entities, chunkGetter,
-                    localMobCapCalculator);
+            state = original.call(stateChunkCount, entities, getter, localMobCapCalculator);
         } finally {
             FabroliaSpawnContext.currentLevel = null;
         }
+        if (lanes) {
+            AtomicIntegerArray counts = ((FabroliaSpawnStateView) state).fabrolia$countsBacking();
+            rs.spawnCapLanes.publishGlobalLane(SpawnCapLanes.slot(counts, laneChunkCount));
+            for (int i = 0; i < SpawnCapLanes.CATEGORIES; i++) {
+                if (islandSlots[i] != 0) counts.addAndGet(i, islandSlots[i]);
+            }
+        }
+        return state;
     }
 
     @WrapOperation(
@@ -1389,6 +1384,8 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                                              NaturalSpawner.SpawnState spawnCookie,
                                              Operation<Void> original) {
         if (FabroliaConfig.disabled || !FabroliaConfig.enableFabroliaSpawn) {
+            // Island-owned chunks are ticked by their island unit, never by Main.
+            if (!fabrolia$mainOwnsChunk(chunk.getPos().pack())) return;
             original.call(instance, chunk, timeDiff, spawningCategories, spawnCookie);
             return;
         }
@@ -1406,7 +1403,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         // natural spawning, thunder, and inhabitedTime accrual under region
         // threading. Copy while the list is still populated.
         List<LevelChunk> list = new java.util.ArrayList<>(live);
-        int n = list.size();
         long capturedTimeDiff = fabrolia$capturedTimeDiff;
 
         if (FabroliaConfig.enableRegionThreading && RegionScheduler.isActive()) {
@@ -1436,9 +1432,12 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
 
         ServerLevel lvl = this.level;
         DistanceManager dmF = this.distanceManager;
+        // Async islands imply region threading (branch above); keep the lane
+        // invariant local anyway: Main never ticks an island-owned chunk.
+        List<LevelChunk> chunks = fabrolia$mainOwnedOnly(list);
+        int n = chunks.size();
         it.unimi.dsi.fastutil.longs.LongOpenHashSet gateF =
-                fabrolia$buildSpawnGate(lvl, list, spawningCategories);
-        List<LevelChunk> chunks = list;
+                fabrolia$buildSpawnGate(lvl, chunks, spawningCategories);
         FabroliaFlatSubmission spawnSubmission = fabrolia$beginFlatFanout(
                 ParallelProcessor.executor, 1, (failureGate, ignoredBatch) -> {
                     com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onPass(lvl);
@@ -1525,8 +1524,9 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         }
 
         if (!FabroliaConfig.disabled && FabroliaConfig.enableFabroliaRandomTicks) {
-            List<LevelChunk> tickChunks = new ArrayList<>();
-            original.call(instance, (Consumer<LevelChunk>) tickChunks::add);
+            List<LevelChunk> collected = new ArrayList<>();
+            original.call(instance, (Consumer<LevelChunk>) collected::add);
+            List<LevelChunk> tickChunks = fabrolia$mainOwnedOnly(collected);
             int n = tickChunks.size();
             if (n > 0) {
                 int poolSize = Math.max(1, ParallelProcessor.getPoolSize());
@@ -1548,7 +1548,10 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 }
             }
         } else {
-            original.call(instance, tickingChunkConsumer);
+            // Island-owned chunks are ticked by their island unit, never by Main.
+            original.call(instance, (Consumer<LevelChunk>) c -> {
+                if (fabrolia$mainOwnsChunk(c.getPos().pack())) tickingChunkConsumer.accept(c);
+            });
         }
 
         boolean rideAlong = FabroliaConfig.enableSpawnBarrierOverlap && !FabroliaConfig.disabled;
@@ -2020,6 +2023,184 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         private void cancelQueuedBeforeStart() {
             if (this.state.compareAndSet(QUEUED, CANCELLED)) {
                 this.gate.finishTask();
+            }
+        }
+    }
+
+    /** Main may tick this chunk: async islands off, or no island owns it. */
+    @Unique
+    private boolean fabrolia$mainOwnsChunk(long packedChunkPos) {
+        RegionizedServer rs = RegionScheduler.forLevel(this.level);
+        return rs == null || !rs.asyncActive || rs.islandOwnerOfChunk(packedChunkPos) == null;
+    }
+
+    /** {@code chunks} minus island-owned ones; the same list when no lane applies. */
+    @Unique
+    private List<LevelChunk> fabrolia$mainOwnedOnly(List<LevelChunk> chunks) {
+        RegionizedServer rs = RegionScheduler.forLevel(this.level);
+        if (rs == null || !rs.asyncActive) return chunks;
+        ArrayList<LevelChunk> owned = new ArrayList<>(chunks.size());
+        for (int i = 0, n = chunks.size(); i < n; i++) {
+            LevelChunk c = chunks.get(i);
+            if (rs.islandOwnerOfChunk(c.getPos().pack()) == null) owned.add(c);
+        }
+        return owned;
+    }
+
+    /**
+     * Vanilla {@code ServerChunkCache.tickChunks} for ONE island, executed by
+     * the island's unit coordinator on the island's clock (IslandTickUnit:
+     * after its scheduled ticks and raids, before its block events — the exact
+     * {@code chunkSource.tick} slot). Everything below is the vanilla body with
+     * "the level" replaced by "this island":
+     *
+     * <ul>
+     *   <li>{@code timeDiff} — island-L since this island's previous pass.</li>
+     *   <li>{@code createState} — census, potential charges and local-cap seed
+     *       over the island's own FULL chunks ({@link ParallelSpawnHelper#censusIslandLane});
+     *       the local cap is exact (every mob within a player's cap radius is
+     *       on the player's island); the potential calculator is island-local
+     *       (another island's charges sit ≥256 blocks away — the one accepted
+     *       approximation).</li>
+     *   <li>spawnable chunks and their count — {@link NaturalSpawnChunks}
+     *       around the island's own players ({@code naturalSpawnChunkCounter}
+     *       restricted to this island).</li>
+     *   <li>global cap — {@link SpawnCapLanes}: this island publishes its slot
+     *       and the state is built from the SUM of every lane's slot.</li>
+     *   <li>category gating ({@code % 400} persistent categories) — island L.</li>
+     *   <li>spawning chunk list — candidate ∧ ticking chunk ∧ owned by this
+     *       island ∧ vanilla's non-spectator 128-block player test, shuffled
+     *       with the level RNG exactly like vanilla; then per chunk inhabited
+     *       time → thunder → spawnForChunk.</li>
+     *   <li>random/fluid ticks — the island's entity-ticking chunks through
+     *       vanilla {@code ServerLevel.tickChunk}.</li>
+     * </ul>
+     *
+     * <p>Serial on the coordinator: an island region is claimable only inside
+     * the unit's entity-phase window (ColorGate), and vanilla's chunk pass is
+     * sequential over the level RNG. {@code customSpawners} stay level-wide on
+     * Main. Frozen tick rate: vanilla runs no chunk pass, neither does this.
+     */
+    @Override
+    public void fabrolia$tickIslandChunks(RegionizedServer rs, IslandRegistry.PIsland island,
+                                          long islandTime) {
+        ServerLevel lvl = this.level;
+        if (FabroliaConfig.disabled || lvl.isDebug() || !lvl.tickRateManager().runsNormally()) {
+            return;
+        }
+        long time = islandTime;
+        long timeDiff = time - island.lastInhabitedUpdateL;
+        island.lastInhabitedUpdateL = time;
+
+        // --- createState, this island's lane ---------------------------------
+        RegionGrid grid = rs.regionizer().grid;
+        java.util.function.LongPredicate laneKeys =
+                key -> rs.islandOwnerOfCell(grid.keyFor(key)) == island;
+        NaturalSpawner.ChunkGetter laneGetter = (key, output) -> {
+            if (laneKeys.test(key)) this.getFullChunk(key, output);
+        };
+        LocalMobCapCalculator localMobCap = new LocalMobCapCalculator(this.chunkMap);
+        ParallelSpawnHelper.LaneCensus census =
+                ParallelSpawnHelper.censusIslandLane(lvl, laneGetter, laneKeys, localMobCap);
+
+        var chunkMapAccess = (com.axalotl.fabrolia.common.regions.RegionTickingAccess) this.chunkMap;
+        ArrayList<ServerPlayer> islandPlayers = new ArrayList<>(4);
+        it.unimi.dsi.fastutil.longs.LongArrayList playerChunks =
+                new it.unimi.dsi.fastutil.longs.LongArrayList(4);
+        chunkMapAccess.fabrolia$forEachSpawnCountedPlayer((player, chunkKey) -> {
+            if (rs.islandOwnerOfCell(grid.keyFor(chunkKey)) == island) {
+                islandPlayers.add(player);
+                playerChunks.add(chunkKey);
+            }
+        });
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet candidates =
+                NaturalSpawnChunks.candidates(playerChunks.iterator());
+
+        int[] own = SpawnCapLanes.slot(census.counts(), candidates.size());
+        island.spawnCapSlot = own;
+        int[] total = rs.spawnCapLanes.sum(rs.islandRegistry().identitySnapshot(), island, true);
+        SpawnCapLanes.add(total, own);
+        NaturalSpawner.SpawnState state = new NaturalSpawner.SpawnState(
+                total[SpawnCapLanes.CHUNKS], SpawnCapLanes.counts(total),
+                census.potential(), localMobCap);
+
+        // --- vanilla tickChunks gating, on island L ----------------------------
+        boolean doMobSpawning = lvl.getGameRules().get(net.minecraft.world.level.gamerules.GameRules.SPAWN_MOBS);
+        int tickSpeed = lvl.getGameRules().get(net.minecraft.world.level.gamerules.GameRules.RANDOM_TICK_SPEED);
+        List<MobCategory> spawningCategories = doMobSpawning
+                ? NaturalSpawner.getFilteredSpawningCategories(state, this.spawnEnemies, time % 400L == 0L)
+                : List.of();
+
+        // --- collectSpawningChunks + shuffle, this island -----------------------
+        ArrayList<LevelChunk> spawningChunks = new ArrayList<>(candidates.size());
+        it.unimi.dsi.fastutil.longs.LongIterator candidateIt = candidates.iterator();
+        while (candidateIt.hasNext()) {
+            long key = candidateIt.nextLong();
+            ChunkHolder holder = this.getVisibleChunkIfPresent(key);
+            if (holder == null) continue;
+            LevelChunk chunk = holder.getTickingChunk();
+            if (chunk == null) continue;
+            // Never write a chunk another lane owns (transient topology skew).
+            if (!laneKeys.test(key)) continue;
+            ChunkPos pos = holder.getPos();
+            boolean close = false;
+            for (int i = 0, n = islandPlayers.size(); i < n && !close; i++) {
+                close = chunkMapAccess.fabrolia$playerCloseEnoughForSpawning(islandPlayers.get(i), pos);
+            }
+            if (close) spawningChunks.add(chunk);
+        }
+        Util.shuffle(spawningChunks, lvl.getRandom());
+
+        // --- tickSpawningChunk per chunk ----------------------------------------
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet gate =
+                fabrolia$buildSpawnGate(lvl, spawningChunks, spawningCategories);
+        DistanceManager dm = this.distanceManager;
+        com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onPass(lvl);
+        for (int i = 0, n = spawningChunks.size(); i < n; i++) {
+            LevelChunk chunk = spawningChunks.get(i);
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                long packed = chunk.getPos().pack();
+                chunk.incrementInhabitedTime(timeDiff);
+                if (dm.inEntityTickingRange(packed)) {
+                    lvl.tickThunder(chunk);
+                }
+                if (gate != null && gate.contains(packed)) {
+                    com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onChunkVisit(lvl, packed);
+                    NaturalSpawner.spawnForChunk(lvl, chunk, state, spawningCategories);
+                }
+            });
+        }
+
+        // --- forEachBlockTickingChunk → tickChunk, this island's chunks -------
+        if (fabrolia$servercoreRandomTickDistanceAffectsRandomTicks()) {
+            // ServerCore replaces forEachBlockTickingChunk with its own
+            // ChunkTickManager source; the same lane rule Main applies —
+            // use the real method, keep only this island's chunks.
+            this.chunkMap.forEachBlockTickingChunk(chunk -> {
+                if (rs.islandOwnerOfCell(grid.keyFor(chunk.getPos().pack())) != island) return;
+                RegionScheduler.runSuccessBodyIfHealthy(() -> lvl.tickChunk(chunk, tickSpeed));
+            });
+            return;
+        }
+        int shift = grid.shift;
+        int side = 1 << shift;
+        it.unimi.dsi.fastutil.longs.LongIterator cells = new IslandRegistry.DualLongIterator(
+                island.cells.iterator(), island.haloCells.iterator());
+        while (cells.hasNext()) {
+            long cell = cells.nextLong();
+            if (rs.islandOwnerOfCell(cell) != island) continue;
+            int baseX = grid.regionX(cell) << shift;
+            int baseZ = grid.regionZ(cell) << shift;
+            for (int dz = 0; dz < side; dz++) {
+                for (int dx = 0; dx < side; dx++) {
+                    long key = ChunkPos.pack(baseX + dx, baseZ + dz);
+                    if (!dm.inEntityTickingRange(key)) continue;
+                    ChunkHolder holder = this.getVisibleChunkIfPresent(key);
+                    if (holder == null) continue;
+                    LevelChunk chunk = holder.getTickingChunk();
+                    if (chunk == null) continue;
+                    RegionScheduler.runSuccessBodyIfHealthy(() -> lvl.tickChunk(chunk, tickSpeed));
+                }
             }
         }
     }

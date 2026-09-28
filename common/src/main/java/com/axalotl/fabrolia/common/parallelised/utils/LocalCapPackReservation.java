@@ -9,10 +9,12 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
  * <p>Vanilla ticks spawning chunks SEQUENTIALLY: chunk N's once-per-pass
  * {@code canSpawnForCategoryLocal} sees chunks 1..N-1's spawns, so the local
  * cap can only be overshot by the one pack whose approval squeezed through at
- * cap-1 (a pack completes without re-checking). Fabrolia runs chunk passes in
- * parallel (region workers + one-tick-late island arms), so every eligible
- * chunk used to read the count in the same open window, approve together, and
- * a whole neighbourhood's packs landed at once — measured 2-7x the local cap.
+ * cap-1 (a pack completes without re-checking). Fabrolia's global lane runs
+ * chunk passes in parallel on region workers, so every eligible chunk used to
+ * read the count in the same open window, approve together, and a whole
+ * neighbourhood's packs landed at once — measured 2-7x the local cap. (An
+ * island's own chunk pass is sequential on its coordinator: there the fused
+ * step reduces to vanilla's plain check.)
  *
  * <p>The fix: fuse the ∃-room check with the pack's worth of increments into
  * one atomic step per near player. Approval RESERVES {@link #PACK_RESERVE}

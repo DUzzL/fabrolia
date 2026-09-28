@@ -294,10 +294,12 @@ public final class ColorGate {
             return true;
         }
         // An island unit also owns an exact accepted-plan cutoff for a region
-        // it did not group. Main never waits for those futureless gate-1 arms:
-        // retained work is re-seeded by the next unit. The global lane is
-        // deliberately excluded because its queue may carry a future physical
-        // Main is awaiting in this tick; it must drain before current-E done.
+        // it did not group. Main never awaits island-queue work (executeAt
+        // tasks routed into an island region drain in that island's next
+        // unit): retained work is re-seeded by the next unit. The global lane
+        // is deliberately excluded because its queue may carry a future
+        // physical Main is awaiting in this tick; it must drain before
+        // current-E done.
         if (requireDispatchedDecision && dispatched
                 && !grouped && expectedDomain.owner != null) {
             return true;

@@ -463,6 +463,32 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
         return this.pendingUnloads.values();
     }
 
+    /**
+     * The players {@code DistanceManager.playersPerChunk} counts for natural
+     * spawning — the source of {@code naturalSpawnChunkCounter}: every PlayerMap
+     * member whose ignored bit is clear ({@code skipPlayer}: spectators without
+     * the spectatorsGenerateChunks rule). Each is visited with the chunk of its
+     * last section position — exactly the key {@code addPlayer} registered.
+     * Reads only the PlayerMap's detached snapshot and monitor: safe off-main.
+     */
+    @Override
+    public void fabrolia$forEachSpawnCountedPlayer(
+            java.util.function.ObjLongConsumer<ServerPlayer> action) {
+        for (ServerPlayer player : this.playerMap.getAllPlayers()) {
+            if (this.playerMap.ignored(player)) continue;
+            SectionPos section = player.getLastSectionPos();
+            action.accept(player, ChunkPos.pack(section.x(), section.z()));
+        }
+    }
+
+    @Shadow
+    protected abstract boolean playerIsCloseEnoughForSpawning(ServerPlayer player, ChunkPos pos);
+
+    @Override
+    public boolean fabrolia$playerCloseEnoughForSpawning(ServerPlayer player, ChunkPos pos) {
+        return this.playerIsCloseEnoughForSpawning(player, pos);
+    }
+
     // ENTITY_TICKING transition tracking MOVED to SimulationChunkTrackerMixin.setLevel.
     // The old updateChunkScheduling hook here fired asymmetrically under c2me's rewritten
     // ticket system — the ENTITY_TICKING-loss transition was lost, so the incremental list
