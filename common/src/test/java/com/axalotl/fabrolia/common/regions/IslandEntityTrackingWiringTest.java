@@ -46,6 +46,9 @@ class IslandEntityTrackingWiringTest {
     private static final String PENDING_PAIRING =
             "com/axalotl/fabrolia/common/regions/IslandPendingPairing";
     private static final String PAIRING_INTENT = PENDING_PAIRING + "$Intent";
+    /** Identity-keyed, insertion-ordered: O(1) per-viewer coalescing with FIFO commit. */
+    private static final String PENDING_QUEUE =
+            "it/unimi/dsi/fastutil/objects/Reference2ReferenceLinkedOpenHashMap";
     private static final String P_ISLAND =
             "com/axalotl/fabrolia/common/regions/IslandRegistry$PIsland";
     private static final String REGIONIZED_SERVER =
@@ -225,10 +228,9 @@ class IslandEntityTrackingWiringTest {
                 "fabrolia$lastMainTrackingServerTick");
         AbstractInsnNode initialTick = previousReal(realInstructionAt(
                 constructorHook, initialTickWrite));
-        int pendingAllocation = typeIndex(constructorHook, Opcodes.NEW,
-                "java/util/ArrayList");
+        int pendingAllocation = typeIndex(constructorHook, Opcodes.NEW, PENDING_QUEUE);
         int pendingConstructor = callIndexAfter(constructorHook,
-                "java/util/ArrayList", "<init>", "(I)V", pendingAllocation);
+                PENDING_QUEUE, "<init>", "(I)V", pendingAllocation);
         int pendingWrite = fieldWriteIndex(constructorHook, TRACKED_ENTITY_MIXIN,
                 "fabrolia$pendingIslandPairings");
         int selfTrackerRegistration = callIndexAfter(constructorHook, TRACKING,
@@ -246,7 +248,7 @@ class IslandEntityTrackingWiringTest {
                         && Integer.valueOf(Integer.MIN_VALUE).equals(constant.cst),
                 "server tick zero must remain a valid first publication generation");
         assertTrue(pendingCapacity != null && pendingCapacity.getOpcode() == Opcodes.ICONST_2,
-                "the first login must see the initialized bounded pairing list");
+                "the first login must see the initialized bounded pairing queue");
         MethodNode discardedMixinConstructor = method(tracker, "<init>", "()V");
         assertEquals(0, fieldWriteCount(discardedMixinConstructor,
                 TRACKED_ENTITY_MIXIN, "fabrolia$pendingIslandPairings"),
@@ -269,7 +271,8 @@ class IslandEntityTrackingWiringTest {
                 "fabrolia$islandTrackingPublicationGeneration"));
 
         FieldNode pendingField = field(tracker, "fabrolia$pendingIslandPairings");
-        assertEquals("Ljava/util/ArrayList;", pendingField.desc);
+        assertEquals("L" + PENDING_QUEUE + ";", pendingField.desc,
+                "viewer removal must not scan a per-tracker list; identity keys survive respawn id reuse");
         assertEquals(0, pendingField.access & Opcodes.ACC_FINAL,
                 "the exact constructor hook, not a discarded final initializer, owns assignment");
         assertNotNull(pendingField.signature);
@@ -279,7 +282,7 @@ class IslandEntityTrackingWiringTest {
         assertEquals(1, fieldReadCount(pending, TRACKED_ENTITY_MIXIN,
                 "fabrolia$pendingBulkPairingRefresh"),
                 "the one bulk token participates in pending-work lifecycle decisions");
-        assertEquals(1, callCount(pending, "java/util/ArrayList", "isEmpty"));
+        assertEquals(1, callCount(pending, PENDING_QUEUE, "isEmpty"));
 
         FieldNode bulkField = field(tracker, "fabrolia$pendingBulkPairingRefresh");
         assertEquals("Z", bulkField.desc,
@@ -307,22 +310,25 @@ class IslandEntityTrackingWiringTest {
                 "pending deduplication must include the exact listener session");
         assertEquals(2, typeCount(queue, Opcodes.NEW, PENDING_PAIRING),
                 "an intent change replaces the record while a new session appends one");
-        assertEquals(1, callCount(queue, "java/util/ArrayList", "set"));
-        assertEquals(1, callCount(queue, "java/util/ArrayList", "add"));
+        assertEquals(1, callCount(queue, PENDING_QUEUE, "get"));
+        assertEquals(1, callCount(queue, PENDING_QUEUE, "put"),
+                "an intent change keeps the session's queue position");
+        assertEquals(1, callCount(queue, PENDING_QUEUE, "putAndMoveToLast"),
+                "a new session takes the tail");
         assertEquals(1, fieldOpcodeCount(queue, Opcodes.GETSTATIC,
                 PAIRING_INTENT, "ADD"));
         assertEquals(1, fieldOpcodeCount(queue, Opcodes.GETSTATIC,
                 PAIRING_INTENT, "REVALIDATE"));
 
-        assertEquals(1, callCount(queueRemoval, "java/util/ArrayList", "removeIf"),
+        assertEquals(1, callCount(queueRemoval, PENDING_QUEUE, "remove"),
                 "desired-ABSENT first coalesces every obligation for the player identity");
         assertEquals(1, callCount(queueRemoval, "java/util/Set", "contains"));
         assertEquals(1, typeCount(queueRemoval, Opcodes.NEW, PENDING_PAIRING));
-        assertEquals(1, callCount(queueRemoval, "java/util/ArrayList", "add"));
+        assertEquals(1, callCount(queueRemoval, PENDING_QUEUE, "put"));
         assertEquals(1, fieldOpcodeCount(queueRemoval, Opcodes.GETSTATIC,
                 PAIRING_INTENT, "REMOVE"));
 
-        int retiredClear = callIndex(commit, "java/util/ArrayList", "clear", "()V");
+        int retiredClear = callIndex(commit, PENDING_QUEUE, "clear", "()V");
         int bulkCommit = callIndex(commit, TRACKING, "commitBulkPairingRefresh",
                 "(L" + TRACKER_ACCESS + ";Ljava/lang/Runnable;)V");
         int bulkClearAfterSuccess = fieldOpcodeIndexAfter(commit, Opcodes.PUTFIELD,
@@ -332,8 +338,8 @@ class IslandEntityTrackingWiringTest {
         List<MethodNode> entryBodies = tracker.methods.stream()
                 .filter(method -> method.name.startsWith(
                         "lambda$fabrolia$commitIslandPairings$"))
-                .filter(method -> callCount(method, "java/util/ArrayList",
-                        "remove") == 1)
+                .filter(method -> callCount(method, PENDING_QUEUE,
+                        "removeFirst") == 1)
                 .toList();
         assertEquals(1, entryBodies.size(),
                 "one admitted helper must own pending pairing detach and body");
@@ -342,8 +348,8 @@ class IslandEntityTrackingWiringTest {
                 "matchesExactly", "(Lnet/minecraft/server/level/ServerPlayer;)Z");
         int removalPlayer = callIndex(entryBody, PENDING_PAIRING,
                 "matchesRemovalPlayer", "(Lnet/minecraft/server/level/ServerPlayer;)Z");
-        int removePending = callIndex(entryBody, "java/util/ArrayList", "remove",
-                "(I)Ljava/lang/Object;");
+        int removePending = callIndex(entryBody, PENDING_QUEUE, "removeFirst",
+                "()Ljava/lang/Object;");
         int commitScope = callIndex(entryBody, TRACKING,
                 "commitPairingInAdmittedBody",
                 "(L" + TRACKER_ACCESS + ";L" + PENDING_PAIRING
@@ -370,10 +376,15 @@ class IslandEntityTrackingWiringTest {
         List<MethodNode> retryBodies = tracker.methods.stream()
                 .filter(method -> method.name.startsWith(
                         "lambda$fabrolia$commitIslandPairings$"))
-                .filter(method -> callCount(method, "java/util/ArrayList", "add") == 1)
+                .filter(method -> callCount(method, TRACKED_ENTITY_MIXIN,
+                        "fabrolia$restagePairing") == 1)
                 .toList();
         assertEquals(1, retryBodies.size(),
                 "only a still-present REMOVE decline owns one admitted bounded retry");
+        MethodNode restage = method(tracker, "fabrolia$restagePairing",
+                "(L" + PENDING_PAIRING + ";)V");
+        assertEquals(1, callCount(restage, PENDING_QUEUE, "putIfAbsent"),
+                "a retry re-arms at the tail and fails stop on a second record for its identity");
         assertEquals(0, callCount(commit, TRACKED_ENTITY_MIXIN,
                 "fabrolia$requeueAfterFailure"),
                 "a failed transformed body must never schedule a successor retry");
