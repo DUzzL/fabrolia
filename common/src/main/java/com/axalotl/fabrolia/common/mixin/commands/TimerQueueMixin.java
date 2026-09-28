@@ -49,8 +49,15 @@ public abstract class TimerQueueMixin<T> {
         // release is mandatory cleanup behind the exact vanilla primary.
         boolean took = IslandCommands.quiesceAllExcept(null);
         if (!took) {
-            IslandCommands.publishAndPropagate(new IllegalStateException(
-                    "could not fence the scheduled-function dispatch at game time " + currentTick));
+            // No-claims return is legitimate when the last async level went
+            // inactive between the gate above and the acquisition; each
+            // callback then keeps its own (now unfenced) vanilla path.
+            if (IslandCommands.requiresMainFence() && !IslandCommands.fenceWindowHeld()) {
+                IslandCommands.publishAndPropagate(new IllegalStateException(
+                        "could not fence the scheduled-function dispatch at game time " + currentTick));
+                return;
+            }
+            original.call(context, currentTick);
             return;
         }
         Throwable failure = null;
@@ -63,9 +70,12 @@ public abstract class TimerQueueMixin<T> {
         IslandCommands.releaseAllExceptAndPropagate(failure);
     }
 
-    /** Due events are the heap prefix; the heap itself is unordered, so count all. */
+    /** Due events are the heap prefix; the heap itself is unordered, so count all
+     *  once the head is due. */
     @org.spongepowered.asm.mixin.Unique
     private int fabrolia$dueFunctionCallbacks(long currentTick) {
+        TimerQueue.Event<T> head = this.queue.peek();
+        if (head == null || head.triggerTime() > currentTick) return 0;
         int due = 0;
         for (TimerQueue.Event<T> event : this.queue) {
             if (event.triggerTime() <= currentTick

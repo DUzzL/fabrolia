@@ -31,7 +31,9 @@ public final class AdvancementDiag {
     public static final LongAdder BATCH_APPLIES = new LongAdder();
     /** Reward FUNCTIONs executed inside an advancement batch scope. */
     public static final LongAdder REWARD_FUNCTIONS = new LongAdder();
-    /** Global quiesce windows taken FOR advancement work (sticky + deferred). */
+    /** Global quiesce windows taken by advancement scopes: sticky reward fences,
+     *  deferred batches, and the tick-head window (which also takes the fence the
+     *  tick-tag functions then share, so ≈1 per tick with tick functions present). */
     public static final LongAdder QUIESCE_TAKES = new LongAdder();
     /** Nanos spent inside advancement-owned quiesce windows + eval pumps. */
     public static final LongAdder BARRIER_NANOS = new LongAdder();

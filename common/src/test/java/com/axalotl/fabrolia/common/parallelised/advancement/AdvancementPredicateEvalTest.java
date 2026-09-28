@@ -106,7 +106,7 @@ final class AdvancementPredicateEvalTest {
             return decide(item, entry);
         };
         try (Pool pool = new Pool(4)) {
-            int[][] actual = AdvancementPredicateEval.evaluate(items, items.length, SHAPE, predicate, TASK_SCOPE);
+            int[][] actual = AdvancementPredicateEval.evaluate(items, items.length, SHAPE, predicate, true, TASK_SCOPE);
             assertArrayEquals(serial(items), actual, "matches must be keyed by serial pending index");
             assertEquals(0, overlaps.get(), "one owner must never be evaluated by two tasks or concurrently");
             IdentityHashMap<Object, Boolean> tasks = new IdentityHashMap<>();
@@ -129,9 +129,24 @@ final class AdvancementPredicateEvalTest {
         };
         try (Pool pool = new Pool(4)) {
             assertArrayEquals(serial(single),
-                    AdvancementPredicateEval.evaluate(single, single.length, SHAPE, predicate, TASK_SCOPE));
+                    AdvancementPredicateEval.evaluate(single, single.length, SHAPE, predicate, true, TASK_SCOPE));
             assertArrayEquals(serial(tiny),
-                    AdvancementPredicateEval.evaluate(tiny, tiny.length, SHAPE, predicate, TASK_SCOPE));
+                    AdvancementPredicateEval.evaluate(tiny, tiny.length, SHAPE, predicate, true, TASK_SCOPE));
+            for (Thread thread : threads.values()) assertSame(Thread.currentThread(), thread);
+        }
+    }
+
+    @Test
+    void withoutAHeldFenceEvenALargeBatchStaysInline() throws Exception {
+        Item[] items = items(600, 24, 5L);
+        Map<Object, Thread> threads = new ConcurrentHashMap<>();
+        AdvancementPredicateEval.EntryPredicate<Item> predicate = (item, entry) -> {
+            threads.put(item.owner, Thread.currentThread());
+            return decide(item, entry);
+        };
+        try (Pool pool = new Pool(4)) {
+            assertArrayEquals(serial(items),
+                    AdvancementPredicateEval.evaluate(items, items.length, SHAPE, predicate, false, TASK_SCOPE));
             for (Thread thread : threads.values()) assertSame(Thread.currentThread(), thread);
         }
     }
@@ -147,7 +162,7 @@ final class AdvancementPredicateEvalTest {
         Object previousFailure = get(RegionScheduler.class, "orphanFatalFailure");
         try (Pool pool = new Pool(4)) {
             RuntimeException thrown = assertThrows(RuntimeException.class, () ->
-                    AdvancementPredicateEval.evaluate(items, items.length, SHAPE, predicate, TASK_SCOPE));
+                    AdvancementPredicateEval.evaluate(items, items.length, SHAPE, predicate, true, TASK_SCOPE));
             assertSame(boom, thrown, "the task primary must surface unchanged on Main");
             assertSame(boom, get(RegionScheduler.class, "orphanFatalFailure"),
                     "a task failure is published as the generation fatal");

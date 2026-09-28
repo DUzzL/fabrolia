@@ -291,7 +291,9 @@ public final class AdvancementBuffer {
     private static void drainOnMain(Pending[] pending, int n,
             IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
         AdvancementBatchScope.ensureEvaluationFence();
-        evaluateAndApply(pending, n, fired);
+        // Main ticks its players one after another, so this batch carries vanilla's
+        // order ACROSS players as well: any award invalidates every later evaluation.
+        evaluateAndApply(pending, n, fired, true);
     }
 
     private static final AdvancementPredicateEval.Shape<Pending> PENDING_SHAPE =
@@ -317,16 +319,24 @@ public final class AdvancementBuffer {
      * order within one pending.
      *
      * <p>Vanilla evaluates each trigger call after the awards of the previous call.
-     * The fan-out sees one pre-award snapshot, so once a player received an award in
-     * this pass, that player's LATER pendings are re-evaluated inline against the
-     * post-award state (a reward may have changed the score, inventory or XP the next
-     * predicate reads); a fresh NBT cache per re-evaluation keeps that read current.
+     * The fan-out sees one pre-award snapshot, so pendings that follow an award in
+     * this pass are re-evaluated inline against the post-award state (a reward may
+     * have changed the score, inventory or XP the next predicate reads); a fresh NBT
+     * cache per re-evaluation keeps that read current. Re-evaluation walks the
+     * fire-time listener snapshot: a listener re-registered by an earlier reward's
+     * revoke of another advancement is not in that snapshot.
+     *
+     * @param crossPlayerOrder whether the batch carries vanilla order between different
+     *                         players' pendings (Main-ticked players, one after another).
+     *                         Island players' pendings have no such order, so there only
+     *                         the awarded player's own later pendings are re-evaluated.
      */
     private static void evaluateAndApply(Pending[] pending, int n,
-            IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
+            IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired,
+            boolean crossPlayerOrder) {
         AdvancementCacheContext.requireSerializationOwnership();
         int[][] matched = AdvancementPredicateEval.evaluate(pending, n, PENDING_SHAPE,
-                PLAYER_PREDICATE, AdvancementCacheContext::runScoped);
+                PLAYER_PREDICATE, IslandCommands.fenceWindowHeld(), AdvancementCacheContext::runScoped);
         IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> activeFired =
                 fired == null ? new IdentityHashMap<>() : fired;
         Set<ServerPlayer> awarded = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -334,7 +344,7 @@ public final class AdvancementBuffer {
         for (int i = 0; i < n; i++) {
             Pending p = pending[i];
             int[] hits = matched[i];
-            if (awarded.contains(p.player)) {
+            if (crossPlayerOrder ? !awarded.isEmpty() : awarded.contains(p.player)) {
                 int[][] fresh = new int[1][];
                 AdvancementCacheContext.runScoped(() ->
                         fresh[0] = AdvancementPredicateEval.evaluateOne(p, PENDING_SHAPE, PLAYER_PREDICATE));
@@ -483,6 +493,8 @@ public final class AdvancementBuffer {
             return;
         }
         if (IslandCommands.requiresMainFence() && !IslandCommands.fenceWindowHeld()) {
+            // The scheduled marker deliberately stays set: it coalesces further
+            // TickTasks until the head window drains and resets it.
             return;
         }
         Throwable failure = null;
@@ -925,7 +937,6 @@ public final class AdvancementBuffer {
             total += arr.length;
         }
         if (batches.isEmpty()) return;
-        AdvancementBatchScope.ensureEvaluationFence();
         // Flatten in publication order: one evaluation fan-out for the whole lane.
         Pending[] pending = new Pending[total];
         int at = 0;
@@ -934,7 +945,8 @@ public final class AdvancementBuffer {
             at += batch.length;
         }
         AdvancementDiag.lastBatchPendings = total;
-        evaluateAndApply(pending, total, fired);
+        // Island players' ticks have no order between each other on Main.
+        evaluateAndApply(pending, total, fired, false);
         // Batch grants can cascade frameless-main raises (reward functions);
         // settle them in the same window.
         drainMainFrameless(fired);
@@ -974,9 +986,12 @@ public final class AdvancementBuffer {
             AdvancementDiag.DEDUP_DROPPED.increment();
             return;
         }
-        if (awarded != null) awarded.add(player);
-        fabrolia$runRewardBody(() ->
+        boolean[] granted = new boolean[1];
+        fabrolia$runRewardBody(() -> granted[0] =
                 player.getAdvancements().award(key.advancement(), key.criterion()));
+        // Only a real grant (progress changed, rewards ran) invalidates later
+        // evaluations; an already-done criterion changes nothing.
+        if (granted[0] && awarded != null) awarded.add(player);
         AdvancementDiag.AWARDS.increment();
     }
 

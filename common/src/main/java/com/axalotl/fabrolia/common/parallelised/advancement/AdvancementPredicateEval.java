@@ -48,16 +48,21 @@ final class AdvancementPredicateEval {
     }
 
     /**
+     * @param fanOut    whether the caller holds the global fence (every island unit
+     *                  ended, Main stays parked in the fan-in). Without it the tick
+     *                  pool may be mid entity fan-out and the reads would race; the
+     *                  walk then stays inline on the caller.
      * @param taskScope binds the per-task evaluation context (the drain-scoped player
      *                  NBT cache) around one task body; also used for the inline path.
      * @return {@code matched[i]} = ascending entry indices of {@code pendings[i]} that
      *         matched, or {@code null} when none did.
      */
     static <P> int[][] evaluate(P[] pendings, int n, Shape<P> shape,
-                                EntryPredicate<P> predicate, Consumer<Runnable> taskScope) {
+                                EntryPredicate<P> predicate, boolean fanOut,
+                                Consumer<Runnable> taskScope) {
         int[][] matched = new int[n][];
         if (n == 0) return matched;
-        ForkJoinPool pool = ParallelProcessor.executor instanceof ForkJoinPool candidate
+        ForkJoinPool pool = fanOut && ParallelProcessor.executor instanceof ForkJoinPool candidate
                 && !candidate.isShutdown() ? candidate : null;
         int[][] partition = pool == null ? null : partition(pendings, n, shape, pool.getParallelism());
         if (partition == null) {
