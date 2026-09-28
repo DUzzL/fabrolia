@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -648,7 +649,8 @@ class IslandEntityPairingStateModelTest {
     private static final class Tracker {
         private State state = State.ACTIVE;
         private Object owner;
-        private final List<Pending> pending = new ArrayList<>();
+        /** Identity-keyed, insertion-ordered: mirrors the production fastutil linked map. */
+        private final LinkedHashMap<Viewer, Pending> pending = new LinkedHashMap<>();
         private final Map<Listener, Viewer> visible = new IdentityHashMap<>();
         private final List<Event> timeline = new ArrayList<>();
         private List<Viewer> currentPlayers = List.of();
@@ -673,17 +675,14 @@ class IslandEntityPairingStateModelTest {
                     || viewer.connection.player != viewer) return false;
             Intent intent = visible.containsKey(viewer.connection)
                     ? Intent.REVALIDATE : Intent.ADD;
-            for (int index = 0; index < pending.size(); index++) {
-                Pending queued = pending.get(index);
-                if (queued.matchesExactly(viewer)) {
-                    if (queued.intent() != intent) {
-                        pending.set(index, new Pending(viewer, viewer.connection, intent));
-                    }
-                    routeMembershipObligation();
-                    return true;
-                }
+            Pending staged = pending.get(viewer);
+            if (staged == null || !staged.matchesExactly(viewer)) {
+                // Rebound session (defensive-only in production): stale record dropped, live one at the tail.
+                pending.remove(viewer);
+                pending.put(viewer, new Pending(viewer, viewer.connection, intent));
+            } else if (staged.intent() != intent) {
+                pending.put(viewer, new Pending(viewer, viewer.connection, intent));
             }
-            pending.add(new Pending(viewer, viewer.connection, intent));
             routeMembershipObligation();
             return true;
         }
@@ -692,9 +691,9 @@ class IslandEntityPairingStateModelTest {
             if (state == State.RETIRED || viewer == null || viewer.connection == null) {
                 return false;
             }
-            pending.removeIf(queued -> queued.player() == viewer);
+            pending.remove(viewer);
             if (visible.containsKey(viewer.connection)) {
-                pending.add(new Pending(viewer, viewer.connection, Intent.REMOVE));
+                pending.put(viewer, new Pending(viewer, viewer.connection, Intent.REMOVE));
             }
             routeMembershipObligation();
             return true;
@@ -796,7 +795,7 @@ class IslandEntityPairingStateModelTest {
             }
             int attempts = pending.size();
             for (int attempt = 0; attempt < attempts && !pending.isEmpty(); attempt++) {
-                Pending candidate = pending.removeFirst();
+                Pending candidate = pending.pollFirstEntry().getValue();
                 boolean removal = candidate.intent() == Intent.REMOVE;
                 if (removal) {
                     if (!candidate.matchesRemovalPlayer(candidate.player())) continue;
@@ -830,7 +829,9 @@ class IslandEntityPairingStateModelTest {
                         }
                     }
                 }
-                if (mustRetry(candidate)) pending.add(candidate);
+                if (mustRetry(candidate) && pending.putIfAbsent(candidate.player(), candidate) != null) {
+                    throw new ModelFailure();
+                }
             }
         }
 
@@ -842,8 +843,7 @@ class IslandEntityPairingStateModelTest {
         }
 
         private void requeueAfterFailure(Pending failed) {
-            if (state == State.RETIRED || pending.stream()
-                    .anyMatch(queued -> queued.player() == failed.player())) return;
+            if (state == State.RETIRED || pending.containsKey(failed.player())) return;
             if (failed.intent() == Intent.REMOVE) stageAbsent(failed.player());
             else if (failed.matchesExactly(failed.player())) stagePresent(failed.player());
         }
@@ -881,8 +881,8 @@ class IslandEntityPairingStateModelTest {
         }
 
         synchronized List<Intent> pendingIntents(Viewer viewer) {
-            return pending.stream().filter(candidate -> candidate.player() == viewer)
-                    .map(Pending::intent).toList();
+            Pending staged = pending.get(viewer);
+            return staged == null ? List.of() : List.of(staged.intent());
         }
 
         synchronized List<Kind> eventsFor(Listener listener) {

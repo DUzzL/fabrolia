@@ -235,6 +235,9 @@ class FullModpackMixinExportVerifierTest {
             "com/axalotl/fabrolia/common/regions/IslandEntityTracking";
     private static final String ISLAND_TRACKED_ENTITY_ACCESS =
             "com/axalotl/fabrolia/common/regions/IslandTrackedEntityAccess";
+    /** Identity-keyed, insertion-ordered staging queue of ChunkMapTrackedEntityMixin. */
+    private static final String PENDING_PAIRING_QUEUE =
+            "it/unimi/dsi/fastutil/objects/Reference2ReferenceLinkedOpenHashMap";
     private static final String REGIONIZED_SERVER =
             "com/axalotl/fabrolia/common/regions/RegionizedServer";
     private static final String P_ISLAND =
@@ -2455,14 +2458,14 @@ class FullModpackMixinExportVerifierTest {
                         "fabrolia$lastMainTrackingServerTick", Opcodes.LDC,
                         Integer.MIN_VALUE),
                 "the merged constructor route must explicitly publish the uninitialised Main clock");
-        assertTrue(hasArrayListCapacityFieldWrite(initialize, tracker.name,
-                        "fabrolia$pendingIslandPairings", 2),
+        assertTrue(hasCapacityConstructedFieldWrite(initialize, tracker.name,
+                        "fabrolia$pendingIslandPairings", PENDING_PAIRING_QUEUE, 2),
                 "the executable merged constructor route, not merely the source mixin, must install "
-                        + "new ArrayList(2) before first VMP pairing");
+                        + "the bounded identity-keyed pairing queue before first VMP pairing");
         int activeInit = fieldIndex(initialize, Opcodes.PUTFIELD, tracker.name,
                 "fabrolia$islandTrackingState", "I");
         int pendingInit = fieldIndex(initialize, Opcodes.PUTFIELD, tracker.name,
-                "fabrolia$pendingIslandPairings", "Ljava/util/ArrayList;");
+                "fabrolia$pendingIslandPairings", "L" + PENDING_PAIRING_QUEUE + ";");
         int registerSelf = callIndex(initialize, ISLAND_ENTITY_TRACKING,
                 "registerPlayerTracker", "(L" + ISLAND_TRACKED_ENTITY_ACCESS + ";)V");
         assertEquals(1, callCountByName(initialize, ISLAND_ENTITY_TRACKING,
@@ -5529,12 +5532,12 @@ class FullModpackMixinExportVerifierTest {
                 && ldcValue.equals(ldc.cst);
     }
 
-    private static boolean hasArrayListCapacityFieldWrite(MethodNode method, String owner,
-                                                          String name, int capacity) {
-        int write = fieldIndex(method, Opcodes.PUTFIELD, owner, name,
-                "Ljava/util/ArrayList;");
-        if (write < 0 || fieldCount(method, Opcodes.PUTFIELD, owner, name,
-                "Ljava/util/ArrayList;") != 1) {
+    private static boolean hasCapacityConstructedFieldWrite(MethodNode method, String owner,
+                                                            String name, String type,
+                                                            int capacity) {
+        String descriptor = "L" + type + ";";
+        int write = fieldIndex(method, Opcodes.PUTFIELD, owner, name, descriptor);
+        if (write < 0 || fieldCount(method, Opcodes.PUTFIELD, owner, name, descriptor) != 1) {
             return false;
         }
         AbstractInsnNode constructor = previousOpcodeInstruction(method.instructions.get(write));
@@ -5552,13 +5555,13 @@ class FullModpackMixinExportVerifierTest {
         };
         return constructor instanceof MethodInsnNode call
                 && call.getOpcode() == Opcodes.INVOKESPECIAL
-                && "java/util/ArrayList".equals(call.owner)
+                && type.equals(call.owner)
                 && "<init>".equals(call.name) && "(I)V".equals(call.desc)
                 && argument != null && argument.getOpcode() == capacityOpcode
                 && duplicate != null && duplicate.getOpcode() == Opcodes.DUP
-                && allocation instanceof TypeInsnNode type
+                && allocation instanceof TypeInsnNode allocated
                 && allocation.getOpcode() == Opcodes.NEW
-                && "java/util/ArrayList".equals(type.desc);
+                && type.equals(allocated.desc);
     }
 
     private static AbstractInsnNode previousOpcodeInstruction(AbstractInsnNode instruction) {

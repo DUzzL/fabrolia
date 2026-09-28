@@ -314,7 +314,7 @@ class IslandEntityTrackingWiringTest {
         assertEquals(1, callCount(queue, PENDING_QUEUE, "put"),
                 "an intent change keeps the session's queue position");
         assertEquals(1, callCount(queue, PENDING_QUEUE, "putAndMoveToLast"),
-                "a new session takes the tail");
+                "a new identity, or a defensively tolerated rebound session, takes the tail");
         assertEquals(1, fieldOpcodeCount(queue, Opcodes.GETSTATIC,
                 PAIRING_INTENT, "ADD"));
         assertEquals(1, fieldOpcodeCount(queue, Opcodes.GETSTATIC,

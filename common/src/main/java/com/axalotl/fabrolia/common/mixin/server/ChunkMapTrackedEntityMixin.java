@@ -141,8 +141,12 @@ public abstract class ChunkMapTrackedEntityMixin
         com.axalotl.fabrolia.common.regions.IslandPendingPairing staged =
                 this.fabrolia$pendingIslandPairings.get(player);
         if (staged == null || !staged.matchesExactly(player)) {
-            // A record of a superseded session would be dropped at commit
-            // anyway; the fresh session takes the tail like any new obligation.
+            // Defensive only: vanilla assigns ServerPlayer.connection once per
+            // instance and every stager authenticates connection.player, so a
+            // record of another session for this identity is not reachable
+            // from vanilla. Should a mod rebind the listener in place, the
+            // stale record would be dropped at commit anyway; the fresh
+            // session takes the tail like any new obligation.
             this.fabrolia$pendingIslandPairings.putAndMoveToLast(player,
                     new com.axalotl.fabrolia.common.regions.IslandPendingPairing(
                             player, player.connection, intent));
