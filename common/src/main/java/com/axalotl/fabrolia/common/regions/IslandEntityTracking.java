@@ -8,7 +8,6 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
-import net.minecraft.world.entity.decoration.ItemFrame;
 
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -1486,11 +1485,13 @@ public final class IslandEntityTracking {
     }
 
     private static boolean mainOwnedEntityType(Entity entity) {
-        // ItemFrame sendChanges mutates shared MapItemSavedData. WitherBoss is
-        // the sole exact-26.2 startSeenByPlayer override with a Main-owned
-        // BossEvent membership callback. Dragon parts use a shared level index.
-        return entity instanceof ItemFrame || entity instanceof WitherBoss
-                || entity instanceof EnderDragon;
+        // WitherBoss is the sole exact-26.2 startSeenByPlayer override with a
+        // Main-owned BossEvent membership callback. Dragon parts use a shared
+        // level index. Item frames publish on their island: a framed map's
+        // shared MapItemSavedData is guarded per map (MapItemSavedDataMixin),
+        // level.players() is a snapshot list, and the saved-data cache is
+        // concurrent (SavedDataStorageMixin).
+        return entity instanceof WitherBoss || entity instanceof EnderDragon;
     }
 
     /** Main-only simulation/compatibility envelopes need a bounded Main clock. */

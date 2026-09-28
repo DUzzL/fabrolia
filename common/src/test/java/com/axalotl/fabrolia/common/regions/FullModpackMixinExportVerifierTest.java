@@ -2565,7 +2565,6 @@ class FullModpackMixinExportVerifierTest {
         MethodNode hardTypes = method(tracking, "mainOwnedEntityType",
                 "(Lnet/minecraft/world/entity/Entity;)Z");
         for (String type : List.of(
-                "net/minecraft/world/entity/decoration/ItemFrame",
                 "net/minecraft/world/entity/boss/wither/WitherBoss",
                 "net/minecraft/world/entity/boss/enderdragon/EnderDragon")) {
             assertEquals(1, typeCount(hardTypes, Opcodes.INSTANCEOF, type),

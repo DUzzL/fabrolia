@@ -745,7 +745,7 @@ class IslandEntityTrackingWiringTest {
                         && hardMainEligible > hardMainViewers
                         && hardMainAttach > hardMainEligible
                         && hardMainRoute > hardMainAttach,
-                "ItemFrame/Wither keep an island owner only as a persistent cadence token, then "
+                "Wither/Dragon keep an island owner only as a persistent cadence token, then "
                         + "route every ServerEntity refresh through claimed physical Main");
 
         int deferPlayer = callIndex(route,
@@ -1056,8 +1056,6 @@ class IslandEntityTrackingWiringTest {
         MethodNode mainOwned = method(tracking, "mainOwnedEntityType",
                 "(Lnet/minecraft/world/entity/Entity;)Z");
         assertEquals(1, typeCount(mainOwned, Opcodes.INSTANCEOF,
-                "net/minecraft/world/entity/decoration/ItemFrame"));
-        assertEquals(1, typeCount(mainOwned, Opcodes.INSTANCEOF,
                 "net/minecraft/world/entity/boss/wither/WitherBoss"));
         assertEquals(1, typeCount(mainOwned, Opcodes.INSTANCEOF,
                 "net/minecraft/world/entity/boss/enderdragon/EnderDragon"));
@@ -1065,7 +1063,7 @@ class IslandEntityTrackingWiringTest {
         MethodNode persistentMain = method(tracking, "requiresPersistentMainPublisher",
                 "(Lnet/minecraft/world/entity/Entity;)Z");
         assertEquals(1, callCount(persistentMain, TRACKING, "mainOwnedEntityType"),
-                "ItemFrame/Wither/Dragon are the direct hard-Main publisher set");
+                "Wither/Dragon are the direct hard-Main publisher set");
         assertEquals(1, typeCount(persistentMain, Opcodes.INSTANCEOF,
                 "net/minecraft/server/level/ServerPlayer"));
         int removedPlayer = callIndex(persistentMain,
@@ -1118,8 +1116,6 @@ class IslandEntityTrackingWiringTest {
                 "containsMainOwnedTrackingEntity",
                 "(Lnet/minecraft/world/entity/Entity;)Z");
         assertEquals(1, typeCount(recursiveHardMain, Opcodes.INSTANCEOF,
-                "net/minecraft/world/entity/decoration/ItemFrame"));
-        assertEquals(1, typeCount(recursiveHardMain, Opcodes.INSTANCEOF,
                 "net/minecraft/world/entity/boss/wither/WitherBoss"));
         assertEquals(1, typeCount(recursiveHardMain, Opcodes.INSTANCEOF,
                 "net/minecraft/world/entity/boss/enderdragon/EnderDragon"));
@@ -1127,7 +1123,7 @@ class IslandEntityTrackingWiringTest {
                 "net/minecraft/world/entity/Entity", "getPassengers"));
         assertEquals(1, callCount(recursiveHardMain, parallel.name,
                 "containsMainOwnedTrackingEntity"),
-                "ItemFrame/Wither/Dragon hard-Main authority must cover the full passenger tree");
+                "Wither/Dragon hard-Main authority must cover the full passenger tree");
         MethodNode requiresMain = method(parallel, "requiresMainThread",
                 "(Lnet/minecraft/world/entity/Entity;)Z");
         MethodNode synchronousTick = method(parallel, "shouldTickSynchronously",
@@ -1136,7 +1132,7 @@ class IslandEntityTrackingWiringTest {
                 "containsMainOwnedTrackingEntity"));
         assertEquals(1, callCount(synchronousTick, parallel.name,
                 "containsMainOwnedTrackingEntity"),
-                "ItemFrame, Wither, and Dragon simulation/tracking remain recursively hard Main");
+                "Wither and Dragon simulation/tracking remain recursively hard Main");
 
         ClassNode pending = readClass(PENDING_PAIRING);
         assertEquals("Lnet/minecraft/server/level/ServerPlayer;",

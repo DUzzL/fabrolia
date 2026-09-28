@@ -16,7 +16,6 @@ import net.minecraft.world.entity.monster.EnderMan;
 import net.minecraft.world.entity.monster.Shulker;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
-import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.entity.vehicle.boat.AbstractBoat;
 import net.minecraft.world.entity.vehicle.boat.Boat;
@@ -464,10 +463,11 @@ public final class ParallelProcessor {
      * declines busy guards instead of waiting while retaining an island claim).
      */
     public static boolean requiresMainThread(Entity entity) {
-        // Item-frame interaction/tracking mutates shared map state. Wither
-        // tracking membership and visibility teardown mutate its boss event;
-        // keep the whole root/passenger tree on Main so those callbacks cannot
-        // overlap the wither's AI tick.
+        // Wither tracking membership and visibility teardown mutate its boss
+        // event; keep the whole root/passenger tree on Main so those callbacks
+        // cannot overlap the wither's AI tick. Item frames tick on their island:
+        // the frame's own tick touches only its attachment block, and the shared
+        // map data a framed map updates is guarded per map (MapItemSavedDataMixin).
         if (containsMainOwnedTrackingEntity(entity)) return true;
         if (containsForcedMainEntity(entity)) return true;
         if (containsServerPlayerTick(entity)) return true;
@@ -563,8 +563,7 @@ public final class ParallelProcessor {
 
     /** Hard-Main simulation state may also be reached through passenger recursion. */
     private static boolean containsMainOwnedTrackingEntity(Entity entity) {
-        if (entity instanceof ItemFrame || entity instanceof WitherBoss
-                || entity instanceof EnderDragon) return true;
+        if (entity instanceof WitherBoss || entity instanceof EnderDragon) return true;
         for (Entity passenger : entity.getPassengers()) {
             if (containsMainOwnedTrackingEntity(passenger)) return true;
         }

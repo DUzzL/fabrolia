@@ -1680,34 +1680,60 @@ public final class RegionScheduler {
         } catch (Throwable thrown) {
             failure = publishFatalAndSelectWinner(thrown);
         } finally {
-            // This is a success continuation, not resource cleanup.  In
-            // particular A5's callback reopens/schedules the listener lane;
-            // running it after a partial entity mutation would consume the
-            // failed turn as if vanilla had completed it.  The pool permit is
-            // the actual resource and is released below for both outcomes.
             if (permitStarted) {
-                if (failure == null && queued.completion() != null) {
-                    try {
-                        // Completion reopens/schedules a successor lane. A worker
-                        // fatal which won while the claimed body was running must
-                        // stop it atomically at the last possible point before entry;
-                        // a health read followed by Runnable.run has a W race.
-                        runSuccessBodyIfHealthy(queued.completion());
-                    } catch (Throwable completionFailure) {
-                        failure = publishFatalAndSelectWinner(
-                                mergeFailure(failure, completionFailure));
-                    }
+                java.util.ArrayList<MainSyncTask> tails = DEFERRED_TAILS.get();
+                if (failure == null && tails != null) {
+                    // Inside a claimed island bucket: the completion edge (A5
+                    // listener ingress: packets that may claim this same island)
+                    // runs after the bucket releases the claim, as it did with
+                    // per-entity claims.
+                    tails.add(queued);
+                    return;
                 }
-                failure = queued.permit().finish(failure);
-                if (failure != null) {
-                    failure = publishFatalAndSelectWinner(failure);
-                }
+                failure = finishMainSync(queued, failure);
             }
         }
         if (failure != null) {
             RegionScheduler.<RuntimeException>rethrow(
                     publishFatalAndSelectWinner(failure));
         }
+    }
+
+    /** Main-confined: MAIN_SYNC bodies of the current claimed bucket awaiting their tail. */
+    private static final ThreadLocal<java.util.ArrayList<MainSyncTask>> DEFERRED_TAILS = new ThreadLocal<>();
+
+    /** Completion (success only) then permit terminal; returns the merged failure. */
+    private static Throwable finishMainSync(MainSyncTask queued, Throwable failure) {
+        // This is a success continuation, not resource cleanup.  In
+        // particular A5's callback reopens/schedules the listener lane;
+        // running it after a partial entity mutation would consume the
+        // failed turn as if vanilla had completed it.  The pool permit is
+        // the actual resource and is released below for both outcomes.
+        if (failure == null && queued.completion() != null) {
+            try {
+                // A worker fatal which won while the claimed body was running must
+                // stop it atomically at the last possible point before entry.
+                runSuccessBodyIfHealthy(queued.completion());
+            } catch (Throwable completionFailure) {
+                failure = publishFatalAndSelectWinner(
+                        mergeFailure(failure, completionFailure));
+            }
+        }
+        failure = queued.permit().finish(failure);
+        if (failure != null) failure = publishFatalAndSelectWinner(failure);
+        return failure;
+    }
+
+    /** Runs the deferred tails of one bucket after its claim was released. */
+    private static Throwable runDeferredTails(java.util.ArrayList<MainSyncTask> tails, Throwable failure) {
+        for (MainSyncTask task : tails) {
+            try {
+                failure = mergeFailure(failure, finishMainSync(task, failure));
+            } catch (Throwable thrown) {
+                failure = publishFatalAndSelectWinner(mergeFailure(failure, thrown));
+            }
+        }
+        return failure;
     }
 
     /** A/B switch for the island-bucketed Main claim drains (per-entity claims when false). */
@@ -2008,11 +2034,15 @@ public final class RegionScheduler {
 
         private void runClaimed(IslandRegistry.PIsland owner, java.util.ArrayDeque<T> queue) {
             Throwable failure = null;
+            java.util.ArrayList<MainSyncTask> outer = DEFERRED_TAILS.get();
+            java.util.ArrayList<MainSyncTask> tails = new java.util.ArrayList<>();
+            DEFERRED_TAILS.set(tails);
             try {
                 runQueue(queue);
             } catch (Throwable thrown) {
                 failure = publishFatalAndSelectWinner(thrown);
             } finally {
+                if (outer == null) DEFERRED_TAILS.remove(); else DEFERRED_TAILS.set(outer);
                 try {
                     IslandCommands.mainRelease(owner);
                     // A peer W selected during release still forbids a normal return.
@@ -2021,6 +2051,8 @@ public final class RegionScheduler {
                     failure = publishFatalAndSelectWinner(mergeFailure(failure, releaseFailure));
                 }
             }
+            // Completion edges run claim-free (they may claim this same island).
+            failure = runDeferredTails(tails, failure);
             if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
         }
 
