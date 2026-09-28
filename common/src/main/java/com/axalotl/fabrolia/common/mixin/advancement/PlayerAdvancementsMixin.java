@@ -41,6 +41,20 @@ public abstract class PlayerAdvancementsMixin {
         }
     }
 
+    /**
+     * {@code PlayerPredicate.advancements} reads through this insert-on-miss accessor.
+     * Parallel predicate evaluation keeps each player's own pendings in one task, but a
+     * vehicle/passenger sub-predicate may evaluate ANOTHER player's progress from a
+     * sibling task; the monitor keeps that plain-map insert exclusive against it.
+     */
+    @WrapMethod(method = "getOrStartProgress(Lnet/minecraft/advancements/AdvancementHolder;)Lnet/minecraft/advancements/AdvancementProgress;")
+    private net.minecraft.advancements.AdvancementProgress fabrolia$lockProgressStart(
+            AdvancementHolder holder, Operation<net.minecraft.advancements.AdvancementProgress> original) {
+        synchronized (this) {
+            return original.call(holder);
+        }
+    }
+
     @WrapMethod(method = "flushDirty(Lnet/minecraft/server/level/ServerPlayer;Z)V")
     private void fabrolia$mainOwnFlush(ServerPlayer player, boolean force, Operation<Void> original) {
         if (fabrolia$offMain()) {

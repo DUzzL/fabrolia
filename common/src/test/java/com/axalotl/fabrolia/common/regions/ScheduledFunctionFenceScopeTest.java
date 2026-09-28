@@ -57,7 +57,9 @@ final class ScheduledFunctionFenceScopeTest {
         assertTrue(timer.indexOf("runMainScheduledFunctionCallback(")
                         < timer.lastIndexOf("original.call(callback, context, queue, triggerTime)"),
                 "custom timer callbacks must call original outside the clean capability");
-        assertFalse(timer.contains("catch ("));
+        assertFalse(timer.substring(timer.indexOf("fabrolia$markScheduledFunctionCallback("))
+                        .contains("catch ("),
+                "the callback capability scope must propagate the exact vanilla failure");
 
         String commands = source("common/regions/IslandCommands.java");
         String scheduledScope = section(commands,

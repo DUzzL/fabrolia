@@ -101,7 +101,6 @@ public final class AdvancementBuffer {
                            PlayerAdvancements.TriggerInstanceKey[] keys,
                            Object[] instances) {}
 
-    private record Match(ServerPlayer player, PlayerAdvancements.TriggerInstanceKey key) {}
 
     private AdvancementBuffer() {}
 
@@ -292,34 +291,65 @@ public final class AdvancementBuffer {
     private static void drainOnMain(Pending[] pending, int n,
             IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
         AdvancementBatchScope.ensureEvaluationFence();
-        ArrayList<Match> matches = new ArrayList<>();
-        AdvancementCacheContext.runScoped(() -> evalRange(pending, 0, n, matches));
-        applyMatches(matches, fired);
+        evaluateAndApply(pending, n, fired);
     }
 
-    private static void applyMatches(ArrayList<Match> matches,
+    private static final AdvancementPredicateEval.Shape<Pending> PENDING_SHAPE =
+            new AdvancementPredicateEval.Shape<>() {
+                @Override
+                public Object owner(Pending pending) {
+                    return pending.player;
+                }
+
+                @Override
+                public int entries(Pending pending) {
+                    return pending.keys.length;
+                }
+            };
+
+    private static final AdvancementPredicateEval.EntryPredicate<Pending> PLAYER_PREDICATE =
+            (p, entry) -> matchesPlayerPredicate(p.instances[entry], p.lootContext);
+
+    /**
+     * Caller holds the evaluation fence. Evaluates every retained {@code player:}
+     * predicate — fanned over the idle tick pool for large batches — then applies the
+     * awards serially on Main in vanilla order: pending publication order, listener
+     * order within one pending.
+     *
+     * <p>Vanilla evaluates each trigger call after the awards of the previous call.
+     * The fan-out sees one pre-award snapshot, so once a player received an award in
+     * this pass, that player's LATER pendings are re-evaluated inline against the
+     * post-award state (a reward may have changed the score, inventory or XP the next
+     * predicate reads); a fresh NBT cache per re-evaluation keeps that read current.
+     */
+    private static void evaluateAndApply(Pending[] pending, int n,
             IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
+        AdvancementCacheContext.requireSerializationOwnership();
+        int[][] matched = AdvancementPredicateEval.evaluate(pending, n, PENDING_SHAPE,
+                PLAYER_PREDICATE, AdvancementCacheContext::runScoped);
         IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> activeFired =
                 fired == null ? new IdentityHashMap<>() : fired;
-        for (Match match : matches) {
-            RegionScheduler.runSuccessBodyIfHealthy(() ->
-                    fabrolia$applyAwardInAdmittedBody(match.player, match.key, activeFired));
-        }
-    }
-
-    private static void evalRange(Pending[] pending, int from, int to, ArrayList<Match> matches) {
-        for (int index = from; index < to; index++) {
-            Pending p = pending[index];
-            for (int listener = 0; listener < p.keys.length; listener++) {
-                int entry = listener;
-                RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                    if (matchesPlayerPredicate(p.instances[entry], p.lootContext)) {
-                        matches.add(new Match(p.player, p.keys[entry]));
-                        AdvancementDiag.MATCHES.increment();
-                    }
-                });
+        Set<ServerPlayer> awarded = Collections.newSetFromMap(new IdentityHashMap<>());
+        int matches = 0;
+        for (int i = 0; i < n; i++) {
+            Pending p = pending[i];
+            int[] hits = matched[i];
+            if (awarded.contains(p.player)) {
+                int[][] fresh = new int[1][];
+                AdvancementCacheContext.runScoped(() ->
+                        fresh[0] = AdvancementPredicateEval.evaluateOne(p, PENDING_SHAPE, PLAYER_PREDICATE));
+                hits = fresh[0];
+            }
+            if (hits == null) continue;
+            matches += hits.length;
+            for (int entry : hits) {
+                PlayerAdvancements.TriggerInstanceKey key = p.keys[entry];
+                RegionScheduler.runSuccessBodyIfHealthy(() ->
+                        fabrolia$applyAwardInAdmittedBody(p.player, key, activeFired, awarded));
             }
         }
+        AdvancementDiag.MATCHES.add(matches);
+        AdvancementDiag.lastBatchMatches = matches;
     }
 
 
@@ -342,7 +372,7 @@ public final class AdvancementBuffer {
             Pending p, int entry,
             IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
         if (matchesPlayerPredicate(p.instances[entry], p.lootContext)) {
-            fabrolia$applyAwardInAdmittedBody(p.player, p.keys[entry], fired);
+            fabrolia$applyAwardInAdmittedBody(p.player, p.keys[entry], fired, null);
         }
     }
 
@@ -436,6 +466,11 @@ public final class AdvancementBuffer {
      * with NO monitor held. A standalone drain owns an exact advancement scope
      * so its first reward function waits for one unbounded fence and retains
      * that sticky window through the complete accepted FIFO.
+     *
+     * <p>While autonomous islands are live and no window is held, a standalone
+     * drain would quiesce every island for these two queues alone; the
+     * once-per-tick head window applies them under the fence it shares with the
+     * tick functions, so the standalone belt only runs when that fence is free.
      */
     public static void drainMainFrameless() {
         RegionScheduler.throwWorkerFailureIfAny();
@@ -445,6 +480,9 @@ public final class AdvancementBuffer {
         }
         if (AdvancementBatchScope.active()) {
             drainMainFrameless(null);
+            return;
+        }
+        if (IslandCommands.requiresMainFence() && !IslandCommands.fenceWindowHeld()) {
             return;
         }
         Throwable failure = null;
@@ -582,11 +620,24 @@ public final class AdvancementBuffer {
     // (advancement, criterion) collapse even if some path produced fresh key instances.
 
     /**
-     * Main-thread, entity-batch end (ParallelProcessor.onEntityTickBatchEnd). Merges
-     * already-matched criteria into one fenced, serial award pass. Dedup spans the
-     * batch; accepted publications also drain at the healthy shutdown fixed point.
+     * Main-thread, entity-batch end (ParallelProcessor.onEntityTickBatchEnd). Applies the
+     * Main-ticked players' parked batch: vanilla awards them inline inside the entity
+     * phase, so this is the nearest monitor-free point and must stay per level. The
+     * worker lane (island players, whose ticks have no Main-phase anchor) rides along
+     * only when this batch already holds the fence or none is required; otherwise it
+     * waits for the tick-head window, which shares the tick-function fence instead of
+     * quiescing every island once more per level.
      */
     public static void applyDeferred() {
+        applyBatch(false);
+    }
+
+    /**
+     * One fenced, serial award pass. Dedup spans the pass; cascades settle inside it.
+     * @param workerLaneUnconditional drain the worker lane even when that costs a fresh
+     *                                fence (shutdown: nothing may survive)
+     */
+    private static void applyBatch(boolean workerLaneUnconditional) {
         long batchT0 = System.nanoTime();
         // Prepare every allocation/local before publishing the exact scope
         // owner. Once begin() succeeds, the cleanup envelope starts
@@ -610,29 +661,23 @@ public final class AdvancementBuffer {
                 drainOnMain(parked, parked.length, fired);
             }
 
-            any |= fabrolia$applyDeferredLane(fired);
+            boolean laneApplied = false;
+            if (workerLaneUnconditional
+                    || !IslandCommands.requiresMainFence()
+                    || IslandCommands.fenceWindowHeld()) {
+                any |= fabrolia$applyDeferredLane(fired);
+                laneApplied = true;
+            }
 
             // Cascades (reward functions raising new triggers, /advancement in
             // rewards) settle inside the same scope + dedup.
             drainMainFrameless(fired);
-            RegionScheduler.throwWorkerFailureIfAny();
-
-            if (any || !fired.isEmpty()) {
-                // Snapshot before the first successor publication. Allocation or
-                // iteration failure is caught by this method's fail-stop envelope;
-                // no queue entry has been detached or lost at that point.
-                ServerPlayer[] affectedPlayers = fired.keySet().toArray(new ServerPlayer[0]);
-                int affectedCount = affectedPlayers.length;
-                RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                    AdvancementDiag.BATCH_APPLIES.increment();
-                    AdvancementDiag.lastBatchAffectedPlayers = affectedCount;
-                });
-                // One flush per affected player, after the whole batch — the
-                // packet carries the tick's complete final state, same tick.
-                for (ServerPlayer p : affectedPlayers) {
-                    queueFlush(p);
-                }
+            if (!laneApplied && IslandCommands.fenceWindowHeld()) {
+                // The frameless drain took the sticky fence: the lane rides along.
+                any |= fabrolia$applyDeferredLane(fired);
             }
+            RegionScheduler.throwWorkerFailureIfAny();
+            fabrolia$finishPass(any, fired);
         } catch (Throwable thrown) {
             // A sticky batch scope may own the global fence. Select W while
             // that ownership is still closed; end() is mandatory cleanup, not
@@ -649,14 +694,142 @@ public final class AdvancementBuffer {
         if (failure != null) {
             AdvancementBuffer.<RuntimeException>rethrow(failure);
         }
+        fabrolia$commitBarrierNanos(batchT0);
+    }
+
+    /** Batch/window epilogue inside the scope: metrics plus one flush per affected player. */
+    private static void fabrolia$finishPass(boolean any,
+            IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
+        if (!any && fired.isEmpty()) return;
+        // Snapshot before the first successor publication. Allocation or
+        // iteration failure is caught by the caller's fail-stop envelope;
+        // no queue entry has been detached or lost at that point.
+        ServerPlayer[] affectedPlayers = fired.keySet().toArray(new ServerPlayer[0]);
+        int affectedCount = affectedPlayers.length;
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            AdvancementDiag.BATCH_APPLIES.increment();
+            AdvancementDiag.lastBatchAffectedPlayers = affectedCount;
+        });
+        // One flush per affected player, after the whole pass — the
+        // packet carries the complete final state, same tick.
+        for (ServerPlayer p : affectedPlayers) {
+            queueFlush(p);
+        }
+    }
+
+    private static void fabrolia$commitBarrierNanos(long startNanos) {
+        Throwable failure = null;
         try {
-            long barrierNanos = System.nanoTime() - batchT0;
+            long barrierNanos = System.nanoTime() - startNanos;
             RegionScheduler.commitSuccessIfHealthy(
                     () -> AdvancementDiag.BARRIER_NANOS.add(barrierNanos));
         } catch (Throwable successFailure) {
             failure = RegionScheduler.publishFatalAndSelectWinner(successFailure);
         }
         if (failure != null) AdvancementBuffer.<RuntimeException>rethrow(failure);
+    }
+
+    /** Dedup scope of the open tick-head window (Main-only, between begin and end). */
+    private static IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>>
+            tickHeadFired;
+
+    /**
+     * MAIN, tick head, immediately before the {@code #minecraft:tick} functions. Opens the
+     * per-tick advancement window: the worker lane, then frameless Main awards and
+     * direct replays (fire order: frameless items arrive in the inter-tick pump, after
+     * the lane's) apply here under one sticky fence which the tick functions then share
+     * ({@code fenceWindowHeld} → inline, no second quiesce). With tick functions queued
+     * the window takes that fence even when no award is pending, so K functions cost
+     * one quiesce instead of K. A {@code true} return MUST be paired with
+     * {@link #endTickHeadWindow} after the functions ran: cascades they raise settle in
+     * the same window and the fence is released exactly once.
+     *
+     * <p>Order argument: vanilla runs tick functions before any level ticks; island
+     * players' awards have no vanilla position inside Main's tick, and Main-ticked
+     * players never publish to this lane. Awards fired during tick T become visible to
+     * the tick functions of T+1 in both the batch-end and the head placement; the head
+     * placement keeps "awards before functions" for the same tick's Main work.
+     *
+     * @param tickFunctionsQueued whether {@code ServerFunctionManager} will execute at
+     *                            least one tick-tag function in this window
+     * @return whether this call owns the window
+     */
+    public static boolean beginTickHeadWindow(boolean tickFunctionsQueued) {
+        RegionScheduler.throwWorkerFailureIfAny();
+        if (IslandCommands.globalFenceTransitionInProgress()
+                || AdvancementBatchScope.active()) {
+            // A nested Main pump owns this position (an acquiring fence's
+            // callbacks, or a re-entered tick()). The ordinary belt applies.
+            drainMainFrameless();
+            return false;
+        }
+        long start = System.nanoTime();
+        IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired =
+                new IdentityHashMap<>();
+        Throwable failure = null;
+        AdvancementBatchScope.begin();
+        tickHeadFired = fired;
+        try {
+            if (fabrolia$applyDeferredLane(fired)) {
+                RegionScheduler.commitSuccessIfHealthy(AdvancementDiag.HEAD_DRAINS::increment);
+            }
+            drainMainFrameless(fired);
+            if (tickFunctionsQueued) AdvancementBatchScope.ensureEvaluationFence();
+            RegionScheduler.throwWorkerFailureIfAny();
+        } catch (Throwable thrown) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+        }
+        if (failure == null) {
+            try {
+                fabrolia$commitBarrierNanos(start);
+                return true;
+            } catch (Throwable thrown) {
+                failure = thrown;
+            }
+        }
+        // The window never opened for its caller: close it here, primary first.
+        AdvancementBuffer.<RuntimeException>rethrow(fabrolia$closeTickHeadWindow(failure));
+        return false;
+    }
+
+    /**
+     * Mandatory pair of a {@code true} {@link #beginTickHeadWindow}. Settles cascades the
+     * tick functions raised (inside the still-held window), flushes affected players,
+     * releases the sticky fence, and returns {@code primary} merged with any cleanup
+     * failure (never null when {@code primary} was non-null). Barrier accounting covers
+     * the drains only, not the functions' own bodies.
+     */
+    public static Throwable endTickHeadWindow(Throwable primary) {
+        long start = System.nanoTime();
+        Throwable failure = primary;
+        if (failure == null) {
+            try {
+                drainMainFrameless(tickHeadFired);
+                RegionScheduler.throwWorkerFailureIfAny();
+                fabrolia$finishPass(false, tickHeadFired);
+            } catch (Throwable thrown) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+            }
+        }
+        failure = fabrolia$closeTickHeadWindow(failure);
+        if (failure != null) return failure;
+        try {
+            drainPendingFlushes();
+            fabrolia$commitBarrierNanos(start);
+        } catch (Throwable thrown) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+        }
+        return failure;
+    }
+
+    private static Throwable fabrolia$closeTickHeadWindow(Throwable failure) {
+        tickHeadFired = null;
+        try {
+            AdvancementBatchScope.end();
+        } catch (Throwable cleanup) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
+        }
+        return failure;
     }
 
     /**
@@ -686,7 +859,7 @@ public final class AdvancementBuffer {
                 && !MAIN_DRAIN_SCHEDULED.get()) {
             return;
         }
-        applyDeferred();
+        applyBatch(true);
         drainPendingFlushes();
     }
 
@@ -730,7 +903,7 @@ public final class AdvancementBuffer {
         FRAME.remove();
     }
 
-    /** The deferred award lane.
+    /** The worker lane: island players' already-matched trigger decisions.
      *  @return true when anything was processed. */
     private static boolean fabrolia$applyDeferredLane(
             IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
@@ -744,19 +917,26 @@ public final class AdvancementBuffer {
     private static void drainDeferredHeld(
             IdentityHashMap<ServerPlayer, Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
         ArrayList<Pending[]> batches = new ArrayList<>();
+        int total = 0;
         Pending[] arr;
         while ((arr = DEFERRED_PENDING.poll()) != null) {
-            if (arr.length != 0) batches.add(arr);
+            if (arr.length == 0) continue;
+            batches.add(arr);
+            total += arr.length;
         }
         if (batches.isEmpty()) return;
         AdvancementBatchScope.ensureEvaluationFence();
-        ArrayList<Match> matches = new ArrayList<>();
-        AdvancementCacheContext.runScoped(() -> {
-            for (Pending[] batch : batches) evalRange(batch, 0, batch.length, matches);
-        });
-        applyMatches(matches, fired);
+        // Flatten in publication order: one evaluation fan-out for the whole lane.
+        Pending[] pending = new Pending[total];
+        int at = 0;
+        for (Pending[] batch : batches) {
+            System.arraycopy(batch, 0, pending, at, batch.length);
+            at += batch.length;
+        }
+        AdvancementDiag.lastBatchPendings = total;
+        evaluateAndApply(pending, total, fired);
         // Batch grants can cascade frameless-main raises (reward functions);
-        // settle them in the same batch-end window.
+        // settle them in the same window.
         drainMainFrameless(fired);
     }
 
@@ -779,18 +959,22 @@ public final class AdvancementBuffer {
     }
 
 
-    /** Caller owns exactly one scheduler-admitted criterion body. */
+    /** Caller owns exactly one scheduler-admitted criterion body.
+     *  @param awarded when non-null, records the player once award() is entered so the
+     *                 caller re-evaluates that player's later pendings post-award */
     private static void fabrolia$applyAwardInAdmittedBody(
             ServerPlayer player,
             PlayerAdvancements.TriggerInstanceKey key,
             IdentityHashMap<ServerPlayer,
-                    Set<PlayerAdvancements.TriggerInstanceKey>> fired) {
+                    Set<PlayerAdvancements.TriggerInstanceKey>> fired,
+            Set<ServerPlayer> awarded) {
         Set<PlayerAdvancements.TriggerInstanceKey> playerFired = fired.computeIfAbsent(
                 player, k -> new HashSet<>());
         if (!playerFired.add(key) && fabrolia$stillGranted(player, key)) {
             AdvancementDiag.DEDUP_DROPPED.increment();
             return;
         }
+        if (awarded != null) awarded.add(player);
         fabrolia$runRewardBody(() ->
                 player.getAdvancements().award(key.advancement(), key.criterion()));
         AdvancementDiag.AWARDS.increment();

@@ -17,7 +17,7 @@ final class CommandEntityCatchEdgeWiringTest {
         assertBodyCatchBeforeCleanup(source, "fabrolia$markTickTag(",
                 "original.call()", "fabrolia$inTickTag = false");
         int tick = source.indexOf("fabrolia$markTickTag(");
-        int drain = source.indexOf("AdvancementBuffer.drainMainFrameless()", tick);
+        int drain = source.indexOf("AdvancementBuffer.beginTickHeadWindow(", tick);
         int admission = source.indexOf(
                 "RegionScheduler.runSuccessBodyIfHealthy(() -> original.call())", drain);
         int tickBody = source.indexOf("original.call()", admission);

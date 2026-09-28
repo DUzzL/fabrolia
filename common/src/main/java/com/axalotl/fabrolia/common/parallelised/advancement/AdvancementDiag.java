@@ -39,6 +39,12 @@ public final class AdvancementDiag {
     public static final LongAdder FLUSHES = new LongAdder();
     /** Direct off-main award/revoke replays. */
     public static final LongAdder DIRECT_REPLAYS = new LongAdder();
+    /** Predicate-evaluation fan-outs over the tick pool (batches above the grain). */
+    public static final LongAdder EVAL_FANOUTS = new LongAdder();
+    /** Tasks dispatched by those fan-outs. */
+    public static final LongAdder EVAL_TASKS = new LongAdder();
+    /** Tick-head windows that applied worker-lane awards under the tick-function fence. */
+    public static final LongAdder HEAD_DRAINS = new LongAdder();
 
     /** Last-batch gauges (main-only writes). */
     public static volatile int lastBatchPendings;
@@ -60,6 +66,9 @@ public final class AdvancementDiag {
                 + " barrierMs=" + BARRIER_NANOS.sum() / 1_000_000L
                 + " flushes=" + FLUSHES.sum()
                 + " directReplays=" + DIRECT_REPLAYS.sum()
+                + " evalFanouts=" + EVAL_FANOUTS.sum()
+                + " evalTasks=" + EVAL_TASKS.sum()
+                + " headDrains=" + HEAD_DRAINS.sum()
                 + " lastBatch[pend=" + lastBatchPendings
                 + " match=" + lastBatchMatches
                 + " players=" + lastBatchAffectedPlayers + "]";
