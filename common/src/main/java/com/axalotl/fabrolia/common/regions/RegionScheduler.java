@@ -1757,7 +1757,16 @@ public final class RegionScheduler {
         MainSyncTask queued;
         while ((queued = MAIN_SYNC.poll()) != null) {
             if (queued.allIslandsFenced()) {
-                buckets.flush();
+                try {
+                    buckets.flush();
+                } catch (Throwable thrown) {
+                    // The fenced task is already out of the queue: cancel its
+                    // permit here, or the fail-stop sweep never sees it.
+                    RegionWorkerPool current = pool;
+                    Throwable failure = current == null ? thrown
+                            : current.cancelQueuedPermit(queued.permit(), thrown);
+                    RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(failure));
+                }
                 runOneMainSync(queued);
                 ran = true;
                 continue;
@@ -1878,66 +1887,69 @@ public final class RegionScheduler {
                 // waiting on, chunk executors, forensics).
                 java.util.ArrayList<IslandRegistry.PIsland> remaining =
                         new java.util.ArrayList<>(buckets.keySet());
-                boolean[] prior = new boolean[remaining.size()];
-                for (int i = 0; i < prior.length; i++) {
-                    prior[i] = remaining.get(i).claimWanted;
-                    remaining.get(i).claimWanted = true;
+                java.util.IdentityHashMap<IslandRegistry.PIsland, Boolean> prior =
+                        new java.util.IdentityHashMap<>(remaining.size() * 2);
+                for (IslandRegistry.PIsland owner : remaining) {
+                    prior.put(owner, owner.claimWanted);
+                    owner.claimWanted = true;
                 }
                 try {
                     long spinStart = System.nanoTime();
-                    long waitStart = spinStart;
-                    IslandCommands.MAIN_CLAIMS_CONTENDED.increment();
-                    try {
-                        while (!buckets.isEmpty()) {
-                            boolean progressed = false;
-                            var round = buckets.entrySet().iterator();
-                            while (round.hasNext()) {
-                                var entry = round.next();
-                                IslandRegistry.PIsland owner = entry.getKey();
-                                if (inherits(owner)) {
-                                    runQueue(entry.getValue());
-                                } else if (IslandCommands.tryMainClaim(owner)) {
-                                    runClaimed(owner, entry.getValue());
-                                } else {
-                                    continue;
-                                }
-                                // Registered until it completed: an abort cancels the rest.
-                                round.remove();
-                                progressed = true;
-                            }
-                            if (buckets.isEmpty()) break;
-                            if (!progressed) {
-                                throwWorkerFailureIfAny();
-                                boolean routed = IslandCommands.hasRoutedPending();
-                                if (!routed) {
-                                    for (IslandRegistry.PIsland owner : buckets.keySet()) {
-                                        if (owner.waitingOnRoutedCommand) { routed = true; break; }
-                                    }
-                                }
-                                if (routed) {
-                                    IslandCommands.drainRoutedBatch();
-                                    continue;
-                                }
-                                if (!poolRunning()) {
-                                    throw new IllegalStateException(
-                                            "island bucket drain found retained island claims after the worker pool stopped");
-                                }
-                                if (System.nanoTime() - spinStart > 5_000_000_000L) {
-                                    spinStart = System.nanoTime();
-                                    for (IslandRegistry.PIsland owner : buckets.keySet()) {
-                                        LOGGER.error("[async-islands] island bucket drain stuck 5s — retained-claim forensics: {}",
-                                                IslandCommands.claimForensics(owner));
-                                    }
-                                }
-                                IslandCommands.drainMainChunkServices();
-                                java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
-                            }
+                    long waitedSince = spinStart;
+                    IslandCommands.MAIN_CLAIMS_CONTENDED.add(remaining.size());
+                    while (!buckets.isEmpty()) {
+                        boolean progressed = false;
+                        var round = buckets.entrySet().iterator();
+                        while (round.hasNext()) {
+                            var entry = round.next();
+                            IslandRegistry.PIsland owner = entry.getKey();
+                            boolean inherited = inherits(owner);
+                            if (!inherited && !IslandCommands.tryMainClaim(owner)) continue;
+                            // Waiting ends here for this island: restore its
+                            // flag before the body so its next unit is not held
+                            // back by the islands Main is still waiting for.
+                            long now = System.nanoTime();
+                            IslandCommands.MAIN_CLAIM_WAIT_NANOS.add(now - waitedSince);
+                            waitedSince = now;
+                            owner.claimWanted = prior.remove(owner);
+                            if (inherited) runQueue(entry.getValue());
+                            else runClaimed(owner, entry.getValue());
+                            // Registered until it completed: an abort cancels the rest.
+                            round.remove();
+                            progressed = true;
+                            waitedSince = System.nanoTime();
                         }
-                    } finally {
-                        IslandCommands.MAIN_CLAIM_WAIT_NANOS.add(System.nanoTime() - waitStart);
+                        if (buckets.isEmpty()) break;
+                        if (!progressed) {
+                            throwWorkerFailureIfAny();
+                            boolean routed = IslandCommands.hasRoutedPending();
+                            if (!routed) {
+                                for (IslandRegistry.PIsland owner : buckets.keySet()) {
+                                    if (owner.waitingOnRoutedCommand) { routed = true; break; }
+                                }
+                            }
+                            if (routed) {
+                                IslandCommands.drainRoutedBatch();
+                                continue;
+                            }
+                            if (!poolRunning()) {
+                                throw new IllegalStateException(
+                                        "island bucket drain found retained island claims after the worker pool stopped");
+                            }
+                            if (System.nanoTime() - spinStart > 5_000_000_000L) {
+                                spinStart = System.nanoTime();
+                                for (IslandRegistry.PIsland owner : buckets.keySet()) {
+                                    LOGGER.error("[async-islands] island bucket drain stuck 5s — retained-claim forensics: {}",
+                                            IslandCommands.claimForensics(owner));
+                                }
+                            }
+                            IslandCommands.drainMainChunkServices();
+                            java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
+                        }
                     }
                 } finally {
-                    for (int i = 0; i < prior.length; i++) remaining.get(i).claimWanted = prior[i];
+                    // Islands never claimed (abort) get their flag back here.
+                    for (var entry : prior.entrySet()) entry.getKey().claimWanted = entry.getValue();
                 }
             } catch (Throwable thrown) {
                 failure = publishFatalAndSelectWinner(thrown);
@@ -1962,6 +1974,8 @@ public final class RegionScheduler {
             } finally {
                 try {
                     IslandCommands.mainRelease(owner);
+                    // A peer W selected during release still forbids a normal return.
+                    commitSuccessIfHealthy(() -> {});
                 } catch (Throwable releaseFailure) {
                     failure = publishFatalAndSelectWinner(mergeFailure(failure, releaseFailure));
                 }
