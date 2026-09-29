@@ -1235,25 +1235,38 @@ public final class RegionScheduler {
         RegionizedServer runtime = PER_LEVEL.get(level);
         if (ownsRuntimeGeneration(runtime)) {
             if (runtime.currentThreadHoldsAllClaims()) return true;
-            Region target = runtime.regionizer().peekRegionForChunk(
-                    ChunkPos.pack(pos));
-            if (target != null && runtime.ownsRegion(target)) {
-                if (target.currentWorker() == caller) return true;
-                EpochDomain domain = target.domain;
-                IslandRegistry.PIsland owner = domain != null ? domain.owner : null;
-                if (owner != null && owner.domain == domain
-                        && owner.domainLevel() == level && !owner.retired) {
-                    if (physicalMain && IslandCommands.mainHolds(owner)) return true;
-                    if (caller instanceof RegionWorkerThread worker
-                            && worker.currentRegion == null
-                            && worker.currentDomain == domain
-                            && owner.unitClaim.get() && owner.claimHolder == caller
-                            && domain.entityPending.get() == 0
-                            && target.currentWorker() == null) {
-                        CompletableFuture<Void> barrier = domain.entityBarrier;
-                        return barrier == null
-                                || barrier.isDone() && !barrier.isCompletedExceptionally();
-                    }
+            long chunk = ChunkPos.pack(pos);
+            Region target = runtime.regionizer().peekRegionForChunk(chunk);
+            EpochDomain domain = null;
+            if (target != null) {
+                if (runtime.ownsRegion(target)) {
+                    if (target.currentWorker() == caller) return true;
+                    domain = target.domain;
+                }
+            } else {
+                // A cell with no region (its chunks are unloaded or not yet
+                // loaded) is still owned: by the committed topology snapshot
+                // that islandOwnerOfChunk dispatches by and that a region born
+                // there is assigned from. Without this a raid whose center is
+                // not loaded was dispatched to an island that then refused it.
+                var committed = runtime.arrivalOwnerSnapshot();
+                if (committed != null) {
+                    domain = committed.get(runtime.regionizer().grid.keyFor(chunk));
+                }
+            }
+            IslandRegistry.PIsland owner = domain != null ? domain.owner : null;
+            if (owner != null && owner.domain == domain
+                    && owner.domainLevel() == level && !owner.retired) {
+                if (physicalMain && IslandCommands.mainHolds(owner)) return true;
+                if (caller instanceof RegionWorkerThread worker
+                        && worker.currentRegion == null
+                        && worker.currentDomain == domain
+                        && owner.unitClaim.get() && owner.claimHolder == caller
+                        && domain.entityPending.get() == 0
+                        && (target == null || target.currentWorker() == null)) {
+                    CompletableFuture<Void> barrier = domain.entityBarrier;
+                    return barrier == null
+                            || barrier.isDone() && !barrier.isCompletedExceptionally();
                 }
             }
         }
@@ -1265,6 +1278,47 @@ public final class RegionScheduler {
         }
         // Disabled guards or apparent idleness are not quiescence receipts.
         return false;
+    }
+
+    /** Failure-message facts behind a refused {@link #ownsCurrentContext}; never a hot path. */
+    public static String describeContext(ServerLevel level, BlockPos pos) {
+        Thread caller = Thread.currentThread();
+        RegionizedServer runtime = PER_LEVEL.get(level);
+        StringBuilder out = new StringBuilder("pos=").append(pos.toShortString())
+                .append(" thread=").append(caller.getName());
+        if (runtime == null) return out.append(" runtime=none").toString();
+        long chunk = ChunkPos.pack(pos);
+        Region target = runtime.regionizer().peekRegionForChunk(chunk);
+        EpochDomain domain;
+        if (target == null) {
+            var committed = runtime.arrivalOwnerSnapshot();
+            domain = committed == null ? null
+                    : committed.get(runtime.regionizer().grid.keyFor(chunk));
+            out.append(" region=none committedDomain=").append(domain != null);
+        } else {
+            domain = target.domain;
+            out.append(" region=").append(runtime.ownsRegion(target) ? "owned" : "foreign")
+                    .append(" regionWorker=").append(target.currentWorker() == null ? "none"
+                            : target.currentWorker().getName());
+        }
+        IslandRegistry.PIsland owner = domain != null ? domain.owner : null;
+        out.append(" owner=").append(owner == null ? "none"
+                : (owner.retired ? "retired" : "live") + (owner.domain == domain ? "" : ",staleDomain"));
+        if (caller instanceof RegionWorkerThread worker) {
+            out.append(" coordinator=").append(worker.currentRegion == null)
+                    .append(" sameDomain=").append(domain != null && worker.currentDomain == domain);
+            if (owner != null) {
+                out.append(" claimHeld=").append(owner.unitClaim.get() && owner.claimHolder == caller);
+            }
+        }
+        if (domain != null) {
+            CompletableFuture<Void> barrier = domain.entityBarrier;
+            out.append(" entityPending=").append(domain.entityPending.get())
+                    .append(" barrier=").append(barrier == null ? "none"
+                            : barrier.isDone() ? (barrier.isCompletedExceptionally() ? "failed" : "done")
+                            : "open");
+        }
+        return out.toString();
     }
 
     /**
@@ -1814,8 +1868,42 @@ public final class RegionScheduler {
             return true;
         }
         ran |= buckets.flushReady();
-        // Busy islands: back to the head, bucket order = queue order.
         java.util.ArrayList<MainSyncTask> busy = buckets.drainRemaining();
+        if (busy.isEmpty()) return ran;
+        // A player's Main fallback is an admission cut for that player: every
+        // later island tick of the player also falls back until this body
+        // completes. Such islands are drained now, waiting for the unit tail as
+        // the per-entity drain did; deferring them lets one player accumulate a
+        // fallback per island unit and freezes its ticks to Main's cadence.
+        java.util.Set<IslandRegistry.PIsland> urgent =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (MainSyncTask task : busy) {
+            if (task.entity() instanceof net.minecraft.server.level.ServerPlayer) {
+                IslandRegistry.PIsland owner = mainClaimOwnerOf(task.entity());
+                if (owner != null) urgent.add(owner);
+            }
+        }
+        if (!urgent.isEmpty()) {
+            IslandBuckets<MainSyncTask> now = new IslandBuckets<>(
+                    RegionScheduler::runOneMainSync,
+                    (task, failure) -> {
+                        RegionWorkerPool current = pool;
+                        return current == null ? failure
+                                : current.cancelQueuedPermit(task.permit(), failure);
+                    });
+            java.util.ArrayList<MainSyncTask> later = new java.util.ArrayList<>(busy.size());
+            for (MainSyncTask task : busy) {
+                IslandRegistry.PIsland owner = mainClaimOwnerOf(task.entity());
+                if (owner != null && urgent.contains(owner)) now.add(owner, task);
+                else later.add(task);
+            }
+            // Requeue first: a failing urgent flush then leaves the rest in the
+            // queue, where the fail-stop sweep cancels their permits.
+            for (int i = later.size() - 1; i >= 0; i--) MAIN_SYNC.addFirst(later.get(i));
+            now.flush();
+            return true;
+        }
+        // Busy islands: back to the head, bucket order = queue order.
         for (int i = busy.size() - 1; i >= 0; i--) MAIN_SYNC.addFirst(busy.get(i));
         return ran;
     }
@@ -1914,9 +2002,11 @@ public final class RegionScheduler {
                     // A back-to-back chaining island never shows an idle
                     // instant to a poll; once its oldest task is stale, ask it
                     // to yield its next unit (withdrawn as soon as Main claims).
+                    // Re-asserted every pass: a nested Main claim that saved the
+                    // flag before this raise restores it afterwards.
                     if (publishedNanos != null
-                            && now - publishedNanos.applyAsLong(entry.getValue().peekFirst()) > STALE_NANOS
-                            && STALE_ANNOUNCED.putIfAbsent(owner, Boolean.TRUE) == null) {
+                            && now - publishedNanos.applyAsLong(entry.getValue().peekFirst()) > STALE_NANOS) {
+                        STALE_ANNOUNCED.put(owner, Boolean.TRUE);
                         owner.claimWanted = true;
                     }
                     continue;

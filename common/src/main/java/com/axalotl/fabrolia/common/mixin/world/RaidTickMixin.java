@@ -133,7 +133,8 @@ public abstract class RaidTickMixin implements RaidOwnerAccess {
             return;
         }
         if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())) {
-            throw new IllegalStateException("raid tick requires its quiescent island coordinator");
+            throw new IllegalStateException("raid tick requires its quiescent island coordinator ("
+                    + RegionScheduler.describeContext(level, fabrolia$view.center()) + ")");
         }
         IslandRegistry.PIsland owner =
                 rs.islandOwnerOfChunk(ChunkPos.pack(fabrolia$view.center()));

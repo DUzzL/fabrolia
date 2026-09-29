@@ -19,7 +19,7 @@
   topology rebuild can miss or repeat at most one chunk cycle. Full table:
   docs/ASYNC-ISLANDS.md §13.
 - Main takes one island claim per drain instead of one per entity for its
-  Main-owned entity ticks (item frames, wither, dragon, player fallbacks) and
+  Main-owned entity ticks (wither, dragon, player fallbacks) and
   Main tracker publications, and never parks for them in async mode: idle
   islands are served at once, busy ones stay queued for Main's next barrier
   pump (same order per island), and an island whose oldest queued entry is
@@ -44,6 +44,9 @@
   O(1) (identity-keyed ordered map instead of a list scan), and the
   portal-custody check on every entity push/collision no longer takes a
   global monitor when the entity is not in a portal transfer.
+- Item frames tick and publish their tracker on their island again instead
+  of on Main. A framed map's shared data is guarded per map, the saved-data
+  cache is concurrent and map ids are allocated under a lock.
 
 - Roll the region runtime back to the stable 0.2.38 behavior (the compiled
   reference build). The uncommitted "native admission" rewrite that routed
@@ -52,6 +55,23 @@
   The rewrite's sources remain on branch `wip-gpt-0.2.38-admission-layer`.
 
 ### Fixed
+
+- Watchdog crash (Main parked forever in `IslandCommands.mainClaim` from an
+  attack/interact packet): a batched Main drain ran a player's Main fallback
+  under that island's claim, the fallback's completion drained the player's
+  packets and a packet claimed the same island again. Completions of batched
+  Main entity bodies now run after the island claim is released.
+- A player whose tick fell back to Main on a busy island no longer waits for
+  the island to go idle: such islands are drained in the same pass. Deferring
+  them made the fallback repeat every island unit until the player's owed
+  entity FIFO overflowed ("A5 owed Main entity ordinal FIFO exceeded 4096
+  entries" crash) and froze the player's ticks to Main's cadence.
+- "raid tick requires its quiescent island coordinator" crash: a raid whose
+  center chunk was not loaded (a saved raid after restart, or a player coming
+  back into range) was dispatched to the island owning that cell in the
+  committed topology, but the ownership check only knew cells with a loaded
+  region and refused it. Region-less cells now resolve through the same
+  committed topology; a remaining refusal names the failing condition.
 
 - Mobs, items and carts crossing a Nether portal no longer wait for Main.
   The worker teleported them under both island claims but the arrival stayed
