@@ -1297,9 +1297,10 @@ public final class RegionScheduler {
             out.append(" region=none committedDomain=").append(domain != null);
         } else {
             domain = target.domain;
+            Thread regionWorker = target.currentWorker();
             out.append(" region=").append(runtime.ownsRegion(target) ? "owned" : "foreign")
-                    .append(" regionWorker=").append(target.currentWorker() == null ? "none"
-                            : target.currentWorker().getName());
+                    .append(" regionWorker=").append(regionWorker == null ? "none"
+                            : regionWorker.getName());
         }
         IslandRegistry.PIsland owner = domain != null ? domain.owner : null;
         out.append(" owner=").append(owner == null ? "none"
@@ -1719,6 +1720,7 @@ public final class RegionScheduler {
     private static void runOneMainSync(MainSyncTask queued) {
         Throwable failure = null;
         boolean permitStarted = false;
+        boolean deferred = false;
         try {
             if (!queued.permit().beginMainSync()) {
                 throw new IllegalStateException("MAIN_SYNC entry executed more than once");
@@ -1732,6 +1734,9 @@ public final class RegionScheduler {
                 runMainSyncEntityTask(queued);
             }
         } catch (Throwable thrown) {
+            // Recorded before publication: if publishing throws, the finally
+            // below still sees a failed body and never defers it as a success.
+            failure = thrown;
             failure = publishFatalAndSelectWinner(thrown);
         } finally {
             if (permitStarted) {
@@ -1742,11 +1747,13 @@ public final class RegionScheduler {
                     // runs after the bucket releases the claim, as it did with
                     // per-entity claims.
                     tails.add(queued);
-                    return;
+                    deferred = true;
+                } else {
+                    failure = finishMainSync(queued, failure);
                 }
-                failure = finishMainSync(queued, failure);
             }
         }
+        if (deferred) return;
         if (failure != null) {
             RegionScheduler.<RuntimeException>rethrow(
                     publishFatalAndSelectWinner(failure));
@@ -1815,20 +1822,36 @@ public final class RegionScheduler {
      * @return true if at least one entity was ticked.
      */
     public static boolean drainMainSyncTicks() {
-        return drainMainSyncTicks(true);
+        return drainMainSyncTicks(DrainMode.COMPLETE);
     }
 
     /**
      * Non-blocking variant for Main's barrier pump: islands still running a
      * unit keep their tasks queued (head, same order) for a later iteration,
      * so Main services what is idle now instead of parking behind a unit that
-     * will end anyway before the barrier completes.
+     * will end anyway before the barrier completes. Raises no claim interest:
+     * interest left standing while Main is busy elsewhere parks the island.
      */
     public static boolean drainReadyMainSyncTicks() {
-        return drainMainSyncTicks(false);
+        return drainMainSyncTicks(DrainMode.READY);
     }
 
-    private static boolean drainMainSyncTicks(boolean complete) {
+    /**
+     * Level-tick tail catch-up: like {@link #drainReadyMainSyncTicks}, but
+     * waits for busy islands whose work is overdue (oldest task older than
+     * {@link IslandBuckets#STALE_NANOS}, or a queued player tick - every later
+     * island tick of that player falls back to Main until it runs). The wait is
+     * the island's running unit: it yields to Main's announced interest. Legal
+     * only where Main holds no claim and no global-lane body runs, since the
+     * wait services routed command batches.
+     */
+    public static boolean drainOverdueMainSyncTicks() {
+        return drainMainSyncTicks(DrainMode.OVERDUE);
+    }
+
+    private enum DrainMode { COMPLETE, READY, OVERDUE }
+
+    private static boolean drainMainSyncTicks(DrainMode mode) {
         if (MAIN_SYNC.isEmpty()) return false;
         if (!MAIN_CLAIM_BATCHING) {
             MainSyncTask queued;
@@ -1837,25 +1860,35 @@ public final class RegionScheduler {
         }
         IslandBuckets<MainSyncTask> buckets = new IslandBuckets<>(
                 RegionScheduler::runOneMainSync,
-                (task, failure) -> {
-                    RegionWorkerPool current = pool;
-                    return current == null ? failure
-                            : current.cancelQueuedPermit(task.permit(), failure);
-                },
-                MainSyncTask::publishedNanos);
+                RegionScheduler::cancelQueuedMainSync,
+                MainSyncTask::publishedNanos,
+                task -> ParallelProcessor.containsServerPlayerTick(task.entity()));
         boolean ran = false;
         MainSyncTask queued;
         while ((queued = MAIN_SYNC.poll()) != null) {
             if (queued.allIslandsFenced()) {
+                boolean blocked = false;
                 try {
-                    buckets.flush();
+                    if (mode != DrainMode.READY) {
+                        buckets.flush();
+                    } else {
+                        // The ready drain never waits: it runs inside the
+                        // entity-barrier pump, where Main may not service routed
+                        // batches. A busy earlier island keeps the fenced task
+                        // behind it until a later drain.
+                        ran |= buckets.flushReady();
+                        blocked = !buckets.isEmpty();
+                    }
                 } catch (Throwable thrown) {
                     // The fenced task is already out of the queue: cancel its
                     // permit here, or the fail-stop sweep never sees it.
-                    RegionWorkerPool current = pool;
-                    Throwable failure = current == null ? thrown
-                            : current.cancelQueuedPermit(queued.permit(), thrown);
-                    RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(failure));
+                    RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(
+                            cancelQueuedMainSync(queued, thrown)));
+                }
+                if (blocked) {
+                    MAIN_SYNC.addFirst(queued);
+                    requeueMainSync(buckets.drainRemaining());
+                    return ran;
                 }
                 runOneMainSync(queued);
                 ran = true;
@@ -1863,49 +1896,27 @@ public final class RegionScheduler {
             }
             buckets.add(mainClaimOwnerOf(queued.entity()), queued);
         }
-        if (complete) {
-            buckets.flush();
-            return true;
-        }
-        ran |= buckets.flushReady();
-        java.util.ArrayList<MainSyncTask> busy = buckets.drainRemaining();
-        if (busy.isEmpty()) return ran;
-        // A player's Main fallback is an admission cut for that player: every
-        // later island tick of the player also falls back until this body
-        // completes. Such islands are drained now, waiting for the unit tail as
-        // the per-entity drain did; deferring them lets one player accumulate a
-        // fallback per island unit and freezes its ticks to Main's cadence.
-        java.util.Set<IslandRegistry.PIsland> urgent =
-                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-        for (MainSyncTask task : busy) {
-            if (task.entity() instanceof net.minecraft.server.level.ServerPlayer) {
-                IslandRegistry.PIsland owner = mainClaimOwnerOf(task.entity());
-                if (owner != null) urgent.add(owner);
+        switch (mode) {
+            case COMPLETE -> {
+                buckets.flush();
+                return true;
             }
-        }
-        if (!urgent.isEmpty()) {
-            IslandBuckets<MainSyncTask> now = new IslandBuckets<>(
-                    RegionScheduler::runOneMainSync,
-                    (task, failure) -> {
-                        RegionWorkerPool current = pool;
-                        return current == null ? failure
-                                : current.cancelQueuedPermit(task.permit(), failure);
-                    });
-            java.util.ArrayList<MainSyncTask> later = new java.util.ArrayList<>(busy.size());
-            for (MainSyncTask task : busy) {
-                IslandRegistry.PIsland owner = mainClaimOwnerOf(task.entity());
-                if (owner != null && urgent.contains(owner)) now.add(owner, task);
-                else later.add(task);
-            }
-            // Requeue first: a failing urgent flush then leaves the rest in the
-            // queue, where the fail-stop sweep cancels their permits.
-            for (int i = later.size() - 1; i >= 0; i--) MAIN_SYNC.addFirst(later.get(i));
-            now.flush();
-            return true;
+            case READY -> ran |= buckets.flushReady();
+            case OVERDUE -> ran |= buckets.flushOverdue();
         }
         // Busy islands: back to the head, bucket order = queue order.
-        for (int i = busy.size() - 1; i >= 0; i--) MAIN_SYNC.addFirst(busy.get(i));
+        requeueMainSync(buckets.drainRemaining());
         return ran;
+    }
+
+    private static Throwable cancelQueuedMainSync(MainSyncTask task, Throwable failure) {
+        RegionWorkerPool current = pool;
+        return current == null ? failure : current.cancelQueuedPermit(task.permit(), failure);
+    }
+
+    /** Puts detached tasks back at the queue head in their order. */
+    private static void requeueMainSync(java.util.ArrayList<MainSyncTask> tasks) {
+        for (int i = tasks.size() - 1; i >= 0; i--) MAIN_SYNC.addFirst(tasks.get(i));
     }
 
     /**
@@ -1914,40 +1925,44 @@ public final class RegionScheduler {
      * whose island is idle run immediately), then, for islands still busy, one
      * {@code claimWanted} announcement to all of them at once and a blocking
      * claim per island (Main waits for the longest running unit, not the sum).
-     * Bodies whose island is already Main-owned (all-claims window, nested
-     * drain under a held claim, no fence required) run inline. A failure
-     * cancels every not-yet-started body through {@code cancel} and rethrows.
+     * {@link #flushReady} is the non-blocking pass alone; {@link #flushOverdue}
+     * waits only for islands with overdue work. Interest is raised only while
+     * Main is waiting: an island with a raised flag runs no unit, so a flag
+     * left standing while Main is elsewhere (a long Main tick, a stall) would
+     * stop that island for as long. Bodies whose island is already Main-owned
+     * (all-claims window, nested drain under a held claim, no fence required)
+     * run inline. A failure cancels every not-yet-started body through
+     * {@code cancel} and rethrows.
      */
     static final class IslandBuckets<T> {
-        /** A non-blocking pass announces interest to an island whose oldest queued task is this old. */
+        /** {@link #flushOverdue} waits for an island whose oldest queued task is this old. */
         static final long STALE_NANOS = 50_000_000L;
-        /** Main-confined: islands whose {@code claimWanted} a non-blocking pass raised for a stale task. */
-        private static final java.util.IdentityHashMap<IslandRegistry.PIsland, Boolean> STALE_ANNOUNCED =
-                new java.util.IdentityHashMap<>();
         private final java.util.function.Consumer<T> body;
         private final java.util.function.BiFunction<T, Throwable, Throwable> cancel;
         private final java.util.function.ToLongFunction<T> publishedNanos;
+        private final java.util.function.Predicate<T> urgent;
         private final java.util.LinkedHashMap<IslandRegistry.PIsland, java.util.ArrayDeque<T>> buckets =
                 new java.util.LinkedHashMap<>();
         private final java.util.ArrayDeque<T> unclaimed = new java.util.ArrayDeque<>();
 
         IslandBuckets(java.util.function.Consumer<T> body,
                       java.util.function.BiFunction<T, Throwable, Throwable> cancel) {
-            this(body, cancel, null);
+            this(body, cancel, null, null);
         }
 
-        /** {@code publishedNanos} (nullable) enables stale-task interest in {@link #flushReady}. */
+        /**
+         * {@code publishedNanos} (nullable) makes a task overdue once older than
+         * {@link #STALE_NANOS}; {@code urgent} (nullable) makes a task overdue at
+         * once. Both only matter to {@link #flushOverdue}.
+         */
         IslandBuckets(java.util.function.Consumer<T> body,
                       java.util.function.BiFunction<T, Throwable, Throwable> cancel,
-                      java.util.function.ToLongFunction<T> publishedNanos) {
+                      java.util.function.ToLongFunction<T> publishedNanos,
+                      java.util.function.Predicate<T> urgent) {
             this.body = body;
             this.cancel = cancel;
             this.publishedNanos = publishedNanos;
-        }
-
-        /** Main raised this island's interest for a stale task and now owns it: withdraw. */
-        private static void withdrawStaleInterest(IslandRegistry.PIsland owner) {
-            if (STALE_ANNOUNCED.remove(owner) != null) owner.claimWanted = false;
+            this.urgent = urgent;
         }
 
         void add(IslandRegistry.PIsland owner, T item) {
@@ -1985,36 +2000,76 @@ public final class RegionScheduler {
             return out;
         }
 
+        /**
+         * Pass 1, then the blocking pass for islands whose work is overdue; the
+         * other busy islands stay registered. Legal only where Main may service
+         * routed batches (no Main claim held, no global-lane body running).
+         * @return ran anything
+         */
+        boolean flushOverdue() {
+            if (isEmpty()) return false;
+            Throwable failure = null;
+            boolean ran = false;
+            java.util.LinkedHashMap<IslandRegistry.PIsland, java.util.ArrayDeque<T>> onTime =
+                    new java.util.LinkedHashMap<>();
+            try {
+                ran = !unclaimed.isEmpty();
+                runQueue(unclaimed);
+                ran |= runIdle();
+                long now = System.nanoTime();
+                var it = buckets.entrySet().iterator();
+                while (it.hasNext()) {
+                    var entry = it.next();
+                    if (!overdue(entry.getValue(), now)) {
+                        onTime.put(entry.getKey(), entry.getValue());
+                        it.remove();
+                    }
+                }
+                if (!buckets.isEmpty()) {
+                    waitForRemaining(true);
+                    ran = true;
+                }
+            } catch (Throwable thrown) {
+                failure = publishFatalAndSelectWinner(thrown);
+            } finally {
+                // Registered again (after any unfinished overdue island) so an
+                // abort cancels them and drainRemaining returns them in order.
+                buckets.putAll(onTime);
+            }
+            if (failure != null) abort(failure);
+            return ran;
+        }
+
         private boolean runIdle() {
             boolean ran = false;
-            long now = publishedNanos == null ? 0L : System.nanoTime();
             var it = buckets.entrySet().iterator();
             while (it.hasNext()) {
                 var entry = it.next();
                 IslandRegistry.PIsland owner = entry.getKey();
                 if (inherits(owner)) {
-                    withdrawStaleInterest(owner);
                     runQueue(entry.getValue());
                 } else if (IslandCommands.tryMainClaim(owner)) {
-                    withdrawStaleInterest(owner);
                     runClaimed(owner, entry.getValue());
                 } else {
-                    // A back-to-back chaining island never shows an idle
-                    // instant to a poll; once its oldest task is stale, ask it
-                    // to yield its next unit (withdrawn as soon as Main claims).
-                    // Re-asserted every pass: a nested Main claim that saved the
-                    // flag before this raise restores it afterwards.
-                    if (publishedNanos != null
-                            && now - publishedNanos.applyAsLong(entry.getValue().peekFirst()) > STALE_NANOS) {
-                        STALE_ANNOUNCED.put(owner, Boolean.TRUE);
-                        owner.claimWanted = true;
-                    }
                     continue;
                 }
                 it.remove();
                 ran = true;
             }
             return ran;
+        }
+
+        private boolean overdue(java.util.ArrayDeque<T> queue, long now) {
+            if (publishedNanos != null
+                    && now - publishedNanos.applyAsLong(queue.peekFirst()) > STALE_NANOS) {
+                return true;
+            }
+            if (urgent != null) {
+                for (T item : queue) {
+                    if (urgent.test(item)) return true;
+                }
+            }
+            return false;
         }
 
         private void abort(Throwable failure) {
@@ -2034,84 +2089,90 @@ public final class RegionScheduler {
                 runQueue(unclaimed);
                 // Pass 1: whatever is idle right now, no waiting.
                 runIdle();
-                if (buckets.isEmpty()) return;
-                // Pass 2: announce to every remaining island at once so their
-                // units yield concurrently, then keep polling all of them: each
-                // is claimed the moment its unit ends, whichever ends first.
-                // Between rounds Main performs the same services as the blocking
-                // mainClaim spin (routed batches an island coordinator may be
-                // waiting on, chunk executors, forensics).
-                java.util.ArrayList<IslandRegistry.PIsland> remaining =
-                        new java.util.ArrayList<>(buckets.keySet());
-                java.util.IdentityHashMap<IslandRegistry.PIsland, Boolean> prior =
-                        new java.util.IdentityHashMap<>(remaining.size() * 2);
-                for (IslandRegistry.PIsland owner : remaining) {
-                    // Interest Main itself raised for a stale task is ours to withdraw.
-                    prior.put(owner, STALE_ANNOUNCED.remove(owner) == null && owner.claimWanted);
-                    owner.claimWanted = true;
-                }
-                try {
-                    long spinStart = System.nanoTime();
-                    long waitedSince = spinStart;
-                    IslandCommands.MAIN_CLAIMS_CONTENDED.add(remaining.size());
-                    while (!buckets.isEmpty()) {
-                        boolean progressed = false;
-                        var round = buckets.entrySet().iterator();
-                        while (round.hasNext()) {
-                            var entry = round.next();
-                            IslandRegistry.PIsland owner = entry.getKey();
-                            boolean inherited = inherits(owner);
-                            if (!inherited && !IslandCommands.tryMainClaim(owner)) continue;
-                            // Waiting ends here for this island: restore its
-                            // flag before the body so its next unit is not held
-                            // back by the islands Main is still waiting for.
-                            long now = System.nanoTime();
-                            IslandCommands.MAIN_CLAIM_WAIT_NANOS.add(now - waitedSince);
-                            waitedSince = now;
-                            owner.claimWanted = prior.remove(owner);
-                            if (inherited) runQueue(entry.getValue());
-                            else runClaimed(owner, entry.getValue());
-                            // Registered until it completed: an abort cancels the rest.
-                            round.remove();
-                            progressed = true;
-                            waitedSince = System.nanoTime();
-                        }
-                        if (buckets.isEmpty()) break;
-                        if (!progressed) {
-                            throwWorkerFailureIfAny();
-                            boolean routed = IslandCommands.hasRoutedPending();
-                            if (!routed) {
-                                for (IslandRegistry.PIsland owner : buckets.keySet()) {
-                                    if (owner.waitingOnRoutedCommand) { routed = true; break; }
-                                }
-                            }
-                            if (routed) {
-                                IslandCommands.drainRoutedBatch();
-                                continue;
-                            }
-                            if (!poolRunning()) {
-                                throw new IllegalStateException(
-                                        "island bucket drain found retained island claims after the worker pool stopped");
-                            }
-                            if (System.nanoTime() - spinStart > 5_000_000_000L) {
-                                spinStart = System.nanoTime();
-                                for (IslandRegistry.PIsland owner : buckets.keySet()) {
-                                    LOGGER.error("[async-islands] island bucket drain stuck 5s — retained-claim forensics: {}",
-                                            IslandCommands.claimForensics(owner));
-                                }
-                            }
-                            IslandCommands.drainMainChunkServices();
-                            java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
-                        }
-                    }
-                } finally {
-                    // Islands never claimed (abort) get their flag back here.
-                    for (var entry : prior.entrySet()) entry.getKey().claimWanted = entry.getValue();
-                }
+                if (!buckets.isEmpty()) waitForRemaining(false);
             } catch (Throwable thrown) {
                 failure = publishFatalAndSelectWinner(thrown);
             }
             if (failure != null) abort(failure);
+        }
+
+        /**
+         * Pass 2: announce to every registered island at once so their units
+         * yield concurrently, then keep polling all of them: each is claimed the
+         * moment its unit ends, whichever ends first. Between rounds Main
+         * performs the same services as the blocking mainClaim spin (routed
+         * batches an island coordinator may be waiting on, chunk executors,
+         * forensics) and, when {@code heal}, the barrier pump's region liveness
+         * sweep (a wedged island region is re-armed instead of holding Main).
+         */
+        private void waitForRemaining(boolean heal) {
+            java.util.ArrayList<IslandRegistry.PIsland> remaining =
+                    new java.util.ArrayList<>(buckets.keySet());
+            java.util.IdentityHashMap<IslandRegistry.PIsland, Boolean> prior =
+                    new java.util.IdentityHashMap<>(remaining.size() * 2);
+            for (IslandRegistry.PIsland owner : remaining) {
+                prior.put(owner, owner.claimWanted);
+                owner.claimWanted = true;
+            }
+            try {
+                long spinStart = System.nanoTime();
+                long waitedSince = spinStart;
+                IslandCommands.MAIN_CLAIMS_CONTENDED.add(remaining.size());
+                while (!buckets.isEmpty()) {
+                    boolean progressed = false;
+                    var round = buckets.entrySet().iterator();
+                    while (round.hasNext()) {
+                        var entry = round.next();
+                        IslandRegistry.PIsland owner = entry.getKey();
+                        boolean inherited = inherits(owner);
+                        if (!inherited && !IslandCommands.tryMainClaim(owner)) continue;
+                        // Waiting ends here for this island: restore its
+                        // flag before the body so its next unit is not held
+                        // back by the islands Main is still waiting for.
+                        long now = System.nanoTime();
+                        IslandCommands.MAIN_CLAIM_WAIT_NANOS.add(now - waitedSince);
+                        waitedSince = now;
+                        owner.claimWanted = prior.remove(owner);
+                        if (inherited) runQueue(entry.getValue());
+                        else runClaimed(owner, entry.getValue());
+                        // Registered until it completed: an abort cancels the rest.
+                        round.remove();
+                        progressed = true;
+                        waitedSince = System.nanoTime();
+                    }
+                    if (buckets.isEmpty()) break;
+                    if (!progressed) {
+                        throwWorkerFailureIfAny();
+                        boolean routed = IslandCommands.hasRoutedPending();
+                        if (!routed) {
+                            for (IslandRegistry.PIsland owner : buckets.keySet()) {
+                                if (owner.waitingOnRoutedCommand) { routed = true; break; }
+                            }
+                        }
+                        if (routed) {
+                            IslandCommands.drainRoutedBatch();
+                            continue;
+                        }
+                        if (!poolRunning()) {
+                            throw new IllegalStateException(
+                                    "island bucket drain found retained island claims after the worker pool stopped");
+                        }
+                        if (System.nanoTime() - spinStart > 5_000_000_000L) {
+                            spinStart = System.nanoTime();
+                            for (IslandRegistry.PIsland owner : buckets.keySet()) {
+                                LOGGER.error("[async-islands] island bucket drain stuck 5s — retained-claim forensics: {}",
+                                        IslandCommands.claimForensics(owner));
+                            }
+                        }
+                        if (heal) healColorGate();
+                        IslandCommands.drainMainChunkServices();
+                        java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
+                    }
+                }
+            } finally {
+                // Islands never claimed (abort) get their flag back here.
+                for (var entry : prior.entrySet()) entry.getKey().claimWanted = entry.getValue();
+            }
         }
 
         private static boolean inherits(IslandRegistry.PIsland owner) {
@@ -2128,21 +2189,29 @@ public final class RegionScheduler {
             java.util.ArrayList<MainSyncTask> tails = new java.util.ArrayList<>();
             DEFERRED_TAILS.set(tails);
             try {
-                runQueue(queue);
-            } catch (Throwable thrown) {
-                failure = publishFatalAndSelectWinner(thrown);
-            } finally {
-                if (outer == null) DEFERRED_TAILS.remove(); else DEFERRED_TAILS.set(outer);
                 try {
-                    IslandCommands.mainRelease(owner);
-                    // A peer W selected during release still forbids a normal return.
-                    commitSuccessIfHealthy(() -> {});
-                } catch (Throwable releaseFailure) {
-                    failure = publishFatalAndSelectWinner(mergeFailure(failure, releaseFailure));
+                    runQueue(queue);
+                } catch (Throwable thrown) {
+                    failure = thrown;
+                    failure = publishFatalAndSelectWinner(thrown);
+                } finally {
+                    if (outer == null) DEFERRED_TAILS.remove(); else DEFERRED_TAILS.set(outer);
+                    try {
+                        IslandCommands.mainRelease(owner);
+                        // A peer W selected during release still forbids a normal return.
+                        commitSuccessIfHealthy(() -> {});
+                    } catch (Throwable releaseFailure) {
+                        failure = mergeFailure(failure, releaseFailure);
+                        failure = publishFatalAndSelectWinner(failure);
+                    }
                 }
+            } finally {
+                // Completion edges run claim-free (they may claim this same
+                // island). Nested under another claimed bucket they wait for
+                // the outermost release; every started permit is finished.
+                if (outer != null) outer.addAll(tails);
+                else failure = runDeferredTails(tails, failure);
             }
-            // Completion edges run claim-free (they may claim this same island).
-            failure = runDeferredTails(tails, failure);
             if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
         }
 
@@ -2207,24 +2276,37 @@ public final class RegionScheduler {
                     }
                     return failure;
                 },
-                MainTrackingPublication::publishedNanos);
+                MainTrackingPublication::publishedNanos, null);
     }
 
     /**
      * Main thread only. Publishes for every island that is idle now; publications
      * of busy islands stay queued (head, same order) for the next call - the
-     * barrier pump, the next drain task or the post-tick boundary. A stale
-     * publication raises the island's claim interest so a chaining island yields.
+     * barrier pump, the next drain task, the post-tick boundary or the
+     * level-tick tail ({@link #drainOverdueMainTracking}).
      * @return true if anything was published.
      */
     public static boolean drainReadyMainTracking() {
+        return drainMainTracking(false);
+    }
+
+    /**
+     * Level-tick tail catch-up: also waits for busy islands whose oldest
+     * publication is older than {@link IslandBuckets#STALE_NANOS} (see
+     * {@link #drainOverdueMainSyncTicks} for the legality of the wait).
+     */
+    public static boolean drainOverdueMainTracking() {
+        return drainMainTracking(true);
+    }
+
+    private static boolean drainMainTracking(boolean overdue) {
         if (MAIN_TRACKING.isEmpty()) return false;
         IslandBuckets<MainTrackingPublication> buckets = trackingBuckets();
         MainTrackingPublication queued;
         while ((queued = MAIN_TRACKING.poll()) != null) {
             buckets.add(mainClaimOwnerOf(queued.trackedEntity()), queued);
         }
-        boolean ran = buckets.flushReady();
+        boolean ran = overdue ? buckets.flushOverdue() : buckets.flushReady();
         java.util.ArrayList<MainTrackingPublication> busy = buckets.drainRemaining();
         for (int i = busy.size() - 1; i >= 0; i--) MAIN_TRACKING.addFirst(busy.get(i));
         return ran;

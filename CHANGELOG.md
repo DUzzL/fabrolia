@@ -20,12 +20,12 @@
   docs/ASYNC-ISLANDS.md §13.
 - Main takes one island claim per drain instead of one per entity for its
   Main-owned entity ticks (wither, dragon, player fallbacks) and
-  Main tracker publications, and never parks for them in async mode: idle
-  islands are served at once, busy ones stay queued for Main's next barrier
-  pump (same order per island), and an island whose oldest queued entry is
-  older than 50 ms is asked to yield its next unit. Before, Main parked
-  behind every island's running unit per entity (33-60 % of Main on the
-  production profiles) and each wait made that island yield a unit.
+  Main tracker publications, and no longer parks for them inside the entity
+  barrier: idle islands are served at once, busy ones stay queued (same order
+  per island), and once per level tick Main waits at most one running unit
+  for islands whose work is older than 50 ms or holds a player tick. Before,
+  Main parked behind every island's running unit per entity (33-60 % of Main
+  on the production profiles) and each wait made that island yield a unit.
   Fixture (100 bots, 4000 item frames, 4000 zombies): Main 23.9 -> 18.4
   ms/tick, islands 20 TPS in both. `-Dfabrolia.mainClaimBatching=false`
   restores the per-entity drains; `flightrec status` shows claim counts,
@@ -61,11 +61,20 @@
   under that island's claim, the fallback's completion drained the player's
   packets and a packet claimed the same island again. Completions of batched
   Main entity bodies now run after the island claim is released.
-- A player whose tick fell back to Main on a busy island no longer waits for
-  the island to go idle: such islands are drained in the same pass. Deferring
-  them made the fallback repeat every island unit until the player's owed
-  entity FIFO overflowed ("A5 owed Main entity ordinal FIFO exceeded 4096
-  entries" crash) and froze the player's ticks to Main's cadence.
+- Islands no longer stop while Main is stalled (reported: an island at 0 TPS
+  for about a minute during heavy world generation, nothing in the log). A
+  non-blocking Main drain that found a busy island with old work raised the
+  island's claim interest and left it raised; an island with the flag up runs
+  no unit, so it waited until Main came back to claim it. Interest is now
+  raised only while Main is actually waiting for the island.
+- A player tick queued for Main no longer waits for its island to go idle:
+  it is caught at the level-tick tail, so the fallback cannot repeat every
+  island unit until the player's owed entity FIFO overflows ("A5 owed Main
+  entity ordinal FIFO exceeded 4096 entries"). Main never parks inside the
+  entity-barrier pump, where it may not run routed commands. An interaction
+  packet reached from a batched drain inherits the island claim Main already
+  holds, and a re-entrant `mainClaim` now fails loudly instead of parking
+  Main forever.
 - "raid tick requires its quiescent island coordinator" crash: a raid whose
   center chunk was not loaded (a saved raid after restart, or a player coming
   back into range) was dispatched to the island owning that cell in the

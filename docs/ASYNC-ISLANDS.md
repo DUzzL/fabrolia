@@ -11,12 +11,19 @@ completes.
 Main-owned entity bodies (MAIN_SYNC) and Main tracker publications are drained
 per island, not per entity (`RegionScheduler.IslandBuckets`): Main takes each
 island's claim once for all of that island's queued work, runs the bucket in
-queue order and releases. In async mode the entity-barrier pump and the
-publication drain are non-blocking: a busy island's work stays queued (same
-order) for the next pump, and only an entry older than 50 ms raises the
-island's `claimWanted` so a back-to-back chaining unit yields. Exact-turn,
-sprint and shutdown drains are complete (blocking). Islands never observe
-each other within a tick, so reordering between islands is not observable.
+queue order and releases. Completions of those bodies (an A5 fallback's
+listener ingress may claim the same island) run after the release. In async
+mode the entity-barrier pump and the publication drain are non-blocking: a
+busy island's work stays queued (same order) for a later drain. Once per level
+tick, at the tail after the routed-command drain (Main holds no claim, the
+global lane is done), Main waits for the busy islands whose work is overdue -
+oldest entry older than 50 ms, or a queued player tick - which is at most
+their running unit. `claimWanted` is raised only while Main is actually
+waiting: an island with the flag up runs no unit, so a flag left standing
+while Main is busy elsewhere would stop the island for the whole Main stall.
+Exact-turn, sprint and shutdown drains are complete (blocking). Islands never
+observe each other within a tick, so reordering between islands is not
+observable.
 
 Nether transfers retain worker-owned endpoint claims with serialized Main
 preparation (§5, A6). Execution remains configuration-gated; historical stage

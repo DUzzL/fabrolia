@@ -122,9 +122,12 @@ public abstract class RaidTickMixin implements RaidOwnerAccess {
     @WrapMethod(method = "tick")
     private void fabrolia$ownerSafeRaidTick(ServerLevel level, Operation<Void> original) {
         RegionizedServer rs = RegionScheduler.forLevel(level);
+        // One read of the published center: the ownership check, the refusal
+        // message and the Main claim all describe the same position.
+        var center = fabrolia$view.center();
         boolean coordinator = Thread.currentThread() instanceof RegionWorkerThread worker
                 && worker.currentRegion == null;
-        if (coordinator && RegionScheduler.ownsCurrentContext(level, fabrolia$view.center())) {
+        if (coordinator && RegionScheduler.ownsCurrentContext(level, center)) {
             RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$tickAndPublish(level, original));
             return;
         }
@@ -134,10 +137,9 @@ public abstract class RaidTickMixin implements RaidOwnerAccess {
         }
         if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())) {
             throw new IllegalStateException("raid tick requires its quiescent island coordinator ("
-                    + RegionScheduler.describeContext(level, fabrolia$view.center()) + ")");
+                    + RegionScheduler.describeContext(level, center) + ")");
         }
-        IslandRegistry.PIsland owner =
-                rs.islandOwnerOfChunk(ChunkPos.pack(fabrolia$view.center()));
+        IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(ChunkPos.pack(center));
         if (owner == null) {
             RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$tickAndPublish(level, original));
             return;

@@ -396,7 +396,9 @@ public abstract class PlayerInteractionOwnerMixin {
                 RegionScheduler.runSuccessBodyIfHealthy(body);
                 return;
             }
-            IslandCommands.mainClaim(owner);
+            // Main may already hold this island (a batched Main drain): the
+            // state is quiescent for us then, and a second claim never succeeds.
+            boolean claimed = IslandCommands.mainClaimScoped(owner);
             boolean bodyRan = false;
             Throwable failure = null;
             try {
@@ -411,11 +413,13 @@ public abstract class PlayerInteractionOwnerMixin {
             } catch (Throwable bodyFailure) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);
             }
-            try {
-                IslandCommands.mainRelease(owner);
-            } catch (Throwable cleanupFailure) {
-                failure = RegionScheduler.publishFatalAndSelectWinner(
-                        fabrolia$mergeFailure(failure, cleanupFailure));
+            if (claimed) {
+                try {
+                    IslandCommands.mainRelease(owner);
+                } catch (Throwable cleanupFailure) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(
+                            fabrolia$mergeFailure(failure, cleanupFailure));
+                }
             }
             if (failure != null) IslandCommands.publishAndPropagate(failure);
             if (bodyRan) return;

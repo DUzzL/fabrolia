@@ -56,29 +56,67 @@ class IslandBucketsTest {
     }
 
     @Test
-    void nonBlockingPassAnnouncesInterestOnlyForStaleTasksAndWithdrawsItOnClaim() throws Exception {
+    void readyPassNeverRaisesInterestSoAMainStallCannotParkTheIsland() throws Exception {
+        try (Fixture f = new Fixture()) {
+            List<String> ran = new ArrayList<>();
+            long stale = System.nanoTime() - RegionScheduler.IslandBuckets.STALE_NANOS * 2;
+            RegionScheduler.IslandBuckets<long[]> buckets = new RegionScheduler.IslandBuckets<>(
+                    item -> ran.add(Long.toString(item[1])), (item, failure) -> fail("no abort expected"),
+                    item -> item[0], item -> item[1] == 7);
+            f.busy.unitClaim.set(true);
+            buckets.add(f.busy, new long[]{stale, 1});
+            buckets.add(f.busy, new long[]{stale, 7});
+            assertFalse(buckets.flushReady(), "the ready pass never waits for a busy island");
+            assertFalse(f.busy.claimWanted,
+                    "no interest is left standing: the island runs no unit while it is raised");
+            assertTrue(ran.isEmpty());
+            assertEquals(2, buckets.drainRemaining().size(), "the busy island's work stays queued");
+        }
+    }
+
+    @Test
+    void overdueFlushWaitsOnlyForIslandsWithStaleOrUrgentWork() throws Exception {
         try (Fixture f = new Fixture()) {
             List<String> ran = new ArrayList<>();
             long fresh = System.nanoTime();
             long stale = fresh - RegionScheduler.IslandBuckets.STALE_NANOS * 2;
             RegionScheduler.IslandBuckets<long[]> buckets = new RegionScheduler.IslandBuckets<>(
                     item -> ran.add(Long.toString(item[1])), (item, failure) -> fail("no abort expected"),
-                    item -> item[0]);
+                    item -> item[0], item -> item[1] == 7);
+            // idle plays a second busy island here, holding only fresh work.
+            f.idle.unitClaim.set(true);
             f.busy.unitClaim.set(true);
-            buckets.add(f.busy, new long[]{fresh, 1});
-            assertFalse(buckets.flushReady());
-            assertFalse(f.busy.claimWanted, "a fresh task announces nothing");
-            buckets.drainRemaining();
+            buckets.add(f.idle, new long[]{fresh, 1});
             buckets.add(f.busy, new long[]{stale, 2});
-            assertFalse(buckets.flushReady());
-            assertTrue(f.busy.claimWanted, "a stale task asks the chaining island to yield");
-            List<long[]> carried = buckets.drainRemaining();
-            f.busy.unitClaim.set(false);
-            for (long[] item : carried) buckets.add(f.busy, item);
-            assertTrue(buckets.flushReady());
-            assertEquals(List.of("2"), ran);
-            assertFalse(f.busy.claimWanted, "interest withdrawn once Main claimed the island");
-            assertFalse(f.busy.unitClaim.get());
+            AtomicBoolean fresherAnnounced = new AtomicBoolean();
+            Thread unit = Thread.ofPlatform().daemon().start(() -> {
+                long deadline = System.nanoTime() + 2_000_000_000L;
+                while (!f.busy.claimWanted && System.nanoTime() < deadline) Thread.onSpinWait();
+                fresherAnnounced.set(f.idle.claimWanted);
+                f.busy.unitClaim.set(false);
+            });
+            assertTrue(buckets.flushOverdue());
+            unit.join(2_000L);
+            assertEquals(List.of("2"), ran, "the stale island is waited for, the fresh one is not");
+            assertFalse(fresherAnnounced.get(), "no interest for an island that is not overdue");
+            assertFalse(f.busy.claimWanted, "interest ends with the wait");
+            assertFalse(f.idle.claimWanted);
+            List<long[]> left = buckets.drainRemaining();
+            assertEquals(1, left.size());
+            assertEquals(1, left.get(0)[1]);
+
+            f.busy.unitClaim.set(true);
+            buckets.add(f.busy, new long[]{fresh, 7});
+            Thread urgentUnit = Thread.ofPlatform().daemon().start(() -> {
+                long deadline = System.nanoTime() + 2_000_000_000L;
+                while (!f.busy.claimWanted && System.nanoTime() < deadline) Thread.onSpinWait();
+                f.busy.unitClaim.set(false);
+            });
+            assertTrue(buckets.flushOverdue());
+            urgentUnit.join(2_000L);
+            assertEquals(List.of("2", "7"), ran, "a fresh urgent task is overdue at once");
+            assertFalse(f.busy.claimWanted);
+            assertTrue(buckets.isEmpty());
         }
     }
 

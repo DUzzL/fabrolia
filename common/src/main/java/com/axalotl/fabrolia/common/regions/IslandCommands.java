@@ -1058,6 +1058,12 @@ public final class IslandCommands {
 
     public static void mainClaim(IslandRegistry.PIsland owner) {
         offMainBelt("mainClaim");
+        if (mainHolds(owner)) {
+            // The claim is not reentrant: this CAS can never succeed, so the
+            // spin below would park Main until the watchdog kills the server.
+            throw new IllegalStateException("mainClaim re-entered island#" + owner.id
+                    + "/gen" + owner.gen + " already held by Main: " + claimForensics(owner));
+        }
         MAIN_CLAIMS.increment();
         boolean priorClaimWanted = owner.claimWanted;
         owner.claimWanted = true; // rate/sprint chaining + pacer yield to us

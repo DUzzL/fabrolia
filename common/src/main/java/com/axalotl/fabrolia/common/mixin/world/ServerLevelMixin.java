@@ -829,8 +829,16 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 }
             }
             // Tail entries queued just before the last region task completed.
-            if (exactPlayerOrder) RegionScheduler.drainMainSyncTicks();
-            else RegionScheduler.drainReadyMainSyncTicks();
+            // Like the routed drain above, this point may wait for islands: Main
+            // holds no claim and the global lane is done. Overdue island work
+            // (older than 50 ms, or a queued player tick) is caught here, bounded
+            // by the island's running unit; the rest waits for the next pump.
+            if (exactPlayerOrder) {
+                RegionScheduler.drainMainSyncTicks();
+            } else {
+                RegionScheduler.drainOverdueMainSyncTicks();
+                RegionScheduler.drainOverdueMainTracking();
+            }
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> ParallelProcessor.onEntityTickBatchEnd(batchStart));
             return;
