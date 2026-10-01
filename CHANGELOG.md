@@ -86,6 +86,26 @@
 
 ### Fixed
 
+- Neighbour updates (redstone, block updates): Fabrolia replaced vanilla's
+  `CollectingNeighborUpdater.addAndRun` body with its own per-thread copy and
+  never called the original, so other mods' injections into it (e.g. Rustmi
+  Nalim's cascade `drainEnter`/`drainExit`) silently never ran, and the
+  vanilla "Too many chained neighbor updates" message was lost. Each thread
+  now drives its own unmodified vanilla updater; the level's own instance
+  only carries the debug listener. Main no longer pays a ThreadLocal lookup.
+- With Lithium, entity pushing (`LivingEntity.pushEntities`) visited
+  candidates in identity-hash order instead of vanilla's insertion order.
+  Lithium's class-group lists are now insertion-ordered copy-on-write
+  snapshots (lock-free, faster to iterate than the previous concurrent set).
+  `Level.getPushableEntities` is no longer replaced wholesale: only its
+  inner `getEntities` call is routed, so other injections into it run.
+- With Rustmi Nalim's collision fast path, a boat, shulker or happy ghast
+  that teleported (or moved more than 4 blocks within a tick, or was wider
+  than 8 blocks via the scale attribute) could be missed by the
+  hard-collider check until the next tick, letting entities pass through it
+  or lose their support. The index is now maintained exactly from
+  `Entity.setBoundingBox` instead of a per-tick snapshot; Main no longer
+  rebuilds it every level tick.
 - NeoForge: the server did not start. NeoForge replaces the sleep clock
   advance in `ServerLevel.tick` (`ClockAdjustment.apply` instead of
   `moveToTimeMarker`), so that stage is now admitted by a platform mixin on

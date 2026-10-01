@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.lithium;
 
+import com.axalotl.fabrolia.common.parallelised.utils.OrderedGroupSnapshot;
 import net.caffeinemc.mods.lithium.common.entity.EntityClassGroup;
 import net.caffeinemc.mods.lithium.common.world.chunk.ClassGroupFilterableList;
 import net.minecraft.util.ClassInstanceMultiMap;
@@ -16,7 +17,6 @@ import java.util.AbstractCollection;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Mixin(value = ClassInstanceMultiMap.class, priority = 1500)
@@ -31,8 +31,17 @@ public abstract class FabroliaLithiumClassGroupFilterableListMixin<T> extends Ab
     @Shadow
     private List<T> allInstances;
 
+    /**
+     * Published per-group member lists, in {@code allInstances} order (vanilla
+     * and Lithium's ReferenceLinkedOpenHashSet iterate in insertion order).
+     * Every mutation runs under {@code synchronized (this)}: the loader mixins
+     * wrap {@code add}/{@code remove} in this monitor and the RETURN callbacks
+     * below run inside those wrapped bodies, so each snapshot replacement is
+     * atomic with the {@code allInstances} mutation it mirrors.
+     */
     @Unique
-    private final Map<EntityClassGroup, Set<T>> fabrolia$entitiesByGroup = new ConcurrentHashMap<>();
+    private final Map<EntityClassGroup, OrderedGroupSnapshot<T>> fabrolia$entitiesByGroup =
+            new ConcurrentHashMap<>();
 
     @Unique
     private boolean fabrolia$applicable() {
@@ -40,31 +49,29 @@ public abstract class FabroliaLithiumClassGroupFilterableListMixin<T> extends Ab
     }
 
     @Unique
-    private Set<T> fabrolia$createGroupSet(EntityClassGroup group) {
-        // Both loader mixins install ConcurrentList here, so iteration is an
-        // internally locked snapshot. The outer monitor pairs that snapshot's
-        // publication with add/remove RETURN callbacks: an overlapping mutation
-        // is either in the snapshot or patched into every published group set
-        // before the mutating ClassInstanceMultiMap operation returns.
-        Set<T> set = ConcurrentHashMap.newKeySet();
+    private OrderedGroupSnapshot<T> fabrolia$createGroupSnapshot(EntityClassGroup group) {
+        // Caller holds this monitor, so no mutation can interleave with the copy.
+        Object[] members = new Object[this.allInstances.size()];
+        int size = 0;
         for (T candidate : this.allInstances) {
             if (candidate != null && group.contains((Entity) candidate)) {
-                set.add(candidate);
+                if (size == members.length) members = java.util.Arrays.copyOf(members, size * 2 + 1);
+                members[size++] = candidate;
             }
         }
-        return set;
+        return OrderedGroupSnapshot.ofOwned(members, size);
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public Collection<T> lithium$getAllOfGroupType(EntityClassGroup group) {
         if (!fabrolia$applicable()) return (Collection<T>) java.util.Collections.emptyList();
-        Set<T> existing = this.fabrolia$entitiesByGroup.get(group);
+        OrderedGroupSnapshot<T> existing = this.fabrolia$entitiesByGroup.get(group);
         if (existing != null) return existing;
         synchronized (this) {
             existing = this.fabrolia$entitiesByGroup.get(group);
             if (existing == null) {
-                existing = fabrolia$createGroupSet(group);
+                existing = fabrolia$createGroupSnapshot(group);
                 this.fabrolia$entitiesByGroup.put(group, existing);
             }
             return existing;
@@ -74,15 +81,13 @@ public abstract class FabroliaLithiumClassGroupFilterableListMixin<T> extends Ab
     @Inject(method = "add", at = @At("RETURN"))
     private void fabrolia$onAdd(T entity, CallbackInfoReturnable<Boolean> cir) {
         if (!fabrolia$applicable()) return;
-        // Serialize only mutations with a first group snapshot. The established
-        // query path remains a lock-free CHM get + weakly-consistent set walk.
         synchronized (this) {
             if (this.fabrolia$entitiesByGroup.isEmpty()) return;
             Entity asEntity = (Entity) entity;
-            for (Map.Entry<EntityClassGroup, Set<T>> e
+            for (Map.Entry<EntityClassGroup, OrderedGroupSnapshot<T>> e
                     : this.fabrolia$entitiesByGroup.entrySet()) {
                 if (e.getKey().contains(asEntity)) {
-                    e.getValue().add(entity);
+                    e.setValue(e.getValue().with(entity));
                 }
             }
         }
@@ -90,11 +95,14 @@ public abstract class FabroliaLithiumClassGroupFilterableListMixin<T> extends Ab
 
     @Inject(method = "remove", at = @At("RETURN"))
     private void fabrolia$onRemove(Object entity, CallbackInfoReturnable<Boolean> cir) {
-        if (!fabrolia$applicable()) return;
+        if (!fabrolia$applicable() || !cir.getReturnValueZ()) return;
         synchronized (this) {
             if (this.fabrolia$entitiesByGroup.isEmpty()) return;
-            for (Set<T> set : this.fabrolia$entitiesByGroup.values()) {
-                set.remove(entity);
+            for (Map.Entry<EntityClassGroup, OrderedGroupSnapshot<T>> e
+                    : this.fabrolia$entitiesByGroup.entrySet()) {
+                OrderedGroupSnapshot<T> current = e.getValue();
+                OrderedGroupSnapshot<T> next = current.without(entity);
+                if (next != current) e.setValue(next);
             }
         }
     }

@@ -494,7 +494,7 @@ public final class ParallelSpawnHelper {
         fabrolia$discardPrecompute(PRECOMPUTE.remove(level));
         SpawnCensus.clearLevel(level);
         com.axalotl.fabrolia.common.parallelised.utils.SpawnIndex.clearLevel(level);
-        com.axalotl.fabrolia.common.parallelised.utils.HardColliderIndex.onLevelUnload(level);
+        ((FabroliaThreadNeighborUpdaters) level).fabrolia$releaseThreadNeighborUpdaters();
         com.axalotl.fabrolia.common.parallelised.utils.PlayerChunkIndex.onLevelUnload(level);
         fabrolia$freeLocalCapHandle(level);
         // Audit 2026-07-26: two more per-level registries retained the unloaded

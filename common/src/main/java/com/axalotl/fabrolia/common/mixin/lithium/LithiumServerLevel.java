@@ -19,7 +19,6 @@ import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntitySelector;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.phys.AABB;
@@ -47,19 +46,21 @@ public abstract class LithiumServerLevel extends Level implements WorldGenLevel,
 
     /**
      * Lithium's adaptive push cache uses a mutable ReferenceMaskedList. The
-     * Fabrolia class-group duck instead exposes a concurrent MAYBE_PUSHABLE set:
-     * retain Lithium's exact per-instance predicate while avoiding one full
-     * ClassInstanceMultiMap snapshot allocation for every living-entity push.
+     * Fabrolia class-group duck instead exposes an insertion-ordered
+     * copy-on-write MAYBE_PUSHABLE snapshot: retain the caller's exact
+     * per-instance predicate and vanilla's section/insertion order while
+     * avoiding one full ClassInstanceMultiMap snapshot per living-entity push.
      */
     @Override
-    public List<Entity> fabrolia$getPushableEntities(Entity pusher, AABB boundingBox) {
+    public List<Entity> fabrolia$getPushableEntitiesOrNull(
+            Entity pusher, AABB boundingBox, java.util.function.Predicate<? super Entity> selector) {
         var cache = WorldHelper.getEntityCacheOrNull(this);
         if (cache == null) {
-            return getEntities(pusher, boundingBox, EntitySelector.pushableBy(pusher));
+            return null;
         }
         return WorldHelper.getEntitiesOfEntityGroupWithoutDragonPieces(
                 cache, pusher, PushableEntityClassGroup.MAYBE_PUSHABLE,
-                boundingBox, EntitySelector.pushableBy(pusher));
+                boundingBox, selector);
     }
 
     @Inject(

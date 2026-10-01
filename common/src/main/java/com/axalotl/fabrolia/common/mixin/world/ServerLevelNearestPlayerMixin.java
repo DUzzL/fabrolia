@@ -12,6 +12,7 @@ import net.minecraft.world.entity.ai.targeting.TargetingConditions;
 import net.minecraft.world.entity.player.Player;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -24,18 +25,27 @@ import java.util.function.Predicate;
 /**
  * Player-proximity traversal backed by the per-tick {@link PlayerChunkIndex}
  * when it is usable, falling back to the vanilla live traversal otherwise.
+ * Also owns the level's incrementally maintained {@link HardColliderIndex}.
  */
 @Mixin(value = ServerLevel.class, priority = 900)
-public abstract class ServerLevelNearestPlayerMixin {
+public abstract class ServerLevelNearestPlayerMixin implements HardColliderIndex.Holder {
+
+    @Unique
+    private final HardColliderIndex.LevelIndex fabrolia$hardColliderIndex =
+            new HardColliderIndex.LevelIndex();
 
     @Shadow public abstract List<ServerPlayer> players();
+
+    @Override
+    public HardColliderIndex.LevelIndex fabrolia$hardColliderIndex() {
+        return this.fabrolia$hardColliderIndex;
+    }
 
     @Inject(method = "tick", at = @At("HEAD"))
     private void fabrolia$rebuildPlayerIndex(BooleanSupplier hasTimeLeft, CallbackInfo ci) {
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
             ServerLevel level = (ServerLevel) (Object) this;
             PlayerChunkIndex.rebuild(level);
-            HardColliderIndex.rebuildCells(level);
             RegionizedServer rs = RegionScheduler.forLevel(level);
             if (rs != null) {
                 rs.onLevelTickStart();
