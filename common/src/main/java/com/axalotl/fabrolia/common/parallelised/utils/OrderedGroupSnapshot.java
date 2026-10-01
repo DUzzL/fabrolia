@@ -15,9 +15,9 @@ import java.util.RandomAccess;
  * that order, so push/collision candidate order is observable vanilla state.
  * Writers replace the published snapshot copy-on-write under the owning map's
  * monitor; readers iterate a stable array without locking. {@link #with} and
- * {@link #without} mirror {@code ArrayList.add}/{@code ArrayList.remove(Object)}
- * exactly (duplicates kept, first identity match removed) — entities do not
- * override {@code equals}.
+ * {@link #without} mirror {@code List.add}/{@code List.remove(Object)} of
+ * {@code allInstances} exactly: duplicates kept, first {@code equals} match
+ * removed ({@code Entity.equals} compares entity ids).
  */
 public final class OrderedGroupSnapshot<T> extends AbstractList<T> implements RandomAccess {
 
@@ -49,7 +49,7 @@ public final class OrderedGroupSnapshot<T> extends AbstractList<T> implements Ra
     public OrderedGroupSnapshot<T> without(Object member) {
         Object[] current = this.members;
         for (int i = 0; i < current.length; i++) {
-            if (current[i] == member) {
+            if (java.util.Objects.equals(current[i], member)) {
                 if (current.length == 1) return empty();
                 Object[] next = new Object[current.length - 1];
                 System.arraycopy(current, 0, next, 0, i);

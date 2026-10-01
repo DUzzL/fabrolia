@@ -11,4 +11,7 @@ public interface EntityResidencyAccess {
 
     /** Revalidate callback storage identity and exact membership under the claimed section owner. */
     boolean fabrolia$isResident(Entity expected, long sectionKey);
+
+    /** {@code onRemove} has begun for this callback (its idempotency latch is set). */
+    boolean fabrolia$removalStarted();
 }

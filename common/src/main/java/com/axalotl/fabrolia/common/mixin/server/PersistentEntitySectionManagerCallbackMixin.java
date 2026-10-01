@@ -64,6 +64,11 @@ public abstract class PersistentEntitySectionManagerCallbackMixin implements
     }
 
     @Override
+    public boolean fabrolia$removalStarted() {
+        return this.fabrolia$onRemoveFired.get();
+    }
+
+    @Override
     public long fabrolia$residentSection(Entity expected) {
         if (expected != this.entity || this.fabrolia$onRemoveFired.get()
                 || this.fabrolia$pendingRemoval || this.currentSection == null) return NO_SECTION;

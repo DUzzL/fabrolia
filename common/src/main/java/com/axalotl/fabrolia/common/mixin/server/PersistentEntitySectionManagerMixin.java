@@ -231,6 +231,15 @@ public abstract class PersistentEntitySectionManagerMixin<T extends EntityAccess
         if (!(entityAccess instanceof net.minecraft.world.entity.Entity entity)) return;
         if (entity.level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
             com.axalotl.fabrolia.common.parallelised.utils.HardColliderIndex.onAdd(serverLevel, entity);
+            // A concurrent setRemoved may have run Callback.onRemove before the
+            // entry above was published. Both sides publish (latch CAS / volatile
+            // placement) before reading the other's, so one of them unfiles it.
+            if (!(((com.axalotl.fabrolia.common.mixin.entity.EntityLevelCallbackAccessor) entity)
+                    .fabrolia$getLevelCallback()
+                    instanceof com.axalotl.fabrolia.common.regions.EntityResidencyAccess callback)
+                    || callback.fabrolia$removalStarted()) {
+                com.axalotl.fabrolia.common.parallelised.utils.HardColliderIndex.onRemove(entity);
+            }
         }
         if (entity instanceof net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEnderpearl pearl) {
             fabrolia$indexLoadedPearl(pearl);

@@ -32,9 +32,12 @@ import java.util.Arrays;
  * <p>Concurrency: the cell map and every member array are immutable once
  * published (volatile copy-on-write); queries never lock. Writers (entity add,
  * remove, cell-leaving moves — all rare) serialize on the level index monitor,
- * a leaf lock. The moving thread re-files before storing the new box; a query
- * on ANOTHER thread racing that store may see either state, the same window
- * vanilla's section storage has between {@code setPosRaw} and the box store.
+ * a leaf lock. The moving thread re-files before storing the new box, so its
+ * own later queries are exact. A query on ANOTHER thread racing a re-file reads
+ * the map, the member arrays and the oversized list separately and may see
+ * the entity in neither its old nor its new cells for that instant — the same
+ * class of window vanilla's section storage has between {@code setPosRaw} and
+ * the box store.
  *
  * <p>Maintenance: PESM {@code addEntity} files (same seam as before), and
  * {@code Callback.onRemove} unfiles via the entity's own placement, so a level
@@ -80,12 +83,17 @@ public final class HardColliderIndex {
         }
 
         boolean covers(AABB box) {
-            return this.oversized
-                    || (Mth.floor(box.minX) >> CELL_SHIFT) >= this.c0x
-                    && (Mth.floor(box.maxX) >> CELL_SHIFT) <= this.c1x
-                    && (Mth.floor(box.minZ) >> CELL_SHIFT) >= this.c0z
-                    && (Mth.floor(box.maxZ) >> CELL_SHIFT) <= this.c1z;
+            int c0x = Mth.floor(box.minX) >> CELL_SHIFT;
+            int c1x = Mth.floor(box.maxX) >> CELL_SHIFT;
+            int c0z = Mth.floor(box.minZ) >> CELL_SHIFT;
+            int c1z = Mth.floor(box.maxZ) >> CELL_SHIFT;
+            if (this.oversized) return isOversized(c0x, c1x, c0z, c1z);
+            return c0x >= this.c0x && c1x <= this.c1x && c0z >= this.c0z && c1z <= this.c1z;
         }
+    }
+
+    private static boolean isOversized(int c0x, int c1x, int c0z, int c1z) {
+        return (long) c1x - c0x >= MAX_FILED_SPAN || (long) c1z - c0z >= MAX_FILED_SPAN;
     }
 
     /** Members of one cell; the array is replaced, never mutated. */
@@ -107,7 +115,7 @@ public final class HardColliderIndex {
             int c1x = Mth.floor(box.maxX) >> CELL_SHIFT;
             int c0z = Mth.floor(box.minZ) >> CELL_SHIFT;
             int c1z = Mth.floor(box.maxZ) >> CELL_SHIFT;
-            boolean oversized = (long) c1x - c0x >= MAX_FILED_SPAN || (long) c1z - c0z >= MAX_FILED_SPAN;
+            boolean oversized = isOversized(c0x, c1x, c0z, c1z);
             return new Placement(this, oversized, c0x, c1x, c0z, c1z);
         }
 
@@ -239,13 +247,17 @@ public final class HardColliderIndex {
     }
 
     static void add(LevelIndex index, Member member) {
-        // Re-added without an intervening remove: never file twice.
-        remove(member);
         Placement placement;
-        synchronized (index) {
-            placement = index.placementFor(member.fabrolia$hardColliderBox());
-            index.file(placement, member);
-            member.fabrolia$setHardColliderPlacement(placement);
+        for (;;) {
+            // Re-added without an intervening remove: never file twice.
+            remove(member);
+            synchronized (index) {
+                if (member.fabrolia$hardColliderPlacement() != null) continue; // a racing add won
+                placement = index.placementFor(member.fabrolia$hardColliderBox());
+                index.file(placement, member);
+                member.fabrolia$setHardColliderPlacement(placement);
+                break;
+            }
         }
         // A box stored after the read above but before publication found no
         // placement to re-file; check the stored box once more.

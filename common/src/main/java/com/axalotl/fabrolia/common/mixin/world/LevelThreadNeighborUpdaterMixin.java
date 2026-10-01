@@ -29,9 +29,17 @@ public abstract class LevelThreadNeighborUpdaterMixin implements FabroliaThreadN
     @Unique
     private final ThreadLocal<FabroliaThreadNeighborUpdaters.Slot> fabrolia$otherThreadSlots = new ThreadLocal<>();
 
+    /**
+     * Weak: a slot is strongly reachable only from its live thread's
+     * ThreadLocalMap, so a retired pool worker's slot (and updater) is
+     * collected with the thread instead of accumulating until level unload.
+     */
     @Unique
-    private final java.util.Queue<FabroliaThreadNeighborUpdaters.Slot> fabrolia$allOtherThreadSlots =
-            new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private final java.util.Queue<java.lang.ref.WeakReference<FabroliaThreadNeighborUpdaters.Slot>>
+            fabrolia$allOtherThreadSlots = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    @Unique
+    private volatile boolean fabrolia$threadUpdatersReleased;
 
     @Override
     public CollectingNeighborUpdater fabrolia$threadNeighborUpdater() {
@@ -47,12 +55,14 @@ public abstract class LevelThreadNeighborUpdaterMixin implements FabroliaThreadN
         if (slot == null) {
             slot = new FabroliaThreadNeighborUpdaters.Slot();
             this.fabrolia$otherThreadSlots.set(slot);
-            this.fabrolia$allOtherThreadSlots.add(slot);
+            this.fabrolia$allOtherThreadSlots.removeIf(ref -> ref.refersTo(null));
+            this.fabrolia$allOtherThreadSlots.add(new java.lang.ref.WeakReference<>(slot));
         }
         CollectingNeighborUpdater updater = slot.updater;
         if (updater == null) {
             updater = fabrolia$newThreadUpdater();
-            slot.updater = updater;
+            // After unload, never re-attach an updater (and the level) to a worker.
+            if (!this.fabrolia$threadUpdatersReleased) slot.updater = updater;
         }
         return updater;
     }
@@ -61,8 +71,11 @@ public abstract class LevelThreadNeighborUpdaterMixin implements FabroliaThreadN
     public void fabrolia$releaseThreadNeighborUpdaters() {
         // The slots themselves stay in the workers' ThreadLocalMaps until those
         // expunge them, but no longer reach this level.
-        for (FabroliaThreadNeighborUpdaters.Slot slot : this.fabrolia$allOtherThreadSlots) {
-            slot.updater = null;
+        this.fabrolia$threadUpdatersReleased = true;
+        for (java.lang.ref.WeakReference<FabroliaThreadNeighborUpdaters.Slot> ref
+                : this.fabrolia$allOtherThreadSlots) {
+            FabroliaThreadNeighborUpdaters.Slot slot = ref.get();
+            if (slot != null) slot.updater = null;
         }
     }
 

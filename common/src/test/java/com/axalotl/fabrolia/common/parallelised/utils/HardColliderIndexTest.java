@@ -127,4 +127,35 @@ final class HardColliderIndexTest {
         assertFalse(queryAt(index, 10.5, 64, 10.5), "a level change must not leave the old entry");
         assertTrue(queryAt(other, 10.5, 64, 10.5));
     }
+
+    @Test
+    void removeRacingCellLeavingMovesNeverLeavesAnEntry() throws Exception {
+        HardColliderIndex.LevelIndex index = new HardColliderIndex.LevelIndex();
+        AABB[] stops = {cube(10, 64, 10, 1), cube(900, 64, -900, 1), cube(-4000, 64, 30, 1)};
+        for (int round = 0; round < 2000; round++) {
+            Collider boat = new Collider(stops[0]);
+            HardColliderIndex.add(index, boat);
+            java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+            Thread mover = new Thread(() -> {
+                awaitQuietly(start);
+                for (int i = 1; i < 60; i++) boat.setBoundingBox(stops[i % stops.length]);
+            });
+            mover.start();
+            start.countDown();
+            HardColliderIndex.remove(boat);
+            mover.join();
+            for (AABB stop : stops) {
+                assertFalse(HardColliderIndex.anyNear(index, stop.minX, stop.minY, stop.minZ,
+                        stop.maxX, stop.maxY, stop.maxZ), "round " + round + " resurrected a removed collider");
+            }
+        }
+    }
+
+    private static void awaitQuietly(java.util.concurrent.CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
 }
