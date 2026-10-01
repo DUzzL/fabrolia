@@ -234,10 +234,15 @@ public abstract class PersistentEntitySectionManagerMixin<T extends EntityAccess
             // A concurrent setRemoved may have run Callback.onRemove before the
             // entry above was published. Both sides publish (latch CAS / volatile
             // placement) before reading the other's, so one of them unfiles it.
-            if (!(((com.axalotl.fabrolia.common.mixin.entity.EntityLevelCallbackAccessor) entity)
-                    .fabrolia$getLevelCallback()
-                    instanceof com.axalotl.fabrolia.common.regions.EntityResidencyAccess callback)
-                    || callback.fabrolia$removalStarted()) {
+            // Only a proven removal unfiles: a callback some other mod wrapped
+            // keeps the entry (a stale entry costs a vanilla walk; a missing one
+            // would skip a real collider).
+            net.minecraft.world.level.entity.EntityInLevelCallback callback =
+                    ((com.axalotl.fabrolia.common.mixin.entity.EntityLevelCallbackAccessor) entity)
+                            .fabrolia$getLevelCallback();
+            if (callback == net.minecraft.world.level.entity.EntityInLevelCallback.NULL
+                    || callback instanceof com.axalotl.fabrolia.common.regions.EntityResidencyAccess fabrolia
+                    && fabrolia.fabrolia$removalStarted()) {
                 com.axalotl.fabrolia.common.parallelised.utils.HardColliderIndex.onRemove(entity);
             }
         }

@@ -105,11 +105,11 @@ final class HardColliderIndexTest {
     @Test
     void marginMatchesTheFlatScanAtTheHalfBlockBoundary() {
         HardColliderIndex.LevelIndex index = new HardColliderIndex.LevelIndex();
-        Collider boat = new Collider(new AABB(126.9, 64, 0, 127.9, 65, 1));
+        Collider boat = new Collider(new AABB(126.75, 64, 0, 127.75, 65, 1));
         HardColliderIndex.add(index, boat);
-        // Collider filed only in cell 0; query lies in cell 1, 0.4 blocks short of it.
-        assertTrue(HardColliderIndex.anyNear(index, 128.3, 64, 0, 129, 65, 1));
-        assertFalse(HardColliderIndex.anyNear(index, 128.4, 64, 0, 129, 65, 1));
+        // Collider filed only in cell 0; queries lie in cell 1. Grown edge: 128.25.
+        assertTrue(HardColliderIndex.anyNear(index, 128.0, 64, 0, 129, 65, 1));
+        assertFalse(HardColliderIndex.anyNear(index, 128.25, 64, 0, 129, 65, 1));
     }
 
     @Test

@@ -93,6 +93,8 @@
   vanilla "Too many chained neighbor updates" message was lost. Each thread
   now drives its own unmodified vanilla updater; the level's own instance
   only carries the debug listener. Main no longer pays a ThreadLocal lookup.
+  Carpet's `updateSuppressionBlock` rule still has no effect, as before: it
+  resets the count on the level's own updater, which runs no updates.
 - With Lithium, entity pushing (`LivingEntity.pushEntities`) visited
   candidates in identity-hash order instead of vanilla's insertion order.
   Lithium's class-group lists are now insertion-ordered copy-on-write
