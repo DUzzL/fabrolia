@@ -3527,7 +3527,7 @@ public final class AsyncIslandPlayerTicks {
         }
     }
 
-    static boolean vanillaContainsPacketFailure(Exception failure) {
+    public static boolean vanillaContainsPacketFailure(Exception failure) {
         if (failure instanceof net.minecraft.ReportedException reported
                 && reported.getCause() instanceof OutOfMemoryError) {
             return false;
@@ -3537,30 +3537,69 @@ public final class AsyncIslandPlayerTicks {
     }
 
     /**
-     * Whether this throwable, or one of its causes, was thrown by Fabrolia code:
-     * its first non-JDK frame is a Fabrolia class or a mixin member merged into
-     * a target class (those carry the {@code fabrolia$} prefix).
+     * Runs the vanilla part of a packet handler ({@code original.call}) through
+     * Fabrolia's own routing/claim wrappers ({@code route}). Those wrappers are
+     * success-only and select W for anything their body throws, so an exception
+     * vanilla's PacketProcessor would contain is caught inside the body, the
+     * wrappers finish normally (claims released), and it is rethrown afterwards
+     * — out of the handler, exactly where vanilla's handler would have thrown it.
+     */
+    public static void runVanillaPacketBody(java.util.function.Consumer<Runnable> route,
+                                            Runnable vanillaBody) {
+        Exception[] contained = new Exception[1];
+        route.accept(() -> {
+            try {
+                vanillaBody.run();
+            } catch (RunningOnDifferentThreadException wrongThread) {
+                throw wrongThread;
+            } catch (Exception failure) {
+                if (!vanillaContainsPacketFailure(failure)) throw failure;
+                contained[0] = failure;
+            }
+        });
+        if (contained[0] != null) throwUnchecked(contained[0]);
+    }
+
+    /**
+     * Whether this throwable, a cause or a suppressed failure was raised by
+     * Fabrolia: a Fabrolia exception type, or a first frame outside the JDK and
+     * shared libraries that is Fabrolia code or a mixin member merged into a
+     * target class (those carry the {@code fabrolia$} prefix). Frames of the
+     * {@code fabrolia.api} collections count as library frames: they throw the
+     * same contract exceptions for their caller that the JDK collections they
+     * replace would.
      */
     static boolean raisedByFabrolia(Throwable failure) {
-        Throwable current = failure;
-        for (int depth = 0; current != null && depth < 32; depth++) {
+        java.util.Set<Throwable> seen =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        java.util.ArrayDeque<Throwable> pending = new java.util.ArrayDeque<>();
+        pending.add(failure);
+        while (!pending.isEmpty() && seen.size() < 64) {
+            Throwable current = pending.poll();
+            if (!seen.add(current)) continue;
+            if (current.getClass().getName().startsWith("com.axalotl.fabrolia.")) return true;
             for (StackTraceElement frame : current.getStackTrace()) {
                 String owner = frame.getClassName();
-                if (owner.startsWith("java.") || owner.startsWith("javax.")
-                        || owner.startsWith("jdk.") || owner.startsWith("sun.")
-                        || owner.startsWith("com.sun.")) {
-                    continue;
-                }
+                if (isLibraryFrame(owner)) continue;
                 if (owner.startsWith("com.axalotl.fabrolia.")
                         || frame.getMethodName().contains("fabrolia$")) {
                     return true;
                 }
                 break;
             }
-            Throwable cause = current.getCause();
-            current = cause == current ? null : cause;
+            if (current.getCause() != null) pending.add(current.getCause());
+            java.util.Collections.addAll(pending, current.getSuppressed());
         }
         return false;
+    }
+
+    private static boolean isLibraryFrame(String owner) {
+        return owner.startsWith("java.") || owner.startsWith("javax.")
+                || owner.startsWith("jdk.") || owner.startsWith("sun.")
+                || owner.startsWith("com.sun.") || owner.startsWith("it.unimi.dsi.fastutil.")
+                || owner.startsWith("com.google.") || owner.startsWith("com.mojang.serialization.")
+                || owner.startsWith("com.llamalad7.") || owner.startsWith("org.spongepowered.")
+                || owner.startsWith("com.axalotl.fabrolia.api.");
     }
 
     /**

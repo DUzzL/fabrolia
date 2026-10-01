@@ -109,4 +109,72 @@ final class PacketFailureContainmentTest {
                         })));
         assertTrue(recorder.reported.isEmpty());
     }
+
+    /** Stands for runSuccessBodyIfHealthy/claim wrappers: anything reaching them would select W. */
+    private static final class SuccessOnlyWrapper implements java.util.function.Consumer<Runnable> {
+        final List<Throwable> seen = new ArrayList<>();
+        boolean finished;
+
+        @Override
+        public void accept(Runnable body) {
+            try {
+                body.run();
+            } catch (RuntimeException failure) {
+                seen.add(failure);
+                throw failure;
+            }
+            finished = true;
+        }
+    }
+
+    @Test
+    void foreignHandlerFailureLeavesFabroliaWrappersBeforeBeingRethrown() {
+        IllegalArgumentException bug = foreignSuggestionBug();
+        SuccessOnlyWrapper wrapper = new SuccessOnlyWrapper();
+        assertSame(bug, assertThrows(IllegalArgumentException.class,
+                () -> AsyncIslandPlayerTicks.runVanillaPacketBody(wrapper, () -> {
+                    throw bug;
+                })));
+        assertTrue(wrapper.seen.isEmpty(), "the wrapper must never see a vanilla-contained failure");
+        assertTrue(wrapper.finished, "claims and fences unwind normally first");
+    }
+
+    /** Stackless invariant types (fence/claim sentinels) are recognised by their type. */
+    private static final class StacklessInvariant extends RuntimeException {
+        StacklessInvariant() {
+            super("owner busy", null, false, false);
+        }
+    }
+
+    @Test
+    void stacklessFabroliaInvariantStillReachesTheWrapper() {
+        StacklessInvariant invariant = new StacklessInvariant();
+        SuccessOnlyWrapper wrapper = new SuccessOnlyWrapper();
+        assertThrows(StacklessInvariant.class,
+                () -> AsyncIslandPlayerTicks.runVanillaPacketBody(wrapper, () -> {
+                    throw invariant;
+                }));
+        assertEquals(List.of(invariant), wrapper.seen);
+    }
+
+    @Test
+    void collectionContractFailureForAVanillaCallerIsContainedLikeArrayList() {
+        IndexOutOfBoundsException outOfBounds = new IndexOutOfBoundsException("Index 3 out of bounds for length 3");
+        outOfBounds.setStackTrace(new StackTraceElement[] {
+                frame("java.util.Objects", "checkIndex"),
+                frame("com.axalotl.fabrolia.api.utils.ConcurrentList", "get"),
+                frame("net.minecraft.world.inventory.AbstractContainerMenu", "clicked")});
+        Recorder recorder = deliver(outOfBounds);
+        assertEquals(List.of(outOfBounds), recorder.reported);
+    }
+
+    @Test
+    void fabroliaCleanupFailureAttachedAsSuppressedStaysFailStop() {
+        IllegalArgumentException bug = foreignSuggestionBug();
+        IllegalStateException cleanup = new IllegalStateException("A5 release failed");
+        cleanup.setStackTrace(new StackTraceElement[] {
+                frame("com.axalotl.fabrolia.common.regions.IslandCommands", "mainRelease")});
+        bug.addSuppressed(cleanup);
+        assertSame(bug, assertThrows(IllegalArgumentException.class, () -> deliver(bug)));
+    }
 }

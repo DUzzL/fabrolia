@@ -46,11 +46,13 @@ public abstract class PlayerInteractionOwnerMixin {
             // run it under the all-island fence like other cross-world
             // spectator operations. Carpet's action pack never reaches this
             // branch: its USE action is preventSpectator.
-            AsyncIslandPlayerTicks.runFencedMainMutation("spectator block use",
+            AsyncIslandPlayerTicks.runVanillaPacketBody(
+                    body -> AsyncIslandPlayerTicks.runFencedMainMutation("spectator block use", body),
                     () -> original.call(packet));
             return;
         }
-        withOwner(ChunkPos.pack(packet.hitResult().getBlockPos()), true,
+        AsyncIslandPlayerTicks.runVanillaPacketBody(
+                body -> withOwner(ChunkPos.pack(packet.hitResult().getBlockPos()), true, body),
                 () -> original.call(packet));
     }
 
@@ -61,8 +63,10 @@ public abstract class PlayerInteractionOwnerMixin {
             return;
         }
         ServerboundPlayerActionPacket.Action action = packet.getAction();
-        withOwner(fabrolia$playerActionOwnerChunk(packet, action),
-                fabrolia$isDestroyBlockAction(action), () -> original.call(packet));
+        boolean destroy = fabrolia$isDestroyBlockAction(action);
+        long owner = fabrolia$playerActionOwnerChunk(packet, action);
+        AsyncIslandPlayerTicks.runVanillaPacketBody(
+                body -> withOwner(owner, destroy, body), () -> original.call(packet));
     }
 
     /**
@@ -100,19 +104,20 @@ public abstract class PlayerInteractionOwnerMixin {
 
     @WrapMethod(method = "handleUseItem")
     private void fabrolia$ownUseItem(ServerboundUseItemPacket packet, Operation<Void> original) {
-        if (!fabrolia$routeFishingRetrieve(packet, original)) {
-            withPlayerOwner(() -> original.call(packet));
-        }
+        AsyncIslandPlayerTicks.runVanillaPacketBody(body -> {
+            if (!fabrolia$routeFishingRetrieve(packet, body)) withPlayerOwner(body);
+        }, () -> original.call(packet));
     }
 
     @WrapMethod(method = "handleInteract")
     private void fabrolia$ownInteract(ServerboundInteractPacket packet, Operation<Void> original) {
-        withEntityOwner(packet.entityId(), () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(
+                body -> withEntityOwner(packet.entityId(), body), () -> original.call(packet));
     }
 
     @WrapMethod(method = "handleContainerClick")
     private void fabrolia$ownContainerClick(ServerboundContainerClickPacket packet, Operation<Void> original) {
-        withPlayerOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
     }
 
     // ------------------------------------------------------------------
@@ -128,17 +133,18 @@ public abstract class PlayerInteractionOwnerMixin {
     /** 26.2 split attack out of ServerboundInteractPacket. */
     @WrapMethod(method = "handleAttack")
     private void fabrolia$ownAttack(net.minecraft.network.protocol.game.ServerboundAttackPacket packet, Operation<Void> original) {
-        withEntityOwner(packet.entityId(), () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(
+                body -> withEntityOwner(packet.entityId(), body), () -> original.call(packet));
     }
 
     @WrapMethod(method = "handleMoveVehicle")
     private void fabrolia$ownMoveVehicle(net.minecraft.network.protocol.game.ServerboundMoveVehiclePacket packet, Operation<Void> original) {
-        withVehicleOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withVehicleOwner, () -> original.call(packet));
     }
 
     @WrapMethod(method = "handlePaddleBoat")
     private void fabrolia$ownPaddleBoat(net.minecraft.network.protocol.game.ServerboundPaddleBoatPacket packet, Operation<Void> original) {
-        withVehicleOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withVehicleOwner, () -> original.call(packet));
     }
 
     private void withVehicleOwner(Runnable body) {
@@ -155,18 +161,20 @@ public abstract class PlayerInteractionOwnerMixin {
      *  at the player's position. */
     @WrapMethod(method = "handlePlayerCommand")
     private void fabrolia$ownPlayerCommand(net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket packet, Operation<Void> original) {
-        withPlayerOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
     }
 
     /** Reads block state + block-entity NBT (includeData) from the target. */
     @WrapMethod(method = "handlePickItemFromBlock")
     private void fabrolia$ownPickBlock(net.minecraft.network.protocol.game.ServerboundPickItemFromBlockPacket packet, Operation<Void> original) {
-        withOwner(ChunkPos.pack(packet.pos()), () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(
+                body -> withOwner(ChunkPos.pack(packet.pos()), body), () -> original.call(packet));
     }
 
     @WrapMethod(method = "handlePickItemFromEntity")
     private void fabrolia$ownPickEntity(net.minecraft.network.protocol.game.ServerboundPickItemFromEntityPacket packet, Operation<Void> original) {
-        withEntityOwner(packet.id(), () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(
+                body -> withEntityOwner(packet.id(), body), () -> original.call(packet));
     }
 
     /** Main-owned NBT query still needs a coherent target snapshot. */
@@ -174,13 +182,14 @@ public abstract class PlayerInteractionOwnerMixin {
     private void fabrolia$ownEntityTagQuery(
             net.minecraft.network.protocol.game.ServerboundEntityTagQueryPacket packet,
             Operation<Void> original) {
-        withEntityOwner(packet.getEntityId(), () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(
+                body -> withEntityOwner(packet.getEntityId(), body), () -> original.call(packet));
     }
 
     /** May drop an item entity into the island world. */
     @WrapMethod(method = "handleSetCreativeModeSlot")
     private void fabrolia$ownCreativeSlot(net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket packet, Operation<Void> original) {
-        withPlayerOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
     }
 
     /** Menu ops whose containers are backed by island block entities /
@@ -188,34 +197,34 @@ public abstract class PlayerInteractionOwnerMixin {
      *  (a hopper pushing into the open chest, the villager restocking). */
     @WrapMethod(method = "handleContainerButtonClick")
     private void fabrolia$ownButtonClick(net.minecraft.network.protocol.game.ServerboundContainerButtonClickPacket packet, Operation<Void> original) {
-        withPlayerOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
     }
 
     @WrapMethod(method = "handleSelectTrade")
     private void fabrolia$ownSelectTrade(net.minecraft.network.protocol.game.ServerboundSelectTradePacket packet, Operation<Void> original) {
-        withPlayerOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
     }
 
     @WrapMethod(method = "handlePlaceRecipe")
     private void fabrolia$ownPlaceRecipe(net.minecraft.network.protocol.game.ServerboundPlaceRecipePacket packet, Operation<Void> original) {
-        withPlayerOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
     }
 
     @WrapMethod(method = "handleRenameItem")
     private void fabrolia$ownRenameItem(net.minecraft.network.protocol.game.ServerboundRenameItemPacket packet, Operation<Void> original) {
-        withPlayerOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
     }
 
     /** Writes BeaconBlockEntity effects. */
     @WrapMethod(method = "handleSetBeaconPacket")
     private void fabrolia$ownSetBeacon(net.minecraft.network.protocol.game.ServerboundSetBeaconPacket packet, Operation<Void> original) {
-        withPlayerOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
     }
 
     /** Menu close can drop the carried stack into the island world. */
     @WrapMethod(method = "handleContainerClose")
     private void fabrolia$ownContainerClose(net.minecraft.network.protocol.game.ServerboundContainerClosePacket packet, Operation<Void> original) {
-        withPlayerOwner(() -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
     }
 
     /** The sign write runs in a DEFERRED main task (after async chat
@@ -226,7 +235,8 @@ public abstract class PlayerInteractionOwnerMixin {
     private void fabrolia$ownSignText(net.minecraft.network.protocol.game.ServerboundSignUpdatePacket packet,
                                       java.util.List<net.minecraft.server.network.FilteredText> lines,
                                       Operation<Void> original) {
-        withOwner(ChunkPos.pack(packet.pos()), () -> original.call(packet, lines));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(
+                body -> withOwner(ChunkPos.pack(packet.pos()), body), () -> original.call(packet, lines));
     }
 
     /**
@@ -236,7 +246,7 @@ public abstract class PlayerInteractionOwnerMixin {
      * in async mode uses the already-established Main FIFO + all-island fence.
      */
     private boolean fabrolia$routeFishingRetrieve(
-            ServerboundUseItemPacket packet, Operation<Void> original) {
+            ServerboundUseItemPacket packet, Runnable retrieve) {
         if (fabrolia$rawEntry()) return false;
 
         if (this.player.fishing == null
@@ -245,7 +255,6 @@ public abstract class PlayerInteractionOwnerMixin {
             return false;
         }
 
-        Runnable retrieve = () -> original.call(packet);
         if (AsyncIslandPlayerTicks.inPacketReplay(this.player)) {
             throw AsyncIslandPlayerTicks.packetInteractionFailure(
                     "fishing retrieval entered an island packet body");

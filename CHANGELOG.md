@@ -86,6 +86,15 @@
 
 ### Fixed
 
+- Server crash ("Exception in server tick loop") when another mod's packet
+  handler threw, e.g. GroupChat 1.2.0 when a player pressed Tab on its
+  `/gc player` command ("No such argument 'group' exists on this command").
+  Vanilla logs such an exception ("Failed to handle packet …, suppressing
+  error") and keeps running; with async islands Fabrolia stopped the server.
+  Packet bodies now follow vanilla's `PacketProcessor` contract on islands
+  and on Main, including inside Fabrolia's interaction claim wrappers.
+  Failures raised by Fabrolia itself, `Error`s and out-of-memory reports
+  still stop the server.
 - Neighbour updates (redstone, block updates): Fabrolia replaced vanilla's
   `CollectingNeighborUpdater.addAndRun` body with its own per-thread copy and
   never called the original, so other mods' injections into it (e.g. Rustmi
