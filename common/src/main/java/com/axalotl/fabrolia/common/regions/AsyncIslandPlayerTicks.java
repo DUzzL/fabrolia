@@ -3408,8 +3408,9 @@ public final class AsyncIslandPlayerTicks {
                 failure = publishFatalFailure(wrongThread);
                 restoreFrom = replay.packetBodyEntered ? index + 1 : index;
             } catch (Throwable packetFailure) {
-                // An entered vanilla/mod packet is terminal for this prefix. A peer W
-                // can instead refuse the lambda before its session entry marker.
+                // handle() already contained what vanilla's PacketProcessor
+                // contains; anything reaching here (Fabrolia invariant, Error, OOM
+                // report, a peer W refusing the lambda) is terminal for this prefix.
                 failure = publishFatalFailure(packetFailure);
                 restoreFrom = replay.packetBodyEntered ? index + 1 : index;
             }
@@ -3502,9 +3503,64 @@ public final class AsyncIslandPlayerTicks {
         }
     }
 
+    /**
+     * One entered packet body under vanilla's
+     * {@code PacketProcessor.ListenerAndPacket.handle} contract: an ordinary
+     * Exception from vanilla or another mod is reported through
+     * {@code listener.onPacketError} (vanilla logs "Failed to handle packet …,
+     * suppressing error" and records it as a suppressed exception) and the
+     * caller continues with the next envelope, exactly as vanilla continues
+     * with the next queued packet. Still fail-stop: a ReportedException caused
+     * by OutOfMemoryError (vanilla rethrows it too), any Error, the A5 routing
+     * sentinel, a failure raised by Fabrolia code, and any failure while a
+     * Fabrolia fatal is already selected.
+     */
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private static void handle(Packet packet, PacketListener listener) {
-        packet.handle(listener);
+    static void handle(Packet packet, PacketListener listener) {
+        try {
+            packet.handle(listener);
+        } catch (RunningOnDifferentThreadException wrongThread) {
+            throw wrongThread;
+        } catch (Exception failure) {
+            if (!vanillaContainsPacketFailure(failure)) throw failure;
+            listener.onPacketError(packet, failure);
+        }
+    }
+
+    static boolean vanillaContainsPacketFailure(Exception failure) {
+        if (failure instanceof net.minecraft.ReportedException reported
+                && reported.getCause() instanceof OutOfMemoryError) {
+            return false;
+        }
+        if (RegionScheduler.workerFailureOrNull() != null) return false;
+        return !raisedByFabrolia(failure);
+    }
+
+    /**
+     * Whether this throwable, or one of its causes, was thrown by Fabrolia code:
+     * its first non-JDK frame is a Fabrolia class or a mixin member merged into
+     * a target class (those carry the {@code fabrolia$} prefix).
+     */
+    static boolean raisedByFabrolia(Throwable failure) {
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < 32; depth++) {
+            for (StackTraceElement frame : current.getStackTrace()) {
+                String owner = frame.getClassName();
+                if (owner.startsWith("java.") || owner.startsWith("javax.")
+                        || owner.startsWith("jdk.") || owner.startsWith("sun.")
+                        || owner.startsWith("com.sun.")) {
+                    continue;
+                }
+                if (owner.startsWith("com.axalotl.fabrolia.")
+                        || frame.getMethodName().contains("fabrolia$")) {
+                    return true;
+                }
+                break;
+            }
+            Throwable cause = current.getCause();
+            current = cause == current ? null : cause;
+        }
+        return false;
     }
 
     /**
@@ -5431,7 +5487,7 @@ public final class AsyncIslandPlayerTicks {
                         && listener.hasClientLoaded()) {
                     // Match PacketProcessor's connection-local rejection, before
                     // admitting packet.handle (including block-break mutation).
-                    // Failures from entered handlers below still select global W.
+                    // Entered handlers report like PacketProcessor through handle().
                     RegionScheduler.throwWorkerFailureIfAny();
                     inbound.listener.onPacketError(inbound.packet,
                             new IllegalArgumentException("Expected packet sequence nr >= 0"));
@@ -5448,9 +5504,10 @@ public final class AsyncIslandPlayerTicks {
             } catch (RunningOnDifferentThreadException wrongThread) {
                 packetFailure = publishFatalFailure(wrongThread);
             } catch (Throwable thrown) {
-                // Once packet.handle is entered, even an ordinary Exception may follow
-                // partial vanilla/mod state. Select W immediately; onPacketError and the
-                // next FIFO envelope are forbidden successors.
+                // handle() already contained what vanilla's PacketProcessor
+                // contains. What reaches here is a Fabrolia invariant, an Error, an
+                // OOM report or a refused admission: select W; onPacketError and
+                // the next FIFO envelope are forbidden successors.
                 packetFailure = publishFatalFailure(thrown);
             }
             synchronized (state) {
