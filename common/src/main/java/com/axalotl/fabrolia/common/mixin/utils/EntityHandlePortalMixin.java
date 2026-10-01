@@ -36,12 +36,6 @@ public abstract class EntityHandlePortalMixin {
     public abstract boolean isOnPortalCooldown();
 
     @Shadow
-    public abstract boolean canTeleport(Level from, Level _to);
-
-    @Shadow
-    public abstract Entity teleport(TeleportTransition transition);
-
-    @Shadow
     public abstract Level level();
 
     @WrapMethod(method = "handlePortal")
@@ -93,12 +87,7 @@ public abstract class EntityHandlePortalMixin {
 
                 TeleportTransition transition = process.getPortalDestination(serverLevel, self);
                 if (transition != null) {
-                    ServerLevel newLevel = transition.newLevel();
-                    if (serverLevel.isAllowedToEnterPortal(newLevel)
-                            && (newLevel.dimension() == serverLevel.dimension()
-                            || this.canTeleport(serverLevel, newLevel))) {
-                        this.teleport(transition);
-                    }
+                    self.teleportToPortalDestination(serverLevel, transition);
                 }
                 profiler.pop();
             }

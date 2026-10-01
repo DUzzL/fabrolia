@@ -366,6 +366,7 @@ public final class FunctionAnalyzer {
             case "summon" -> tok.length == 2
                     ? new int[0][] : tok.length >= 5 ? new int[][]{{2}} : null;
             case "data" -> tok.length >= 6 && "block".equals(tok[2])
+                    && IslandCommands.dataReadsOnlyTarget(tok)
                     ? new int[][]{{3}} : null;
             case "particle" -> tok.length >= 5 ? new int[][]{{2}} : null;
             default -> null;

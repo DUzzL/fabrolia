@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Exact Minecraft 26.2 packet-entry census. This is deliberately two-way:
+ * Exact Minecraft 26.3 packet-entry census. This is deliberately two-way:
  * adding, removing, renaming or changing the descriptor of any handler fails
  * until its vanilla threading/ordering policy is reviewed and classified.
  */
@@ -45,7 +45,7 @@ class VanillaPacketHandlerCoverageTest {
             handleBundleItemSelectedPacket|net/minecraft/network/protocol/game/ServerboundSelectBundleItemPacket|E
             handleRecipeBookChangeSettingsPacket|net/minecraft/network/protocol/game/ServerboundRecipeBookChangeSettingsPacket|E
             handleSeenAdvancements|net/minecraft/network/protocol/game/ServerboundSeenAdvancementsPacket|E
-            handleCustomCommandSuggestions|net/minecraft/network/protocol/game/ServerboundCommandSuggestionPacket|E
+            handleCustomCommandSuggestions|net/minecraft/network/protocol/game/ServerboundCommandSuggestionPacket|D
             handleSetCommandBlock|net/minecraft/network/protocol/game/ServerboundSetCommandBlockPacket|E
             handleSetCommandMinecart|net/minecraft/network/protocol/game/ServerboundSetCommandMinecartPacket|E
             handlePickItemFromBlock|net/minecraft/network/protocol/game/ServerboundPickItemFromBlockPacket|E
@@ -74,7 +74,7 @@ class VanillaPacketHandlerCoverageTest {
             handleChatCommand|net/minecraft/network/protocol/game/ServerboundChatCommandPacket|D
             handleSignedChatCommand|net/minecraft/network/protocol/game/ServerboundChatCommandSignedPacket|D
             handleChatAck|net/minecraft/network/protocol/game/ServerboundChatAckPacket|D
-            handleAnimate|net/minecraft/network/protocol/game/ServerboundSwingPacket|E
+            handlePunch|net/minecraft/network/protocol/game/ServerboundPunchPacket|E
             handlePlayerCommand|net/minecraft/network/protocol/game/ServerboundPlayerCommandPacket|E
             handlePingRequest|net/minecraft/network/protocol/ping/ServerboundPingRequestPacket|D
             handleAttack|net/minecraft/network/protocol/game/ServerboundAttackPacket|E
@@ -109,11 +109,11 @@ class VanillaPacketHandlerCoverageTest {
             """;
 
     @Test
-    void exactDeclaredHandlersAndThreadPoliciesMatchMinecraft262() throws Exception {
+    void exactDeclaredHandlersAndThreadPoliciesMatchMinecraft263() throws Exception {
         byte[] bytes = classBytes(ServerGamePacketListenerImpl.class);
-        assertEquals("7ae6a2f6b2653b05cfbae93c0e9f40b2a3bfc045f66cbc3bc940bbde0d543c26",
+        assertEquals("b963daf1a78106f08397f54c3fdefeda512a65b8f058031394c99b0e84a4ca8c",
                 hex(MessageDigest.getInstance("SHA-256").digest(bytes)),
-                "resolved ServerGamePacketListenerImpl is not the audited 26.2 class");
+                "resolved ServerGamePacketListenerImpl is not the audited 26.3 class");
 
         ClassNode node = read(bytes);
         Map<String, Expected> expected = parse(DECLARED);
@@ -128,9 +128,11 @@ class VanillaPacketHandlerCoverageTest {
             assertEquals(entry.getValue().policy == Policy.ENSURED_MAIN, ensures,
                     entry.getKey() + " vanilla PacketUtils policy changed");
         }
-        assertEquals(52, expected.values().stream()
+        // 26.3: command suggestions are queued to ServerCommandSuggestionsProvider
+        // (drained from SGPLI.tick) instead of ensureRunningOnSameThread.
+        assertEquals(51, expected.values().stream()
                 .filter(e -> e.policy == Policy.ENSURED_MAIN).count());
-        assertEquals(9, expected.values().stream()
+        assertEquals(10, expected.values().stream()
                 .filter(e -> e.policy == Policy.INTENTIONAL_DIRECT).count());
     }
 
@@ -143,10 +145,13 @@ class VanillaPacketHandlerCoverageTest {
                 privateHandleMethods.put(method.name, method.desc);
             }
         }
+        // 26.3 extracted handleMovePlayer's body into handlePlayerPositionChange
+        // (also reached from handleAcceptTeleportPacket).
         assertEquals(Map.of(
                 "handleMessageDecodeFailure",
                 "(Lnet/minecraft/network/chat/SignedMessageChain$DecodeException;)V",
-                "handlePlayerKnownMovement", "(Lnet/minecraft/world/phys/Vec3;)V"),
+                "handlePlayerKnownMovement", "(Lnet/minecraft/world/phys/Vec3;)V",
+                "handlePlayerPositionChange", "(DDDFFZZ)V"),
                 privateHandleMethods);
 
         ClassNode common = read(classBytes(ServerCommonPacketListenerImpl.class));

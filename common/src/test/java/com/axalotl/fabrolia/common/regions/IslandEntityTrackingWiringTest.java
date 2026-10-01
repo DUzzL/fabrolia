@@ -214,7 +214,8 @@ class IslandEntityTrackingWiringTest {
                 "runtime state must come from a merged target-constructor hook");
         assertTrue(annotationValueContains(constructorInject, "method",
                 "<init>(Lnet/minecraft/server/level/ChunkMap;"
-                        + "Lnet/minecraft/world/entity/Entity;IIZ)V"));
+                        + "Lnet/minecraft/world/entity/Entity;I"
+                        + "Lnet/minecraft/world/entity/UpdateInterval;Z)V"));
         AnnotationNode constructorAt = firstNestedAnnotation(
                 constructorInject, "at");
         assertEquals("RETURN", annotationValue(constructorAt, "value"),

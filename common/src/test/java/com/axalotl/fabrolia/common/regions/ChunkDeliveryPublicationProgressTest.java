@@ -365,7 +365,7 @@ class ChunkDeliveryPublicationProgressTest {
     private static final class TestChunkSource extends ServerChunkCache {
         TestChunk chunk;
         private TestChunkSource() {
-            super(null, null, null, null, Runnable::run, null, 0, 0, false, null, null);
+            super(null, null, null, null, Runnable::run, null, 0, 0, false, null);
         }
         @Override public LevelChunk getChunkNow(int x, int z) {
             return chunk.position.x() == x && chunk.position.z() == z ? chunk : null;

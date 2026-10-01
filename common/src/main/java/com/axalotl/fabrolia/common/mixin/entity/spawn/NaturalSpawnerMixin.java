@@ -27,10 +27,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class NaturalSpawnerMixin {
 
     @Inject(method = "createState", at = @At("HEAD"), cancellable = true)
-    private static void fabrolia$parallelCreateState(int spawnableChunkCount, Iterable<Entity> entities, NaturalSpawner.ChunkGetter chunkGetter, LocalMobCapCalculator localMobCapCalculator, CallbackInfoReturnable<NaturalSpawner.SpawnState> cir) {
+    private static void fabrolia$parallelCreateState(int spawnableChunkCount, ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter, LocalMobCapCalculator localMobCapCalculator, CallbackInfoReturnable<NaturalSpawner.SpawnState> cir) {
         if (FabroliaConfig.disabled || !FabroliaConfig.enableFabroliaSpawn) return;
         if (ParallelProcessor.executor == null) return;
-        cir.setReturnValue(ParallelSpawnHelper.buildState(spawnableChunkCount, entities, chunkGetter, localMobCapCalculator));
+        cir.setReturnValue(ParallelSpawnHelper.buildState(spawnableChunkCount, level, chunkGetter, localMobCapCalculator));
     }
 
     /**

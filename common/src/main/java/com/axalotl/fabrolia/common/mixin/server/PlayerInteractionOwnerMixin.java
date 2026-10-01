@@ -36,7 +36,21 @@ public abstract class PlayerInteractionOwnerMixin {
 
     @WrapMethod(method = "handleUseItemOn")
     private void fabrolia$ownUseItemOn(ServerboundUseItemOnPacket packet, Operation<Void> original) {
-        withOwner(ChunkPos.pack(packet.getHitResult().getBlockPos()), true,
+        if (!fabrolia$rawEntry() && this.player.isSpectator()
+                && !AsyncIslandPlayerTicks.inPacketReplay(this.player)) {
+            // 26.3: a spectator's block use can walk through the clicked portal
+            // (Portal#getPortalDestination + teleportToPortalDestination): a
+            // destination-level portal search, block reads there and a
+            // cross-dimension teleport, outside the handlePortal routing and
+            // outside the clicked block's island. Spectator block use is rare;
+            // run it under the all-island fence like other cross-world
+            // spectator operations. Carpet's action pack never reaches this
+            // branch: its USE action is preventSpectator.
+            AsyncIslandPlayerTicks.runFencedMainMutation("spectator block use",
+                    () -> original.call(packet));
+            return;
+        }
+        withOwner(ChunkPos.pack(packet.hitResult().getBlockPos()), true,
                 () -> original.call(packet));
     }
 
@@ -52,7 +66,7 @@ public abstract class PlayerInteractionOwnerMixin {
     }
 
     /**
-     * Exact 26.2 split: only the three destroy-block actions consume the packet
+     * Exact 26.3 split: only the four destroy-block actions consume the packet
      * position. STAB, swap, drop and release-use mutate the source player (and a
      * dropped item at that player's location); their wire position is a dummy
      * value and must never be interpreted as an external island target.
@@ -71,12 +85,15 @@ public abstract class PlayerInteractionOwnerMixin {
             return this.player.chunkPosition().pack();
         }
         throw com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks
-                .packetInteractionFailure("unknown 26.2 player action owner: " + action);
+                .packetInteractionFailure("unknown 26.3 player action owner: " + action);
     }
 
+    /** The actions routed to ServerPlayerGameMode#handleBlockBreakAction, which
+     *  range-checks and reads the block at the packet position. */
     private static boolean fabrolia$isDestroyBlockAction(
             ServerboundPlayerActionPacket.Action action) {
         return action == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK
+                || action == ServerboundPlayerActionPacket.Action.CHANGE_DESTROY_DIRECTION
                 || action == ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK
                 || action == ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK;
     }
@@ -209,7 +226,7 @@ public abstract class PlayerInteractionOwnerMixin {
     private void fabrolia$ownSignText(net.minecraft.network.protocol.game.ServerboundSignUpdatePacket packet,
                                       java.util.List<net.minecraft.server.network.FilteredText> lines,
                                       Operation<Void> original) {
-        withOwner(ChunkPos.pack(packet.getPos()), () -> original.call(packet, lines));
+        withOwner(ChunkPos.pack(packet.pos()), () -> original.call(packet, lines));
     }
 
     /**
@@ -223,7 +240,7 @@ public abstract class PlayerInteractionOwnerMixin {
         if (fabrolia$rawEntry()) return false;
 
         if (this.player.fishing == null
-                || !(this.player.getItemInHand(packet.getHand()).getItem()
+                || !(this.player.getItemInHand(packet.hand()).getItem()
                 instanceof FishingRodItem)) {
             return false;
         }

@@ -206,7 +206,7 @@ public abstract class ThrownEnderpearlMixin {
 
             ServerPlayer newOwner = player.teleport(new TeleportTransition(
                     level, teleportPos, Vec3.ZERO, 0.0F, 0.0F,
-                    Relative.union(Relative.ROTATION, Relative.DELTA),
+                    Relative.ROTATION,
                     TeleportTransition.DO_NOTHING));
             if (newOwner != null) {
                 newOwner.resetFallDistance();

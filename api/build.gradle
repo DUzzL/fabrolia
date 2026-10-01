@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'io.github.axalotldev'
-version = "1.0.3"
+version = "1.0.4"
 
 base {
     archivesName = "${mod_id}-${project.name}"
@@ -39,6 +39,15 @@ dependencies {
     compileOnly("net.fabricmc:fabric-loader:$fabric_loader_version")
     compileOnly "net.fabricmc.fabric-api:fabric-api:${fabric_version}"
     compileOnly(annotationProcessor'org.projectlombok:lombok:1.18.44')
+}
+
+// NeoForge (FML) loads a nested jar without mods.toml as a plugin-layer
+// LIBRARY, which cannot see Minecraft classes (the API's collections use
+// MobCategory etc.). GAMELIBRARY puts it on the game layer. Fabric ignores it.
+jar {
+    manifest {
+        attributes('FMLModType': 'GAMELIBRARY')
+    }
 }
 
 publishing {

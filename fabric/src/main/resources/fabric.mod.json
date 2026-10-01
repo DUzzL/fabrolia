@@ -30,12 +30,13 @@
   "depends": {
     "fabricloader": "*",
     "fabric-api": "*",
-    "minecraft": ">=26.1",
+    "minecraft": "~26.3",
     "java": ">=25"
   },
   "breaks": {
     "moonrise": "*",
-    "openpartiesandclaims": "*"
+    "openpartiesandclaims": "*",
+    "c2me": "<0.4.2-alpha.0.88"
   },
   "custom": {
     "lithium:options": {

@@ -8,8 +8,8 @@ import com.axalotl.fabrolia.api.spawn.FabroliaLocalCapView;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.QuartPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.attribute.EnvironmentAttributes;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobCategory;
@@ -17,9 +17,7 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LocalMobCapCalculator;
 import net.minecraft.world.level.NaturalSpawner;
 import net.minecraft.world.level.PotentialCalculator;
-import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.MobSpawnSettings;
-import net.minecraft.world.level.chunk.ChunkAccess;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -337,15 +335,10 @@ public final class ParallelSpawnHelper {
         final int[] counts = new int[CATEGORY_COUNT];
         final List<ChargeEntry> charges;
         final List<MobCapEntry> mobCaps;
-        /** Per-batch biome cache keyed on packed (qx, qy, qz). Dense farms reuse the same QuartPos
-         *  for hundreds of entities; `chunk.getNoiseBiome` lookup is cheap but not free, and
-         *  this skips it for every cache hit. Per-batch (not shared) — no concurrency overhead. */
-        final Long2ObjectOpenHashMap<Biome> biomeCache;
 
         BatchResult(int sizeHint) {
             this.charges = new ArrayList<>(Math.max(16, sizeHint >> 2));
             this.mobCaps = new ArrayList<>(Math.max(16, sizeHint >> 1));
-            this.biomeCache = new Long2ObjectOpenHashMap<>(Math.max(8, sizeHint >> 4));
         }
 
         void absorb(BatchResult other) {
@@ -426,7 +419,7 @@ public final class ParallelSpawnHelper {
             Entity[][] snapshot = new Entity[1][];
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> snapshot[0] = live.toArray(Entity[]::new));
-            return collect(snapshot[0], snapshot[0].length, getter);
+            return collect(level, snapshot[0], snapshot[0].length, getter);
         });
         Pre pre = new Pre(version, task);
         Pre displaced = PRECOMPUTE.put(level, pre);
@@ -513,24 +506,23 @@ public final class ParallelSpawnHelper {
         com.axalotl.fabrolia.common.regions.NetherPortalTransfers.onLevelUnload(level);
     }
 
-    public static NaturalSpawner.SpawnState buildState(int spawnableChunkCount, Iterable<Entity> entities, NaturalSpawner.ChunkGetter chunkGetter, LocalMobCapCalculator localMobCap) {
+    public static NaturalSpawner.SpawnState buildState(int spawnableChunkCount, ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter, LocalMobCapCalculator localMobCap) {
         RegionScheduler.throwWorkerFailureIfAny();
-        // Prefer the incremental SpawnIndex when a level is currently surfaced — bypasses
-        // the c2me-notickvd-filtered section walk (4.14% of server thread in R5FaKJnHJg).
-        // chunkGetter.query inside computeRange still filters out non-ticking chunks at
-        // observation time, so extra entries cost only their live chunk lookup.
-        ServerLevel surfacedLevel = FabroliaSpawnContext.currentLevel;
+        // Prefer the incremental SpawnIndex — bypasses the level-wide entity walk
+        // (4.14% of server thread in R5FaKJnHJg). chunkGetter.query inside
+        // computeRange still filters out non-ticking chunks at observation time,
+        // so extra entries cost only their live chunk lookup.
 
         // INCREMENTAL CENSUS (task #21): O(occupied chunks × categories) reduce
         // over event-maintained counts — no entity traversal, no pool submission,
         // no main-thread wait. The scan below remains as the config-gated legacy path.
-        if (surfacedLevel != null && FabroliaConfig.fabroliaIncrementalSpawnCensus) {
+        if (FabroliaConfig.fabroliaIncrementalSpawnCensus) {
             // Discard the legacy precompute after a runtime config flip.
             Pre[] displaced = new Pre[1];
             RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> displaced[0] = PRECOMPUTE.remove(surfacedLevel));
+                    () -> displaced[0] = PRECOMPUTE.remove(level));
             fabrolia$discardPrecompute(displaced[0]);
-            return fabrolia$buildStateIncremental(surfacedLevel, spawnableChunkCount, chunkGetter, localMobCap);
+            return fabrolia$buildStateIncremental(level, spawnableChunkCount, chunkGetter, localMobCap);
         }
 
         // The LOCAL-cap arena (provider, e.g. Oxidizium) is built inside finishState — it
@@ -538,50 +530,47 @@ public final class ParallelSpawnHelper {
         // canSpawn/addMob traffic starts after finishState attaches the handle.
 
         // Tick-head precompute: bit-identical when the membership version held.
-        if (surfacedLevel != null) {
-            Pre[] preSlot = new Pre[1];
-            RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> preSlot[0] = PRECOMPUTE.remove(surfacedLevel));
-            Pre pre = preSlot[0];
-            // Every 256 ticks force the inline path: it PURGES stale index
-            // entries (removed / section-absent) that the precompute only
-            // filters — without this cadence the set's strong refs grow for
-            // the whole session under region mode (precompute serves ~every
-            // tick there).
-            if (pre != null) {
-                boolean candidate = RegionScheduler.callSuccessBooleanIfHealthy(
-                        () -> (surfacedLevel.getGameTime() & 255) != 0
-                                && pre.version() == SpawnIndex.version());
-                if (!candidate) {
-                    RegionScheduler.runSuccessBodyIfHealthy(pre.task()::cancelBeforeRun);
-                }
-                BatchResult merged = fabrolia$awaitPrecompute(pre.task());
-                boolean stillCandidate = candidate
-                        && RegionScheduler.callSuccessBooleanIfHealthy(
-                        () -> pre.version() == SpawnIndex.version());
-                if (stillCandidate) {
-                    NaturalSpawner.SpawnState result = finishState(
-                            surfacedLevel, spawnableChunkCount, merged, localMobCap);
-                    RegionScheduler.commitSuccessIfHealthy(
-                            SpawnCensusDiag.CENSUS_PRE::incrementAndGet);
-                    return result;
-                }
+        Pre[] preSlot = new Pre[1];
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> preSlot[0] = PRECOMPUTE.remove(level));
+        Pre pre = preSlot[0];
+        // Every 256 ticks force the inline path: it PURGES stale index
+        // entries (removed / section-absent) that the precompute only
+        // filters — without this cadence the set's strong refs grow for
+        // the whole session under region mode (precompute serves ~every
+        // tick there).
+        if (pre != null) {
+            boolean candidate = RegionScheduler.callSuccessBooleanIfHealthy(
+                    () -> (level.getGameTime() & 255) != 0
+                            && pre.version() == SpawnIndex.version());
+            if (!candidate) {
+                RegionScheduler.runSuccessBodyIfHealthy(pre.task()::cancelBeforeRun);
+            }
+            BatchResult merged = fabrolia$awaitPrecompute(pre.task());
+            boolean stillCandidate = candidate
+                    && RegionScheduler.callSuccessBooleanIfHealthy(
+                    () -> pre.version() == SpawnIndex.version());
+            if (stillCandidate) {
+                NaturalSpawner.SpawnState result = finishState(
+                        level, spawnableChunkCount, merged, localMobCap);
+                RegionScheduler.commitSuccessIfHealthy(
+                        SpawnCensusDiag.CENSUS_PRE::incrementAndGet);
+                return result;
             }
         }
 
         // Ground-truth resync at the forced-inline tick (task #32): re-add any
         // accessible live entity the index lost (missed attach seams, race
         // evictions) BEFORE counting, so the census below sees the healed set.
-        boolean forceInline = surfacedLevel != null
-                && RegionScheduler.callSuccessBooleanIfHealthy(
-                () -> (surfacedLevel.getGameTime() & 255) == 0);
+        boolean forceInline = RegionScheduler.callSuccessBooleanIfHealthy(
+                () -> (level.getGameTime() & 255) == 0);
         if (forceInline) {
             int[] healedSlot = new int[1];
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
                 var storage = ((TickingChunksAccess)
-                        ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor) surfacedLevel)
+                        ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor) level)
                                 .fabrolia$entityManager()).fabrolia$sectionStorage();
-                healedSlot[0] = SpawnIndex.reconcile(surfacedLevel, storage);
+                healedSlot[0] = SpawnIndex.reconcile(level, storage);
             });
             int healed = healedSlot[0];
             if (healed > 0) {
@@ -593,10 +582,8 @@ public final class ParallelSpawnHelper {
         @SuppressWarnings("unchecked")
         Collection<Entity>[] indexSlot = new Collection[1];
         RegionScheduler.runSuccessBodyIfHealthy(() ->
-                indexSlot[0] = surfacedLevel != null
-                        ? com.axalotl.fabrolia.common.parallelised.utils.SpawnIndex
-                        .getEntities(surfacedLevel)
-                        : null);
+                indexSlot[0] = com.axalotl.fabrolia.common.parallelised.utils.SpawnIndex
+                        .getEntities(level));
         Collection<Entity> indexEntities = indexSlot[0];
 
         int n = 0;
@@ -605,16 +592,19 @@ public final class ParallelSpawnHelper {
                     && RegionScheduler.callSuccessBooleanIfHealthy(
                     () -> !indexEntities.isEmpty());
             if (useIndex) {
-                n = fillBufferFromIndex(surfacedLevel, indexEntities);
+                n = fillBufferFromIndex(level, indexEntities);
                 RegionScheduler.commitSuccessIfHealthy(
                         SpawnCensusDiag.CENSUS_INLINE::incrementAndGet);
             } else {
-                n = fillBuffer(entities);
+                // Vanilla createState's own source. Third-party wraps of that
+                // call (C2ME notickvd, Lithium) sit inside the replaced body;
+                // chunkGetter.query below applies the ticking-chunk filter.
+                n = fillBuffer(level.getAllEntities());
             }
-            BatchResult merged = collect(entityBuf, n, chunkGetter);
+            BatchResult merged = collect(level, entityBuf, n, chunkGetter);
             // (a parallel playersNearChunk pre-warm was tried and reverted 2026-06-12 —
             // dispatch overhead exceeded the addMob saving; the arena seed made it moot)
-            return finishState(surfacedLevel, spawnableChunkCount, merged, localMobCap);
+            return finishState(level, spawnableChunkCount, merged, localMobCap);
         } finally {
             // encloses the FILL too — a fill-time throw must not strand up to
             // ~13k strong Entity refs in the static buffer (crash-day leak).
@@ -718,11 +708,9 @@ public final class ParallelSpawnHelper {
                 if (fabrolia$deadCorpse(level, e)) return;
                 BlockPos pos = e.blockPosition();
                 chunkGetter.query(ChunkPos.pack(pos), chunk -> {
-                    MobSpawnSettings.MobSpawnCost cost = chunk
-                            .getNoiseBiome(QuartPos.fromBlock(pos.getX()),
-                                    QuartPos.fromBlock(pos.getY()),
-                                    QuartPos.fromBlock(pos.getZ()))
-                            .value().getMobSettings().getMobSpawnCost(e.getType());
+                    MobSpawnSettings.MobSpawnCost cost = level.environmentAttributes()
+                            .getValue(EnvironmentAttributes.NATURAL_MOB_SPAWNS, pos)
+                            .getMobSpawnCost(e.getType());
                     if (cost != null) {
                         chargeSlot[0] = new ChargeEntry(pos, cost.charge());
                     }
@@ -1019,7 +1007,7 @@ public final class ParallelSpawnHelper {
         return size[0];
     }
 
-    private static BatchResult collect(Entity[] entities, int n,
+    private static BatchResult collect(ServerLevel level, Entity[] entities, int n,
                                        NaturalSpawner.ChunkGetter chunkGetter) {
         if (n == 0) return new BatchResult(0);
         if (n > SPAWN_GRAIN && ParallelProcessor.executor instanceof ForkJoinPool fjp) {
@@ -1033,7 +1021,7 @@ public final class ParallelSpawnHelper {
             for (int from = 0; from < n; from += batchSize, b++) {
                 int to = Math.min(from + batchSize, n);
                 parts[b] = new BatchResult(to - from);
-                tasks[b] = new CollectRangeTask(gate, entities, chunkGetter, from, to, parts[b]);
+                tasks[b] = new CollectRangeTask(gate, level, entities, chunkGetter, from, to, parts[b]);
             }
             int submitted = 0;
             try {
@@ -1055,7 +1043,7 @@ public final class ParallelSpawnHelper {
             return merged[0];
         }
         BatchResult result = new BatchResult(n);
-        computeRange(entities, chunkGetter, 0, n, result);
+        computeRange(level, entities, chunkGetter, 0, n, result);
         return result;
     }
 
@@ -1107,12 +1095,12 @@ public final class ParallelSpawnHelper {
         if (failure != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
     }
 
-    private static void computeRange(Entity[] entities, NaturalSpawner.ChunkGetter chunkGetter,
+    private static void computeRange(ServerLevel level, Entity[] entities, NaturalSpawner.ChunkGetter chunkGetter,
                                      int from, int to, BatchResult out) {
-        computeRange(entities, chunkGetter, from, to, out, null);
+        computeRange(level, entities, chunkGetter, from, to, out, null);
     }
 
-    private static void computeRange(Entity[] entities, NaturalSpawner.ChunkGetter chunkGetter,
+    private static void computeRange(ServerLevel level, Entity[] entities, NaturalSpawner.ChunkGetter chunkGetter,
                                      int from, int to, BatchResult out, SpawnFailureGate gate) {
         for (int i = from; i < to; i++) {
             if (gate != null) gate.admitNext();
@@ -1122,11 +1110,12 @@ public final class ParallelSpawnHelper {
             // permit terminal prevents the next entity from entering after a
             // concurrent winner.
             RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> computeOne(entry, chunkGetter, out));
+                    () -> computeOne(level, entry, chunkGetter, out));
         }
     }
 
-    private static void computeOne(Entity e,
+    /** Vanilla 26.3 createState's per-entity step. */
+    private static void computeOne(ServerLevel level, Entity e,
                                    NaturalSpawner.ChunkGetter chunkGetter,
                                    BatchResult out) {
         if (e == null) return;
@@ -1137,28 +1126,13 @@ public final class ParallelSpawnHelper {
         if (ord == MISC_ORDINAL) return;
         BlockPos pos = e.blockPosition();
         chunkGetter.query(ChunkPos.pack(pos), chunk -> {
-            Biome biome = cachedRoughBiome(pos, chunk, out);
-            MobSpawnSettings.MobSpawnCost cost =
-                    biome.getMobSettings().getMobSpawnCost(e.getType());
+            MobSpawnSettings.MobSpawnCost cost = level.environmentAttributes()
+                    .getValue(EnvironmentAttributes.NATURAL_MOB_SPAWNS, pos)
+                    .getMobSpawnCost(e.getType());
             if (cost != null) out.charges.add(new ChargeEntry(pos, cost.charge()));
             if (e instanceof Mob) out.mobCaps.add(new MobCapEntry(chunk.getPos(), cat));
             out.counts[ord]++;
         });
-    }
-
-    private static Biome cachedRoughBiome(BlockPos pos, ChunkAccess chunk, BatchResult out) {
-        int qx = QuartPos.fromBlock(pos.getX());
-        int qy = QuartPos.fromBlock(pos.getY());
-        int qz = QuartPos.fromBlock(pos.getZ());
-        // 24/24/12 packing — covers vanilla world bounds (±16M xz, ±2048 y) without collisions.
-        long key = ((long)(qx & 0xFFFFFF))
-                 | ((long)(qz & 0xFFFFFF) << 24)
-                 | ((long)(qy & 0xFFF) << 48);
-        Biome cached = out.biomeCache.get(key);
-        if (cached != null) return cached;
-        Biome biome = chunk.getNoiseBiome(qx, qy, qz).value();
-        out.biomeCache.put(key, biome);
-        return biome;
     }
 
     private static final class CollectRangeTask extends RecursiveAction {
@@ -1168,6 +1142,7 @@ public final class ParallelSpawnHelper {
         private static final int CANCELLED = 3;
 
         private final SpawnFailureGate gate;
+        private final ServerLevel level;
         private final Entity[] entities;
         private final NaturalSpawner.ChunkGetter chunkGetter;
         private final int from;
@@ -1175,10 +1150,11 @@ public final class ParallelSpawnHelper {
         private final BatchResult out;
         private final AtomicInteger state = new AtomicInteger(QUEUED);
 
-        private CollectRangeTask(SpawnFailureGate gate, Entity[] entities,
+        private CollectRangeTask(SpawnFailureGate gate, ServerLevel level, Entity[] entities,
                                  NaturalSpawner.ChunkGetter chunkGetter,
                                  int from, int to, BatchResult out) {
             this.gate = gate;
+            this.level = level;
             this.entities = entities;
             this.chunkGetter = chunkGetter;
             this.from = from;
@@ -1193,7 +1169,7 @@ public final class ParallelSpawnHelper {
             try {
                 gate.admitNext();
                 RegionScheduler.runSuccessBodyIfHealthy(
-                        () -> computeRange(entities, chunkGetter, from, to, out, gate));
+                        () -> computeRange(level, entities, chunkGetter, from, to, out, gate));
                 gate.admitNext();
             } catch (Throwable thrown) {
                 failure = gate.publishFailure(thrown);

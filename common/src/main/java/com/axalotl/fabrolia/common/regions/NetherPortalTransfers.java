@@ -99,9 +99,7 @@ public final class NetherPortalTransfers {
                 && RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())) {
             root.setPortalCooldown();
             TeleportTransition transition = portal.getPortalDestination(level, root, entry);
-            if (transition != null && level.isAllowedToEnterPortal(transition.newLevel())
-                    && (level.dimension() == transition.newLevel().dimension()
-                    || root.canTeleport(level, transition.newLevel()))) root.teleport(transition);
+            if (transition != null) root.teleportToPortalDestination(level, transition);
             return true;
         }
         EpochDomain domain = runtime == null ? null : sourceDomain(runtime, root);
@@ -717,6 +715,9 @@ public final class NetherPortalTransfers {
 
         void execute(Scope scope) {
             TeleportTransition transition = preparation.transition();
+            // Exactly 26.3 Entity#teleportToPortalDestination, split in two: the
+            // denial is decided before body admission (custody state), and the
+            // body needs teleport's result entity.
             if (transition == null || !sourceLevel.isAllowedToEnterPortal(transition.newLevel())
                     || sourceLevel.dimension() != transition.newLevel().dimension()
                     && !root.canTeleport(sourceLevel, transition.newLevel())) {

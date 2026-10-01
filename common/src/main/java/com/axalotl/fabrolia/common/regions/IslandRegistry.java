@@ -405,11 +405,6 @@ public final class IslandRegistry {
          * read by every lane's cap check. Null until the first pass.
          */
         public volatile int[] spawnCapSlot;
-        /** Island-L of the previous chunk pass — vanilla's
-         *  {@code ServerChunkCache.lastInhabitedUpdate} on this island's clock,
-         *  anchored at birth so a new island never replays the wall counter
-         *  into {@code inhabitedTime}. Coordinator-only under unitClaim. */
-        public long lastInhabitedUpdateL;
         /**
          * ServerCore random-tick mode only: Main's last per-tick snapshot of
          * this island's random-tick chunk positions from ServerCore's chunk
@@ -509,7 +504,6 @@ public final class IslandRegistry {
             // takes over getGameTime for its members. A healthy island keeps
             // L == gameTime; only real overruns open a gap (per-island TPS).
             this.logicalTick = bornGameTime;
-            this.lastInhabitedUpdateL = bornGameTime;
             this.domain.owner = this;
         }
 
@@ -712,10 +706,6 @@ public final class IslandRegistry {
                         if (src != null) { // fragments inherit the source clock
                             p.logicalTick = src.logicalTick;
                             p.lagNanos = src.lagNanos;
-                            // The chunk pass measures inhabitedTime as L since
-                            // its previous pass; the source's chunks were last
-                            // credited on the SOURCE clock, never on wall time.
-                            p.lastInhabitedUpdateL = src.lastInhabitedUpdateL;
                             // A split can land between a fail-closed HOLD and
                             // its same-L retry. Carry the unit-head stamp with
                             // the inherited clock so the fresh fragment cannot

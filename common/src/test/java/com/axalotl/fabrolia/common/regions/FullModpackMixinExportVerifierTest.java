@@ -45,8 +45,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 /**
  * Verifies the final, post-composition bytecode exported by Mixin in the real
  * server modpack. This is deliberately separate from source-mixin wiring tests:
- * it proves that Fabrolia, Lithium, C2ME, Carpet, FSit and the other runtime
- * transformers actually produced the one final machine shape we rely on.
+ * it proves that Fabrolia, Lithium, C2ME, Carpet, FSit (when installed) and the
+ * other runtime transformers actually produced the one final machine shape we rely on.
  *
  * <p>The ordinary {@code test} task skips this external-artifact test. Use the
  * dedicated Gradle task with {@code -PfabroliaMixinExportRoot=/.../.mixin.out}.
@@ -647,7 +647,7 @@ class FullModpackMixinExportVerifierTest {
             String targetOwner, String targetName, String targetDescriptor,
             int matches) {
         assertEquals(matches, generatedCallCount(body, level.name, handlerSuffix),
-                handlerSuffix + " must replace every 26.2 ServerLevel.tick call");
+                handlerSuffix + " must replace every 26.3 ServerLevel.tick call");
         assertEquals(0, callCount(body, targetOwner, targetName, targetDescriptor),
                 handlerSuffix + " must leave no raw stage entry in the transformed tick");
         generatedMethod(level, handlerSuffix);
@@ -671,15 +671,30 @@ class FullModpackMixinExportVerifierTest {
         assertTrue(markerReset >= 0 && cleanupCommit > markerReset
                         && exactRethrow > cleanupCommit,
                 "function tick must cut normal return after restoring its marker");
-        assertEquals(1, functions.methods.stream()
-                        .filter(candidate -> candidate.name.contains(
-                                "fabrolia$markTickTag"))
+        String advancementBuffer =
+                "com/axalotl/fabrolia/common/parallelised/advancement/AdvancementBuffer";
+        List<MethodNode> tickTagFamily = functions.methods.stream()
+                .filter(candidate -> candidate.name.contains("fabrolia$markTickTag"))
+                .toList();
+        assertEquals(0, tickTagFamily.stream()
                         .mapToInt(candidate -> callCountByName(candidate,
-                                "com/axalotl/fabrolia/common/parallelised/advancement/"
-                                        + "AdvancementBuffer",
-                                "drainMainFrameless"))
+                                advancementBuffer, "drainMainFrameless"))
                         .sum(),
-                "the raw advancement drain may not remain before function-body admission");
+                "the raw advancement drain may not bypass the tick-head window");
+        assertEquals(1, tickTagFamily.stream()
+                        .mapToInt(candidate -> callCount(candidate,
+                                advancementBuffer, "beginTickHeadWindow", "(Z)Z"))
+                        .sum(),
+                "the tick-head advancement window must open exactly once before "
+                        + "function-body admission");
+        assertEquals(1, callCount(handler, advancementBuffer, "endTickHeadWindow",
+                        "(Ljava/lang/Throwable;)Ljava/lang/Throwable;"),
+                "the tick-head advancement window must be closed exactly once");
+        int windowClose = callIndex(handler, advancementBuffer, "endTickHeadWindow",
+                "(Ljava/lang/Throwable;)Ljava/lang/Throwable;");
+        assertTrue(windowClose > markerReset && cleanupCommit > windowClose,
+                "the advancement window must close after the marker reset and before "
+                        + "the success commit");
 
         String executeDesc = "(Lnet/minecraft/commands/functions/CommandFunction;"
                 + "Lnet/minecraft/commands/CommandSourceStack;)V";
@@ -866,7 +881,8 @@ class FullModpackMixinExportVerifierTest {
         assertServerLevelStageComposition(level, tickBody,
                 "$fabrolia$admitSleepTimeAdvance",
                 "net/minecraft/world/clock/ServerClockManager", "moveToTimeMarker",
-                "(Lnet/minecraft/core/Holder;Lnet/minecraft/resources/ResourceKey;)Z", 1);
+                "(Lnet/minecraft/core/Holder;Lnet/minecraft/resources/ResourceKey;)"
+                        + "Lnet/minecraft/world/clock/ServerClockManager$MoveResult;", 1);
         assertServerLevelStageComposition(level, tickBody,
                 "$fabrolia$admitWakePlayers", level.name,
                 "wakeUpAllPlayers", "()V", 1);
@@ -964,6 +980,11 @@ class FullModpackMixinExportVerifierTest {
                         && bodyCalls.getFirst().name.contains("$carpet$onTick"),
                 "Carpet ServerPlayer tick HEAD must remain the first call in the wrapped body");
 
+        // FSit has no build for every Minecraft version the pack targets. When it
+        // is installed, its TAIL handlers must stay inside the wrapped body, last.
+        boolean fsitComposed = player.methods.stream()
+                .anyMatch(candidate -> candidate.name.contains("$fsit$"));
+        if (!fsitComposed) return;
         List<String> fsitTail = List.of(
                 "$fsit$sneakWindow",
                 "$fsit$tickAttached",
@@ -1728,7 +1749,6 @@ class FullModpackMixinExportVerifierTest {
         String futureDesc = "(Ljava/lang/Runnable;)"
                 + "Ljava/util/concurrent/CompletableFuture;";
         String completableFuture = "java/util/concurrent/CompletableFuture";
-        String rconScope = "com/axalotl/fabrolia/common/regions/RconCommandFenceScope";
 
         MethodNode executeBlocking = method(blockableEventLoop,
                 "executeBlocking", runnableDesc);
@@ -1862,33 +1882,23 @@ class FullModpackMixinExportVerifierTest {
 
         MethodNode runAllTasks = method(blockableEventLoop,
                 "runAllTasks", "()V");
-        MethodInsnNode runAllPollDispatch = generatedHandlerCall(
-                runAllTasks, blockableEventLoop, "$fabrolia$frameRunAllTasksPoll");
-        MethodNode runAllPollHandler = method(blockableEventLoop,
-                runAllPollDispatch.name, runAllPollDispatch.desc);
-        MethodNode runAllPollBridge = uniqueMethod(blockableEventLoop,
-                candidate -> invokedynamicTargetCount(runAllTasks, blockableEventLoop.name,
-                        candidate.name, candidate.desc) == 1
-                        && callCount(candidate, blockableEventLoop.name, "pollTask", "()Z") == 1,
-                "the literal runAllTasks poll operation");
-        MethodNode runAllPollBody = uniqueMethod(blockableEventLoop,
-                candidate -> invokedynamicTargetCount(runAllPollHandler, blockableEventLoop.name,
-                        candidate.name, candidate.desc) == 1
-                        && callCount(candidate, OPERATION, "call", OPERATION_CALL_DESC) == 1,
-                "the one original poll inside its callsite receipt");
-        assertEquals(1, callCount(runAllPollHandler, rconScope, "callRunAllTasksPoll",
-                "(Ljava/lang/Object;Ljava/util/function/BooleanSupplier;)Z"));
-        assertEquals(0, callCount(runAllTasks, blockableEventLoop.name, "pollTask", "()Z"),
-                "the wrapped poll must not coexist with a second native poll");
+        // The generic drain is not framed per poll: its one native poll result
+        // alone decides whether the drain repeats. The RCON edge is claimed by the
+        // waitUntilNextTick runAllTasks wrapper, not inside this loop.
+        assertEquals(1, callCount(runAllTasks, blockableEventLoop.name, "pollTask", "()Z"),
+                "runAllTasks must retain exactly one native poll");
+        assertEquals(1, calls(runAllTasks).size(),
+                "runAllTasks may not gain a second call beside its native poll");
+        MethodInsnNode runAllPoll = calls(runAllTasks).getFirst();
         JumpInsnNode nativeEmptyExit = assertInstanceOf(JumpInsnNode.class,
-                nextRealInstruction(runAllPollDispatch.getNext()));
+                nextRealInstruction(runAllPoll.getNext()));
         assertEquals(Opcodes.IFEQ, nativeEmptyExit.getOpcode(),
                 "the exact poll's returned boolean must decide whether the drain ends");
         JumpInsnNode nextPoll = assertInstanceOf(JumpInsnNode.class,
                 nextRealInstruction(nativeEmptyExit.getNext()));
         assertEquals(Opcodes.GOTO, nextPoll.getOpcode());
         assertTrue(runAllTasks.instructions.indexOf(nextPoll.label)
-                        < runAllTasks.instructions.indexOf(runAllPollDispatch),
+                        < runAllTasks.instructions.indexOf(runAllPoll),
                 "only a true poll result may repeat the native drain");
         assertEquals(Opcodes.RETURN, nextRealInstruction(nativeEmptyExit.label).getOpcode(),
                 "a false poll result must leave the original drain without another body");
@@ -1951,30 +1961,10 @@ class FullModpackMixinExportVerifierTest {
                 "wrapRunnable",
                 "(Ljava/lang/Runnable;)Lnet/minecraft/server/TickTask;"));
 
-        MethodNode minecraftPollEntry = method(minecraftServer, "pollTask", "()Z");
-        MethodInsnNode mainPollDispatch = generatedHandlerCall(
-                minecraftPollEntry, minecraftServer, "$fabrolia$frameMainPoll");
-        MethodNode mainPollHandler = method(minecraftServer,
-                mainPollDispatch.name, mainPollDispatch.desc);
-        MethodNode minecraftPollTask = uniqueMethod(minecraftServer,
-                candidate -> candidate.name.startsWith("pollTask$mixinextras$wrapped$")
-                        && candidate.desc.equals("()Z"),
-                "the original Main poll body inside its entry receipt");
-        MethodNode mainPollBridge = uniqueMethod(minecraftServer,
-                candidate -> invokedynamicTargetCount(minecraftPollEntry, minecraftServer.name,
-                        candidate.name, candidate.desc) == 1
-                        && callCount(candidate, minecraftServer.name,
-                        minecraftPollTask.name, minecraftPollTask.desc) == 1,
-                "the one wrapped Main poll operation");
-        MethodNode mainPollBody = uniqueMethod(minecraftServer,
-                candidate -> invokedynamicTargetCount(mainPollHandler, minecraftServer.name,
-                        candidate.name, candidate.desc) == 1
-                        && callCount(candidate, OPERATION, "call", OPERATION_CALL_DESC) == 1,
-                "the one original Main poll inside its entry receipt");
-        assertEquals(1, callCount(mainPollHandler, rconScope, "callMainPoll",
-                "(Ljava/lang/Object;Ljava/util/function/BooleanSupplier;)Z"));
-        assertEquals(0, callCount(minecraftPollEntry, minecraftServer.name,
-                "pollTaskInternal", "()Z"));
+        MethodNode minecraftPollTask = method(minecraftServer, "pollTask", "()Z");
+        assertFalse(minecraftServer.methods.stream().anyMatch(candidate ->
+                        candidate.name.startsWith("pollTask$mixinextras$wrapped$")),
+                "the Main poll must stay one native body, not a framed receipt");
         MethodInsnNode failStopDispatch = generatedHandlerCall(
                 minecraftPollTask, minecraftServer,
                 "$failStopBeforeNextMainTask");
@@ -1986,6 +1976,8 @@ class FullModpackMixinExportVerifierTest {
                 "throwWorkerFailureIfAny", "()V"));
         assertEquals(1, callCount(minecraftPollTask, minecraftServer.name,
                 "pollTaskInternal", "()Z"));
+        assertEquals(2, calls(minecraftPollTask).size(),
+                "the Main poll may hold only its HEAD W gate and the one native poll");
         assertTrue(failStop >= 0 && pollInternal > failStop,
                 "Main must observe Fabrolia's exact W before it asks the vanilla queue "
                         + "path to remove or run another task");
@@ -1996,13 +1988,6 @@ class FullModpackMixinExportVerifierTest {
         assertTrue(failStopHandler.tryCatchBlocks == null
                         || failStopHandler.tryCatchBlocks.isEmpty(),
                 "the pre-poll W gate must not suppress the selected failure");
-        MethodInsnNode residualDispatch = generatedHandlerCall(
-                minecraftPollTask, minecraftServer, "$serviceResidualGameplay");
-        assertTrue(callIndex(minecraftPollTask, minecraftServer.name,
-                        residualDispatch.name, residualDispatch.desc) > pollInternal,
-                "the scoped RETURN policy must run after the one native poll");
-        MethodNode residualHandler = method(minecraftServer,
-                residualDispatch.name, residualDispatch.desc);
         MethodNode minecraftPollInternal = method(minecraftServer,
                 "pollTaskInternal", "()Z");
         assertEquals(1, callCount(minecraftPollInternal,
@@ -2022,10 +2007,8 @@ class FullModpackMixinExportVerifierTest {
 
         for (MethodNode monitorFree : List.of(
                 executeBlocking, submit, submitLambda, execute, enqueue,
-                runAllTasks, runAllPollHandler, runAllPollBridge, runAllPollBody,
-                pollTask, managedBlock, baseDoRunTask,
-                wrapRunnable, genericWrapRunnable, minecraftPollEntry, minecraftPollTask,
-                mainPollHandler, mainPollBridge, mainPollBody, failStopHandler, residualHandler,
+                runAllTasks, pollTask, managedBlock, baseDoRunTask,
+                wrapRunnable, genericWrapRunnable, minecraftPollTask, failStopHandler,
                 minecraftPollInternal, minecraftDoRunTask,
                 genericMinecraftDoRunTask)) {
             assertEquals(0, monitorFree.access & Opcodes.ACC_SYNCHRONIZED,
@@ -2437,9 +2420,11 @@ class FullModpackMixinExportVerifierTest {
                             .filter(candidate -> candidate.name.equals(field)).count(),
                     "transformed tracker authority field " + field);
         }
+        // 26.3 passes the tracker cadence as an UpdateInterval instead of an int.
         MethodNode constructor = method(tracker, "<init>",
                 "(Lnet/minecraft/server/level/ChunkMap;"
-                        + "Lnet/minecraft/world/entity/Entity;IIZ)V");
+                        + "Lnet/minecraft/world/entity/Entity;I"
+                        + "Lnet/minecraft/world/entity/UpdateInterval;Z)V");
         MethodNode initialize = generatedMethod(tracker,
                 "$fabrolia$initializeIslandTrackingState");
         int initializeCall = callIndex(constructor, tracker.name,
@@ -3686,7 +3671,7 @@ class FullModpackMixinExportVerifierTest {
         assertEquals(expectedConstructors,
                 constructors.stream().map(candidate -> candidate.desc)
                         .sorted().toList(),
-                "26.2 constructor census is part of the write-fence dominance proof");
+                "26.3 constructor census is part of the write-fence dominance proof");
 
         MethodNode canonicalConstructor = method(levelChunk, "<init>",
                 LEVEL_CHUNK_CANONICAL_CTOR);

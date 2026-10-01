@@ -573,7 +573,7 @@ ownership test `RegionizedServer.islandOwned(region)`.
 | `LocalMobCapCalculator` | vanilla's level `LocalMobCapCalculator` (over `ChunkMap.getPlayersCloseForSpawning`), seeded island-locally with the island's census — exact, because the closest two cross-island points are ≥ 2·8·16+16 = 272 blocks apart, beyond the 128-block cap radius. The native pack-reservation arena stays on main's parallel lane only (an island pass is sequential, vanilla's own setting). |
 | `PotentialCalculator` | island-local — **accepted deviation**: another island's charges are ≥256 blocks away (vanilla contribution ≈ charge/256 at that range). |
 | `canSpawnForCategoryGlobal` (level count < cap × level chunks / 289) | `SpawnCapLanes`: each lane publishes `[counts per category, spawnable chunk count]` as one immutable slot (island: `PIsland.spawnCapSlot`; main's remainder lane: `SpawnCapLanes.globalLane`), and every lane's `SpawnState` is built from the SUM. Staleness ≤ one period of the other lane; no lane ever waits on another or on main. |
-| `getGameTime() % 400` persistent categories; `timeDiff` for inhabitedTime | island L; `PIsland.lastInhabitedUpdateL` (anchored at birth). |
+| `getGameTime() % 400` persistent categories; `incrementInhabitedTime()` (+1 per pass since 26.3) | island L; +1 per island chunk pass. |
 | `forEachBlockTickingChunk → level.tickChunk` | the island's entity-ticking chunks (its cells + adopted halo cells, completed simulation view) through vanilla `tickChunk`. Under ServerCore's `chunkTickDistanceAffectsRandomTicks` the source is ServerCore's Main-mutated ChunkTickManager: Main partitions the real `forEachBlockTickingChunk` result by owner once per Main tick (`PIsland.servercoreRandomTickChunks`) and the island re-resolves that snapshot (≤1 Main tick stale). |
 | `customSpawners` | unchanged: level-wide, on main. |
 
@@ -613,9 +613,9 @@ Not bit-exact vs. vanilla (all bounded, none accumulating):
   period instead of vanilla's one level-wide evaluation per tick; a lane whose
   unit is held (HOLD, portal fence, long TemporalControl period) keeps its
   last slot pinned for the others until it runs again;
-- `inhabitedTime` accrues island ticks (L), not wall ticks — a slowed island's
-  local difficulty grows at its own rate; the island anchor also removes
-  vanilla's first-tick jump (`lastInhabitedUpdate = 0`) for island chunks;
+- `inhabitedTime` accrues island ticks, not wall ticks — a slowed island's
+  local difficulty grows at its own rate (26.3 vanilla credits +1 per chunk
+  pass, so this is the only difference);
 - the island's 128-block player test iterates only the island's counted
   players (vanilla iterates every PlayerMap member, ignored spectators
   included — identical under vanilla's predicate, which rejects spectators);

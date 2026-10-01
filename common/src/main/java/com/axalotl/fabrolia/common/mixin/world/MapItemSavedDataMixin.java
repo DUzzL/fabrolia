@@ -65,12 +65,6 @@ public abstract class MapItemSavedDataMixin {
         original.call(x, z, color);
     }
 
-    @WrapMethod(method = "isExplorationMap")
-    private synchronized boolean fabrolia$lockExplorationMapRead(
-            Operation<Boolean> original) {
-        return original.call();
-    }
-
     @WrapMethod(method = "isTrackedCountOverLimit")
     private synchronized boolean fabrolia$lockTrackedCountRead(
             int limit, Operation<Boolean> original) {

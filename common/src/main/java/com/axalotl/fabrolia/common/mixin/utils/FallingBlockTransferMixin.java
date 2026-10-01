@@ -11,7 +11,8 @@ import org.spongepowered.asm.mixin.injection.At;
 
 /**
  * Deferred-landing verification for gravity blocks (2026-07-15 source-loss
- * fix). A falling block's landing {@code setBlock} can be optimistically
+ * fix). A falling block's landing {@code setBlockAndUpdate} (setBlock flags 3)
+ * can be optimistically
  * deferred by the cross-region guard; vanilla's failure fallback (the item
  * drop) is then skipped on trust. Verify after the owner-timeline replay and,
  * if the write was lost, pop the block item so the contraption's matter is
@@ -23,10 +24,10 @@ public abstract class FallingBlockTransferMixin {
     /** Source-side landing write inside tick(): verify deferred placements. */
     @WrapOperation(method = "tick",
             at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/world/level/Level;setBlock(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;I)Z"))
-    private boolean fabrolia$sourcePlacement(Level level, BlockPos pos, BlockState state, int flags,
+                    target = "Lnet/minecraft/world/level/Level;setBlockAndUpdate(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;)Z"))
+    private boolean fabrolia$sourcePlacement(Level level, BlockPos pos, BlockState state,
                                              Operation<Boolean> original) {
-        boolean ok = original.call(level, pos, state, flags);
+        boolean ok = original.call(level, pos, state);
         if (ok && com.axalotl.fabrolia.common.regions.CrossRegionGuard.LAST_SETBLOCK_DEFERRED.get()
                 && level instanceof net.minecraft.server.level.ServerLevel sl) {
             // The landing write was optimistic-true DEFERRED: vanilla's

@@ -4,7 +4,7 @@ import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
-import net.minecraft.advancements.predicates.ContextAwarePredicate;
+import net.minecraft.core.Holder;
 import net.minecraft.advancements.triggers.CriterionTrigger;
 import net.minecraft.advancements.predicates.entity.EntityPredicate;
 import net.minecraft.advancements.triggers.SimpleCriterionTrigger;
@@ -13,6 +13,7 @@ import net.minecraft.server.PlayerAdvancements;
 import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.storage.loot.LootContext;
+import net.minecraft.world.level.storage.loot.predicates.LootItemCondition;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -596,14 +597,14 @@ public final class AdvancementBuffer {
     }
 
     // Vanilla SimpleCriterionTrigger.trigger gates each listener on BOTH the per-trigger
-    // predicate AND the SimpleInstance.player() ContextAwarePredicate (the advancement
-    // JSON's `player:` block). For TickTrigger/LocationTrigger the per-trigger predicate
+    // predicate AND the SimpleInstance.player() condition (the advancement JSON's
+    // `player:` block). For TickTrigger/LocationTrigger the per-trigger predicate
     // is trivially true, so dropping this second gate would grant every listener every
     // tick.
     private static boolean matchesPlayerPredicate(Object instance, LootContext ctx) {
         if (instance instanceof SimpleCriterionTrigger.SimpleInstance si) {
-            Optional<ContextAwarePredicate> pp = si.player();
-            return pp.isEmpty() || pp.get().matches(ctx);
+            Optional<Holder<LootItemCondition>> pp = si.player();
+            return pp.isEmpty() || pp.get().value().test(ctx);
         }
         return true;
     }

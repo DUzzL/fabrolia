@@ -4,6 +4,7 @@
   "package": "com.axalotl.fabrolia.neoforge.mixin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
+    "server.ServerLevelSleepClockMixin",
     "server.ServerWatchdogMixin",
     "utils.ClassInstanceMultiMapMixin",
     "utils.UtilMixin"

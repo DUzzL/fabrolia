@@ -1,5 +1,35 @@
 ## Unreleased
 
+### Minecraft 26.3
+
+- Ported to Minecraft 26.3 (Java 25): Fabric Loader 0.19.5, Fabric API
+  0.161.0+26.3, NeoForge 26.3.0.38-beta (FML 12: the config is registered as
+  `ModConfig.Type.LOCAL`, the renamed `COMMON`), Loom 1.17, Gradle 9.6.0.
+  Audited against Lithium mc26.3-0.26.2, C2ME 0.4.2-alpha.0.88+26.3, VMP
+  0.2.0+beta.7.238+26.3 and Carpet 26.3+v260915.
+- Natural spawning follows 26.3: spawn costs come from the
+  `minecraft:natural_mob_spawns` environment attribute at the full-resolution
+  biome (plus the dimension overlay); the quart-biome cost cache is gone.
+  `inhabitedTime` gains 1 per chunk pass on both lanes, as in 26.3.
+- New 26.3 packet surface: `CHANGE_DESTROY_DIRECTION` is a destroy action
+  (same island ownership and sequence check as the other three);
+  `ServerboundPunchPacket` replaces the swing packet on the island lane;
+  command suggestions (now processed by `ServerCommandSuggestionsProvider`
+  from the listener tick) are parsed on Main.
+- 26.3 lets spectators walk through a clicked portal. A spectator's block-use
+  packet runs under the all-island fence, and a spectator never generates an
+  exit portal (vanilla's `getExitPortal` rule) in the async Nether transfer.
+  Portal teleports go through `Entity#teleportToPortalDestination`.
+- `/data … from|string|compute` lines are no longer treated as island-local
+  (they read outside the target block).
+- `fabrolia tickrepair` datafixes unloaded chunk NBT before classifying it
+  (26.3 saves block states as `id`/`properties`).
+- C2ME 0.88: the mid-tick hook is applied only when C2ME's own mid-tick
+  chunk tasks are enabled (off by default in this build), and the exact
+  player actor passes C2ME's new "Async update chunks" check. With C2ME on
+  26.3, 0.4.2-alpha.0.88 or later is required (earlier 26.3 builds lack that
+  check); on Fabric this is declared in `breaks`.
+
 ### Changed
 
 - Async islands: natural spawning, thunder and random/fluid block ticks for
@@ -56,6 +86,23 @@
 
 ### Fixed
 
+- NeoForge: the server did not start. NeoForge replaces the sleep clock
+  advance in `ServerLevel.tick` (`ClockAdjustment.apply` instead of
+  `moveToTimeMarker`), so that stage is now admitted by a platform mixin on
+  each loader; and the bundled `fabrolia-api` jar (now 1.0.4) is marked
+  `FMLModType: GAMELIBRARY`, so FML loads it on the game layer (it was a
+  plugin-layer library that could not see Minecraft classes).
+- Server crash "Chunk not there when requested: Unloaded chunk" when an
+  island tick needed a chunk that was not loaded yet (reproduced: a player's
+  first tick after a Nether-portal crossing reads its old supporting block
+  position in the new dimension, and vanilla loads that chunk). Vanilla's
+  1-tick request ticket expired while Main kept ticking; island requests now
+  hold a non-expiring load ticket until the chunk resolves, then leave
+  vanilla's request ticket armed.
+- Server crash (`ArrayIndexOutOfBoundsException` in `ChunkMap.setChunkUnsaved`)
+  when an island marked a chunk unsaved while Main (vanilla or C2ME's idle
+  autosave) iterated the eager-save set. The set's iterator is now safe
+  against concurrent adds; a chunk re-dirtied during its save is re-queued.
 - Watchdog crash (Main parked forever in `IslandCommands.mainClaim` from an
   attack/interact packet): a batched Main drain ran a player's Main fallback
   under that island's claim, the fallback's completion drained the player's

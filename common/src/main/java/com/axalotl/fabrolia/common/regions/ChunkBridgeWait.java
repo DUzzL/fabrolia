@@ -111,11 +111,16 @@ public final class ChunkBridgeWait {
      * @param initial the future produced by the caller's one submission
      * @param probe   lock-free ready-chunk probe, re-run every iteration;
      *                a non-null result wins immediately
+     * @param loadStallInspector run at every REPEATED load=true stall report:
+     *                the request's load ticket is held until it resolves, so a
+     *                stranded (e.g. C2ME FLAG_BROKEN) holder can never downgrade
+     *                and fail its futures; the inspector names it and fail-stops
      */
     public static <T, C> Result<T, C> await(CompletableFuture<T> initial,
                                             Supplier<C> probe,
                                             boolean loadOrGenerate,
-                                            Supplier<String> posDescription) {
+                                            Supplier<String> posDescription,
+                                            Runnable loadStallInspector) {
         long sleepNs = INITIAL_PARK_NS;
         final long start = System.nanoTime();
         long lastReport = start;
@@ -152,6 +157,7 @@ public final class ChunkBridgeWait {
                         withStack ? new Throwable("chunk bridge wait site") : null};
                 if (reports > 1) {
                     LOGGER.error(msg + " — REPEATED stall: likely a chunk-system strand", args);
+                    loadStallInspector.run();
                 } else {
                     LOGGER.warn(msg, args);
                 }

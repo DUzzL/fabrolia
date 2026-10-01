@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.regions;
 
+import net.minecraft.SharedConstants;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
@@ -352,11 +353,22 @@ public final class TickRepairRun {
                             continue;
                         }
                         chunksRead++;
+                        // ChunkMap.read is the raw region payload; vanilla's load
+                        // path datafixes it first (ChunkMap#readChunk →
+                        // upgradeChunkTag). 26.3 changed the saved block-state
+                        // shape (Name/Properties → id/properties), so sections
+                        // written before 26.3 only decode after that upgrade.
+                        ServerLevel scanned = ls.level();
+                        CompoundTag current = ls.chunkMap().upgradeChunkTag(tag.get(), -1,
+                                ChunkMap.getChunkDataFixContextTag(scanned.dimension(),
+                                        scanned.getChunkSource().getGenerator()
+                                                .getTypeNameForDataFixer()),
+                                SharedConstants.getCurrentVersion().dataVersion().version());
                         // TickRepairNbt deliberately accounts for undecodable
                         // individual entries in its result. A thrown classifier
                         // failure is unexpected and fail-stops the whole run.
                         TickRepairNbt.NbtChunkResult result =
-                                TickRepairNbt.classifyChunkNbt(tag.get());
+                                TickRepairNbt.classifyChunkNbt(current);
                         if (!result.fullStatus()) {
                             belowFull++;
                             continue;

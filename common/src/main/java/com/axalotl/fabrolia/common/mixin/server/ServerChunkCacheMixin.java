@@ -48,7 +48,6 @@ import java.util.function.Consumer;
 import java.util.HashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
-import com.axalotl.fabrolia.common.parallelised.utils.FabroliaSpawnContext;
 import com.axalotl.fabrolia.common.utils.SpawnFutureTaker;
 import com.axalotl.fabrolia.common.regions.ChunkRegionKeyed;
 import com.axalotl.fabrolia.common.regions.ChunkTicketDebugAccess;
@@ -87,7 +86,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
 
     @Shadow public abstract @Nullable ChunkHolder getVisibleChunkIfPresent(long key);
     @Shadow protected abstract CompletableFuture<ChunkResult<ChunkAccess>> getChunkFutureMainThread(int x, int z, ChunkStatus targetStatus, boolean loadOrGenerate);
-    @Shadow public abstract void tickSpawningChunk(LevelChunk chunk, long timeDiff, List<MobCategory> spawningCategories, NaturalSpawner.SpawnState spawnCookie);
     @Shadow protected abstract void getFullChunk(long chunkKey, Consumer<LevelChunk> output);
 
 
@@ -415,7 +413,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
      *  identical every tick; cached so the tick-head precompute can use it. */
     @Unique private volatile NaturalSpawner.ChunkGetter fabrolia$lastChunkGetter;
     @Unique private volatile CompletableFuture<Void> fabrolia$blockTicksFuture;
-    @Unique private long fabrolia$capturedTimeDiff;
     @Unique private boolean fabrolia$spawnLaunchedThisTick;
     /** The level's border, resolved on Main every chunk phase for off-main gates. */
     @Unique private volatile net.minecraft.world.level.border.WorldBorder fabrolia$worldBorder;
@@ -946,6 +943,50 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     @Unique
     private static final long SOFT_NULL_TTL_NS = 2_000_000_000L;
 
+    /**
+     * Non-expiring load ticket for one off-Main {@code load=true} request.
+     * Vanilla's blocking {@code getChunk} relies on its 1-tick UNKNOWN ticket
+     * surviving because the caller parks Main in {@code managedBlock}, so
+     * {@code purgeStaleTickets} cannot run before the chunk arrives. An island
+     * caller does not park Main: after a tick or two UNKNOWN is purged and a
+     * cold load/generation resolves to UNLOADED ("Chunk not there when
+     * requested"). The pin keeps vanilla's contract until the request resolves.
+     * One unregistered type per request (NetherPortalPreparation's pattern):
+     * TicketStorage merges tickets by type identity and level, so a request's
+     * pin never merges with another's. No PERSIST flag: never saved. Never put
+     * these types in equals/hash collections (TicketType is a record).
+     */
+    @Unique
+    private Ticket fabrolia$pinBridgeLoad(ChunkPos pos, int ticketLevel) {
+        Ticket pin = new Ticket(new TicketType(0L, TicketType.FLAG_LOADING), ticketLevel);
+        this.ticketStorage.addTicket(pin, pos);
+        return pin;
+    }
+
+    /** Main only. Vanilla's blocking getChunk returns with its UNKNOWN ticket
+     *  still armed; re-arm it only while this request's pin is live (shutdown's
+     *  deactivateTicketsOnClosing may already have moved the pin out). The scan
+     *  and both ticket writes are one step under the ChunkMap monitor that
+     *  guards TicketStorage (TicketStorageSyncMixin): island player moves edit
+     *  the same per-chunk ticket list concurrently. */
+    @Unique
+    private void fabrolia$releaseBridgePin(ChunkPos pos, Ticket pin, boolean rearm) {
+        synchronized (this.chunkMap) {
+            boolean live = false;
+            for (Ticket ticket : this.ticketStorage.getTickets(pos.pack())) {
+                if (ticket == pin) {
+                    live = true;
+                    break;
+                }
+            }
+            if (!live) return;
+            if (rearm) {
+                this.ticketStorage.addTicket(new Ticket(TicketType.UNKNOWN, pin.getTicketLevel()), pos);
+            }
+            this.ticketStorage.removeTicket(pin, pos);
+        }
+    }
+
     /** One main-thread request submission. No path may create a successor for
      *  the same entered obligation. */
     @Unique
@@ -956,7 +997,26 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         try {
             this.mainThreadProcessor.execute(() -> fabrolia$runPublishedChunkMainRequest(
                     publication, chunkFuture, () -> {
-                this.getChunkFutureMainThread(x, z, targetStatus, loadOrGenerate).whenComplete((result, ex) -> {
+                CompletableFuture<ChunkResult<ChunkAccess>> vanilla;
+                if (loadOrGenerate) {
+                    ChunkPos pinned = new ChunkPos(x, z);
+                    Ticket pin = fabrolia$pinBridgeLoad(pinned, ChunkLevel.byStatus(targetStatus));
+                    try {
+                        vanilla = this.getChunkFutureMainThread(x, z, targetStatus, true);
+                    } catch (Throwable requestFailure) {
+                        fabrolia$releaseBridgePin(pinned, pin, false);
+                        throw requestFailure;
+                    }
+                    // Completion may run on a generation thread; tickets are Main
+                    // state. Main's task loop only logs a task's exception, so the
+                    // release is a fail-stop body like every other Main mutation.
+                    vanilla.whenComplete((result, ex) -> this.mainThreadProcessor.execute(
+                            () -> RegionScheduler.runSuccessBodyIfHealthy(
+                                    () -> fabrolia$releaseBridgePin(pinned, pin, true))));
+                } else {
+                    vanilla = this.getChunkFutureMainThread(x, z, targetStatus, false);
+                }
+                vanilla.whenComplete((result, ex) -> {
                     try {
                         if (ex != null) {
                             fabrolia$completeChunkRequestFailure(chunkFuture, ex);
@@ -1205,7 +1265,11 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 },
                 loadOrGenerate,
                 () -> "[" + ChunkPos.getX(pos) + ", " + ChunkPos.getZ(pos) + "] status=" + status
-                        + " thread=" + Thread.currentThread().getName());
+                        + " thread=" + Thread.currentThread().getName(),
+                // The request's pin keeps a stranded holder from ever failing
+                // its futures: a recognized C2ME FLAG_BROKEN holder fail-stops.
+                () -> com.axalotl.fabrolia.common.regions.C2meStrandHeal.inspectAndMaybeHeal(
+                        this.getVisibleChunkIfPresent(pos), this.chunkMap, pos));
         if (outcome instanceof com.axalotl.fabrolia.common.regions.ChunkBridgeWait.Result.Ready<ChunkResult<ChunkAccess>, ChunkAccess> ready) {
             return ready.chunk();
         }
@@ -1237,7 +1301,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             if (ready != null) return ready;
         }
         if (!loadOrGenerate) return null;
-        throw fabrolia$missingChunk(result);
+        throw fabrolia$missingChunk(result, this.level, pos, status);
     }
 
     @Unique
@@ -1272,10 +1336,15 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     }
 
     @Unique
-    private static IllegalStateException fabrolia$missingChunk(@Nullable ChunkResult<?> result) {
+    private static IllegalStateException fabrolia$missingChunk(@Nullable ChunkResult<?> result,
+                                                               ServerLevel level, long pos,
+                                                               ChunkStatus status) {
         String error = result == null ? "unknown fabrolia chunk result" : result.getError();
         return (IllegalStateException) Util.pauseInIde(
-                new IllegalStateException("Chunk not there when requested: " + error));
+                new IllegalStateException("Chunk not there when requested: " + error
+                        + " (" + level.dimension().identifier() + " [" + ChunkPos.getX(pos)
+                        + ", " + ChunkPos.getZ(pos) + "] " + status + ", off-Main bridge, thread "
+                        + Thread.currentThread().getName() + ")"));
     }
 
     @Unique
@@ -1288,15 +1357,14 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
 
 
     @WrapOperation(
-            method = "tickChunks(Lnet/minecraft/util/profiling/ProfilerFiller;J)V",
+            method = "tickChunks(Lnet/minecraft/util/profiling/ProfilerFiller;)V",
             at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/world/level/NaturalSpawner;createState(ILjava/lang/Iterable;Lnet/minecraft/world/level/NaturalSpawner$ChunkGetter;Lnet/minecraft/world/level/LocalMobCapCalculator;)Lnet/minecraft/world/level/NaturalSpawner$SpawnState;")
+                    target = "Lnet/minecraft/world/level/NaturalSpawner;createState(ILnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/level/NaturalSpawner$ChunkGetter;Lnet/minecraft/world/level/LocalMobCapCalculator;)Lnet/minecraft/world/level/NaturalSpawner$SpawnState;")
     )
-    private NaturalSpawner.SpawnState fabrolia$captureTimeAndPassthrough(
-            int spawnableChunkCount, Iterable<Entity> entities, NaturalSpawner.ChunkGetter chunkGetter,
+    private NaturalSpawner.SpawnState fabrolia$laneCensusPassthrough(
+            int spawnableChunkCount, ServerLevel censusLevel, NaturalSpawner.ChunkGetter chunkGetter,
             LocalMobCapCalculator localMobCapCalculator, Operation<NaturalSpawner.SpawnState> original,
-            ProfilerFiller profiler, long timeDiff) {
-        fabrolia$capturedTimeDiff = timeDiff;
+            ProfilerFiller profiler) {
         fabrolia$spawnLaunchedThisTick = false;
         fabrolia$worldBorder = this.level.getWorldBorder();
         // Belt-and-suspenders: with enableSpawnBarrierOverlap the previous tick's spawn
@@ -1359,16 +1427,8 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         // The tick-head precompute (legacy census) must count with the same
         // lane rule as this build, or its bit-identity claim is void.
         fabrolia$lastChunkGetter = getter;
-        // Surface the level to ParallelSpawnHelper so it can read the incremental SpawnIndex
-        // instead of iterating the c2me-notickvd-filtered entity stream — the section walk
-        // dominates fillBuffer (4.14% of server thread in R5FaKJnHJg).
-        FabroliaSpawnContext.currentLevel = this.level;
-        NaturalSpawner.SpawnState state;
-        try {
-            state = original.call(stateChunkCount, entities, getter, localMobCapCalculator);
-        } finally {
-            FabroliaSpawnContext.currentLevel = null;
-        }
+        NaturalSpawner.SpawnState state =
+                original.call(stateChunkCount, censusLevel, getter, localMobCapCalculator);
         if (lanes) {
             AtomicIntegerArray counts = ((FabroliaSpawnStateView) state).fabrolia$countsBacking();
             rs.spawnCapLanes.publishGlobalLane(SpawnCapLanes.slot(counts, laneChunkCount));
@@ -1380,16 +1440,16 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     }
 
     @WrapOperation(
-            method = "tickChunks(Lnet/minecraft/util/profiling/ProfilerFiller;J)V",
+            method = "tickChunks(Lnet/minecraft/util/profiling/ProfilerFiller;)V",
             at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/level/ServerChunkCache;tickSpawningChunk(Lnet/minecraft/world/level/chunk/LevelChunk;JLjava/util/List;Lnet/minecraft/world/level/NaturalSpawner$SpawnState;)V")
+                    target = "Lnet/minecraft/server/level/ServerChunkCache;tickSpawningChunk(Lnet/minecraft/world/level/chunk/LevelChunk;Ljava/util/List;Lnet/minecraft/world/level/NaturalSpawner$SpawnState;)V")
     )
     private void fabrolia$interceptTickSpawning(ServerChunkCache instance, LevelChunk chunk,
-                                             long timeDiff, List<MobCategory> spawningCategories,
+                                             List<MobCategory> spawningCategories,
                                              NaturalSpawner.SpawnState spawnCookie,
                                              Operation<Void> original) {
         if (FabroliaConfig.disabled || !FabroliaConfig.enableFabroliaSpawn) {
-            original.call(instance, chunk, timeDiff, spawningCategories, spawnCookie);
+            original.call(instance, chunk, spawningCategories, spawnCookie);
             return;
         }
 
@@ -1408,7 +1468,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         // islands this list holds only global-lane chunks (ChunkMapMixin
         // filters island-owned candidates at getSpawnCandidateChunks).
         List<LevelChunk> list = new java.util.ArrayList<>(live);
-        long capturedTimeDiff = fabrolia$capturedTimeDiff;
 
         if (FabroliaConfig.enableRegionThreading && RegionScheduler.isActive()) {
             // Region mode publishes metadata now; its coordinator enters the native
@@ -1421,8 +1480,8 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onPass(lvl0);
                 fabrolia$spawnFuture = fabrolia$submitPerRegion(list, c -> {
                     long packed = c.getPos().pack();
-                    c.incrementInhabitedTime(capturedTimeDiff);
-                    // Native 26.2 tickSpawningChunk performs thunder before spawning.
+                    c.incrementInhabitedTime();
+                    // Native 26.3 tickSpawningChunk performs thunder before spawning.
                     if (dm0.inEntityTickingRange(packed)) {
                         lvl0.tickThunder(c);
                     }
@@ -1449,7 +1508,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                         failureGate.runNext(() -> {
                             LevelChunk c = chunks.get(chunkIndex);
                             long packed = c.getPos().pack();
-                            c.incrementInhabitedTime(capturedTimeDiff);
+                            c.incrementInhabitedTime();
                             if (dmF.inEntityTickingRange(packed)) {
                                 lvl.tickThunder(c);
                             }
@@ -1467,7 +1526,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     }
 
     @WrapOperation(
-            method = "tickChunks(Lnet/minecraft/util/profiling/ProfilerFiller;J)V",
+            method = "tickChunks(Lnet/minecraft/util/profiling/ProfilerFiller;)V",
             at = @At(value = "INVOKE",
                     target = "Lnet/minecraft/server/level/ChunkMap;forEachBlockTickingChunk(Ljava/util/function/Consumer;)V")
     )
@@ -2095,7 +2154,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
      * "the level" replaced by "this island":
      *
      * <ul>
-     *   <li>{@code timeDiff} — island-L since this island's previous pass.</li>
+     *   <li>inhabited time — +1 per pass, exactly like 26.3's per-tick increment.</li>
      *   <li>{@code createState} — census, potential charges and local-cap seed
      *       over the island's own FULL chunks ({@link ParallelSpawnHelper#censusIslandLane});
      *       the local cap is exact (every mob within a player's cap radius is
@@ -2129,8 +2188,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             return;
         }
         long time = islandTime;
-        long timeDiff = time - island.lastInhabitedUpdateL;
-        island.lastInhabitedUpdateL = time;
 
         // --- createState, this island's lane ---------------------------------
         RegionGrid grid = rs.regionizer().grid;
@@ -2200,7 +2257,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             LevelChunk chunk = spawningChunks.get(i);
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
                 long packed = chunk.getPos().pack();
-                chunk.incrementInhabitedTime(timeDiff);
+                chunk.incrementInhabitedTime();
                 if (dm.inEntityTickingRange(packed)) {
                     lvl.tickThunder(chunk);
                 }

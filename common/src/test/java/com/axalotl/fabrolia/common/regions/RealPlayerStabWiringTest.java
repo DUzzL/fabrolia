@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Exact 26.2 client-wire and server-body pins for a real-player spear stab. */
+/** Exact 26.3 client-wire and server-body pins for a real-player spear stab. */
 class RealPlayerStabWiringTest {
 
     private static final String PACKET =
@@ -35,7 +35,7 @@ class RealPlayerStabWiringTest {
     @Test
     void clientStabWireUsesTheDocumentedDummyPosition() throws Exception {
         MethodNode stab = method(readClass(CLIENT_GAME_MODE), "piercingAttack",
-                "(L" + PIERCING + ";)V");
+                "(Lnet/minecraft/world/item/component/SwingAnimation;L" + PIERCING + ";)V");
         int carried = callIndex(stab, CLIENT_GAME_MODE,
                 "ensureHasSentCarriedItem", "()V");
         int allocation = typeIndex(stab, Opcodes.NEW, PACKET);
@@ -82,7 +82,7 @@ class RealPlayerStabWiringTest {
         assertTrue(stabConstant >= 0 && stabOrdinal > stabConstant
                         && caseNumber != null && caseNumber.getOpcode() == Opcodes.ICONST_1
                         && storeCase != null && storeCase.getOpcode() == Opcodes.IASTORE,
-                "the synthetic 26.2 switch must continue mapping STAB to case one");
+                "the synthetic 26.3 switch must continue mapping STAB to case one");
 
         MethodNode handler = method(readClass(SERVER_LISTENER), "handlePlayerAction",
                 "(L" + PACKET + ";)V");
@@ -101,7 +101,8 @@ class RealPlayerStabWiringTest {
 
         TableSwitchInsnNode actionSwitch = firstTableSwitch(handler);
         assertEquals(1, actionSwitch.min);
-        assertEquals(8, actionSwitch.max);
+        // 26.3 added CHANGE_DESTROY_DIRECTION (ninth action).
+        assertEquals(9, actionSwitch.max);
         int stabCase = handler.instructions.indexOf(actionSwitch.labels.getFirst());
         int nextCase = handler.instructions.indexOf(actionSwitch.labels.get(1));
         int cooldown = callIndexAfter(handler,

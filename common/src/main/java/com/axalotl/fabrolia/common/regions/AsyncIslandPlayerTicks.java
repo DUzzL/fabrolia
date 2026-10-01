@@ -1975,23 +1975,24 @@ public final class AsyncIslandPlayerTicks {
 
     /**
      * Pure decoded-input validation, before any vanilla/mod handler can mutate.
-     * Only the three destroy actions consume a PlayerAction sequence in vanilla;
-     * the other actions deliberately ignore that field.
+     * Only the four destroy-family actions consume a PlayerAction sequence in
+     * vanilla (ackBlockChangesUpTo throws on a negative one); the other actions
+     * deliberately ignore that field.
      */
     private static boolean hasInvalidBlockAckSequence(Packet<?> packet) {
         if (packet == null) return false;
         Class<?> type = packet.getClass();
         if (type == ServerboundUseItemPacket.class) {
-            return ((ServerboundUseItemPacket) packet).getSequence() < 0;
+            return ((ServerboundUseItemPacket) packet).sequence() < 0;
         }
         if (type == ServerboundUseItemOnPacket.class) {
-            return ((ServerboundUseItemOnPacket) packet).getSequence() < 0;
+            return ((ServerboundUseItemOnPacket) packet).sequence() < 0;
         }
         if (type == ServerboundPlayerActionPacket.class) {
             ServerboundPlayerActionPacket action = (ServerboundPlayerActionPacket) packet;
             return switch (action.getAction()) {
-                case START_DESTROY_BLOCK, ABORT_DESTROY_BLOCK, STOP_DESTROY_BLOCK ->
-                        action.getSequence() < 0;
+                case START_DESTROY_BLOCK, CHANGE_DESTROY_DIRECTION, ABORT_DESTROY_BLOCK,
+                     STOP_DESTROY_BLOCK -> action.getSequence() < 0;
                 default -> false;
             };
         }

@@ -107,12 +107,13 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
     /** Hook point NOTE: baseTick is NOT reached by every entity type —
      *  AbstractMinecart.tick() never calls super.tick() (bytecode-verified
      *  26.2: hurt/damage → checkBelowWorld → computeSpeed → handlePortal →
-     *  behavior.tick). setOldPosAndRot is the first statement of
+     *  behavior.tick). 26.3 {@code Entity#commonTick} (invulnerability timer,
+     *  setOldPosAndRot, tickCount) is the first statement of
      *  ServerLevel.tickNonPassenger/tickPassenger for EVERY ticked entity. */
     @Inject(method = "setOldPosAndRot()V", at = @At("HEAD"))
     private void fabrolia$stampLastTick(CallbackInfo ci) {
-        // Last-tick stamp (stuck-in-portal probe): setOldPosAndRot is the first
-        // statement of tickNonPassenger/tickPassenger for every ticked entity,
+        // Last-tick stamp (stuck-in-portal probe): setOldPosAndRot runs in the
+        // commonTick head of tickNonPassenger/tickPassenger for every ticked entity,
         // so this records "was ticked at wall-nanos T". A cart trapped in a
         // portal but STILL ticking (island self-drive) stamps every tick; a
         // stranded/unticked one goes stale — the discriminator between the two.

@@ -13,10 +13,10 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Exact Minecraft 26.2 ingress policy for an A5-owned play listener.
+ * Exact Minecraft 26.3 ingress policy for an A5-owned play listener.
  *
  * <p>The policy is intentionally an exact-class allow-list.  A packet may enter
- * the island FIFO only after its complete vanilla 26.2 handler body has been
+ * the island FIFO only after its complete vanilla 26.3 handler body has been
  * audited against the player/listener ownership transaction.  New vanilla
  * packet classes, subclasses, loader packets and mod/custom packets therefore
  * fail closed to {@link Lane#MAIN_FIFO} until explicitly reviewed.
@@ -49,10 +49,10 @@ public final class AsyncIslandPacketPolicy {
 
     /**
      * One entry for every effective public serverbound handler parameter on
-     * {@code ServerGamePacketListenerImpl} in the audited 26.2 artifact:
+     * {@code ServerGamePacketListenerImpl} in the audited 26.3 artifact:
      * 61 declared handlers plus five effective inherited handlers.
      */
-    private static final Map<Class<?>, Lane> AUDITED_26_2 = Map.ofEntries(
+    private static final Map<Class<?>, Lane> AUDITED_26_3 = Map.ofEntries(
             // Player/listener-local movement and ordinary session state.
             Map.entry(ServerboundPlayerInputPacket.class, I),
             Map.entry(ServerboundMoveVehiclePacket.class, I),
@@ -94,7 +94,7 @@ public final class AsyncIslandPacketPolicy {
 
             // Player/world actions execute inside the exact island owner turn.
             // The handler parameter is abstract.  These are the complete concrete
-            // 26.2 wire family; keeping the abstract base here made exact lookup send
+            // 26.3 wire family; keeping the abstract base here made exact lookup send
             // every ordinary movement heartbeat to sticky Main fallback.
             Map.entry(ServerboundMovePlayerPacket.Pos.class, I),
             Map.entry(ServerboundMovePlayerPacket.Rot.class, I),
@@ -125,7 +125,9 @@ public final class AsyncIslandPacketPolicy {
             Map.entry(ServerboundChatCommandSignedPacket.class, M),
             Map.entry(ServerboundChatAckPacket.class, M),
 
-            Map.entry(ServerboundSwingPacket.class, I),
+            // 26.3 renamed ServerboundSwingPacket/handleAnimate; handlePunch only
+            // swings the player's own arm and resets its attack strength.
+            Map.entry(ServerboundPunchPacket.class, I),
             Map.entry(ServerboundPlayerCommandPacket.class, I),
             Map.entry(ServerboundPingRequestPacket.class, I),
             // Entity ids are client-controlled. The replay wrapper resolves and
@@ -189,7 +191,7 @@ public final class AsyncIslandPacketPolicy {
      * lookup (rather than assignability) is the fail-closed boundary.
      */
     public static Lane classifyType(Class<?> packetType) {
-        return packetType == null ? M : AUDITED_26_2.getOrDefault(packetType, M);
+        return packetType == null ? M : AUDITED_26_3.getOrDefault(packetType, M);
     }
 
     public static boolean usesIslandFifo(Packet<?> packet) {
@@ -209,7 +211,7 @@ public final class AsyncIslandPacketPolicy {
     static boolean requiresMainInteraction(Packet<?> packet, ServerPlayer player) {
         if (packet instanceof ServerboundUseItemPacket use) {
             return player.fishing != null
-                    && player.getItemInHand(use.getHand()).getItem() instanceof FishingRodItem;
+                    && player.getItemInHand(use.hand()).getItem() instanceof FishingRodItem;
         }
         if (packet instanceof ServerboundInteractPacket interact) {
             return player.level() instanceof ServerLevel level
@@ -222,12 +224,12 @@ public final class AsyncIslandPacketPolicy {
         return false;
     }
 
-    /** Package-visible immutable audit surface for the two-way 26.2 pin. */
+    /** Package-visible immutable audit surface for the two-way 26.3 pin. */
     static Map<Class<?>, Lane> auditedPolicies() {
-        return AUDITED_26_2;
+        return AUDITED_26_3;
     }
 
     static Set<Class<?>> auditedPacketTypes() {
-        return AUDITED_26_2.keySet();
+        return AUDITED_26_3.keySet();
     }
 }

@@ -338,7 +338,7 @@ class TickRepairProductionPathTest {
     static final class TestChunkMap extends net.minecraft.server.level.ChunkMap {
         private TestChunkMap() {
             super(null, null, null, null, Runnable::run, null, null, null,
-                    null, null, null, 0, false);
+                    null, null, 0, false);
             throw new AssertionError("never constructed — allocated via Unsafe");
         }
 
@@ -359,7 +359,7 @@ class TickRepairProductionPathTest {
     static final class TestChunkSource extends net.minecraft.server.level.ServerChunkCache {
         private TestChunkSource() {
             super(null, null, null, null, Runnable::run, null,
-                    0, 0, false, null, null);
+                    0, 0, false, null);
             throw new AssertionError("never constructed — allocated via Unsafe");
         }
 
@@ -1336,7 +1336,8 @@ class TickRepairProductionPathTest {
 
     /** Hand-built saved chunk at [3,5]: one stone section at Y=4, everything
      *  else air — decoded by the PRODUCTION classifier through vanilla's own
-     *  codecs. */
+     *  codecs. Current (26.3) on-disk shape: TickRepairRun datafixes older
+     *  payloads to it before classification. */
     private static CompoundTag chunkNbt(String status) {
         CompoundTag chunk = new CompoundTag();
         chunk.putInt("xPos", 3);
@@ -1349,7 +1350,7 @@ class TickRepairProductionPathTest {
         CompoundTag blockStates = new CompoundTag();
         ListTag palette = new ListTag();
         CompoundTag stone = new CompoundTag();
-        stone.putString("Name", "minecraft:stone");
+        stone.putString("id", "minecraft:stone");
         palette.add(stone);
         blockStates.put("palette", palette);
         section.put("block_states", blockStates);

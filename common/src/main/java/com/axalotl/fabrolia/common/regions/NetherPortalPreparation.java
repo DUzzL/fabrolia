@@ -430,6 +430,10 @@ public final class NetherPortalPreparation {
                     post = created != null && rectangle.minCorner.equals(created.minCorner)
                             ? TeleportTransition.PLAY_PORTAL_SOUND.then(TeleportTransition.PLACE_PORTAL_TICKET)
                             : TeleportTransition.PLAY_PORTAL_SOUND.then(entity -> entity.placePortalTicket(selected));
+                } else if (root.isSpectator()) {
+                    // 26.3 NetherPortalBlock#getExitPortal: a spectator with no
+                    // existing exit portal gets no destination, never a new portal.
+                    return true;
                 } else {
                     generate = true;
                     requestMain();
@@ -558,7 +562,7 @@ public final class NetherPortalPreparation {
                 if (!future.isDone()) { needsMain = true; continue; }
                 if (future.join().orElse(null) == null) throw new IllegalStateException("portal chunk preparation returned unloaded chunk");
             }
-            if (positions == null || needsMain || !generate) return;
+            if (positions == null || needsMain || !generate || root.isSpectator()) return;
             positions = snapshotPositions(true);
             if (positions == null || needsMain || !published(destination)) { needsMain = true; return; }
             List<BlockPos> freshPositions = positions;

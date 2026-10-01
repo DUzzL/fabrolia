@@ -34,7 +34,7 @@ class C2meStrandHealTest {
             original.complete("done");
         }, "pin-completer");
         completer.start();
-        var out = ChunkBridgeWait.await(original, () -> null, true, () -> "[pin]");
+        var out = ChunkBridgeWait.await(original, () -> null, true, () -> "[pin]", () -> { });
         completer.join();
         assertTrue(out instanceof ChunkBridgeWait.Result.Done<?, ?>);
     }

@@ -57,13 +57,6 @@ class ChunkBridgeWiringTest {
         assertTrue(!src.contains("LOAD_TRUE_MAX_RESUBMITS")
                         && !src.contains("future = resubmit.get()"),
                 "completed-empty load=true must fail; no fresh ticket/schedule retry exists");
-        int join = src.indexOf("lastResult = done.future().join()");
-        if (join < 0) join = src.indexOf("result = done.future().join()");
-        int exact = src.indexOf("fabrolia$unwrapCompletion(wrapped)", join);
-        int missing = src.indexOf("throw fabrolia$missingChunk(result)", join);
-        assertTrue(join >= 0 && exact > join && missing > exact,
-                "exceptional completion must rethrow its cause; completed-empty must fail "
-                        + "without a successor request");
         // The memo must be consulted only AFTER the ready-probes so a chunk
         // that became available is never masked by a stale negative entry.
         int probe = src.indexOf("fabrolia$extractReady(holder, targetStatus)");

@@ -86,7 +86,7 @@ class ChunkFullSnapshotEnqueueFenceWiringTest {
         int prime = callIndex(use, tnt.name, "prime");
         int air = callIndex(use, "net/minecraft/world/level/Level", "setBlock");
         assertTrue(prime >= 0 && air > prime,
-                "26.2 publishes PrimedTnt before replacing the source block with AIR");
+                "26.3 publishes PrimedTnt before replacing the source block with AIR");
         AbstractInsnNode flag = previousReal(use.instructions.get(air));
         assertTrue(flag instanceof IntInsnNode immediate
                         && immediate.getOpcode() == Opcodes.BIPUSH
@@ -94,10 +94,12 @@ class ChunkFullSnapshotEnqueueFenceWiringTest {
                 "TNT AIR must retain UPDATE_NEIGHBORS|UPDATE_CLIENTS|UPDATE_IMMEDIATE");
 
         ClassNode level = readClass("net/minecraft/world/level/Level");
-        MethodNode threeArg = method(level, "setBlock",
+        // 26.3 moved the three-argument overload to a LevelWriter default.
+        ClassNode writer = readClass("net/minecraft/world/level/LevelWriter");
+        MethodNode threeArg = method(writer, "setBlock",
                 "(Lnet/minecraft/core/BlockPos;"
                         + "Lnet/minecraft/world/level/block/state/BlockState;I)Z");
-        assertEquals(1, callCount(threeArg, level.name, "setBlock"),
+        assertEquals(1, callCount(threeArg, writer.name, "setBlock"),
                 "TNT's three-argument write must enter the complete four-argument route");
         MethodNode fourArg = method(level, "setBlock",
                 "(Lnet/minecraft/core/BlockPos;"

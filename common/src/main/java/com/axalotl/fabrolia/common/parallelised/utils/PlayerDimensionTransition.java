@@ -69,11 +69,8 @@ public final class PlayerDimensionTransition {
                     profiler.push("portal");
                     try {
                         TeleportTransition transition = portal.getPortalDestination(source, player, entry);
-                        if (transition != null
-                                && source.isAllowedToEnterPortal(transition.newLevel())
-                                && (source.dimension() == transition.newLevel().dimension()
-                                || player.canTeleport(source, transition.newLevel()))) {
-                            player.teleport(transition);
+                        if (transition != null) {
+                            player.teleportToPortalDestination(source, transition);
                         }
                     } finally {
                         profiler.pop();

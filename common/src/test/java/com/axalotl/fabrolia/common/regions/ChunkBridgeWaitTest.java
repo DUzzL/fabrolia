@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ChunkBridgeWaitTest {
 
     private static final java.util.function.Supplier<String> POS = () -> "[test]";
+    private static final Runnable NO_STALL_INSPECTOR = () -> { };
 
     /** The production wedge: load=false + a future that never completes must
      *  answer the vanilla-legal null within the bounded budget — the pre-fix
@@ -31,7 +32,7 @@ class ChunkBridgeWaitTest {
     void loadFalseStrandedFutureGivesVanillaNullWithinBudget() {
         CompletableFuture<Object> stranded = new CompletableFuture<>();
         long t0 = System.nanoTime();
-        var out = ChunkBridgeWait.await(stranded, () -> null, false, POS);
+        var out = ChunkBridgeWait.await(stranded, () -> null, false, POS, NO_STALL_INSPECTOR);
         long elapsed = System.nanoTime() - t0;
         assertInstanceOf(ChunkBridgeWait.Result.GiveUpNull.class, out,
                 "stranded load=false future must resolve to the vanilla null");
@@ -52,7 +53,7 @@ class ChunkBridgeWaitTest {
             fut.complete("chunk-result");
         });
         completer.start();
-        var out = ChunkBridgeWait.await(fut, () -> null, false, POS);
+        var out = ChunkBridgeWait.await(fut, () -> null, false, POS, NO_STALL_INSPECTOR);
         assertInstanceOf(ChunkBridgeWait.Result.Done.class, out);
         assertEquals("chunk-result",
                 ((ChunkBridgeWait.Result.Done<Object, Object>) out).future().join());
@@ -67,7 +68,7 @@ class ChunkBridgeWaitTest {
         AtomicInteger calls = new AtomicInteger();
         ChunkBridgeWait.Result<Object, String> out = ChunkBridgeWait.await(stranded,
                 () -> calls.incrementAndGet() >= 3 ? "probed-chunk" : null,
-                true, POS);
+                true, POS, NO_STALL_INSPECTOR);
         assertInstanceOf(ChunkBridgeWait.Result.Ready.class, out);
         assertEquals("probed-chunk",
                 ((ChunkBridgeWait.Result.Ready<Object, String>) out).chunk());
@@ -86,7 +87,7 @@ class ChunkBridgeWaitTest {
             original.complete("done");
         });
         completer.start();
-        var outcome = ChunkBridgeWait.await(original, () -> null, true, POS);
+        var outcome = ChunkBridgeWait.await(original, () -> null, true, POS, NO_STALL_INSPECTOR);
         completer.join();
         assertInstanceOf(ChunkBridgeWait.Result.Done.class, outcome);
         assertEquals(original,
@@ -117,7 +118,7 @@ class ChunkBridgeWaitTest {
                                 probes.incrementAndGet();
                                 return null;
                             },
-                            true, POS));
+                            true, POS, NO_STALL_INSPECTOR));
             assertSame(winner, surfaced);
             assertEquals(0, probes.get(),
                     "W must stop the accepted wait before another chunk probe body");

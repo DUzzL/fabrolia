@@ -9,9 +9,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.datafixers.DataFixer;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
-import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
-import it.unimi.dsi.fastutil.longs.LongSets;
 import net.minecraft.server.level.ChunkGenerationTask;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ChunkMap;
@@ -551,7 +549,9 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
         entityMap = new Int2ObjectConcurrentHashMap<>();
         pendingGenerationTasks = new ConcurrentList<>();
         fabrolia$deferredOwnerUnloads = new ConcurrentLinkedQueue<>();
-        chunksToEagerlySave = LongSets.synchronize(new LongLinkedOpenHashSet());
+        // Island workers add (LevelChunk#markUnsaved) while Main iterates in
+        // saveChunksEagerly: the iterator itself must be race-free.
+        chunksToEagerlySave = new com.axalotl.fabrolia.common.utils.EagerSaveChunkSet();
         // Hand the simulation tracker its ChunkMap back-ref so its setLevel seam can feed
         // the entity-ticking incremental list (see SimulationChunkTrackerMixin). The tracker
         // exists by <init> TAIL (built inside the DistanceManager during the ChunkMap ctor).

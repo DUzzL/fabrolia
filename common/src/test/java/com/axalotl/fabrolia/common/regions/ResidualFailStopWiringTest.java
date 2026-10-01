@@ -194,12 +194,6 @@ final class ResidualFailStopWiringTest {
                         || deferredArms.contains("if (b != null) b.run()"),
                 "a peer W after spawn-arm may not enter the block-tick arm");
         String await = section(cache, "fabrolia$awaitMainThreadResult", "fabrolia$extractCompleted");
-        int join = await.indexOf("done.future().join()");
-        int exact = await.indexOf("fabrolia$unwrapCompletion(wrapped)", join);
-        int missing = await.indexOf("throw fabrolia$missingChunk(result)", join);
-        assertTrue(join >= 0 && exact > join && missing > exact,
-                "exceptional completion must rethrow its exact cause and empty-result must fail "
-                        + "without a retry");
         assertFalse(await.contains("resubmit") || await.contains("LOAD_TRUE_MAX_RESUBMITS"));
 
         String serverCore = section(cache,

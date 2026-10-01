@@ -409,13 +409,14 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
 
     /**
      * tickPassenger has removal/vehicle gates before its actual body. Stamp only at the
-     * exact setOldPosAndRot invoke, not at wrapper HEAD, or an early return would suppress
-     * a later legitimate standalone consumer in the same global phase.
+     * exact commonTick invoke (26.3's tick head: invulnerability, old pos/rot, tickCount),
+     * not at wrapper HEAD, or an early return would suppress a later legitimate
+     * standalone consumer in the same global phase.
      */
     @WrapOperation(
             method = "tickPassenger(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/entity/Entity;)V",
             at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/world/entity/Entity;setOldPosAndRot()V"),
+                    target = "Lnet/minecraft/world/entity/Entity;commonTick()V"),
             require = 1)
     private void fabrolia$stampPassengerBody(Entity entity, Operation<Void> original) {
         com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
@@ -488,19 +489,9 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(instance));
     }
 
-    @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
-            at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/world/clock/ServerClockManager;"
-                            + "moveToTimeMarker(Lnet/minecraft/core/Holder;"
-                            + "Lnet/minecraft/resources/ResourceKey;)Z"),
-            require = 1,
-            allow = 1)
-    private boolean fabrolia$admitSleepTimeAdvance(
-            net.minecraft.world.clock.ServerClockManager instance,
-            Holder<?> clock, ResourceKey<?> marker, Operation<Boolean> original) {
-        return RegionScheduler.callSuccessBooleanIfHealthy(
-                () -> original.call(instance, clock, marker));
-    }
+    // The sleep clock advance (vanilla moveToTimeMarker; NeoForge's
+    // ClockAdjustment.apply) is admitted by the platform modules'
+    // ServerLevelSleepClockMixin: NeoForge patches that call out of tick.
 
     @WrapOperation(method = "tick(Ljava/util/function/BooleanSupplier;)V",
             at = @At(value = "INVOKE",

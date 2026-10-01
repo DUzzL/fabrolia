@@ -20,7 +20,7 @@ import net.minecraft.world.entity.animal.squid.Squid;
 import net.minecraft.world.entity.animal.wolf.Wolf;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
 import net.minecraft.world.entity.decoration.ArmorStand;
-import net.minecraft.world.entity.monster.EnderMan;
+import net.minecraft.world.entity.monster.Enderman;
 import net.minecraft.world.entity.monster.Ghast;
 import net.minecraft.world.entity.monster.Guardian;
 import net.minecraft.world.entity.monster.Shulker;
@@ -42,7 +42,7 @@ import org.spongepowered.asm.mixin.Mixin;
  */
 @Mixin({Bat.class, Allay.class, Armadillo.class, Axolotl.class, Bee.class, AbstractHorse.class,
         IronGolem.class, AbstractNautilus.class, Panda.class, Parrot.class, GlowSquid.class, Squid.class,
-        Wolf.class, WitherBoss.class, ArmorStand.class, EnderMan.class, Ghast.class, Guardian.class,
+        Wolf.class, WitherBoss.class, ArmorStand.class, Enderman.class, Ghast.class, Guardian.class,
         Shulker.class, Silverfish.class, Zoglin.class, Creaking.class, SulfurCube.class, Hoglin.class,
         Piglin.class, PiglinBrute.class, Warden.class, Zombie.class, Raider.class})
 public abstract class LivingDamageOverridePortalReservationMixin {

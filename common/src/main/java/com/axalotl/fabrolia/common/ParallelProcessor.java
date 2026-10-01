@@ -12,7 +12,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.item.FallingBlockEntity;
-import net.minecraft.world.entity.monster.EnderMan;
+import net.minecraft.world.entity.monster.Enderman;
 import net.minecraft.world.entity.monster.Shulker;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
@@ -103,8 +103,8 @@ public final class ParallelProcessor {
             AbstractBoat.class,
             FallingBlockEntity.class,
             Shulker.class,
-            // Preserve synchronous EnderMan ticks in regions-off flat-pool mode.
-            EnderMan.class,
+            // Preserve synchronous Enderman ticks in regions-off flat-pool mode.
+            Enderman.class,
             Boat.class,
             Projectile.class,
             ServerPlayer.class,

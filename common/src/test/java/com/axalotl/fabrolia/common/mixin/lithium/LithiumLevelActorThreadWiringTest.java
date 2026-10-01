@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Pins the exact Lithium 0.25.0 compile seam and the audited 0.25.3 production seam. */
+/** Pins the exact Lithium 0.26.2 (mc26.3) compile and production seams. */
 class LithiumLevelActorThreadWiringTest {
 
     private static final int DEFAULT_MIXIN_PRIORITY = 1000;
@@ -65,11 +65,11 @@ class LithiumLevelActorThreadWiringTest {
             "db09026bf5b51d8f31d4abc9bb40f6bbf2cd5f7df463e654003a00b1c1b797d4";
     private static final String CHUNK_STATUS_TRACKER_CLASS_SHA256 =
             "d3184c392722d7d67b74e79774fc8fcc350d312ba6e3515faac720c2fb8a40d0";
-    private static final String PRODUCTION_0253_JAR_SHA256 =
-            "fdde92e238e8075f89ad7f701f2a3d5854af88ba9a67657184a4407b104ac563";
+    private static final String PRODUCTION_0262_JAR_SHA256 =
+            "0be5b17ef9f6e9244cd07b24b227553a73aec0cf93158cf28099f3094c167f1b";
 
     @Test
-    void compileLithium0250HasTheExactAuditedLevelSeams() throws Exception {
+    void compileLithium0262HasTheExactAuditedLevelSeams() throws Exception {
         URL retrievalUrl = LithiumLevelActorThreadWiringTest.class.getClassLoader()
                 .getResource(RETRIEVAL_CLASS);
         assertNotNull(retrievalUrl, "Lithium LevelMixin must be on the common compile/test classpath");
@@ -95,25 +95,25 @@ class LithiumLevelActorThreadWiringTest {
             String metadata = new String(jar.getInputStream(
                     jar.getJarEntry("META-INF/neoforge.mods.toml")).readAllBytes(),
                     StandardCharsets.UTF_8);
-            assertTrue(metadata.contains("version = \"0.25.0\""),
-                    "common must compile against the audited Lithium 0.25.0 API");
+            assertTrue(metadata.contains("version = \"0.26.2\""),
+                    "common must compile against the audited Lithium 0.26.2 API");
             assertLithiumConfig(jar);
         }
     }
 
     @Test
-    void productionLithium0253HasTheByteIdenticalAuditedLevelSeams() throws Exception {
-        String configured = System.getenv("FABROLIA_LITHIUM_0253_JAR");
+    void productionLithium0262HasTheByteIdenticalAuditedLevelSeams() throws Exception {
+        String configured = System.getenv("FABROLIA_LITHIUM_0262_JAR");
         Assumptions.assumeTrue(configured != null && !configured.isBlank(),
-                "set FABROLIA_LITHIUM_0253_JAR for the external production-artifact pin");
+                "set FABROLIA_LITHIUM_0262_JAR for the external production-artifact pin");
         Path jarPath = Path.of(configured);
         assertTrue(Files.isRegularFile(jarPath), jarPath.toString());
-        assertEquals(PRODUCTION_0253_JAR_SHA256, sha256(Files.readAllBytes(jarPath)));
+        assertEquals(PRODUCTION_0262_JAR_SHA256, sha256(Files.readAllBytes(jarPath)));
 
         try (JarFile jar = new JarFile(jarPath.toFile())) {
             String metadata = new String(jar.getInputStream(jar.getJarEntry("fabric.mod.json"))
                     .readAllBytes(), StandardCharsets.UTF_8);
-            assertTrue(metadata.contains("\"version\": \"0.25.3+mc26.2\""));
+            assertTrue(metadata.contains("\"version\": \"0.26.2+mc26.3\""));
             byte[] retrieval = jar.getInputStream(jar.getJarEntry(RETRIEVAL_CLASS)).readAllBytes();
             byte[] accessor = jar.getInputStream(jar.getJarEntry(ACCESSOR_CLASS)).readAllBytes();
             byte[] tracker = jar.getInputStream(

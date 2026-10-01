@@ -42,6 +42,10 @@ import org.spongepowered.asm.mixin.injection.At;
  * main-thread build instead of ever blocking a pool worker on a busy island.
  * The section read-locks below stay as the palette-level belt for sync mode
  * (no islands, no claims) and for gap-cell chunks with no owner.
+ *
+ * <p>26.3 made the packet a record: the chunk data is now built in the
+ * delegating constructor's {@code this(...)} argument list, before the
+ * instance exists, so the handler is static.
  */
 @Mixin(ClientboundLevelChunkWithLightPacket.class)
 public abstract class ClientboundLevelChunkWithLightPacketMixin {
@@ -50,7 +54,7 @@ public abstract class ClientboundLevelChunkWithLightPacketMixin {
             method = "<init>(Lnet/minecraft/world/level/chunk/LevelChunk;Lnet/minecraft/world/level/lighting/LevelLightEngine;Ljava/util/BitSet;Ljava/util/BitSet;)V",
             at = @At(value = "NEW", target = "(Lnet/minecraft/world/level/chunk/LevelChunk;)Lnet/minecraft/network/protocol/game/ClientboundLevelChunkPacketData;")
     )
-    private ClientboundLevelChunkPacketData fabrolia$stableChunkData(LevelChunk chunk,
+    private static ClientboundLevelChunkPacketData fabrolia$stableChunkData(LevelChunk chunk,
                                                                  Operation<ClientboundLevelChunkPacketData> original) {
         IslandRegistry.PIsland owner = null;
         boolean mainClaimed = false;

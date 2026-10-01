@@ -14,6 +14,8 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LocalMobCapCalculator;
 import net.minecraft.world.level.NaturalSpawner;
 import net.minecraft.world.level.PotentialCalculator;
+import net.minecraft.world.attribute.EnvironmentAttributes;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.biome.MobSpawnSettings;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import org.spongepowered.asm.mixin.Final;
@@ -53,7 +55,7 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
     // NaturalSpawnerMixin.fabrolia$approveAndReservePack — which restores the
     // sequential visibility the recheck was faking without rejecting any
     // candidate inside an already-approved pack. canSpawn retains vanilla's
-    // potential-energy check, with invocation-owned biome costs instead of a
+    // potential-energy check, with invocation-owned spawn costs instead of a
     // shared last-candidate memo.
 
     /**
@@ -61,9 +63,10 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
      * @reason A SpawnState spans region workers; candidate costs must remain method-local.
      */
     @Overwrite
-    private boolean canSpawn(EntityType<?> type, BlockPos testPos, ChunkAccess chunk) {
-        MobSpawnSettings.MobSpawnCost cost =
-                NaturalSpawner.getRoughBiome(testPos, chunk).getMobSettings().getMobSpawnCost(type);
+    private boolean canSpawn(EntityType<?> type, Level level, BlockPos testPos, ChunkAccess chunk) {
+        MobSpawnSettings.MobSpawnCost cost = level.environmentAttributes()
+                .getValue(EnvironmentAttributes.NATURAL_MOB_SPAWNS, testPos)
+                .getMobSpawnCost(type);
         if (cost == null) {
             return true;
         }
@@ -74,7 +77,7 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
 
     /**
      * @author Fabrolia
-     * @reason Select the accepted mob's own biome charge, never another worker's last check.
+     * @reason Select the accepted mob's own spawn cost, never another worker's last check.
      */
     @Overwrite
     private void afterSpawn(Mob mob, ChunkAccess chunk) {
@@ -82,8 +85,9 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
         BlockPos pos = mob.blockPosition();
         // Re-read at the accepted position: a prior check may belong to another
         // region, type or biome (and its BlockPos may itself have been mutable).
-        MobSpawnSettings.MobSpawnCost cost =
-                NaturalSpawner.getRoughBiome(pos, chunk).getMobSettings().getMobSpawnCost(type);
+        MobSpawnSettings.MobSpawnCost cost = mob.level().environmentAttributes()
+                .getValue(EnvironmentAttributes.NATURAL_MOB_SPAWNS, pos)
+                .getMobSpawnCost(type);
         double charge = cost == null ? 0.0 : cost.charge();
         this.spawnPotential.addCharge(pos, charge);
         MobCategory category = type.getCategory();
@@ -94,10 +98,10 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
     /** Cadence instrumentation only (was fused with the removed recheck):
      *  every candidate CHECK, per category — /fabrolia regions debug spawnrate
      *  reads checks vs accepts. Never cancels. */
-    @Inject(method = "canSpawn(Lnet/minecraft/world/entity/EntityType;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/chunk/ChunkAccess;)Z",
+    @Inject(method = "canSpawn(Lnet/minecraft/world/entity/EntityType;Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/chunk/ChunkAccess;)Z",
             at = @At("HEAD"))
     private void fabrolia$countCheck(net.minecraft.world.entity.EntityType<?> type,
-            net.minecraft.core.BlockPos pos, net.minecraft.world.level.chunk.ChunkAccess chunk,
+            Level level, net.minecraft.core.BlockPos pos, net.minecraft.world.level.chunk.ChunkAccess chunk,
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
         if (com.axalotl.fabrolia.common.config.FabroliaConfig.disabled
                 || !com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaSpawn
@@ -108,8 +112,7 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
         if (cat == MobCategory.MISC) {
             return;
         }
-        if (chunk instanceof net.minecraft.world.level.chunk.LevelChunk lc
-                && lc.getLevel() instanceof net.minecraft.server.level.ServerLevel sl) {
+        if (level instanceof net.minecraft.server.level.ServerLevel sl) {
             com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.onCheck(sl, cat);
         }
     }

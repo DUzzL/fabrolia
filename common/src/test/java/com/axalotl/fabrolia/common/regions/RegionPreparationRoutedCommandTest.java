@@ -569,7 +569,7 @@ class RegionPreparationRoutedCommandTest {
         @Override
         public CommandSourceStack createCommandSourceStack(ServerLevel level, CommandSource source) {
             return new CommandSourceStack(source, Vec3.ZERO, Vec2.ZERO, level,
-                    PermissionSet.ALL_PERMISSIONS, "fixture", getName(), level.getServer(), target);
+                    PermissionSet.ALL_PERMISSIONS, level.getServer(), target);
         }
     }
 

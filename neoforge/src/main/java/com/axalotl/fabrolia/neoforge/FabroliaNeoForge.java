@@ -33,7 +33,8 @@ public class FabroliaNeoForge extends FabroliaCommon {
         LOGGER.info("Initializing Fabrolia...");
         NeoForge.EVENT_BUS.register(this);
         LOGGER.info("Initializing Fabrolia Config...");
-        container.registerConfig(ModConfig.Type.COMMON, SPEC, "fabrolia.toml");
+        // FML 12 (NeoForge 26.3) renamed COMMON to LOCAL: both sides, not synced.
+        container.registerConfig(ModConfig.Type.LOCAL, SPEC, "fabrolia.toml");
         LOGGER.info("Fabrolia Initialized Successfully!");
     }
 

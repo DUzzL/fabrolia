@@ -95,11 +95,12 @@ public final class SpawnCensus {
         // the map's per-key compute lock. Readers remain weakly consistent.
         final ConcurrentHashMap<Long, AtomicIntegerArray> live = new ConcurrentHashMap<>();
         final ConcurrentHashMap<Long, AtomicIntegerArray> corpse = new ConcurrentHashMap<>();
-        /** Entities whose TYPE has a MobSpawnCost in at least one of the
-         *  level's biomes — the only entities that can contribute potential
-         *  charges. Usually empty outside the nether. */
+        /** Entities whose TYPE has a MobSpawnCost in at least one source of the
+         *  level's natural_mob_spawns attribute — the only entities that can
+         *  contribute potential charges. Usually empty outside the nether. */
         final Set<Entity> costBearing = ConcurrentHashMap.newKeySet();
-        volatile Set<net.minecraft.world.entity.EntityType<?>> costTypes;
+        /** Null while unbuilt; {@link #ANY_COST_TYPE} when a timeline supplies spawn settings. */
+        volatile java.util.function.Predicate<net.minecraft.world.entity.EntityType<?>> costTypes;
         volatile long costTypesBuiltAt = Long.MIN_VALUE;
     }
 
@@ -200,8 +201,7 @@ public final class SpawnCensus {
 
     private static void fabrolia$syncCostSet(ServerLevel level, Entity e, boolean contributing) {
         LevelCensus c = census(level);
-        Set<net.minecraft.world.entity.EntityType<?>> types = fabrolia$costTypes(level, c);
-        if (types.isEmpty() || !types.contains(e.getType())) {
+        if (!fabrolia$costTypes(level, c).test(e.getType())) {
             return;
         }
         if (contributing) {
@@ -211,20 +211,48 @@ public final class SpawnCensus {
         }
     }
 
-    /** Types with a MobSpawnCost in ANY of the level's biomes — static per
-     *  datapack state; rebuilt lazily and refreshed at most every 6000 gt so a
-     *  datapack reload converges without a dedicated hook. */
-    private static Set<net.minecraft.world.entity.EntityType<?>> fabrolia$costTypes(ServerLevel level, LevelCensus c) {
-        Set<net.minecraft.world.entity.EntityType<?>> t = c.costTypes;
+    private static final java.util.function.Predicate<net.minecraft.world.entity.EntityType<?>> ANY_COST_TYPE =
+            type -> true;
+
+    /** Types that can have a MobSpawnCost anywhere in the level: the 26.3
+     *  natural_mob_spawns attribute is the dimension type's value overlaid by
+     *  the biome's (costs are merged, so the union is exact), then by timeline
+     *  tracks. Timeline keyframes are not enumerated: a dimension whose
+     *  timelines supply the attribute makes every type a candidate (charges are
+     *  still looked up per entity at its exact position). Static per datapack
+     *  state; rebuilt lazily and refreshed at most every 6000 gt so a datapack
+     *  reload converges without a dedicated hook. */
+    private static java.util.function.Predicate<net.minecraft.world.entity.EntityType<?>> fabrolia$costTypes(
+            ServerLevel level, LevelCensus c) {
+        var t = c.costTypes;
         long now = level.getGameTime();
         if (t != null && now - c.costTypesBuiltAt < 6000L) {
             return t;
         }
-        Set<net.minecraft.world.entity.EntityType<?>> built = ConcurrentHashMap.newKeySet();
-        for (var biome : level.registryAccess()
-                .lookupOrThrow(net.minecraft.core.registries.Registries.BIOME)) {
-            built.addAll(((com.axalotl.fabrolia.common.mixin.entity.spawn.MobSpawnSettingsAccessor)
-                    (Object) biome.getMobSettings()).fabrolia$mobSpawnCosts().keySet());
+        var attribute = net.minecraft.world.attribute.EnvironmentAttributes.NATURAL_MOB_SPAWNS;
+        boolean timelineSupplied = false;
+        for (var timeline : level.dimensionType().timelines()) {
+            if (timeline.value().attributes().contains(attribute)) {
+                timelineSupplied = true;
+                break;
+            }
+        }
+        java.util.function.Predicate<net.minecraft.world.entity.EntityType<?>> built;
+        if (timelineSupplied) {
+            built = ANY_COST_TYPE;
+        } else {
+            Set<net.minecraft.world.entity.EntityType<?>> types = new java.util.HashSet<>(
+                    level.dimensionType().attributes()
+                            .applyModifier(attribute, net.minecraft.world.level.biome.MobSpawnSettings.EMPTY)
+                            .allSpawnCosts().keySet());
+            for (var biome : level.registryAccess()
+                    .lookupOrThrow(net.minecraft.core.registries.Registries.BIOME)) {
+                types.addAll(biome.getAttributes()
+                        .applyModifier(attribute, net.minecraft.world.level.biome.MobSpawnSettings.EMPTY)
+                        .allSpawnCosts().keySet());
+            }
+            Set<net.minecraft.world.entity.EntityType<?>> frozen = Set.copyOf(types);
+            built = frozen::contains;
         }
         c.costTypes = built;
         c.costTypesBuiltAt = now;

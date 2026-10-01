@@ -88,7 +88,7 @@ public abstract class ChunkMapTrackedEntityMixin
      */
     @Inject(
             method = "<init>(Lnet/minecraft/server/level/ChunkMap;"
-                    + "Lnet/minecraft/world/entity/Entity;IIZ)V",
+                    + "Lnet/minecraft/world/entity/Entity;ILnet/minecraft/world/entity/UpdateInterval;Z)V",
             at = @At("RETURN"),
             require = 1)
     private void fabrolia$initializeIslandTrackingState(CallbackInfo ci) {

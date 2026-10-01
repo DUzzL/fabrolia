@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Exact, two-way Minecraft 26.2 audit of the A5 packet-ownership policy. */
+/** Exact, two-way Minecraft 26.3 audit of the A5 packet-ownership policy. */
 class AsyncIslandPacketPolicyTest {
 
     private static final String EXPECTED = """
@@ -75,7 +75,7 @@ class AsyncIslandPacketPolicyTest {
             net.minecraft.network.protocol.game.ServerboundChatCommandPacket|M
             net.minecraft.network.protocol.game.ServerboundChatCommandSignedPacket|M
             net.minecraft.network.protocol.game.ServerboundChatAckPacket|M
-            net.minecraft.network.protocol.game.ServerboundSwingPacket|I
+            net.minecraft.network.protocol.game.ServerboundPunchPacket|I
             net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket|I
             net.minecraft.network.protocol.ping.ServerboundPingRequestPacket|I
             net.minecraft.network.protocol.game.ServerboundAttackPacket|I
@@ -107,13 +107,13 @@ class AsyncIslandPacketPolicyTest {
             """;
 
     @Test
-    void exactMinecraft262SurfaceAndEveryPolicyRowArePinnedBothWays() throws Exception {
+    void exactMinecraft263SurfaceAndEveryPolicyRowArePinnedBothWays() throws Exception {
         byte[] gameBytes = classBytes(ServerGamePacketListenerImpl.class);
         byte[] commonBytes = classBytes(ServerCommonPacketListenerImpl.class);
-        assertEquals("7ae6a2f6b2653b05cfbae93c0e9f40b2a3bfc045f66cbc3bc940bbde0d543c26",
-                sha256(gameBytes), "ServerGamePacketListenerImpl is not the audited 26.2 class");
+        assertEquals("b963daf1a78106f08397f54c3fdefeda512a65b8f058031394c99b0e84a4ca8c",
+                sha256(gameBytes), "ServerGamePacketListenerImpl is not the audited 26.3 class");
         assertEquals("e5f7229b060a9f50b5754e4c1a9d371af835377f5cb230f30167362e44ae30f4",
-                sha256(commonBytes), "ServerCommonPacketListenerImpl is not the audited 26.2 class");
+                sha256(commonBytes), "ServerCommonPacketListenerImpl is not the audited 26.3 class");
 
         Set<Class<?>> actualSurface = effectivePacketParameterTypes(
                 read(gameBytes), read(commonBytes));
@@ -125,7 +125,7 @@ class AsyncIslandPacketPolicyTest {
 
         assertEquals(66, actualSurface.size());
         assertEquals(actualSurface, expected.keySet(),
-                "a 26.2 handler parameter was added/removed without a policy review");
+                "a 26.3 handler parameter was added/removed without a policy review");
         assertEquals(expectedWire.keySet(), production.keySet(),
                 "production has a missing or stale concrete wire-class policy row");
         assertEquals(expectedWire, production,
@@ -158,12 +158,12 @@ class AsyncIslandPacketPolicyTest {
 
     @Test
     void allConcreteMovePlayerWirePacketsStayOnTheIslandButUnknownSubclassesFailClosed() {
-        Set<Class<?>> exactMinecraft262WireTypes = Set.of(
+        Set<Class<?>> exactMinecraft263WireTypes = Set.of(
                 ServerboundMovePlayerPacket.Pos.class,
                 ServerboundMovePlayerPacket.Rot.class,
                 ServerboundMovePlayerPacket.PosRot.class,
                 ServerboundMovePlayerPacket.StatusOnly.class);
-        for (Class<?> type : exactMinecraft262WireTypes) {
+        for (Class<?> type : exactMinecraft263WireTypes) {
             assertSame(ISLAND_FIFO, AsyncIslandPacketPolicy.classifyType(type), type.getName());
         }
         assertSame(MAIN_FIFO, AsyncIslandPacketPolicy.classifyType(UnknownMovePacket.class),

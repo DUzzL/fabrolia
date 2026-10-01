@@ -26,7 +26,7 @@ import org.spongepowered.asm.mixin.injection.At;
  * still decides pushability. This gives up only the optional cached exclusion for entities
  * standing on climbable blocks; it cannot create a false-negative candidate or hold an
  * entity monitor across a world/chunk call. The handler and field read are exact pins for
- * Lithium 0.25.3; a supported update that changes either fails mixin application.
+ * Lithium 0.26.2 (mc26.3); a supported update that changes either fails mixin application.
  */
 @Mixin(value = Entity.class, priority = 2000)
 public abstract class FabroliaLithiumInBlockStateMixin {

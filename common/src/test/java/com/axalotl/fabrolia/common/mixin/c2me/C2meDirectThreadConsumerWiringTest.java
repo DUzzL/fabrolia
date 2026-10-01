@@ -118,6 +118,7 @@ class C2meDirectThreadConsumerWiringTest {
     @Test
     void compatMixinsAreRegisteredAndDisappearWithoutC2me() throws Exception {
         String shortcut = "c2me.FabroliaC2meChunkShortcutActorThreadMixin";
+        String consolidate = "c2me.FabroliaC2meConsolidateActorThreadMixin";
         String midTick = "c2me.FabroliaC2meMidTickActorThreadMixin";
         String saves = "c2me.FabroliaC2meSaveActorThreadMixin";
         try (InputStream input = getClass().getClassLoader()
@@ -125,6 +126,7 @@ class C2meDirectThreadConsumerWiringTest {
             assertNotNull(input);
             String config = new String(input.readAllBytes(), StandardCharsets.UTF_8);
             assertEquals(1, occurrences(config, "\"" + shortcut + "\""));
+            assertEquals(1, occurrences(config, "\"" + consolidate + "\""));
             assertEquals(1, occurrences(config, "\"" + midTick + "\""));
             assertEquals(1, occurrences(config, "\"" + saves + "\""));
         }
@@ -132,6 +134,8 @@ class C2meDirectThreadConsumerWiringTest {
         String prefix = "com.axalotl.fabrolia.common.mixin.";
         assertTrue(absent.shouldCancel(List.of("net.minecraft.server.level.ServerChunkCache"),
                 prefix + shortcut));
+        assertTrue(absent.shouldCancel(List.of("net.minecraft.server.level.ServerChunkCache"),
+                prefix + consolidate));
         assertTrue(absent.shouldCancel(List.of("net.minecraft.server.MinecraftServer"),
                 prefix + midTick));
         assertTrue(absent.shouldCancel(List.of("net.minecraft.server.MinecraftServer"),
@@ -139,7 +143,21 @@ class C2meDirectThreadConsumerWiringTest {
         MixinCanceller present = new MixinCanceller();
         assertFalse(present.shouldCancel(List.of("unused"), REWRITE_MIXIN));
         assertFalse(present.shouldCancel(List.of("unused"), prefix + shortcut));
-        assertFalse(present.shouldCancel(List.of("unused"), prefix + midTick));
+        assertFalse(present.shouldCancel(List.of("unused"), prefix + consolidate));
+        // C2ME's scheduling plugin merges executeTasksMidTick only when
+        // midTickChunkTasksInterval > 0 (0.4.2-alpha.0.88 default: -1). The hook
+        // follows that exact decision (test stand-ins for C2ME's Config).
+        long interval = com.ishland.c2me.opts.scheduling.common.Config.midTickChunkTasksInterval;
+        try {
+            com.ishland.c2me.opts.scheduling.common.Config.midTickChunkTasksInterval = -1L;
+            assertTrue(present.shouldCancel(List.of("unused"), prefix + midTick),
+                    "C2ME default: no mid-tick method, so no hook");
+            com.ishland.c2me.opts.scheduling.common.Config.midTickChunkTasksInterval = 100_000L;
+            assertFalse(present.shouldCancel(List.of("unused"), prefix + midTick),
+                    "C2ME mid-tick enabled: the hook must bind");
+        } finally {
+            com.ishland.c2me.opts.scheduling.common.Config.midTickChunkTasksInterval = interval;
+        }
         assertFalse(present.shouldCancel(List.of("unused"), SAVE_MIXIN),
                 "save catcher provider must stay active; TargetHandler preserves its body");
         assertFalse(present.shouldCancel(List.of("unused"), prefix + saves));

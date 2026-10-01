@@ -151,7 +151,7 @@ public final class IslandCommands {
                     return tok.length >= 5 && tripleLocal(tok, 2, src, rs, d);
                 case "data":
                     // only block targets are provable: data <get|merge|modify|remove> block x y z ...
-                    if (tok.length >= 6 && "block".equals(tok[2])) {
+                    if (tok.length >= 6 && "block".equals(tok[2]) && dataReadsOnlyTarget(tok)) {
                         return tripleLocal(tok, 3, src, rs, d);
                     }
                     return false;
@@ -161,6 +161,25 @@ public final class IslandCommands {
         } catch (RuntimeException e) {
             return false;   // any grammar surprise → routed path
         }
+    }
+
+    /**
+     * A {@code data} line whose only world access is its target block. Source
+     * arguments after the target ({@code from}/{@code string} block, entity or
+     * storage, and 26.3's {@code compute} with its own block/entity context) read
+     * outside the proven triple. Any such keyword anywhere in the tail routes,
+     * including one inside a literal value: false routing is always correct.
+     */
+    static boolean dataReadsOnlyTarget(String[] tok) {
+        for (int i = 6; i < tok.length; i++) {
+            switch (tok[i]) {
+                case "from", "string", "compute" -> {
+                    return false;
+                }
+                default -> { }
+            }
+        }
+        return true;
     }
 
     /** Runtime validation of a load-time locality proof against THIS call's
