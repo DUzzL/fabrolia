@@ -636,9 +636,10 @@ public final class AdvancementBuffer {
      * Main-thread, entity-batch end (ParallelProcessor.onEntityTickBatchEnd). Applies the
      * Main-ticked players' parked batch: vanilla awards them inline inside the entity
      * phase, so this is the nearest monitor-free point and must stay per level. The
-     * worker lane (island players, whose ticks have no Main-phase anchor) rides along
-     * only when this batch already holds the fence or none is required; otherwise it
-     * waits for the tick-head window, which shares the tick-function fence instead of
+     * worker lane (island players, whose ticks have no Main-phase anchor) and the
+     * frameless Main queues (packet-driven triggers, direct replays) ride along only
+     * when this batch already holds the fence or none is required; otherwise they
+     * wait for the tick-head window, which shares the tick-function fence instead of
      * quiescing every island once more per level.
      */
     public static void applyDeferred() {
@@ -674,20 +675,19 @@ public final class AdvancementBuffer {
                 drainOnMain(parked, parked.length, fired);
             }
 
-            boolean laneApplied = false;
-            if (workerLaneUnconditional
+            boolean fenceFree = workerLaneUnconditional
                     || !IslandCommands.requiresMainFence()
-                    || IslandCommands.fenceWindowHeld()) {
+                    || IslandCommands.fenceWindowHeld();
+            if (fenceFree) {
                 any |= fabrolia$applyDeferredLane(fired);
-                laneApplied = true;
-            }
-
-            // Cascades (reward functions raising new triggers, /advancement in
-            // rewards) settle inside the same scope + dedup.
-            drainMainFrameless(fired);
-            if (!laneApplied && IslandCommands.fenceWindowHeld()) {
-                // The frameless drain took the sticky fence: the lane rides along.
-                any |= fabrolia$applyDeferredLane(fired);
+                // Cascades (reward functions raising new triggers, /advancement in
+                // rewards) settle inside the same scope + dedup. A frameless item
+                // that would need a fresh fence of its own waits for the head
+                // window instead, exactly like the standalone drain: one extra
+                // all-island quiesce per level batch end for a packet-driven
+                // trigger was 5 ms/tick of Main waiting on the 2026-10-03
+                // production profile (40 players).
+                drainMainFrameless(fired);
             }
             RegionScheduler.throwWorkerFailureIfAny();
             fabrolia$finishPass(any, fired);

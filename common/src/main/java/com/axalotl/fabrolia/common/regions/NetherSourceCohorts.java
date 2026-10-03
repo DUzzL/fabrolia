@@ -14,6 +14,15 @@ public final class NetherSourceCohorts<T> {
     private final ArrayDeque<Prepared<T>> queue = new ArrayDeque<>();
     private List<T> stage = new ArrayList<>();
     private final Prepared<T> empty = new Prepared<>(this, List.of());
+    /**
+     * {@code queue.size()}, republished under the monitor after every change.
+     * Every idle region worker polls every source's head on each loop pass
+     * ({@code NetherPortalTransfers.serviceOne}); with the queues almost always
+     * empty that monitor traffic was pure contention (35 s blocked + 25 s CPU
+     * over 3 min on the 2026-10-03 production profile). A read racing a
+     * concurrent prepare() may miss it once: the next pass sees it.
+     */
+    private volatile int queued;
 
     public NetherSourceCohorts(BiConsumer<T, Throwable> cancellation) {
         this.cancellation = Objects.requireNonNull(cancellation);
@@ -37,6 +46,7 @@ public final class NetherSourceCohorts<T> {
             stage = nextStage;
             try {
                 queue.addLast(prepared);
+                queued = queue.size();
             } catch (Throwable thrown) {
                 failure = thrown;
             }
@@ -57,23 +67,8 @@ public final class NetherSourceCohorts<T> {
         cancelItems(cancelled, failure);
     }
 
-    /** A finite FIFO snapshot bound, including any cancelled receipts behind the current head. */
-    public int pendingCohorts() {
-        synchronized (monitor) {
-            headAfterCancelled();
-            return queue.size();
-        }
-    }
-
-    /** Reads accepted head items without taking ownership, including an already-acquired head. */
-    public List<T> acceptedHeadItems() {
-        synchronized (monitor) {
-            Prepared<T> head = headAfterCancelled();
-            return head != null && head.state == State.ACCEPTED ? head.items : List.of();
-        }
-    }
-
     public Cohort<T> tryAcquireHead() {
+        if (queued == 0) return null;
         synchronized (monitor) {
             Prepared<T> head = headAfterCancelled();
             if (head == null || head.state != State.ACCEPTED || head.acquired != null) return null;
@@ -88,6 +83,7 @@ public final class NetherSourceCohorts<T> {
         Prepared<T> head;
         while ((head = queue.peekFirst()) != null && head.state == State.CANCELLED) {
             queue.removeFirst();
+            queued = queue.size();
         }
         return head;
     }
@@ -161,6 +157,7 @@ public final class NetherSourceCohorts<T> {
             synchronized (prepared.owner.monitor) {
                 if (released) return;
                 prepared.owner.queue.removeFirst();
+                prepared.owner.queued = prepared.owner.queue.size();
                 prepared.state = State.COMPLETE;
                 prepared.acquired = null;
                 released = true;

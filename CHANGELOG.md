@@ -32,6 +32,19 @@
 
 ### Changed
 
+- Main no longer scans every region every 2 ms while it waits for an island
+  to yield its claim (level-tick tail catch-up). Island coordinators heal
+  their own barrier while they wait, so the full sweep now runs at most once
+  per 50 ms during such a wait, and at full cadence only once the wait itself
+  is older than 50 ms. The sweep cost 10-15 ms/tick of Main on a 40-player
+  production profile.
+- Idle region workers no longer take every Nether transfer queue's monitor
+  on each loop pass to find it empty (35 s blocked over 3 minutes on the same
+  profile).
+- Advancement triggers that fire on Main outside a player tick (packet
+  driven, direct replays) no longer cost an extra all-island fence at each
+  level's entity-batch end; they apply at the next tick head under the fence
+  the tick functions already take, as the standalone drain already did.
 - Async islands: natural spawning, thunder and random/fluid block ticks for
   island-owned chunks now run inside the island's own tick unit at the
   island's cadence on its logical clock (vanilla's chunkSource.tick slot:

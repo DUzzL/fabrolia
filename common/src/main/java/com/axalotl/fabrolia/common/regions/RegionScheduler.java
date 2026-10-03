@@ -1937,6 +1937,8 @@ public final class RegionScheduler {
     static final class IslandBuckets<T> {
         /** {@link #flushOverdue} waits for an island whose oldest queued task is this old. */
         static final long STALE_NANOS = 50_000_000L;
+        /** {@link #waitForRemaining} starts its liveness sweep once a wait is this old. */
+        static final long HEAL_AFTER_WAIT_NANOS = 50_000_000L;
         private final java.util.function.Consumer<T> body;
         private final java.util.function.BiFunction<T, Throwable, Throwable> cancel;
         private final java.util.function.ToLongFunction<T> publishedNanos;
@@ -2102,8 +2104,19 @@ public final class RegionScheduler {
          * moment its unit ends, whichever ends first. Between rounds Main
          * performs the same services as the blocking mainClaim spin (routed
          * batches an island coordinator may be waiting on, chunk executors,
-         * forensics) and, when {@code heal}, the barrier pump's region liveness
-         * sweep (a wedged island region is re-armed instead of holding Main).
+         * forensics) and, when {@code heal}, the region liveness sweep: at full
+         * cadence once the wait has outlasted {@link #HEAL_AFTER_WAIT_NANOS},
+         * before that at most one sweep per {@link #HEAL_AFTER_WAIT_NANOS}.
+         *
+         * <p>Why: an island coordinator waiting on its own entity barrier heals
+         * its domain ({@code healIslandBarrier}), so an ordinary wait here ends
+         * when the running unit does. Sweeping every region of every level each
+         * 2 ms of that wait cost Main 10-15 ms/tick of pure scanning on the
+         * 2026-10-03 production profiles (40 players, ~24k chunks). The sweep
+         * stays the backstop for a strand that the coordinator's own heal
+         * missed (it heals once per pending value; EntityBarrierWatchdog fails
+         * the unit after 3 s): it still reaches every island at least once per
+         * 50 ms while Main waits here.
          */
         private void waitForRemaining(boolean heal) {
             java.util.ArrayList<IslandRegistry.PIsland> remaining =
@@ -2117,6 +2130,7 @@ public final class RegionScheduler {
             try {
                 long spinStart = System.nanoTime();
                 long waitedSince = spinStart;
+                final long healFrom = spinStart + HEAL_AFTER_WAIT_NANOS;
                 IslandCommands.MAIN_CLAIMS_CONTENDED.add(remaining.size());
                 while (!buckets.isEmpty()) {
                     boolean progressed = false;
@@ -2164,7 +2178,12 @@ public final class RegionScheduler {
                                         IslandCommands.claimForensics(owner));
                             }
                         }
-                        if (heal) healColorGate();
+                        if (heal) {
+                            long now = System.nanoTime();
+                            if (now - healFrom >= 0 || healSweepIdleFor(now) >= HEAL_AFTER_WAIT_NANOS) {
+                                healColorGate();
+                            }
+                        }
                         IslandCommands.drainMainChunkServices();
                         java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
                     }
@@ -3279,6 +3298,11 @@ public final class RegionScheduler {
      *  appear, so heal at full cadence again. */
     static void resetHealBackoff() {
         healIntervalNanos = 2_000_000L;
+    }
+
+    /** Main thread: how long since the last admitted heal sweep began. */
+    static long healSweepIdleFor(long now) {
+        return now - lastHealNanos;
     }
 
     public static void healColorGate() {
