@@ -270,6 +270,112 @@ class NetherSourceCohortsTest {
         assertNull(source.tryAcquireHead());
     }
 
+    @Test
+    void concurrentPollersConsumeEveryCohortExactlyOnceInFifoOrder() throws Exception {
+        NetherSourceCohorts<Integer> source = new NetherSourceCohorts<>((item, failure) -> fail(item.toString()));
+        int cohorts = 2_000;
+        for (int i = 0; i < cohorts; i++) {
+            source.stage(i);
+            source.prepare().commit();
+        }
+        java.util.concurrent.atomic.AtomicInteger holders = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger overlaps = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.ConcurrentLinkedQueue<Integer> completed = new java.util.concurrent.ConcurrentLinkedQueue<>();
+        int threads = 8;
+        CyclicBarrier start = new CyclicBarrier(threads);
+        ExecutorService pollers = Executors.newFixedThreadPool(threads);
+        try {
+            List<Future<?>> futures = new ArrayList<>();
+            for (int t = 0; t < threads; t++) {
+                int seed = t;
+                futures.add(pollers.submit(() -> {
+                    java.util.Random random = new java.util.Random(seed);
+                    start.await(5, TimeUnit.SECONDS);
+                    while (completed.size() < cohorts) {
+                        NetherSourceCohorts.Cohort<Integer> cohort = source.tryAcquireHead();
+                        if (cohort == null) continue;
+                        try (cohort) {
+                            if (holders.incrementAndGet() != 1) overlaps.incrementAndGet();
+                            // A released attempt must hand the same head to a later poller.
+                            boolean finish = random.nextInt(3) != 0;
+                            if (finish) completed.add(cohort.items().getFirst());
+                            // Leave before complete()/close() reopen the gate.
+                            holders.decrementAndGet();
+                            if (finish) cohort.complete();
+                        }
+                    }
+                    return null;
+                }));
+            }
+            for (Future<?> future : futures) future.get(30, TimeUnit.SECONDS);
+        } finally {
+            pollers.shutdownNow();
+        }
+        assertEquals(0, overlaps.get(), "two attempts held the same source at once");
+        List<Integer> order = new ArrayList<>(completed);
+        assertEquals(cohorts, order.size());
+        for (int i = 0; i < cohorts; i++) assertEquals(i, order.get(i));
+        assertFalse(source.hasQueued());
+        assertNull(source.tryAcquireHead());
+    }
+
+    @Test
+    void activityTracksTheQueueNotTheStage() {
+        List<Boolean> transitions = new ArrayList<>();
+        NetherSourceCohorts<String> source = new NetherSourceCohorts<>(
+                (item, failure) -> { }, transitions::add);
+        source.stage("open");
+        assertEquals(List.of(), transitions, "staging is not transport");
+        NetherSourceCohorts.Prepared<String> first = source.prepare();
+        assertFalse(first.isEmpty());
+        assertEquals(List.of(true), transitions, "an offering cohort is already queued");
+        assertTrue(source.prepare().isEmpty());
+        source.stage("second");
+        NetherSourceCohorts.Prepared<String> second = source.prepare();
+        second.commit();
+        assertEquals(List.of(true), transitions);
+
+        // The older offering head is not acquirable and keeps FIFO order: the
+        // committed second stays queued behind it, so the source stays active.
+        assertNull(source.tryAcquireHead());
+        assertTrue(source.hasQueued());
+        first.commit();
+        try (NetherSourceCohorts.Cohort<String> head = source.tryAcquireHead()) {
+            assertNotNull(head);
+            assertEquals(List.of("open"), head.items());
+            head.complete();
+        }
+        assertEquals(List.of(true), transitions, "one cohort is still queued");
+    }
+
+    @Test
+    void activityReportsDrainOnCompletionAndOnDroppedCancelledHead() {
+        List<Boolean> transitions = new ArrayList<>();
+        NetherSourceCohorts<String> source = new NetherSourceCohorts<>(
+                (item, failure) -> { }, transitions::add);
+        source.stage("a");
+        source.prepare().commit();
+        try (NetherSourceCohorts.Cohort<String> head = source.tryAcquireHead()) {
+            assertNotNull(head);
+            head.close();
+            assertEquals(List.of(true), transitions, "a released attempt keeps its head queued");
+        }
+        try (NetherSourceCohorts.Cohort<String> head = source.tryAcquireHead()) {
+            assertNotNull(head);
+            head.complete();
+        }
+        assertEquals(List.of(true, false), transitions);
+        assertFalse(source.hasQueued());
+
+        source.stage("b");
+        NetherSourceCohorts.Prepared<String> doomed = source.prepare();
+        doomed.cancel(new IllegalStateException("publisher failed"));
+        assertEquals(List.of(true, false, true), transitions);
+        assertNull(source.tryAcquireHead(), "a cancelled head is dropped, never handed out");
+        assertEquals(List.of(true, false, true, false), transitions);
+        assertFalse(source.hasQueued());
+    }
+
     private static void backOutAndRetry(NetherSourceCohorts<String> own,
                                        NetherSourceCohorts<String> opposite,
                                        String item, CyclicBarrier phases) throws Exception {

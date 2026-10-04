@@ -54,12 +54,27 @@ final class EpochDomain {
 
     /**
      * Epoch whose region-map membership was closed for entity dispatch.
-     * Region creation takes the matching topology READ lock; dispatch records
-     * its finite member snapshot and this cut while holding WRITE. A creator
-     * admitted before the cut is captured and starts at E-1. One admitted
-     * after it was not counted in the barrier and starts at E.
+     * Region creation for a cell of this domain holds {@link #regionCreationGate}
+     * READ; dispatch records its finite member snapshot and this cut while
+     * holding the matching WRITE (the global domain's cut holds the level-wide
+     * topology WRITE instead, which excludes every creator). A creator admitted
+     * before the cut is captured and starts at E-1. One admitted after it was
+     * not counted in the barrier and starts at E.
      */
     volatile long entityDispatchCutEpoch = Long.MIN_VALUE;
+
+    /**
+     * Per-domain shard of the region-creation cut. Island units of different
+     * domains close their membership concurrently: a creator for a cell of
+     * domain X can never become a member of domain Y's cut, so excluding it
+     * there was pure serialization (2026-10-03 production: 27 s of workers
+     * parked on the one level-wide fair WRITE lock). Lock order: level
+     * topology READ, then this READ; the WRITE side never takes the level lock.
+     * Fair for the same reason as the level gate: continuous creation must not
+     * starve a cut.
+     */
+    final java.util.concurrent.locks.ReentrantReadWriteLock regionCreationGate =
+            new java.util.concurrent.locks.ReentrantReadWriteLock(true);
 
     /** Completed by the LAST owing region's barrier contribution (R5 event path). */
     volatile CompletableFuture<Void> entityBarrier;
@@ -109,6 +124,25 @@ final class EpochDomain {
         private final java.util.concurrent.atomic.AtomicInteger readyReceipts =
                 new java.util.concurrent.atomic.AtomicInteger();
 
+        /**
+         * Consumers parked in {@link #awaitAccepted}: a Treiber stack drained by
+         * the decision. Parking used to be a 1 us timed poll, which Linux timer
+         * slack turns into ~50 us per round — every ready consumer that popped
+         * an entry before the dispatcher finished its sweep started that much
+         * late (2026-10-03 production: 15 s parked here over 3 min).
+         */
+        private final java.util.concurrent.atomic.AtomicReference<Waiter> waiters =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        private static final class Waiter {
+            final Thread thread;
+            Waiter next;
+
+            Waiter(Thread thread) {
+                this.thread = thread;
+            }
+        }
+
         EntityDispatchPublication() {
             this(OFFERING);
         }
@@ -121,28 +155,45 @@ final class EpochDomain {
             if (!state.compareAndSet(OFFERING, ACCEPTED)) {
                 throw new IllegalStateException("entity dispatch publication was already decided");
             }
+            wakeWaiters();
         }
 
         void cancel() {
-            state.compareAndSet(OFFERING, CANCELLED);
+            if (state.compareAndSet(OFFERING, CANCELLED)) wakeWaiters();
         }
         boolean isAccepted() {
             return state.get() == ACCEPTED;
         }
 
+        /** After the decision write: a waiter pushed later re-reads the decided state before parking. */
+        private void wakeWaiters() {
+            for (Waiter w = waiters.getAndSet(null); w != null; w = w.next) {
+                java.util.concurrent.locks.LockSupport.unpark(w.thread);
+            }
+        }
 
         boolean awaitAccepted() {
             int observed;
             int spins = 64;
+            Waiter self = null;
             while ((observed = state.get()) == OFFERING) {
                 if (spins-- > 0) {
                     Thread.onSpinWait();
+                } else if (self == null) {
+                    // Register, then re-check the state before the first park:
+                    // the decision writes state before draining the stack.
+                    self = new Waiter(Thread.currentThread());
+                    Waiter head;
+                    do {
+                        head = waiters.get();
+                        self.next = head;
+                    } while (!waiters.compareAndSet(head, self));
                 } else {
                     // This receipt can only become ACCEPTED/CANCELLED; parking is
-                    // not a timeout or refusal.  It merely stops dozens of ready
-                    // consumers from burning whole cores while the one publisher
-                    // which decides the exact receipt is waiting to run.
-                    java.util.concurrent.locks.LockSupport.parkNanos(this, 1_000L);
+                    // not a timeout or refusal. The decision unparks every
+                    // registered consumer; the bound only covers a spurious
+                    // or consumed permit.
+                    java.util.concurrent.locks.LockSupport.parkNanos(this, 100_000L);
                 }
             }
             return observed == ACCEPTED;

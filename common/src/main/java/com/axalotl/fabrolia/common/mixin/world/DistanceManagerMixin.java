@@ -5,8 +5,6 @@ import com.axalotl.fabrolia.api.fastutil.ConcurrentLongLinkedOpenHashSet;
 import com.axalotl.fabrolia.common.regions.CompletedSimulationView;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
-import it.unimi.dsi.fastutil.longs.Long2ByteMap;
-import it.unimi.dsi.fastutil.longs.Long2ByteMaps;
 import it.unimi.dsi.fastutil.longs.LongConsumer;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.server.level.ChunkHolder;
@@ -81,12 +79,8 @@ public abstract class DistanceManagerMixin {
      *  descriptor — live boot crash 2026-07-06. */
     @Inject(method = "forEachEntityTickingChunk", at = @At("HEAD"), cancellable = true)
     private void fabrolia$forEachCompletedEntityTicking(LongConsumer consumer, CallbackInfo ci) {
-        Long2ByteMap view = ((CompletedSimulationView) this.simulationChunkTracker).fabrolia$completedView();
-        for (Long2ByteMap.Entry entry : Long2ByteMaps.fastIterable(view)) {
-            if (ChunkLevel.isEntityTicking(entry.getByteValue())) {
-                consumer.accept(entry.getLongKey());
-            }
-        }
+        ((CompletedSimulationView) this.simulationChunkTracker).fabrolia$completedLevels()
+                .forEach(ChunkLevel::isEntityTicking, consumer);
         ci.cancel();
     }
 

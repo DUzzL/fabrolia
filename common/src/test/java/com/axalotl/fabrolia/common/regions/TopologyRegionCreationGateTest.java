@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
@@ -226,6 +227,156 @@ final class TopologyRegionCreationGateTest {
         assertFalse(tail.isAlive());
         assertFalse(waiter.isAlive());
         assertNull(failure.get());
+    }
+
+    @Test
+    void islandCutsOfDifferentDomainsDoNotWaitForEachOther() throws Exception {
+        EpochDomain a = new EpochDomain();
+        EpochDomain b = new EpochDomain();
+        long keyA = 41L;
+        long keyB = 42L;
+        ThreadedRegionizer regionizer = islandRegionizer(Map.of(keyA, a, keyB, b));
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch otherSideDone = new CountDownLatch(1);
+        AtomicReference<Region> createdForB = new AtomicReference<>();
+
+        regionizer.lockDomainCreationCut(a);
+        try {
+            Thread other = Thread.ofPlatform().name("other-island").start(() -> {
+                try {
+                    // B's creator and B's own cut are not members of A's cut.
+                    createdForB.set(regionizer.regionForGridKey(keyB));
+                    regionizer.lockDomainCreationCut(b);
+                    regionizer.unlockDomainCreationCut(b);
+                    otherSideDone.countDown();
+                } catch (Throwable thrown) {
+                    failure.compareAndSet(null, thrown);
+                }
+            });
+            assertTrue(otherSideDone.await(2, TimeUnit.SECONDS),
+                    "another island's creator or cut waited for this island's cut");
+            other.join(Duration.ofSeconds(3));
+        } finally {
+            regionizer.unlockDomainCreationCut(a);
+        }
+        assertNull(failure.get());
+        assertSame(b, createdForB.get().domain);
+        assertNull(regionizer.peekByGridKey(keyA));
+    }
+
+    @Test
+    void domainCutLinearizesItsOwnCreatorsAtExactlyOneSide() throws Exception {
+        EpochDomain a = new EpochDomain();
+        a.epoch = 9L;
+        a.entityDispatchCutEpoch = 8L;
+        long early = 51L;
+        long late = 52L;
+        ThreadedRegionizer regionizer = islandRegionizer(Map.of(early, a, late, a));
+        CountDownLatch creatorAdmitted = new CountDownLatch(1);
+        CountDownLatch cutQueued = new CountDownLatch(1);
+        CountDownLatch cutDone = new CountDownLatch(1);
+        AtomicReference<Region> earlyRegion = new AtomicReference<>();
+        AtomicReference<List<Region>> members = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        // An already-admitted creator (holding the domain READ) publishes
+        // before the cut; its reentrant creation is not blocked by the queued cut.
+        Thread creator = Thread.ofPlatform().name("admitted-creator").start(() -> {
+            a.regionCreationGate.readLock().lock();
+            try {
+                creatorAdmitted.countDown();
+                assertTrue(cutQueued.await(2, TimeUnit.SECONDS));
+                earlyRegion.set(regionizer.regionForGridKey(early));
+            } catch (Throwable thrown) {
+                failure.compareAndSet(null, thrown);
+            } finally {
+                a.regionCreationGate.readLock().unlock();
+            }
+        });
+        assertTrue(creatorAdmitted.await(2, TimeUnit.SECONDS));
+        Thread cut = Thread.ofPlatform().name("island-cut").start(() -> {
+            try {
+                cutQueued.countDown();
+                regionizer.lockDomainCreationCut(a);
+                try {
+                    Region r = regionizer.peekByGridKey(early);
+                    members.set(r == null ? List.of() : List.of(r));
+                    a.entityDispatchCutEpoch = a.epoch;
+                } finally {
+                    regionizer.unlockDomainCreationCut(a);
+                }
+                cutDone.countDown();
+            } catch (Throwable thrown) {
+                failure.compareAndSet(null, thrown);
+            }
+        });
+        assertTrue(cutDone.await(3, TimeUnit.SECONDS));
+        creator.join(Duration.ofSeconds(3));
+        cut.join(Duration.ofSeconds(3));
+        assertNull(failure.get());
+
+        assertEquals(List.of(earlyRegion.get()), members.get(),
+                "the admitted creator's region must be inside the cut");
+        assertEquals(8L, earlyRegion.get().doneEpoch, "pre-cut creation owes epoch E");
+        Region lateRegion = regionizer.regionForGridKey(late);
+        assertEquals(9L, lateRegion.doneEpoch, "post-cut creation cannot owe the armed barrier");
+        assertSame(a, lateRegion.domain);
+    }
+
+    @Test
+    void queuedDomainCutBlocksNewCreatorsOfThatDomainOnly() throws Exception {
+        EpochDomain a = new EpochDomain();
+        long keyA = 61L;
+        long gapKey = 62L;
+        ThreadedRegionizer regionizer = islandRegionizer(Map.of(keyA, a));
+        CountDownLatch creatorDone = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        regionizer.lockDomainCreationCut(a);
+        Thread creator;
+        try {
+            // A gap cell resolves to the global domain: never behind an island cut.
+            Region gap = regionizer.regionForGridKey(gapKey);
+            assertSame(regionizer.owner.globalDomain, gap.domain);
+            creator = Thread.ofPlatform().name("late-creator").start(() -> {
+                try {
+                    regionizer.regionForGridKey(keyA);
+                    creatorDone.countDown();
+                } catch (Throwable thrown) {
+                    failure.compareAndSet(null, thrown);
+                }
+            });
+            assertFalse(creatorDone.await(100, TimeUnit.MILLISECONDS),
+                    "a creator of the cut's own domain crossed the held cut");
+            assertNull(regionizer.peekByGridKey(keyA));
+        } finally {
+            regionizer.unlockDomainCreationCut(a);
+        }
+        assertTrue(creatorDone.await(2, TimeUnit.SECONDS));
+        creator.join(Duration.ofSeconds(3));
+        assertNull(failure.get());
+        assertSame(a, regionizer.peekByGridKey(keyA).domain);
+    }
+
+    private static ThreadedRegionizer islandRegionizer(Map<Long, EpochDomain> cells) throws Exception {
+        java.lang.reflect.Field theUnsafe = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+        theUnsafe.setAccessible(true);
+        sun.misc.Unsafe unsafe = (sun.misc.Unsafe) theUnsafe.get(null);
+        RegionizedServer runtime = (RegionizedServer) unsafe.allocateInstance(RegionizedServer.class);
+        it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<EpochDomain> snapshot =
+                new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
+        cells.forEach(snapshot::put);
+        set(runtime, "globalDomain", new EpochDomain());
+        set(runtime, "cellDomainSnapshot", snapshot);
+        runtime.asyncActive = true;
+        ThreadedRegionizer regionizer = regionizer();
+        regionizer.owner = runtime;
+        return regionizer;
+    }
+
+    private static void set(Object target, String name, Object value) throws Exception {
+        java.lang.reflect.Field field = RegionizedServer.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(target, value);
     }
 
     private static int captureNewMapMembers(

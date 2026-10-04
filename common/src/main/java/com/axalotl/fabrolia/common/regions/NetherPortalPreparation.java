@@ -71,6 +71,11 @@ public final class NetherPortalPreparation {
         return request;
     }
 
+    /** Lock-free: whether {@link #serviceClaimFree} has anything to move. */
+    static boolean hasStaged() {
+        return !STAGED.isEmpty();
+    }
+
     /** Called only after all transfer/source claims have been released. */
     public static void serviceClaimFree() {
         Request request;
@@ -377,6 +382,11 @@ public final class NetherPortalPreparation {
         /** Queue precedence hint only; resolve still validates the acquired attempt. */
         public synchronized boolean readyToAttempt() {
             return !closed && (destination == null || !needsMain && (denied || border != null));
+        }
+
+        /** Exactly {@link #resolve}'s refusal for a request Main has not serviced yet. */
+        public synchronized boolean awaitingMain() {
+            return !closed && destination != null && needsMain;
         }
 
         /** Adds an actual vanilla rider/follower arrival dependency before body entry. */
