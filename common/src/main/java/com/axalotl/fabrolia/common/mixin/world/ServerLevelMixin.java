@@ -421,6 +421,10 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private void fabrolia$stampPassengerBody(Entity entity, Operation<Void> original) {
         com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                 .markPlayerEntityBodyPhase(entity);
+        // The passenger's real tick: re-open its per-tick function pass here,
+        // after vanilla's removed/vehicle/tick-list gates.
+        com.axalotl.fabrolia.common.regions.IslandFunctionHead.entityTicked(
+                (com.axalotl.fabrolia.common.regions.FunctionPassMark) entity);
         original.call(entity);
     }
 
@@ -820,10 +824,11 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 }
             }
             // Tail entries queued just before the last region task completed.
-            // Like the routed drain above, this point may wait for islands: Main
-            // holds no claim and the global lane is done. Overdue island work
-            // (older than 50 ms, or a queued player tick) is caught here, bounded
-            // by the island's running unit; the rest waits for the next pump.
+            // Main holds no claim and the global lane is done. MAIN_SYNC work of
+            // busy islands does not wait here: it raises a service request and is
+            // served at the next safe point (post-tick boundary, level head).
+            // Only overdue tracker publications may wait, bounded by the island's
+            // running unit; the rest waits for the next pump.
             if (exactPlayerOrder) {
                 RegionScheduler.drainMainSyncTicks();
             } else {

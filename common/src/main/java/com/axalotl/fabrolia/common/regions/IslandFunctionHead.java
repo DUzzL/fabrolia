@@ -393,6 +393,66 @@ public final class IslandFunctionHead {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Main-sync entities (physical Main, inside the MAIN_SYNC body)
+    // ------------------------------------------------------------------
+
+    /**
+     * An entity whose tick physical Main runs (MAIN_SYNC lane, under its
+     * island's claim or in the global lane) and which no pass took since its
+     * last tick: run the armed roots for it now, before its tick body. Covers
+     * Main-owned players (an island head never runs them: strict C1) and any
+     * entity whose queued Main tick lagged behind its island's next head.
+     * Owner-local lines run here; an escalate match runs inline under a held
+     * global fence, otherwise the rest of that entity's pass is handed to the
+     * fenced routed batch (Main holds an island claim here and must not
+     * quiesce from inside it).
+     */
+    public static void runMainSyncEntityPass(Entity entity, MinecraftServer server) {
+        Armed armed = ARMED;
+        if (armed.isEmpty() || FunctionAnalyzer.plan() != armed.plan()) return;
+        // Cheap common case first: the island head already took this entity.
+        FunctionPartition partition = FunctionPartition.single(entity);
+        FunctionPartition.Pass pass = partition.open(NEXT_ISLAND_PASS.getAndIncrement(), false);
+        if (pass.isEmpty()) return;
+        ArrayList<FunctionPlan.RootPlan> roots = new ArrayList<>(armed.tickRoots());
+        roots.addAll(armed.loops());
+        List<Step> steps = steps(roots);
+        if (steps.isEmpty()) return;
+        RegionScheduler.commitSuccessIfHealthy(FunctionFenceDiag.MAIN_SYNC_ENTITY_PASSES::increment);
+        CommandSourceStack source = server.getFunctions().getGameLoopSender();
+        FunctionPlan.RootPlan aborted = null;
+        for (int i = 0; i < steps.size(); i++) {
+            Step step = steps.get(i);
+            if (step.root() == aborted) continue;
+            List<List<Entity>> matches;
+            try {
+                matches = partitionStep(step.line(), source, pass, server);
+            } catch (RuntimeException failure) {
+                functionFailure(step.root(), failure);
+                aborted = step.root();
+                continue;
+            }
+            if (matches == null) continue;
+            int from = i;
+            FunctionPlan.RootPlan abortedNow = aborted;
+            String label = step.root().id() + ":" + step.line().sourceLine();
+            RegionScheduler.commitSuccessIfHealthy(() -> {
+                FunctionFenceDiag.MAIN_ESCALATIONS.increment();
+                FunctionFenceDiag.escalated(label);
+            });
+            Runnable rest = () -> IslandFunctionScope.runUnscoped(() -> runRemainderFenced(
+                    armed.plan(), steps, from, matches, abortedNow, pass, server));
+            if (IslandCommands.fenceWindowHeld()) {
+                rest.run();
+            } else {
+                RegionScheduler.commitSuccessIfHealthy(FunctionFenceDiag.DEFERRED_ESCALATIONS::increment);
+                IslandCommands.enqueueFencedBody(rest);
+            }
+            return;
+        }
+    }
+
     private static void runFencedOnMain(Runnable body) {
         if (!IslandCommands.requiresMainFence() || IslandCommands.fenceWindowHeld()) {
             IslandFunctionScope.runUnscoped(body);

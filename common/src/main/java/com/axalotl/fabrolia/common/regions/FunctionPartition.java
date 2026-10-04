@@ -155,7 +155,13 @@ public abstract class FunctionPartition {
         private static void addRegion(List<Entity> out, Region r, EpochDomain d) {
             if (r == null || r.domain != d || r.state() != RegionState.ACTIVE) return;
             for (Entity e : r.entities) {
-                if (live(e)) out.add(e);
+                // Only entities whose tick this coordinator owns: a player Main
+                // owns (A5 MAIN phase, fallbacks, MAIN_SYNC lane) is served by
+                // its Main-sync body (IslandFunctionHead.runMainSyncEntityPass).
+                if (!live(e)) continue;
+                if (e instanceof net.minecraft.server.level.ServerPlayer p
+                        && !PlayerTurnOwnership.currentThreadOwns(p)) continue;
+                out.add(e);
             }
         }
 
@@ -278,5 +284,51 @@ public abstract class FunctionPartition {
         if (e.isRemoved()) return false;
         ParallelProcessor.TickGuard guard = (ParallelProcessor.TickGuard) e;
         return !guard.fabrolia$tickLease().isArrivalPending() && !guard.fabrolia$isPortalPending();
+    }
+
+    // ------------------------------------------------------------------
+    // One Main-sync entity (physical Main, inside its MAIN_SYNC body)
+    // ------------------------------------------------------------------
+
+    static FunctionPartition single(Entity entity) {
+        return new SinglePartition(entity);
+    }
+
+    /**
+     * Exactly one entity whose tick body physical Main is about to run under
+     * the claim of its island (or in the global lane): chunks are owned while
+     * they belong to no island or to an island whose claim Main holds.
+     */
+    static final class SinglePartition extends FunctionPartition {
+        final Entity entity;
+
+        SinglePartition(Entity entity) {
+            this.entity = entity;
+        }
+
+        @Override
+        protected List<Entity> candidates() {
+            return live(entity) ? List.of(entity) : List.of();
+        }
+
+        @Override
+        public boolean owns(Entity e) {
+            return e == entity;
+        }
+
+        @Override
+        public boolean ownsChunk(ServerLevel level, int cx, int cz) {
+            if (IslandCommands.fenceWindowHeld()) return true;
+            RegionizedServer rs = RegionScheduler.forLevel(level);
+            if (rs == null) return true;
+            IslandRegistry.PIsland owner =
+                    rs.islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(cx, cz));
+            return owner == null || IslandCommands.mainHolds(owner);
+        }
+
+        @Override
+        public String describe() {
+            return "main-sync " + entity;
+        }
     }
 }

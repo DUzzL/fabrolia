@@ -145,6 +145,9 @@ public final class RegionScheduler {
         // Islands stopped by a MAIN_SYNC service request since the last entity
         // phase are served here, ahead of the tracker publications (pump/tail order).
         drainMainSyncOutOfPhase();
+        // Parked island waiters (escalated function heads, routed commands):
+        // Main holds no claim or fence at this boundary.
+        if (IslandCommands.hasRoutedPending()) IslandCommands.drainRoutedBatch();
         drainReadyMainTracking();
         while (true) {
             DeferredLifecycleTransition task;
@@ -1457,6 +1460,9 @@ public final class RegionScheduler {
                 throw new IllegalStateException("MAIN_SYNC entity left its claimed server level");
             }
             if (((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return;
+            // Per-tick datapack roots for an entity no function pass took since
+            // its last tick (Main-owned players; Main ticks lagging their island).
+            IslandFunctionHead.runMainSyncEntityPass(entity, level.getServer());
             entity.checkDespawn();
             if (!entity.isRemoved()) {
                 if (vanillaGuarded) ParallelProcessor.tickEntityVanillaGuarded(level, entity, false);

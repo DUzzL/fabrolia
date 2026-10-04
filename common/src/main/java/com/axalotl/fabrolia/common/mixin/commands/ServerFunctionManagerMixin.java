@@ -237,18 +237,11 @@ public abstract class ServerFunctionManagerMixin {
     @WrapMethod(method = "execute")
     private void fabrolia$fenceFunction(CommandFunction<CommandSourceStack> function,
                                         CommandSourceStack source, Operation<Void> original) {
-        // C2: the advancement reward routing point proved this exact call owner-local
-        // and runs it on the player's owner (island worker or Main) without a fence.
-        if (com.axalotl.fabrolia.common.parallelised.advancement.AdvancementRewardRouting
-                .isOwnerLocalReward(function)) {
-            RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> original.call(function, source));
-            return;
-        }
         if (Thread.currentThread() instanceof RegionWorkerThread) {
-            // C3: a worker runs only a body the exact active plan proves
-            // owner-local, inside its partition's ownership guards. Anything
-            // else would run unfenced next to live islands: fail-stop.
+            // C3 (also for C2 owner-local rewards): a worker runs only a body the
+            // exact active plan proves owner-local, under the live-generation
+            // lease and inside its partition's ownership guards. Anything else
+            // would run unfenced next to live islands: fail-stop.
             boolean ran = FunctionAnalyzer.withExactOwnerLocalProof(
                     (ServerFunctionManager) (Object) this, function, proven -> {
                         if (!proven) return false;
@@ -266,6 +259,14 @@ public abstract class ServerFunctionManagerMixin {
                                 + Thread.currentThread().getName()
                                 + " is not proven owner-local by the active function plan"));
             }
+            return;
+        }
+        // C2 on physical Main: the advancement reward routing point proved this
+        // exact call owner-local for a Main-owned player; it runs without a fence.
+        if (com.axalotl.fabrolia.common.parallelised.advancement.AdvancementRewardRouting
+                .isOwnerLocalReward(function)) {
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> original.call(function, source));
             return;
         }
         if (IslandFunctionScope.current() != null) {

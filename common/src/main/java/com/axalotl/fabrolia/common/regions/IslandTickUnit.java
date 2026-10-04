@@ -903,6 +903,15 @@ public final class IslandTickUnit {
                 terminalOutcome = AttemptOutcome.RETIRED;
                 return;
             }
+            // Async OFF races the pre-claim check: Main writes asyncActive=false
+            // and then reads unitClaim (its OFF catch-up fences iff a claim is
+            // visible); this unit wrote unitClaim and now reads asyncActive.
+            // Both volatile: at least one side sees the other, so a unit never
+            // runs beside Main's unfenced catch-up over the same entities.
+            if (globalSprintRequest == null && !rs.asyncActive) {
+                terminalOutcome = AttemptOutcome.RETIRED;
+                return;
+            }
             if (globalSprintRequest != null
                     && (island.globalSprintRequest != globalSprintRequest
                         || !island.globalSprintFenced)) {

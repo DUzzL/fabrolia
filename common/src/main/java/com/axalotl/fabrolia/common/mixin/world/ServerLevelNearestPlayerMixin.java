@@ -58,7 +58,14 @@ public abstract class ServerLevelNearestPlayerMixin implements HardColliderIndex
         // served now instead of after this level's chunk tick. Async levels
         // only — exact-ordinal levels drain completely in their entity phase.
         RegionizedServer rs = RegionScheduler.forLevel((ServerLevel) (Object) this);
-        if (rs != null && rs.asyncActive) RegionScheduler.drainMainSyncOutOfPhase();
+        if (rs != null && rs.asyncActive) {
+            RegionScheduler.drainMainSyncOutOfPhase();
+            // Parked island waiters (escalated function heads, routed commands)
+            // are served at this fence-free point too, not only at the pumps.
+            if (com.axalotl.fabrolia.common.regions.IslandCommands.hasRoutedPending()) {
+                com.axalotl.fabrolia.common.regions.IslandCommands.drainRoutedBatch();
+            }
+        }
     }
 
     /**
