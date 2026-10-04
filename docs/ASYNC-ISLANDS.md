@@ -660,6 +660,21 @@ only take snapshots now. `common/save/AsyncSaveWriter` writes the files.
   (`save-all flush`, shutdown) and `stopServer` wait for every queued file
   after the islands run again. `PlayerDataStorage.load`, `PlayerAdvancements`
   (re)load and the stats file load wait for that file's queued write first.
+- Scoreboard (`DeferredSavedDataEncodes`, `SavedDataStorageEncodeMixin`):
+  `ServerScoreboard.storeToSaveDataIfDirty` still packs the scoreboard under
+  the quiesce, but `encodeUnchecked` only captures that immutable `Packed`
+  and hands `collectDirtyTagsToSave` an empty placeholder tag (keyed by
+  identity); the codec encode runs in the scoreboard's own `tryWrite` task on
+  `Util.ioPool`. Dirty-bit retirement, the per-storage write order
+  (`pendingWriteFuture`) and `saveAndJoin` (flush, close) stay vanilla, the
+  joined task now includes the encode. Same bytes. Only `ScoreboardSaveData`
+  qualifies: every other SavedData (maps, raids, command storage, …) encodes
+  live mutable state and stays on Main. An encode failure is published fatal
+  (vanilla would have thrown on Main), writes nothing and marks the scoreboard
+  dirty again (vanilla keeps it dirty), so the stop's flushing save retries;
+  it is not rethrown into the storage's write chain, which would stop every
+  later server SavedData write. Placeholders are weak keys: a write task
+  dropped after an earlier failure in the chain frees its snapshot.
 
 ## 15. Entity tracking tick (opt/tracking, 2026-10-04)
 
