@@ -4,9 +4,11 @@
   "package": "com.axalotl.fabrolia.common.mixin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
+    "advancement.AdvancementRewardsMixin",
     "advancement.EntityNbtPredicateMixin",
     "advancement.NbtPredicateMixin",
     "advancement.PlayerAdvancementsMixin",
+    "advancement.PlayerListAdvancementMixin",
     "advancement.SimpleCriterionTriggerMixin",
     "c2me.PoiUnloadGuardMixin",
     "c2me.FabroliaC2mePoiResidencyMixin",

@@ -1,6 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
-import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer;
+import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCacheContext;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.mojang.authlib.GameProfile;
@@ -430,6 +430,9 @@ public abstract class ServerPlayerMixin extends Player implements
     private void fabrolia$saveEnderPearlsAtomically(
             net.minecraft.world.level.storage.ValueOutput output, Operation<Void> original) {
         if (this.enderPearls.isEmpty()) return;
+        // A fire-time advancement compare never references the pearls (one that does
+        // is routed before serializing); they may live on any island or level.
+        if (AdvancementCacheContext.excludesEnderPearls()) return;
 
         int healed = 0;
         java.util.EnumMap<net.minecraft.world.entity.Entity.RemovalReason, Integer> byReason = null;
@@ -495,10 +498,6 @@ public abstract class ServerPlayerMixin extends Player implements
         }
     }
 
-    // V1's worker-doTick/packet-lane hooks are gone. V2 only marks the existing
-    // tick() wrapper's exact body entry; doTick() remains the vanilla main-owned
-    // connection-phase call and is never invoked by Fabrolia production code.
-
     @WrapMethod(method = "die(Lnet/minecraft/world/damagesource/DamageSource;)V")
     private void die(DamageSource source, Operation<Void> original) {
         ServerPlayer self = (ServerPlayer) (Object) this;
@@ -516,80 +515,25 @@ public abstract class ServerPlayerMixin extends Player implements
     }
 
     /**
-     * Opens the per-thread advancement award buffer for this player's tick.
-     * Complete trigger and player predicates run synchronously at fire time under
-     * exclusive gameplay ownership; only matched listener keys survive until drain.
-     * Main applies those awards here, while a selected worker queues them for the
-     * Main batch-end apply. Failed bodies discard their frame rather than awarding
-     * from a partially completed tick.
+     * Exact A5/V2 turn accounting around ServerPlayer.tick. Advancement triggers in
+     * the body evaluate and award on the player's owner at fire time
+     * (AdvancementBuffer.trigger), so the body's own flushDirty sends their progress
+     * in vanilla order.
      */
-    /** task #15 (production CME): ServerPlayer.tick's own advancement flush
-     *  iterates progressChanged/rootsToUpdate/visible plain HashSets. A mod or
-     *  compatibility path may still invoke it off-main while main legally
-     *  mutates the same sets via award()/revoke() (buffer drains, packet-time
-     *  triggers, commands, other players' reward cascades). Route only that
-     *  defensive off-main case to the main batch-end drain. Main-ticked players
-     *  keep the vanilla inline call. */
-    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
-            method = "tick()V",
-            at = @org.spongepowered.asm.mixin.injection.At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/PlayerAdvancements;flushDirty(Lnet/minecraft/server/level/ServerPlayer;Z)V"))
-    private void fabrolia$mainOwnFlush(net.minecraft.server.PlayerAdvancements advancements,
-                                       net.minecraft.server.level.ServerPlayer player, boolean force,
-                                       Operation<Void> original) {
-        if (com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .isWorkerTickOf(player)) {
-            // V2 owns one exact guarded tick and reaches the level barrier before
-            // main continues. Preserve vanilla's inline TICK-trigger -> flush order.
-            original.call(advancements, player, force);
-            return;
-        }
-        if (Thread.currentThread() instanceof com.axalotl.fabrolia.common.regions.RegionWorkerThread) {
-            AdvancementBuffer.queueFlush(player);
-            return;
-        }
-        original.call(advancements, player, force);
-    }
-
     @WrapMethod(method = "tick()V")
-    private void fabrolia$bufferAdvancementsDuringTick(Operation<Void> original) {
+    private void fabrolia$accountPlayerTick(Operation<Void> original) {
         ServerPlayer self = (ServerPlayer) (Object) this;
         com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks
                 .markServerPlayerTickEntered(self);
         boolean directLease = com.axalotl.fabrolia.common.regions
                 .RegionalPlayerEntityTicksV2.beginServerPlayerTick(self);
         Throwable failure = null;
-        boolean advancementFrame = false;
         try {
-            if (com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                    .isWorkerTickOf(self)) {
-            // The old generic off-main buffer applies grants at batch end and therefore
-                // changes ServerPlayer.tick's trigger/flush order. V2 keeps the original
-                // synchronous callbacks inside its guarded actor invocation.
-                original.call();
-            } else {
-                AdvancementBuffer.enter();
-                advancementFrame = true;
-                original.call();
-                // A failed vanilla body must not apply queued advancement awards
-                // as a recovery tail. Drain only after the
-                // body returned normally; exceptional exits discard the frame.
-                AdvancementBuffer.drain();
-                advancementFrame = false;
-            }
+            original.call();
         } catch (Throwable bodyFailure) {
             failure = com.axalotl.fabrolia.common.regions.RegionScheduler
                     .publishFatalAndSelectWinner(bodyFailure);
         } finally {
-            if (advancementFrame) {
-                try {
-                    AdvancementBuffer.exit();
-                } catch (Throwable cleanup) {
-                    failure = com.axalotl.fabrolia.common.regions.RegionScheduler
-                            .publishFatalAndSelectWinner(
-                                    fabrolia$mergePlayerTickFailure(failure, cleanup));
-                }
-            }
             try {
                 com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                         .endServerPlayerTick(self, directLease);
@@ -689,46 +633,6 @@ public abstract class ServerPlayerMixin extends Player implements
             ServerPlayerMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
         }
         return (T) result[0];
-    }
-
-    /**
-     * Separate, reentrancy-safe buffering window on doTick. Vanilla calls tick()
-     * in the entity phase and doTick() later in the connection phase; these are
-     * two distinct frames, not nested calls. Carpet's EntityPlayerMPFake
-     * OVERRIDES tick() and calls doTick() directly — the tick() wrap above never
-     * runs for fake players, so their every-tick triggers fell through to the
-     * vanilla inline path under the SyncAll monitor and convoyed every region
-     * worker on the PlayerTrigger lock (50-bot load test, 2026-06-12). A depth
-     * counter remains necessary for modded/reentrant call chains.
-     */
-    @WrapMethod(method = "doTick()V")
-    private void fabrolia$bufferAdvancementsDuringDoTick(Operation<Void> original) {
-        Throwable failure = null;
-        boolean advancementFrame = false;
-        AdvancementBuffer.enter();
-        advancementFrame = true;
-        try {
-            original.call();
-            // Match tick(): a failed doTick owns no successful advancement tail.
-            AdvancementBuffer.drain();
-            advancementFrame = false;
-        } catch (Throwable bodyFailure) {
-            failure = com.axalotl.fabrolia.common.regions.RegionScheduler
-                    .publishFatalAndSelectWinner(bodyFailure);
-        } finally {
-            if (advancementFrame) {
-                try {
-                    AdvancementBuffer.exit();
-                } catch (Throwable cleanup) {
-                    failure = com.axalotl.fabrolia.common.regions.RegionScheduler
-                            .publishFatalAndSelectWinner(
-                                    fabrolia$mergePlayerTickFailure(failure, cleanup));
-                }
-            }
-        }
-        if (failure != null) {
-            ServerPlayerMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
-        }
     }
 
     /** Publish the exact cross-dimension lifecycle window to region entities.

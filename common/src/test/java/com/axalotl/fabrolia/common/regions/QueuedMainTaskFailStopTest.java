@@ -1,6 +1,5 @@
 package com.axalotl.fabrolia.common.regions;
 
-import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,13 +42,7 @@ final class QueuedMainTaskFailStopTest {
 
     @Test
     void queuedMainWrappersPublishAndRethrowTheExactPrimary() throws Exception {
-        assertExactFailStopWrapper(AdvancementBuffer.class);
-        orphanFatalField.set(null, null);
         assertExactFailStopWrapper(NavRecompute.class, "runFailStopMainTask");
-    }
-
-    private void assertExactFailStopWrapper(Class<?> owner) throws Exception {
-        assertExactFailStopWrapper(owner, "fabrolia$runFailStopMainTask");
     }
 
     private void assertExactFailStopWrapper(Class<?> owner, String methodName)

@@ -1,78 +1,115 @@
 package com.axalotl.fabrolia.common.parallelised.advancement;
 
+import com.axalotl.fabrolia.common.ParallelProcessor;
+import net.minecraft.server.MinecraftServer;
+
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Advancement-pipeline counters plus last-batch gauges; surfaced by
- * {@code /fabrolia regions debug advstats}. Counters are cheap LongAdders on
- * paths that already allocate; no gating needed.
+ * Advancement-pipeline counters, surfaced by {@code /fabrolia regions debug advstats}.
+ * Every global quiesce an advancement scope takes is attributed to exactly one
+ * {@link Site}; with nothing routed, every site stays at zero.
  */
 public final class AdvancementDiag {
 
     private AdvancementDiag() {}
 
-    /** trigger() calls that produced a non-empty Pending (criterion events). */
-    public static final LongAdder EVENTS_PRODUCED = new LongAdder();
+    /** Where an advancement scope took (or would take) the global fence. */
+    public enum Site {
+        /** Tick-head window: routed work needed the fence. */
+        HEAD_ROUTED,
+        /** Tick-head window: the {@code #minecraft:tick} functions asked for a shared fence. */
+        HEAD_TICK_FUNCTIONS,
+        /** Level entity-batch end (never acquires; only borrows). */
+        BATCH_END,
+        /** Before {@code PlayerList.remove} saves a disconnecting player. */
+        REMOVE,
+        /** Server stop. */
+        SHUTDOWN;
+
+        final LongAdder takes = new LongAdder();
+        final LongAdder nanos = new LongAdder();
+    }
+
+    /** Why a piece of advancement work left its fire-time owner. */
+    public enum Route {
+        /** Trigger fired off the player's owner (matcher at fire time, player condition at drain). */
+        OFF_OWNER_TRIGGER,
+        /** A fire-time compare needed the player's ender pearls (whole call at drain). */
+        FOREIGN_READ_TRIGGER,
+        /** Award whose completion runs a reward the owner may not run (non-owner-local function or loot). */
+        AWARD_GLOBAL_REWARD,
+        /** Award queued behind earlier routed work of the same player. */
+        AWARD_BACKLOG,
+        /** Reward function not proven owner-local ({@code FunctionPlans.ownerLocal}). */
+        REWARD_FUNCTION,
+        /** Whole reward grant (loot table, or behind earlier routed work). */
+        REWARD_GRANT,
+        /** Chat announcement from a thread that does not own the player list. */
+        ANNOUNCEMENT;
+
+        final LongAdder count = new LongAdder();
+    }
+
+    /** Trigger calls evaluated on the player's owner at fire time (islands live). */
+    public static final LongAdder TRIGGERS_OWNER = new LongAdder();
+    /** Trigger calls evaluated in a quiescent context (held fence, async off, V2 actor). */
+    public static final LongAdder TRIGGERS_QUIESCENT = new LongAdder();
     /** Trigger-map entries walked at fire time (inspected). */
     public static final LongAdder ENTRIES_INSPECTED = new LongAdder();
-    /** Instances surviving the fire-time per-trigger predicate. */
-    public static final LongAdder INSTANCES_KEPT = new LongAdder();
-    /** Player-predicate matches (award candidates before dedup). */
+    /** Listener matches (award candidates). */
     public static final LongAdder MATCHES = new LongAdder();
-    /** award() invocations actually made. */
-    public static final LongAdder AWARDS = new LongAdder();
-    /** Matches dropped by the per-batch (player, key) dedup. */
-    public static final LongAdder DEDUP_DROPPED = new LongAdder();
-    /** Main-frame per-player drain() calls that PARKED into the tick batch. */
-    public static final LongAdder DRAIN_PARKS = new LongAdder();
-    /** Per-player drainOnMain executions (legacy/async-off path only). */
-    public static final LongAdder DRAIN_LEGACY = new LongAdder();
-    /** Batch applies at entity-batch end. */
-    public static final LongAdder BATCH_APPLIES = new LongAdder();
-    /** Reward FUNCTIONs executed inside an advancement batch scope. */
+    /** Awards applied inline on the owner at fire time. */
+    public static final LongAdder AWARDS_INLINE = new LongAdder();
+    /** Reward functions run inline on the owner (proven owner-local). */
+    public static final LongAdder REWARD_FUNCTIONS_OWNER = new LongAdder();
+    /** Routed items applied by Main drains. */
+    public static final LongAdder ROUTED_APPLIED = new LongAdder();
+    /** Tick-head windows opened, and those that found routed work. */
+    public static final LongAdder HEAD_WINDOWS = new LongAdder();
+    public static final LongAdder HEAD_WINDOWS_ROUTED = new LongAdder();
+    /** Reward FUNCTIONs executed inside an advancement batch scope (ServerFunctionManagerMixin). */
     public static final LongAdder REWARD_FUNCTIONS = new LongAdder();
-    /** Global quiesce windows taken by advancement scopes: sticky reward fences,
-     *  deferred batches, and the tick-head window (which also takes the fence the
-     *  tick-tag functions then share, so ≈1 per tick with tick functions present). */
+    /** Every global quiesce taken by an advancement scope, all sites (incl. sticky reward fences). */
     public static final LongAdder QUIESCE_TAKES = new LongAdder();
-    /** Nanos spent inside advancement-owned quiesce windows + eval pumps. */
+    /** Nanos spent inside advancement drains (barrier accounting). */
     public static final LongAdder BARRIER_NANOS = new LongAdder();
-    /** flushDirty calls issued by the pipeline (≈ packets flushed upper bound). */
-    public static final LongAdder FLUSHES = new LongAdder();
-    /** Direct off-main award/revoke replays. */
-    public static final LongAdder DIRECT_REPLAYS = new LongAdder();
-    /** Predicate-evaluation fan-outs over the tick pool (batches above the grain). */
-    public static final LongAdder EVAL_FANOUTS = new LongAdder();
-    /** Tasks dispatched by those fan-outs. */
-    public static final LongAdder EVAL_TASKS = new LongAdder();
-    /** Tick-head windows that applied worker-lane awards under the tick-function fence. */
-    public static final LongAdder HEAD_DRAINS = new LongAdder();
 
-    /** Last-batch gauges (main-only writes). */
-    public static volatile int lastBatchPendings;
-    public static volatile int lastBatchMatches;
-    public static volatile int lastBatchAffectedPlayers;
+    static void quiesced(Site site, long waitNanos) {
+        site.takes.increment();
+        site.nanos.add(waitNanos);
+        QUIESCE_TAKES.increment();
+    }
+
+    static void routed(Route route) {
+        route.count.increment();
+    }
 
     public static String report() {
-        return "advstats events=" + EVENTS_PRODUCED.sum()
-                + " inspected=" + ENTRIES_INSPECTED.sum()
-                + " kept=" + INSTANCES_KEPT.sum()
-                + " matches=" + MATCHES.sum()
-                + " awards=" + AWARDS.sum()
-                + " dedupDropped=" + DEDUP_DROPPED.sum()
-                + " drainParks=" + DRAIN_PARKS.sum()
-                + " drainLegacy=" + DRAIN_LEGACY.sum()
-                + " batches=" + BATCH_APPLIES.sum()
-                + " rewardFns=" + REWARD_FUNCTIONS.sum()
-                + " quiesceTakes=" + QUIESCE_TAKES.sum()
-                + " barrierMs=" + BARRIER_NANOS.sum() / 1_000_000L
-                + " flushes=" + FLUSHES.sum()
-                + " directReplays=" + DIRECT_REPLAYS.sum()
-                + " evalFanouts=" + EVAL_FANOUTS.sum()
-                + " evalTasks=" + EVAL_TASKS.sum()
-                + " headDrains=" + HEAD_DRAINS.sum()
-                + " lastBatch[pend=" + lastBatchPendings
-                + " match=" + lastBatchMatches
-                + " players=" + lastBatchAffectedPlayers + "]";
+        StringBuilder out = new StringBuilder("advstats");
+        MinecraftServer server = ParallelProcessor.getServer();
+        if (server != null) out.append(" tick=").append(server.getTickCount());
+        out.append(" triggersOwner=").append(TRIGGERS_OWNER.sum())
+                .append(" triggersQuiescent=").append(TRIGGERS_QUIESCENT.sum())
+                .append(" inspected=").append(ENTRIES_INSPECTED.sum())
+                .append(" matches=").append(MATCHES.sum())
+                .append(" awardsInline=").append(AWARDS_INLINE.sum())
+                .append(" rewardFnsOwner=").append(REWARD_FUNCTIONS_OWNER.sum())
+                .append(" rewardFnsFenced=").append(REWARD_FUNCTIONS.sum())
+                .append(" routedApplied=").append(ROUTED_APPLIED.sum())
+                .append(" headWindows=").append(HEAD_WINDOWS.sum())
+                .append(" headWindowsRouted=").append(HEAD_WINDOWS_ROUTED.sum())
+                .append(" quiesceTakes=").append(QUIESCE_TAKES.sum())
+                .append(" barrierMs=").append(BARRIER_NANOS.sum() / 1_000_000L)
+                .append(" routed[");
+        for (Route route : Route.values()) {
+            out.append(' ').append(route.name()).append('=').append(route.count.sum());
+        }
+        out.append(" ] quiesce[");
+        for (Site site : Site.values()) {
+            out.append(' ').append(site.name()).append('=').append(site.takes.sum())
+                    .append('/').append(site.nanos.sum() / 1_000_000L).append("ms");
+        }
+        return out.append(" ]").toString();
     }
 }

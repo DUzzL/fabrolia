@@ -5,14 +5,15 @@ import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
 
 /**
- * Exact physical-Main scope around deferred advancement awards and flushes.
- * Matching has already completed in the producer's owned venue. Acquire the
- * existing global command fence before detaching any retained mutation, and
- * keep that exclusion through rewards, cascades and dirty-state packet delivery.
+ * Exact physical-Main scope around routed advancement work. Fire-time
+ * evaluation and awards run on the player's owner; only work routed to the
+ * fenced Main lane reaches this scope. The scope acquires the existing global
+ * command fence lazily, before the first routed item that needs it, and keeps
+ * that exclusion through the item's rewards and cascades.
  *
- * <p>The batch apply point is main-owned.  The exact owner thread is retained
- * so an unrelated mod thread cannot borrow the clean-Main fence capability or
- * the sticky receipt while Main is applying the batch.</p>
+ * <p>The drain point is main-owned. The exact owner thread is retained so an
+ * unrelated mod thread cannot borrow the clean-Main fence capability or the
+ * sticky receipt while Main is applying routed work.</p>
  */
 public final class AdvancementBatchScope {
 
@@ -79,19 +80,20 @@ public final class AdvancementBatchScope {
         owner = current;
     }
 
-    /** Must run before detaching deferred awards or entering reward bodies. The batch's
+    /** Must run before applying routed work that needs the fence. The scope's
      * mandatory end() owns cleanup immediately after acquisition succeeds. */
-    static void ensureEvaluationFence() {
+    static void ensureEvaluationFence(AdvancementDiag.Site site) {
         if (!IslandCommands.requiresMainFence()) return;
         if (owner != Thread.currentThread()) {
             throw new IllegalStateException(
                     "advancement evaluation entered outside its exact Main batch");
         }
         if (IslandCommands.fenceWindowHeld()) return;
+        long start = System.nanoTime();
         boolean took = IslandCommands.quiesceAllExcept(null);
         if (took) {
             stickyHeld = true;
-            AdvancementDiag.QUIESCE_TAKES.increment();
+            AdvancementDiag.quiesced(site, System.nanoTime() - start);
         } else if (IslandCommands.requiresMainFence() && !IslandCommands.fenceWindowHeld()) {
             IslandCommands.publishAndPropagate(new IllegalStateException(
                     "advancement batch could not establish its exact Main fence"));

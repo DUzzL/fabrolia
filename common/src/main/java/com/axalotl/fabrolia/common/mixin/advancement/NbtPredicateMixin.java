@@ -20,10 +20,11 @@ import org.spongepowered.asm.mixin.Mixin;
  *       {@code saveWithoutId} entirely. Covers BACAP's hot triggers (using_item /
  *       enter_block). The same fast path is applied to 26.2's other entry shape in
  *       {@link EntityNbtPredicateMixin}.</li>
- *   <li><b>Per-scope player NBT cache</b> ({@link AdvancementCacheContext}) on the static
- *       {@code getEntityTagToCompare(Entity)}: while a cache scope is bound, a live
- *       player's {@code saveWithoutId} tag is computed once and reused across the
- *       predicates evaluated in that scope.</li>
+ *   <li><b>Per-evaluation player NBT</b> ({@link AdvancementCacheContext}) on the static
+ *       {@code getEntityTagToCompare(Entity)}: while a trigger call's evaluation scope is
+ *       bound, a live player's {@code saveWithoutId} tag is computed once and reused
+ *       across its listeners; a fire-time compare that references the player's ender
+ *       pearls routes the call to the fenced Main lane first.</li>
  * </ol>
  */
 @Mixin(NbtPredicate.class)
@@ -39,6 +40,7 @@ public abstract class NbtPredicateMixin {
         }
 
         // The original body uses the scope-cached fetch below.
+        AdvancementCacheContext.checkFireTimeCompare(entity, expected);
         return original.call(entity);
     }
 

@@ -134,6 +134,14 @@ public abstract class ServerFunctionManagerMixin {
     @WrapMethod(method = "execute")
     private void fabrolia$fenceFunction(CommandFunction<CommandSourceStack> function,
                                         CommandSourceStack source, Operation<Void> original) {
+        // C2: the advancement reward routing point proved this exact call owner-local
+        // and runs it on the player's owner (island worker or Main) without a fence.
+        if (com.axalotl.fabrolia.common.parallelised.advancement.AdvancementRewardRouting
+                .isOwnerLocalReward(function)) {
+            RegionScheduler.runSuccessBodyIfHealthy(
+                    () -> original.call(function, source));
+            return;
+        }
         if (Thread.currentThread() instanceof RegionWorkerThread
                 || !IslandCommands.requiresMainFence()) {
             RegionScheduler.runSuccessBodyIfHealthy(

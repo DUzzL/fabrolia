@@ -101,15 +101,6 @@ final class AdvancementBatchScopeOwnershipTest {
         } finally {
             AdvancementBatchScope.end();
         }
-
-        RuntimeException legacyPrimary = new RuntimeException(
-                "exact legacy reward failure");
-        InvocationTargetException legacyThrown = assertThrows(
-                InvocationTargetException.class,
-                () -> wrapper.invoke(null,
-                        (Runnable) () -> { throw legacyPrimary; }));
-        assertSame(legacyPrimary, legacyThrown.getCause(),
-                "async-off/no-batch mode must preserve its direct vanilla Throwable");
         assertFalse(AdvancementBatchScope.active());
     }
 
