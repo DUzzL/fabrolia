@@ -2,7 +2,7 @@ package com.axalotl.fabrolia.common.parallelised.advancement;
 
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
-import com.axalotl.fabrolia.common.regions.PlayerOwnership;
+import com.axalotl.fabrolia.common.regions.PlayerTurnOwnership;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -13,7 +13,7 @@ import java.util.function.BooleanSupplier;
  * Venue rules for advancement state (contract C1).
  *
  * <p>{@link #ownsPlayer}: the current thread may evaluate the player's criteria and
- * mutate its {@code PlayerAdvancements} now ({@link PlayerOwnership}). Award, revoke
+ * mutate its {@code PlayerAdvancements} now ({@link PlayerTurnOwnership}). Award, revoke
  * and flush run synchronously there with vanilla's return value; anywhere else they
  * are rejected loudly.
  *
@@ -27,7 +27,7 @@ public final class AdvancementOwnership {
     private AdvancementOwnership() {}
 
     public static boolean ownsPlayer(ServerPlayer player) {
-        return PlayerOwnership.currentThreadOwns(player);
+        return PlayerTurnOwnership.currentThreadOwns(player);
     }
 
     public static boolean quiescentContext() {
@@ -58,6 +58,6 @@ public final class AdvancementOwnership {
     /** Off-owner mutation of a player's advancements: no deferral, no fabricated result. */
     public static IllegalStateException offOwnerMutation(String operation, ServerPlayer player, Object subject) {
         return new IllegalStateException("PlayerAdvancements." + operation + "(" + subject
-                + ") off the player's owner thread: " + PlayerOwnership.describe(player));
+                + ") off the player's owner thread: " + PlayerTurnOwnership.describe(player));
     }
 }

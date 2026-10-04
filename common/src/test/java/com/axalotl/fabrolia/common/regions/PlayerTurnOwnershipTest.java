@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @Isolated
 @Timeout(20)
-final class PlayerOwnershipTest {
+final class PlayerTurnOwnershipTest {
 
     @BeforeAll
     static void bootstrapMinecraft() {
@@ -45,19 +45,19 @@ final class PlayerOwnershipTest {
     void ownershipFollowsTheIslandSessionAndTheExactTurn() throws Exception {
         try (Fixture fixture = new Fixture()) {
             assertTrue(IslandCommands.requiresMainFence());
-            assertTrue(PlayerOwnership.currentThreadOwns(fixture.player),
+            assertTrue(PlayerTurnOwnership.currentThreadOwns(fixture.player),
                     "no island session holds the player: physical Main owns it");
             assertFalse(fixture.onForeignThread(),
                     "a thread that is neither Main nor the player's island never owns it");
 
             assertTrue(fixture.state.session.attach(fixture.owner));
-            assertFalse(PlayerOwnership.currentThreadOwns(fixture.player),
+            assertFalse(PlayerTurnOwnership.currentThreadOwns(fixture.player),
                     "Main without the attached island's claim must not mutate an island player");
             assertTrue(fixture.inOwnTurn(), "the player's own A5 turn owns it");
             assertFalse(fixture.onForeignThread());
 
             fixture.holdAllClaims();
-            assertTrue(PlayerOwnership.currentThreadOwns(fixture.player),
+            assertTrue(PlayerTurnOwnership.currentThreadOwns(fixture.player),
                     "under the held fence Main owns every player");
         }
     }
@@ -116,7 +116,7 @@ final class PlayerOwnershipTest {
 
         boolean onForeignThread() throws InterruptedException {
             AtomicBoolean owns = new AtomicBoolean(true);
-            Thread foreign = new Thread(() -> owns.set(PlayerOwnership.currentThreadOwns(player)),
+            Thread foreign = new Thread(() -> owns.set(PlayerTurnOwnership.currentThreadOwns(player)),
                     "foreign-producer");
             foreign.start();
             foreign.join();
@@ -133,7 +133,7 @@ final class PlayerOwnershipTest {
             constructor.setAccessible(true);
             turn.set(constructor.newInstance(state, player, island, owner, permit, false));
             try {
-                return PlayerOwnership.currentThreadOwns(player);
+                return PlayerTurnOwnership.currentThreadOwns(player);
             } finally {
                 turn.remove();
             }

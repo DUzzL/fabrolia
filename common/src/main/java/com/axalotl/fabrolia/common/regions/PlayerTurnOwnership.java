@@ -30,9 +30,9 @@ import net.minecraft.server.level.ServerPlayer;
  * state, then the session view; the worker probe takes the scheduler
  * lifecycle monitor only after every cheaper answer was negative.
  */
-public final class PlayerOwnership {
+public final class PlayerTurnOwnership {
 
-    private PlayerOwnership() {}
+    private PlayerTurnOwnership() {}
 
     public static boolean currentThreadOwns(ServerPlayer player) {
         if (AsyncIslandPlayerTicks.isIslandPlayerTickOf(player)) return true;

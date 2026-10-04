@@ -60,7 +60,7 @@ not transferable world access. `executeOnOwner` queues callbacks when a foreign
 caller lacks owner authority.
 
 Advancements are evaluated and awarded on the thread that owns the player
-(`AdvancementBuffer.trigger`, `PlayerOwnership`): the player's own A5 turn, an
+(`AdvancementBuffer.trigger`, `PlayerTurnOwnership`): the player's own A5 turn, an
 island worker of the island attached to the player's resting session (the
 lifecycle-mutation authority), physical Main for a player no island session
 holds (or under the island's claim / the global fence), the V2 actor, or Main
