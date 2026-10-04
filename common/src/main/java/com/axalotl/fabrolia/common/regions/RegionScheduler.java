@@ -1275,7 +1275,13 @@ public final class RegionScheduler {
                         && worker.currentDomain == domain
                         && owner.unitClaim.get() && owner.claimHolder == caller
                         && domain.entityPending.get() == 0
-                        && (target == null || target.currentWorker() == null)) {
+                        // A real member helper only runs inside the unit window
+                        // (ColorGate: doneEpoch < E, checked before and after its
+                        // claim CAS). A holder of a region already done for E is a
+                        // stale claimant about to back out (e.g. on an unsealed
+                        // empty halo) and must not revoke this coordinator.
+                        && (target == null || target.currentWorker() == null
+                            || target.doneEpoch >= domain.epoch)) {
                     CompletableFuture<Void> barrier = domain.entityBarrier;
                     return barrier == null
                             || barrier.isDone() && !barrier.isCompletedExceptionally();
