@@ -675,6 +675,14 @@ only take snapshots now. `common/save/AsyncSaveWriter` writes the files.
   (`save-all flush`, shutdown) and `stopServer` wait for every queued file
   after the islands run again. `PlayerDataStorage.load`, `PlayerAdvancements`
   (re)load and the stats file load wait for that file's queued write first.
+- Claim interest for the whole `saveAll` (`regions/IslandSaveGroup`, F3): an
+  unfenced pass (autosave, the `/reload` apply stage, `stopServer`; a fenced
+  `save-all` already holds every claim) announces Main's claim interest once
+  on every island owning a player, runs the vanilla loop, then withdraws. Each
+  save still takes and releases its island's claim (Main holds at most one),
+  but no unit is admitted or chained in between, so the pass waits for each
+  island's running unit at most once (max, not sum). Islands are not released
+  early after their last player: autosave's `saveAllChunks` quiesce follows.
 - Scoreboard (`DeferredSavedDataEncodes`, `SavedDataStorageEncodeMixin`):
   `ServerScoreboard.storeToSaveDataIfDirty` still packs the scoreboard under
   the quiesce, but `encodeUnchecked` only captures that immutable `Packed`

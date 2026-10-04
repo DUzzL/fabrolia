@@ -36,6 +36,9 @@ public abstract class PlayerListMixin {
     @Shadow @Final
     private net.minecraft.server.MinecraftServer server;
 
+    @Shadow @Final
+    private java.util.List<ServerPlayer> players;
+
     @org.spongepowered.asm.mixin.Unique
     private static final com.axalotl.fabrolia.common.parallelised.utils.ConcurrentIdentitySet<ServerPlayer>
             fabrolia$activeRemovals =
@@ -411,10 +414,48 @@ public abstract class PlayerListMixin {
      * Autosave, plain save-all and reload: the snapshots are taken here and the
      * files are written by {@link com.axalotl.fabrolia.common.save.AsyncSaveWriter};
      * {@code save-all flush} and shutdown wait for them in saveAllChunks.
+     * Every island the pass claims keeps Main's claim interest for the whole
+     * pass ({@link com.axalotl.fabrolia.common.regions.IslandSaveGroup}), so no
+     * unit runs between two saves of one island's players.
      */
     @WrapMethod(method = "saveAll()V", require = 1, allow = 1)
     private void fabrolia$deferPlayerFileWrites(Operation<Void> original) {
-        com.axalotl.fabrolia.common.save.SaveDurability.runDeferred(() -> original.call());
+        com.axalotl.fabrolia.common.save.SaveDurability.runDeferred(() -> {
+            com.axalotl.fabrolia.common.regions.IslandSaveGroup group =
+                    com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
+                                    .isPhysicalServerThread(this.server)
+                            ? com.axalotl.fabrolia.common.regions.IslandSaveGroup.open(
+                                    this.players, player -> fabrolia$saveClaimOwner(player))
+                            : null;
+            if (group == null) {
+                original.call();
+                return;
+            }
+            Throwable failure = null;
+            try {
+                original.call();
+            } catch (Throwable thrown) {
+                failure = thrown;
+            }
+            // Mandatory withdrawal, then the body's own failure raw (a failed
+            // withdrawal arrives published).
+            failure = group.close(failure);
+            if (failure != null) {
+                PlayerListMixin.<RuntimeException>fabrolia$throwUnchecked(failure);
+            }
+        });
+    }
+
+    /** The island whose claim {@code save(player)} takes, or null if it takes none. */
+    @org.spongepowered.asm.mixin.Unique
+    private static IslandRegistry.PIsland fabrolia$saveClaimOwner(ServerPlayer player) {
+        if (!(player.level() instanceof ServerLevel sl)) return null;
+        RegionizedServer rs = RegionScheduler.forLevel(sl);
+        if (rs == null || !rs.asyncActive || rs.currentThreadHoldsAllClaims()) return null;
+        IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(player.chunkPosition().pack());
+        return owner == null
+                || com.axalotl.fabrolia.common.regions.IslandCommands.mainHolds(owner)
+                ? null : owner;
     }
 
     @WrapMethod(method = "save(Lnet/minecraft/server/level/ServerPlayer;)V")
@@ -430,6 +471,12 @@ public abstract class PlayerListMixin {
             batch.close();
         }
         batch.awaitDurable();
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void fabrolia$throwUnchecked(Throwable thrown) throws T {
+        throw (T) thrown;
     }
 
     @org.spongepowered.asm.mixin.Unique
