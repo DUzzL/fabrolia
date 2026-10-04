@@ -2,7 +2,11 @@ package com.axalotl.fabrolia.common.mixin.commands;
 
 import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.FunctionAnalyzer;
+import com.axalotl.fabrolia.common.regions.FunctionFenceDiag;
 import com.axalotl.fabrolia.common.regions.FunctionLibraryAnalysisAccess;
+import com.axalotl.fabrolia.common.regions.FunctionPartition;
+import com.axalotl.fabrolia.common.regions.IslandFunctionHead;
+import com.axalotl.fabrolia.common.regions.IslandFunctionScope;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
@@ -36,6 +40,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * invocation. The deferred advancement batch is another proven clean Main
  * point: its entity barrier and trigger/advancement monitors have completed
  * before the serial reward body is entered.
+ *
+ * <p><b>Per-tick roots on island heads:</b> {@code #minecraft:tick} roots the
+ * active {@code FunctionPlan} partitions are armed here for the island heads;
+ * Main runs only their remainder partition, without a fence, and only
+ * Main-resident roots ask the tick-head window for the global fence. On a
+ * region worker (C3) only plan-proven owner-local bodies run, inside their
+ * partition's ownership guards; anything else is a fail-stop.
  */
 @Mixin(ServerFunctionManager.class)
 public abstract class ServerFunctionManagerMixin {
@@ -46,6 +57,10 @@ public abstract class ServerFunctionManagerMixin {
     @org.spongepowered.asm.mixin.Unique
     private boolean fabrolia$inTickTag;
 
+    /** True while the {@code #minecraft:tick} tag itself (not {@code #load}) executes. */
+    @org.spongepowered.asm.mixin.Unique
+    private boolean fabrolia$inTickFunctionsTag;
+
     @org.spongepowered.asm.mixin.Shadow @org.spongepowered.asm.mixin.Final
     private MinecraftServer server;
     @org.spongepowered.asm.mixin.Shadow
@@ -53,19 +68,23 @@ public abstract class ServerFunctionManagerMixin {
     @org.spongepowered.asm.mixin.Shadow
     private boolean postReload;
 
-    /** Initial boot installs an already-sealed candidate library. */
+    /** Initial boot installs an already-sealed candidate library and its plan. */
     @Inject(method = "<init>", at = @At("TAIL"))
     private void fabrolia$activateInitialFunctionAnalysis(
             MinecraftServer server, ServerFunctionLibrary library, CallbackInfo ci) {
-        FunctionAnalyzer.activateInitial(
-                ((FunctionLibraryAnalysisAccess) library)
-                        .fabrolia$preparedFunctionAnalysis());
+        FunctionAnalyzer.Prepared prepared =
+                ((FunctionLibraryAnalysisAccess) library).fabrolia$preparedFunctionAnalysis();
+        FunctionAnalyzer.activateInitial(prepared,
+                FunctionAnalyzer.plan(prepared, library, server));
     }
 
     /**
      * Reload's library swap and metadata activation are one fair write-side
      * transaction. The Prepared snapshot was fully allocated by the reload
-     * listener; after vanilla returns activation is one volatile assignment.
+     * listener and the plan is resolved against the new generation's tags and
+     * registries before the write lock. With async islands live the swap also
+     * holds the global fence: no island head is inside a function pass of the
+     * old generation while its library is replaced.
      */
     @WrapMethod(method = "replaceLibrary", require = 1, allow = 1)
     private void fabrolia$replaceLibraryAndAnalysis(
@@ -73,8 +92,31 @@ public abstract class ServerFunctionManagerMixin {
         FunctionAnalyzer.Prepared prepared =
                 ((FunctionLibraryAnalysisAccess) library)
                         .fabrolia$preparedFunctionAnalysis();
-        FunctionAnalyzer.replaceAndActivate(prepared,
-                () -> original.call(library));
+        com.axalotl.fabrolia.common.regions.FunctionPlan plan =
+                FunctionAnalyzer.plan(prepared, library, this.server);
+        if (!IslandCommands.requiresMainFence() || IslandCommands.fenceWindowHeld()) {
+            FunctionAnalyzer.replaceAndActivate(prepared, plan,
+                    () -> original.call(library));
+            return;
+        }
+        if (!IslandCommands.quiesceAllExcept(null)) {
+            if (IslandCommands.requiresMainFence() && !IslandCommands.fenceWindowHeld()) {
+                IslandCommands.publishAndPropagate(new IllegalStateException(
+                        "could not fence the function library replacement"));
+                return;
+            }
+            FunctionAnalyzer.replaceAndActivate(prepared, plan,
+                    () -> original.call(library));
+            return;
+        }
+        Throwable failure = null;
+        try {
+            RegionScheduler.runSuccessBodyIfHealthy(() -> FunctionAnalyzer.replaceAndActivate(
+                    prepared, plan, () -> original.call(library)));
+        } catch (Throwable thrown) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+        }
+        IslandCommands.releaseAllExceptAndPropagate(failure);
     }
 
     /** Tick-tag window marker (main-confined): execute() calls inside tick()
@@ -92,12 +134,22 @@ public abstract class ServerFunctionManagerMixin {
             // drained batch. Its own leading health read cannot linearize that
             // mutation against a peer W, so admit the complete drain here.
             // Mirrors vanilla tick(): functions run only while the tick rate
-            // runs normally; the load tag runs once after a reload.
-            boolean functionsQueued = this.server.tickRateManager().runsNormally()
-                    && (this.postReload || !this.ticking.isEmpty());
+            // runs normally; the load tag runs once after a reload. Partitioned
+            // #tick roots are island-head work (armed after the tag, so a
+            // reload's #load precedes their first island pass), so only
+            // Main-resident roots ask the window for the global fence.
+            boolean runs = this.server.tickRateManager().runsNormally();
+            boolean islands = IslandCommands.requiresMainFence();
+            com.axalotl.fabrolia.common.regions.FunctionPlan plan = FunctionAnalyzer.plan();
+            boolean functionsQueued = runs
+                    && (this.postReload || fabrolia$mainResidentTicking(plan, islands));
             RegionScheduler.runSuccessBodyIfHealthy(() -> window[0] =
                     com.axalotl.fabrolia.common.parallelised.advancement
                             .AdvancementBuffer.beginTickHeadWindow(functionsQueued));
+            if (functionsQueued) {
+                FunctionFenceDiag.noteTickFunctionsQueued(
+                        islands && IslandCommands.fenceWindowHeld());
+            }
             fabrolia$inTickTag = true;
             // The window drain may return through its empty fast path while a
             // peer worker is selecting W.  Treat the tick-tag invocation as its
@@ -105,6 +157,7 @@ public abstract class ServerFunctionManagerMixin {
             // call finishes its cleanup chain, or W wins and original is never
             // entered.
             RegionScheduler.runSuccessBodyIfHealthy(() -> original.call());
+            IslandFunctionHead.publishTickRoots(plan, runs && islands);
         } catch (Throwable thrown) {
             // tick() is an entered vanilla function body. Publish before
             // restoring the main-confined tick-tag marker.
@@ -131,11 +184,90 @@ public abstract class ServerFunctionManagerMixin {
         }
     }
 
+    /** Whether any #tick function of this tick still runs as a whole on Main. */
+    @org.spongepowered.asm.mixin.Unique
+    private boolean fabrolia$mainResidentTicking(
+            com.axalotl.fabrolia.common.regions.FunctionPlan plan, boolean islands) {
+        for (CommandFunction<CommandSourceStack> f : this.ticking) {
+            if (!islands || plan.partitionedTickRoot(f) == null) return true;
+        }
+        return false;
+    }
+
+    @WrapMethod(method = "executeTagFunctions", require = 1, allow = 1)
+    private void fabrolia$markTickFunctionsTag(
+            java.util.Collection<CommandFunction<CommandSourceStack>> functions,
+            net.minecraft.resources.Identifier tag, Operation<Void> original) {
+        boolean previous = fabrolia$inTickFunctionsTag;
+        fabrolia$inTickFunctionsTag = net.minecraft.resources.Identifier.withDefaultNamespace("tick").equals(tag);
+        try {
+            original.call(functions, tag);
+        } finally {
+            fabrolia$inTickFunctionsTag = previous;
+        }
+    }
+
+    /**
+     * The tick tag's own dispatch of each root. A partitioned root is island
+     * head work: Main runs only its remainder partition, unfenced, at this
+     * exact vanilla position between the Main-resident roots.
+     */
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+            method = "executeTagFunctions",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/ServerFunctionManager;execute("
+                            + "Lnet/minecraft/commands/functions/CommandFunction;"
+                            + "Lnet/minecraft/commands/CommandSourceStack;)V"),
+            require = 1,
+            allow = 1)
+    private void fabrolia$partitionTickRoot(ServerFunctionManager self,
+                                            CommandFunction<CommandSourceStack> function,
+                                            CommandSourceStack sender, Operation<Void> original) {
+        if (fabrolia$inTickFunctionsTag && IslandCommands.requiresMainFence()) {
+            com.axalotl.fabrolia.common.regions.FunctionPlan.RootPlan root =
+                    FunctionAnalyzer.plan().partitionedTickRoot(function);
+            if (root != null) {
+                IslandFunctionHead.runMainPartition(root, this.server);
+                return;
+            }
+        }
+        original.call(self, function, sender);
+    }
+
     @WrapMethod(method = "execute")
     private void fabrolia$fenceFunction(CommandFunction<CommandSourceStack> function,
                                         CommandSourceStack source, Operation<Void> original) {
-        if (Thread.currentThread() instanceof RegionWorkerThread
-                || !IslandCommands.requiresMainFence()) {
+        if (Thread.currentThread() instanceof RegionWorkerThread) {
+            // C3: a worker runs only a body the exact active plan proves
+            // owner-local, inside its partition's ownership guards. Anything
+            // else would run unfenced next to live islands: fail-stop.
+            boolean ran = FunctionAnalyzer.withExactOwnerLocalProof(
+                    (ServerFunctionManager) (Object) this, function, proven -> {
+                        if (!proven) return false;
+                        FunctionPartition partition =
+                                IslandFunctionScope.partitionOfCurrentWorker(this.server);
+                        RegionScheduler.commitSuccessIfHealthy(
+                                FunctionFenceDiag.WORKER_OWNER_LOCAL::increment);
+                        IslandFunctionScope.run(partition, () -> RegionScheduler
+                                .runSuccessBodyIfHealthy(() -> original.call(function, source)));
+                        return true;
+                    });
+            if (!ran) {
+                IslandCommands.publishAndPropagate(new IllegalStateException(
+                        "function " + function.id() + " executed on region worker "
+                                + Thread.currentThread().getName()
+                                + " is not proven owner-local by the active function plan"));
+            }
+            return;
+        }
+        if (IslandFunctionScope.current() != null) {
+            // A whole function reached from inside a Main owner-local pass (an
+            // advancement reward of a trigger the pass fired) is not covered by
+            // that pass's proof: it takes the normal Main path, unscoped.
+            IslandFunctionScope.runUnscoped(() -> fabrolia$fenceFunction(function, source, original));
+            return;
+        }
+        if (!IslandCommands.requiresMainFence()) {
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> original.call(function, source));
             return;
@@ -188,6 +320,7 @@ public abstract class ServerFunctionManagerMixin {
             }
             RegionScheduler.commitSuccessIfHealthy(() -> {
                 IslandCommands.FUNCTION_FENCED.increment();
+                FunctionFenceDiag.functionFenced(function.id());
                 if (sticky) {
                     com.axalotl.fabrolia.common.parallelised.advancement.AdvancementDiag
                             .REWARD_FUNCTIONS.increment();

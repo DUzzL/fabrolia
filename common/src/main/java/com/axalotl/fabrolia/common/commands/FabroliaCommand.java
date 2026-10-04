@@ -15,6 +15,7 @@ public class FabroliaCommand {
         main = ConfigCommand.registerConfig(main);
         main = StatsCommand.registerStatus(main);
         main = RegionCommand.register(main);
+        main = FunctionsCommand.register(main);
         dispatcher.register(main);
         // Region-aware /tick extension (2026-07-14): brigadier merges
         // same-name roots, so this adds island scopes to vanilla's /tick.

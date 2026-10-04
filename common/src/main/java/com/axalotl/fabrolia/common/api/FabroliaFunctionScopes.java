@@ -1,73 +1,38 @@
 package com.axalotl.fabrolia.common.api;
 
 import com.axalotl.fabrolia.common.regions.FunctionAnalyzer;
+import com.axalotl.fabrolia.common.regions.FunctionPlans;
 import net.minecraft.resources.Identifier;
 
+import java.util.List;
+
 /**
- * A8/MCFC bridge — scope metadata for datapack functions (interpreted or
- * compiled). A function compiler (MCFC) or analyzer registers what a function
- * CAN touch; Fabrolia's command router uses it to dispatch island-local
- * function bodies to island execution lanes at island cadence instead of the
- * fenced global path. Static analysis is never trusted alone: any function
- * whose metadata sets {@link Scope#requiresRuntimeValidation} — dynamic
- * selectors, macros, command storage, runtime coordinates, modded commands,
- * unknown sources, dynamic execute chains — is re-validated per invocation,
- * and every unknown operation falls back to the fenced global path (the safe
- * compatibility path). Absent metadata = fenced global path.
+ * Read-only view of Fabrolia's datapack function plan (async islands).
  *
- * <p>Compiled execution must never become faster by changing observable
- * behavior: vanilla command ordering, source context, selector results,
- * random consumption, success counts, return values, recursion limits,
- * exception behavior, scoreboard/storage visibility, scheduling, ownership
- * and merge/split semantics all bind identically on every path.
+ * <p>Fabrolia analyzes every function exactly as vanilla parsed it and, per
+ * reload generation, publishes a plan: per-tick roots ({@code #minecraft:tick}
+ * and unconditional 1t self-rearming loops) are partitioned per root line
+ * across island heads and Main, and functions whose whole call-graph closure
+ * touches only the executing entity are marked owner-local. Nothing outside
+ * that analysis can widen it: absent or unproven metadata means the fenced
+ * Main path, and vanilla command semantics remain the only source of truth.
  */
 public final class FabroliaFunctionScopes {
 
     private FabroliaFunctionScopes() {}
 
-    /** Declared capability envelope of one function (conservative = safe). */
-    public record Scope(
-            /** Every effect provably within the CALLER's island (relative/
-             *  source-anchored positions, no selectors beyond @s, no global
-             *  state). Eligible for island-inline execution. */
-            boolean provenIslandLocal,
-            /** Touches dimension-global state only (time/weather/...). */
-            boolean dimensionGlobal,
-            /** Touches server-global state (scoreboards, storage, whitelist…). */
-            boolean serverGlobal,
-            /** May span islands (multi-target selectors, absolute far coords). */
-            boolean crossIsland,
-            /** Metadata alone is insufficient — validate scope per invocation. */
-            boolean requiresRuntimeValidation,
-            /** May be partitioned into per-owner shards (Phase 2). */
-            boolean partitionable,
-            /** Human-readable analysis note (diagnostics). */
-            String note) {
-
-        public static final Scope UNKNOWN =
-                new Scope(false, false, true, true, true, false, "no metadata: fenced global path");
+    /** Whether {@code function} of the active generation is proven owner-local. */
+    public static boolean ownerLocal(Identifier function) {
+        return FunctionPlans.ownerLocal(function);
     }
 
-    /**
-     * Compiler registration. During {@code CommandFunction.fromLines} this is
-     * bound to the exact candidate-library transaction; a failed reload cannot
-     * overwrite live metadata. An id-only registration outside that exact
-     * scope is ignored because it cannot prove which function generation it
-     * describes.
-     */
-    public static void register(Identifier function, Scope scope) {
-        FunctionAnalyzer.registerScope(function, scope);
+    /** Human-readable per-tick plan with each root's verdict and blocking line. */
+    public static List<String> describePlan() {
+        return FunctionAnalyzer.plan().describe();
     }
 
-    public static void clear() {
-        FunctionAnalyzer.clear();
-    }
-
-    public static Scope scopeOf(Identifier function) {
-        return FunctionAnalyzer.scopeOf(function);
-    }
-
-    public static int registered() {
+    /** Number of functions analyzed in the active generation. */
+    public static int analyzed() {
         return FunctionAnalyzer.registered();
     }
 }

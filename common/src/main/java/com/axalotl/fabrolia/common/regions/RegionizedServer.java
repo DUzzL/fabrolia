@@ -338,6 +338,10 @@ public final class RegionizedServer {
                 // schedule-time deltas rot against the frozen island clock
                 // (the 6gt QC trencher stall zone starting at a static seam).
                 TickDomains.collapseAllToWall(java.util.List.of(this));
+                // Entities that ticked on the retiring islands after their last
+                // function head owe this tick's datapack pass, which Main's tick
+                // tag skipped as island work (FunctionPassMark keeps it single).
+                IslandFunctionHead.catchUpRetiredIslands(level);
             }
             LOGGER.info("[async-islands] {} for {} (applies this tick)",
                     wantAsync ? "ENABLED" : "DISABLED", level.dimension().identifier());
@@ -4043,6 +4047,10 @@ public final class RegionizedServer {
             // independent (player distance + own removal), safe under this
             // region's claim like the gate-passing path's call below.
             e.checkDespawn();
+            // A range-gated visit still closes the inter-tick interval of its
+            // per-tick function pass (vanilla passes such entities every tick);
+            // real ticks re-open it in tickNonPassenger/tickPassenger.
+            IslandFunctionHead.entityTicked((FunctionPassMark) e);
             return;
         }
         // Own-chunk FULL invariant (see fabrolia$ownChunkFull): an entity whose
