@@ -101,6 +101,36 @@ class FabroliaIslandOwnershipTest {
         }
     }
 
+    /**
+     * After the unit's barrier an empty halo is stamped done for E without a
+     * sealed-done stamp, so a stale ready claimant's CAS can still land there
+     * before its post-CAS eligibility check backs it out. That transient
+     * holder must not revoke the coordinator's raid/lifecycle authority.
+     */
+    @Test
+    void aStaleClaimOnARegionAlreadyDoneForTheUnitDoesNotRevokeTheCoordinator() throws Exception {
+        try (Fixture fixture = new Fixture(true)) {
+            onThread(true, () -> {
+                RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
+                worker.currentDomain = fixture.own.domain;
+                assertTrue(fixture.own.tryClaimAutonomousWork());
+                fixture.own.noteClaim("ownership-stale-claimant");
+                long previousDone = fixture.ownRegion.doneEpoch;
+                try {
+                    withForeignClaim(fixture.ownRegion, () -> assertFalse(fixture.owns(OWN),
+                            "an in-window helper still excludes the coordinator"));
+                    fixture.ownRegion.doneEpoch = fixture.own.domain.epoch;
+                    withForeignClaim(fixture.ownRegion, () -> assertTrue(fixture.owns(OWN),
+                            "a stale claimant on a done region revoked the coordinator"));
+                } finally {
+                    fixture.ownRegion.doneEpoch = previousDone;
+                    fixture.own.clearClaim();
+                    fixture.own.unitClaim.set(false);
+                }
+            });
+        }
+    }
+
     @Test
     void physicalMainNeedsAnExactClaimAndForeignObserversCannotBorrowIt() throws Exception {
         try (Fixture fixture = new Fixture(true)) {
