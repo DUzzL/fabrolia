@@ -1,15 +1,27 @@
 package com.axalotl.fabrolia.common.regions;
 
-import com.axalotl.fabrolia.common.api.FabroliaFunctionScopes;
+import com.google.gson.JsonElement;
+import com.mojang.serialization.JsonOps;
+import net.minecraft.advancements.AdvancementHolder;
+import net.minecraft.commands.CacheableFunction;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.functions.CommandFunction;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
+import net.minecraft.resources.RegistryOps;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.ServerFunctionLibrary;
 import net.minecraft.server.ServerFunctionManager;
+import net.minecraft.world.level.storage.loot.predicates.LootItemCondition;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
@@ -25,6 +37,12 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * after vanilla successfully applies that library, and activated together
  * with {@link ServerFunctionManager}'s exact library replacement. A failed or
  * abandoned reload therefore cannot leak metadata into the live generation.
+ *
+ * <p>Each staged function carries its {@link FunctionIR} (the exact vanilla
+ * parse). At activation the {@link FunctionPlanner} resolves the call-graph
+ * closure against that generation's tags, predicates and advancement rewards;
+ * the resulting {@link FunctionPlan} is published with the library under the
+ * same write lock.
  */
 public final class FunctionAnalyzer {
 
@@ -51,17 +69,15 @@ public final class FunctionAnalyzer {
 
     private record Staged(CommandFunction<?> function,
                           Analysis analysis,
-                          FabroliaFunctionScopes.Scope sourceScope) {}
+                          FunctionIR.Function ir) {}
 
     private record ActiveEntry(CommandFunction<CommandSourceStack> function,
                                Analysis analysis,
-                               FabroliaFunctionScopes.Scope scope) {}
+                               FunctionIR.Function ir) {}
 
     /** One exact candidate-library transaction; parse tasks write concurrently. */
     public static final class ReloadStage {
         private final ConcurrentHashMap<Identifier, Staged> analyzed =
-                new ConcurrentHashMap<>();
-        private final ConcurrentHashMap<Identifier, FabroliaFunctionScopes.Scope> registeredScopes =
                 new ConcurrentHashMap<>();
         private final AtomicReference<Throwable> firstFailure = new AtomicReference<>();
 
@@ -87,6 +103,7 @@ public final class FunctionAnalyzer {
             ScopedValue.newInstance();
 
     private static volatile Prepared ACTIVE = EMPTY;
+    private static volatile FunctionPlan PLAN = FunctionPlan.EMPTY;
 
     public static ReloadStage beginReload() {
         return new ReloadStage();
@@ -131,8 +148,8 @@ public final class FunctionAnalyzer {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(function, "function");
         Analysis analysis = analyze(lines);
-        FabroliaFunctionScopes.Scope sourceScope = scopeFor(analysis);
-        stage.analyzed.put(id, new Staged(function, analysis, sourceScope));
+        FunctionIR.Function ir = FunctionIR.of(id, function, lines);
+        stage.analyzed.put(id, new Staged(function, analysis, ir));
     }
 
     /**
@@ -166,40 +183,85 @@ public final class FunctionAnalyzer {
         functions.forEach((id, function) -> {
             Staged staged = stage.analyzed.get(id);
             if (staged == null || staged.function() != function) return;
-            FabroliaFunctionScopes.Scope scope =
-                    stage.registeredScopes.getOrDefault(id, staged.sourceScope());
-            sealed.put(id, new ActiveEntry(function, staged.analysis(), scope));
+            sealed.put(id, new ActiveEntry(function, staged.analysis(), staged.ir()));
         });
         return sealed.isEmpty() ? EMPTY : new Prepared(Map.copyOf(sealed));
     }
 
+    /**
+     * Resolve the per-tick plan of {@code prepared} against the generation it
+     * will be activated with: {@code library}'s tags and {@code server}'s
+     * reloadable registries/advancements (already swapped to the same reload
+     * when vanilla calls {@code replaceLibrary}). Runs before the write lock.
+     */
+    public static FunctionPlan plan(Prepared prepared, ServerFunctionLibrary library,
+                                    MinecraftServer server) {
+        return FunctionPlanner.build(new LibrarySources(prepared, library, server));
+    }
+
     /** Initial-boot activation; no function body may observe a partial map. */
-    public static void activateInitial(Prepared prepared) {
+    public static void activateInitial(Prepared prepared, FunctionPlan plan) {
         Prepared next = Objects.requireNonNull(prepared, "prepared");
+        FunctionPlan nextPlan = Objects.requireNonNull(plan, "plan");
         Lock write = LIVE_GENERATION.writeLock();
         write.lock();
         try {
             ACTIVE = next;
+            PLAN = nextPlan;
         } finally {
             write.unlock();
         }
     }
 
     /**
-     * Live reload commit. All fallible allocation and analysis completed in
-     * seal(). Under the write lock vanilla replaces its library exactly once,
-     * then activation is only a volatile reference assignment.
+     * Live reload commit. All fallible allocation and analysis completed
+     * before this call. Under the write lock vanilla replaces its library
+     * exactly once, then activation is two volatile reference assignments.
      */
-    public static void replaceAndActivate(Prepared prepared, Runnable vanillaReplace) {
+    public static void replaceAndActivate(Prepared prepared, FunctionPlan plan,
+                                          Runnable vanillaReplace) {
         Prepared next = Objects.requireNonNull(prepared, "prepared");
+        FunctionPlan nextPlan = Objects.requireNonNull(plan, "plan");
         Runnable replace = Objects.requireNonNull(vanillaReplace, "vanillaReplace");
         Lock write = LIVE_GENERATION.writeLock();
         write.lock();
         try {
             replace.run();
             ACTIVE = next;
+            PLAN = nextPlan;
         } finally {
             write.unlock();
+        }
+    }
+
+    /** The active plan (lock-free; identity changes exactly at activation). */
+    public static FunctionPlan plan() {
+        return PLAN;
+    }
+
+    /** Callback runs while the fair live-generation read lock is held. */
+    @FunctionalInterface
+    public interface ExactProofAction<T> {
+        T run(boolean proven);
+    }
+
+    /**
+     * C3: {@code function} is the manager's current object for its id and the
+     * active plan proves its whole closure owner-local. The callback (which
+     * runs the body when proven) holds the read lease, so a reload cannot swap
+     * the library between proof and execution.
+     */
+    public static <T> T withExactOwnerLocalProof(ServerFunctionManager manager,
+                                                 CommandFunction<CommandSourceStack> function,
+                                                 ExactProofAction<T> action) {
+        Lock read = LIVE_GENERATION.readLock();
+        read.lock();
+        try {
+            boolean proven = PLAN.ownerLocal(function)
+                    && manager.get(function.id()).orElse(null) == function;
+            return action.run(proven);
+        } finally {
+            read.unlock();
         }
     }
 
@@ -242,17 +304,6 @@ public final class FunctionAnalyzer {
         }
     }
 
-    public static FabroliaFunctionScopes.Scope scopeOf(Identifier id) {
-        Lock read = LIVE_GENERATION.readLock();
-        read.lock();
-        try {
-            ActiveEntry entry = ACTIVE.entries.get(id);
-            return entry == null ? FabroliaFunctionScopes.Scope.UNKNOWN : entry.scope();
-        } finally {
-            read.unlock();
-        }
-    }
-
     public static int registered() {
         Lock read = LIVE_GENERATION.readLock();
         read.lock();
@@ -263,28 +314,84 @@ public final class FunctionAnalyzer {
         }
     }
 
-    /** Compiler registration is staged when called from the parse scope. */
-    public static void registerScope(Identifier id, FabroliaFunctionScopes.Scope scope) {
-        Objects.requireNonNull(id, "id");
-        Objects.requireNonNull(scope, "scope");
-        if (CURRENT_RELOAD.isBound()) {
-            CURRENT_RELOAD.get().registeredScopes.put(id, scope);
-        } else {
-            // An id alone is not a receipt for the active function object: a
-            // late compiler callback from an aborted/older reload could refine
-            // a newer generation. Without an exact reload scope, fail closed.
-            return;
-        }
-    }
-
     /** Clearing is conservative: every function returns to the fenced path. */
     public static void clear() {
         Lock write = LIVE_GENERATION.writeLock();
         write.lock();
         try {
             ACTIVE = EMPTY;
+            PLAN = FunctionPlan.EMPTY;
         } finally {
             write.unlock();
+        }
+    }
+
+    /** Planner input of one exact generation (library + server registries). */
+    private static final class LibrarySources implements FunctionPlanner.Sources {
+        private final Prepared prepared;
+        private final ServerFunctionLibrary library;
+        private final MinecraftServer server;
+        private final Set<Identifier> tags = new HashSet<>();
+        private final HashMap<String, JsonElement> predicates = new HashMap<>();
+        private RegistryOps<JsonElement> ops;
+
+        LibrarySources(Prepared prepared, ServerFunctionLibrary library, MinecraftServer server) {
+            this.prepared = prepared;
+            this.library = library;
+            this.server = server;
+            library.getAvailableTags().forEach(tags::add);
+        }
+
+        @Override
+        public FunctionIR.Function ir(Identifier id) {
+            ActiveEntry entry = prepared.entries.get(id);
+            if (entry == null) return null;
+            return library.getFunction(id).orElse(null) == entry.function() ? entry.ir() : null;
+        }
+
+        @Override
+        public CommandFunction<CommandSourceStack> function(Identifier id) {
+            return library.getFunction(id).orElse(null);
+        }
+
+        @Override
+        public Iterable<Identifier> functionIds() {
+            return library.getFunctions().keySet();
+        }
+
+        @Override
+        public List<Identifier> tag(Identifier id) {
+            if (!tags.contains(id)) return null;
+            List<CommandFunction<CommandSourceStack>> members = library.getTag(id);
+            ArrayList<Identifier> out = new ArrayList<>(members.size());
+            for (CommandFunction<CommandSourceStack> f : members) out.add(f.id());
+            return out;
+        }
+
+        @Override
+        public JsonElement predicate(String id) {
+            if (predicates.containsKey(id)) return predicates.get(id);
+            Identifier key = Identifier.tryParse(id);
+            JsonElement json = null;
+            if (key != null) {
+                if (ops == null) ops = RegistryOps.create(JsonOps.INSTANCE, server.registryAccess());
+                json = server.reloadableRegistries().lookup().lookup(Registries.PREDICATE)
+                        .flatMap(lookup -> lookup.get(ResourceKey.create(Registries.PREDICATE, key)))
+                        .flatMap(holder -> LootItemCondition.DIRECT_CODEC
+                                .encodeStart(ops, holder.value()).result())
+                        .orElse(null);
+            }
+            predicates.put(id, json);
+            return json;
+        }
+
+        @Override
+        public List<Identifier> rewardFunctions() {
+            ArrayList<Identifier> out = new ArrayList<>();
+            for (AdvancementHolder holder : server.getAdvancements().getAllAdvancements()) {
+                holder.value().rewards().function().map(CacheableFunction::getId).ifPresent(out::add);
+            }
+            return out;
         }
     }
 
@@ -345,13 +452,6 @@ public final class FunctionAnalyzer {
             return new Analysis(Kind.PURE_LOCAL_REL, radius, 0, 0, 0, 0);
         }
         return new Analysis(Kind.PURE_LOCAL_ABS, 0, minX, minZ, maxX, maxZ);
-    }
-
-    private static FabroliaFunctionScopes.Scope scopeFor(Analysis analysis) {
-        boolean routed = analysis.kind() == Kind.ROUTED;
-        return new FabroliaFunctionScopes.Scope(
-                !routed, false, routed, routed, routed, false,
-                "source analysis: " + analysis.kind());
     }
 
     /** Coordinate-triple token indices for the local allowlist, or null. */

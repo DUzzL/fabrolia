@@ -343,9 +343,28 @@ public final class IslandCommands {
         // Routed: one shard, exactly once, on the serialized main batch.
         Invocation inv = new Invocation("command_block", sourcePos, owner.id,
                 owner.logicalTick, command);
+        return routeAndPark(rs, owner, inv, original, isGlobalNoFence(command), "routed command");
+    }
+
+    /**
+     * An island coordinator (holding its unit claim) hands one body to the
+     * serialized Main routed batch and parks until it completed: exactly one
+     * execution on physical Main under the all-island fence (this island is
+     * stable through its exact park acknowledgement). Used by the function
+     * head's escalate-on-match lines.
+     */
+    static boolean routeFencedIslandBody(RegionizedServer rs, IslandRegistry.PIsland owner,
+                                         String label, BooleanSupplier body) {
+        Invocation inv = new Invocation("function", null, owner.id, owner.logicalTick, label);
+        return routeAndPark(rs, owner, inv, body, false, "routed function line");
+    }
+
+    private static boolean routeAndPark(RegionizedServer rs, IslandRegistry.PIsland owner,
+                                        Invocation inv, BooleanSupplier body, boolean fenceless,
+                                        String lane) {
         RoutedResult fut = new RoutedResult();
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            ROUTED.add(new RoutedCmd(inv, original, fut, isGlobalNoFence(command), null));
+            ROUTED.add(new RoutedCmd(inv, body, fut, fenceless, null));
             // Self-nudge: main drains its task queue while idling between slots,
             // so the batch runs within ~ms instead of at the next drive head.
             var sv = RegionScheduler.getServer();
@@ -380,7 +399,7 @@ public final class IslandCommands {
         long routedWaitNanos = System.nanoTime() - w0;
         RegionScheduler.runSuccessBodyIfHealthy(
                 () -> ROUTE_WAIT_NANOS.add(routedWaitNanos));
-        return exactCommandResult(fut, inv, "routed command");
+        return exactCommandResult(fut, inv, lane);
     }
 
     /**

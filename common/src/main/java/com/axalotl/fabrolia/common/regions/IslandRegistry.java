@@ -422,6 +422,12 @@ public final class IslandRegistry {
          *  in that one logical tick while preserving command-before-scheduled
          *  semantics on the first attempt. Coordinator-only under unitClaim. */
         public long unitHeadAppliedL = Long.MIN_VALUE;
+        /** Candidate island-L whose armed per-tick datapack roots were last run
+         *  at the function head (after cross-dimension arrivals). Same
+         *  discipline as {@link #unitHeadAppliedL}: stamped before execution,
+         *  inherited across splits, so a same-L retry never runs a second
+         *  pass. Coordinator-only under unitClaim. */
+        public long functionHeadAppliedL = Long.MIN_VALUE;
         /** Candidate island-L of the current fail-closed scheduled-tick HOLD
          *  streak and how many consecutive unit attempts held at it. Detection
          *  only ({@link IslandScheduledTicks#SCHEDULED_HOLD_STUCK_STREAK}): a
@@ -711,6 +717,7 @@ public final class IslandRegistry {
                             // the inherited clock so the fresh fragment cannot
                             // replay a cadence task already applied at this L.
                             p.unitHeadAppliedL = src.unitHeadAppliedL;
+                            p.functionHeadAppliedL = src.functionHeadAppliedL;
                             // audit10: and its tick identity, so entities migrated into
                             // this fresh fragment keep their already-ticked state for the
                             // current epoch instead of ticking a second time.

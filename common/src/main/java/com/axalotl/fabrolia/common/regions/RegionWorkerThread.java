@@ -23,6 +23,10 @@ public final class RegionWorkerThread extends Thread {
      *  getGameTime redirect. */
     volatile EpochDomain currentDomain;
 
+    /** Ownership partition of the owner-local function body this thread is
+     *  executing ({@link IslandFunctionScope}); thread-confined, null outside. */
+    FunctionPartition functionScope;
+
     /** R5 targeted wake: set (volatile) BEFORE the final lane re-check preceding park,
      *  cleared after park returns. Submitters publish work first, then scan these flags
      *  and unpark only as many workers as there are new units — Dekker-style: either the

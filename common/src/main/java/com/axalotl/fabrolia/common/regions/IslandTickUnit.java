@@ -987,6 +987,24 @@ public final class IslandTickUnit {
                     RegionScheduler.throwWorkerFailureIfAny();
                     CrossDimArrivals.publishIsland(island);
                     RegionScheduler.throwWorkerFailureIfAny();
+                    // DATAPACK FUNCTION HEAD — armed per-tick roots
+                    // (#minecraft:tick, 1t self-rearming loops) for this
+                    // island's entities at its own cadence: after arrivals
+                    // (they precede the destination's whole tick), before
+                    // scheduled ticks and the entity phase. Vanilla runs
+                    // functions outside the level tick, so handlingTick is
+                    // off for the pass. Own stamp, unitHeadAppliedL discipline.
+                    if (ScheduledTickIslandAdmission.shouldApplyUnitHead(
+                            island.functionHeadAppliedL, d.unitGameTime)) {
+                        island.functionHeadAppliedL = d.unitGameTime;
+                        d.handlingTickPhase = false;
+                        try {
+                            IslandFunctionHead.runIslandHead(rs, island);
+                        } finally {
+                            d.handlingTickPhase = true;
+                        }
+                        RegionScheduler.throwWorkerFailureIfAny();
+                    }
                     // Scheduled block/fluid ticks collected at THIS island's
                     // time — a lagging island's repeaters keep its own cadence.
                     // First segment: vanilla order [scheduled → events →

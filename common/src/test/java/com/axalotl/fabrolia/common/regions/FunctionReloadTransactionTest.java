@@ -1,6 +1,5 @@
 package com.axalotl.fabrolia.common.regions;
 
-import com.axalotl.fabrolia.common.api.FabroliaFunctionScopes;
 import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.FunctionInstantiationException;
@@ -43,7 +42,7 @@ final class FunctionReloadTransactionTest {
         FunctionAnalyzer.analyzeInto(
                 oldStage, oldId, oldFunction, List.of("setblock ~ ~ ~ stone"));
         FunctionAnalyzer.activateInitial(FunctionAnalyzer.seal(
-                oldStage, Map.of(oldId, oldFunction)));
+                oldStage, Map.of(oldId, oldFunction)), FunctionPlan.EMPTY);
 
         FunctionAnalyzer.ReloadStage abandoned = FunctionAnalyzer.beginReload();
         FunctionAnalyzer.analyzeInto(
@@ -65,12 +64,10 @@ final class FunctionReloadTransactionTest {
                 stage, id, staged, List.of("setblock ~ ~ ~ stone"));
 
         FunctionAnalyzer.activateInitial(FunctionAnalyzer.seal(
-                stage, Map.of(id, replacement)));
+                stage, Map.of(id, replacement)), FunctionPlan.EMPTY);
 
         assertNull(FunctionAnalyzer.analysisOf(id),
                 "same id with a different returned object must fail closed");
-        assertEquals(FabroliaFunctionScopes.Scope.UNKNOWN,
-                FabroliaFunctionScopes.scopeOf(id));
     }
 
     @Test
@@ -93,11 +90,14 @@ final class FunctionReloadTransactionTest {
                 oldId, function(oldId), "setblock ~ ~ ~ stone");
         FunctionAnalyzer.Prepared newPrepared = prepared(
                 newId, function(newId), "setblock ~ ~ ~ dirt");
-        FunctionAnalyzer.activateInitial(oldPrepared);
+        FunctionAnalyzer.activateInitial(oldPrepared, FunctionPlan.EMPTY);
+        FunctionPlan newPlan = new FunctionPlan(List.of(), Map.of(),
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()),
+                java.util.Set.of(), List.of("candidate plan"));
         IllegalStateException exact = new IllegalStateException("vanilla replace failed");
 
         Throwable observed = assertThrows(Throwable.class,
-                () -> FunctionAnalyzer.replaceAndActivate(newPrepared, () -> {
+                () -> FunctionAnalyzer.replaceAndActivate(newPrepared, newPlan, () -> {
                     throw exact;
                 }));
 
@@ -105,32 +105,8 @@ final class FunctionReloadTransactionTest {
         assertEquals(FunctionAnalyzer.Kind.PURE_LOCAL_REL,
                 FunctionAnalyzer.analysisOf(oldId).kind());
         assertNull(FunctionAnalyzer.analysisOf(newId));
-    }
-
-    @Test
-    void compilerScopeRegistrationBelongsOnlyToItsBoundCandidate() {
-        Identifier id = Identifier.parse("fabrolia_test:compiled");
-        CommandFunction<CommandSourceStack> function = function(id);
-        FabroliaFunctionScopes.Scope compilerScope = new FabroliaFunctionScopes.Scope(
-                false, true, false, false, false, false, "compiler exact scope");
-        FunctionAnalyzer.ReloadStage stage = FunctionAnalyzer.beginReload();
-
-        FunctionAnalyzer.withReloadStage(stage, () -> {
-            FabroliaFunctionScopes.register(id, compilerScope);
-            return null;
-        });
-        FunctionAnalyzer.analyzeInto(
-                stage, id, function, List.of("setblock ~ ~ ~ stone"));
-        FunctionAnalyzer.activateInitial(FunctionAnalyzer.seal(
-                stage, Map.of(id, function)));
-
-        assertSame(compilerScope, FabroliaFunctionScopes.scopeOf(id));
-
-        FabroliaFunctionScopes.Scope staleLateScope = new FabroliaFunctionScopes.Scope(
-                false, false, true, true, true, false, "late stale scope");
-        FabroliaFunctionScopes.register(id, staleLateScope);
-        assertSame(compilerScope, FabroliaFunctionScopes.scopeOf(id),
-                "an unbound id-only registration has no exact-generation receipt");
+        assertSame(FunctionPlan.EMPTY, FunctionAnalyzer.plan(),
+                "a failed library swap must not publish the candidate plan");
     }
 
     @Test

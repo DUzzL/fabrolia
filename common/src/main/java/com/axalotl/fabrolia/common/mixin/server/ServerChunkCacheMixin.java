@@ -879,6 +879,9 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             cancellable = true
     )
     private void fabrolia$getChunk(int x, int z, ChunkStatus targetStatus, boolean loadOrGenerate, CallbackInfoReturnable<ChunkAccess> cir) {
+        // Owner-local datapack function bodies touch only their partition's
+        // chunks (plan-proven; fail-stop on a miss instead of a race).
+        com.axalotl.fabrolia.common.regions.IslandFunctionScope.checkChunk(this.level, x, z);
         if (Thread.currentThread() == this.mainThread
                 || com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                 .inExactPlayerActor()) return;
