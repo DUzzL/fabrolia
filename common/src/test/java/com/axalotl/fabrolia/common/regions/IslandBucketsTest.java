@@ -55,6 +55,32 @@ class IslandBucketsTest {
         }
     }
 
+    /**
+     * A postponed task (a Main-sync function pass that may need the global
+     * fence during an entity-phase pump) stops its bucket: neither it nor any
+     * later task of that island runs, and the remainder returns in order.
+     */
+    @Test
+    void aPostponedTaskStopsItsBucketAndKeepsTheRemainderInOrder() throws Exception {
+        try (Fixture f = new Fixture()) {
+            List<String> ran = new ArrayList<>();
+            RegionScheduler.IslandBuckets<String> buckets =
+                    new RegionScheduler.IslandBuckets<>(ran::add, (item, failure) -> fail("no abort expected"));
+            buckets.postponeWhile(item -> item.startsWith("fence"));
+            buckets.add(f.idle, "idle-1");
+            buckets.add(f.idle, "fence-idle");
+            buckets.add(f.idle, "idle-2");
+            buckets.add(null, "unclaimed-1");
+            buckets.add(null, "fence-unclaimed");
+            buckets.add(null, "unclaimed-2");
+            assertTrue(buckets.flushReady());
+            assertEquals(List.of("unclaimed-1", "idle-1"), ran);
+            assertFalse(f.idle.unitClaim.get(), "the claim is released at the postponed task");
+            assertEquals(List.of("fence-idle", "idle-2", "fence-unclaimed", "unclaimed-2"),
+                    buckets.drainRemaining());
+        }
+    }
+
     @Test
     void readyPassNeverRaisesInterestSoAMainStallCannotParkTheIsland() throws Exception {
         try (Fixture f = new Fixture()) {

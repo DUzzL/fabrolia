@@ -49,9 +49,28 @@ public final class IslandFunctionHead {
 
     /** Armed roots of exactly one plan generation. */
     record Armed(FunctionPlan plan, List<FunctionPlan.RootPlan> tickRoots,
-                 List<FunctionPlan.RootPlan> loops) {
+                 List<FunctionPlan.RootPlan> loops, boolean mayEscalate) {
+        Armed(FunctionPlan plan, List<FunctionPlan.RootPlan> tickRoots,
+              List<FunctionPlan.RootPlan> loops) {
+            this(plan, tickRoots, loops, mayEscalate(tickRoots) || mayEscalate(loops));
+        }
+
         boolean isEmpty() {
             return tickRoots.isEmpty() && loops.isEmpty();
+        }
+
+        /** Some line may need the global fence: ESCALATE, or fake-player inputs to precheck. */
+        private static boolean mayEscalate(List<FunctionPlan.RootPlan> roots) {
+            for (FunctionPlan.RootPlan root : roots) {
+                for (FunctionPlan.LinePlan line : root.lines()) {
+                    if (line.kind() == FunctionPlan.LineKind.ESCALATE
+                            || (line.kind() == FunctionPlan.LineKind.PARTITION
+                                && !line.fakeReads().isEmpty())) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
     }
 
@@ -413,14 +432,7 @@ public final class IslandFunctionHead {
         Armed armed = ARMED;
         if (armed.isEmpty() || FunctionAnalyzer.plan() != armed.plan()) return;
         // Cheap common case first: the island head already took every member.
-        boolean owed = false;
-        for (Entity e : root.getSelfAndPassengers().toList()) {
-            if (((FunctionPassMark) e).fabrolia$functionPassOwed()) {
-                owed = true;
-                break;
-            }
-        }
-        if (!owed) return;
+        if (!treeOwed(root)) return;
         FunctionPartition partition = FunctionPartition.mainSyncTree(root, heldIsland);
         FunctionPartition.Pass pass = partition.open(NEXT_ISLAND_PASS.getAndIncrement(), false);
         if (pass.isEmpty()) return;
@@ -454,6 +466,26 @@ public final class IslandFunctionHead {
                     armed.plan(), steps, from, matches, abortedNow, pass, server));
             return;
         }
+    }
+
+    /**
+     * Whether the MAIN_SYNC body of {@code root} would run a function pass that
+     * may need the global fence (entity-phase pumps postpone such bodies).
+     */
+    public static boolean mainSyncPassMayEscalate(Entity root) {
+        Armed armed = ARMED;
+        return armed.mayEscalate() && !armed.isEmpty()
+                && FunctionAnalyzer.plan() == armed.plan() && treeOwed(root);
+    }
+
+    /** Some member of {@code root}'s tree owes a pass (no allocation for a lone entity). */
+    private static boolean treeOwed(Entity root) {
+        if (((FunctionPassMark) root).fabrolia$functionPassOwed()) return true;
+        if (root.getPassengers().isEmpty()) return false;
+        for (Entity e : root.getPassengers()) {
+            if (treeOwed(e)) return true;
+        }
+        return false;
     }
 
     private static void runFencedOnMain(Runnable body) {
