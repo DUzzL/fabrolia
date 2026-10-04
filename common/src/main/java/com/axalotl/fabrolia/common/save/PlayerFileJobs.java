@@ -213,7 +213,9 @@ public final class PlayerFileJobs {
             ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder().encode(CharBuffer.wrap(text.getBuffer()));
             byte[] bytes = new byte[encoded.remaining()];
             encoded.get(bytes);
-            tmp = Files.createTempFile(file.getParent(), file.getFileName() + "-", ".tmp");
+            // Jobs of one file never overlap, so a fixed sibling is private to
+            // this write; Files.write creates it with umask permissions like vanilla.
+            tmp = file.resolveSibling(file.getFileName() + ".tmp");
             Files.write(tmp, bytes);
             try {
                 Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);

@@ -33,8 +33,8 @@ import java.util.function.Consumer;
  *
  * <p>Jobs reproduce vanilla's own exception handling for the IO failures vanilla
  * tolerates (log and continue). Anything that escapes a job is a bug that vanilla
- * would have thrown on the saving thread: it is published as fatal and rethrown
- * from every await covering that job.
+ * would have thrown on the saving thread: it is always published as fatal and is
+ * rethrown by awaits whose own (or last) ticket it is.
  */
 public final class AsyncSaveWriter {
 

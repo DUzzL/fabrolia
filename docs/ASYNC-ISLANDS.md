@@ -644,13 +644,15 @@ only take snapshots now. `common/save/AsyncSaveWriter` writes the files.
 - Advancements: `asData()` detached under the progress monitor (criteria in
   stream order + requirements); encode, pretty print and write on the writer.
   Stats: map copied in `toJson()`'s stream order (fastutil streams ≠ iterates).
-  JSON goes to a temp file + atomic move (same bytes, never truncated on kill).
+  JSON goes to a `.tmp` sibling + atomic move (same bytes, umask permissions,
+  never truncated on kill).
 - Writer: per-file FIFO, files in parallel (≤4 daemon threads); waiters run
   their own file's queued jobs inline; at most one unstarted job per file (a
   second submit writes the first — backpressure instead of an unbounded queue;
   a write stuck >10 s is logged as an error while the saver keeps waiting, like
   vanilla's blocking write). An exception escaping a job (not vanilla's
-  tolerated IO errors) is published fatal and rethrown by every covering await.
+  tolerated IO errors) is always published fatal (and rethrown by the await of
+  that ticket).
 - Durability (`SaveDurability`): `PlayerList.saveAll` (autosave, plain
   `save-all`, reload) and the `saveAllChunks` body are deferred; any other
   `PlayerList.save` — logout above all, also nested in a deferred saveAll —
