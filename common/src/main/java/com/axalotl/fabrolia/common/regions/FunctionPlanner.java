@@ -681,6 +681,8 @@ public final class FunctionPlanner {
             fx.global(where, "item " + String.join(" ", lits.subList(1, Math.min(lits.size(), 3))));
             return;
         }
+        // Inventory triggers may award advancements (C1 on the owner).
+        fx.write("adv:*");
         if (!selfSelector(s.arg("targets"), ctx, fx, where, "item replace entity")) return;
         fx.write("inventory");
         if (s.hasLiteral("from")) {

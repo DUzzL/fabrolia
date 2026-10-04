@@ -79,7 +79,7 @@ public final class AdvancementBuffer {
     /** {@code SimpleCriterionTrigger.trigger} body. */
     public static void trigger(ServerPlayer player, Predicate<?> matcher, CriterionTrigger<?> trigger) {
         PlayerAdvancements advancements = player.getAdvancements();
-        if (AdvancementOwnership.quiescentContext()) {
+        if (AdvancementOwnership.quiescentOutsidePass()) {
             AdvancementDiag.TRIGGERS_QUIESCENT.increment();
             // A routed item's own cascade nests synchronously, as vanilla; any other
             // quiescent caller (a fenced command) keeps behind the player's routed work.

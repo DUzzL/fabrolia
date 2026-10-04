@@ -87,6 +87,49 @@ public final class IslandFunctionScope {
     }
 
     /**
+     * C2 inline owner-local reward: the same proof as C3 (exact object of the
+     * active plan, current library object, read lease across the body), run
+     * inside the enclosing pass's scope or the venue's own partition, which
+     * must own {@code player}.
+     *
+     * @return false when not proven or not owned here — the caller routes it
+     */
+    public static boolean runOwnerLocalReward(MinecraftServer server,
+                                              net.minecraft.server.level.ServerPlayer player,
+                                              net.minecraft.commands.functions.CommandFunction<
+                                                      net.minecraft.commands.CommandSourceStack> function,
+                                              Runnable body) {
+        return FunctionAnalyzer.withExactOwnerLocalProof(server.getFunctions(), function, proven -> {
+            if (!proven) return false;
+            FunctionPartition partition = current();
+            if (partition == null) {
+                partition = Thread.currentThread() instanceof RegionWorkerThread
+                        ? partitionOfCurrentWorker(server) : mainPartitionFor(server, player);
+            }
+            if (!partition.owns(player)) return false;
+            run(partition, body);
+            return true;
+        });
+    }
+
+    /**
+     * Main's partition for {@code player}: its island while Main holds that
+     * island's claim (MAIN_SYNC bucket, routed body), else Main's remainder.
+     */
+    private static FunctionPartition mainPartitionFor(MinecraftServer server,
+                                                      net.minecraft.server.level.ServerPlayer player) {
+        if (player.level() instanceof ServerLevel level) {
+            RegionizedServer rs = RegionScheduler.forLevel(level);
+            IslandRegistry.PIsland island = rs == null ? null
+                    : rs.islandOwnerOfChunk(player.chunkPosition().pack());
+            if (island != null && IslandCommands.mainHolds(island)) {
+                return FunctionPartition.island(rs, island);
+            }
+        }
+        return FunctionPartition.main(server);
+    }
+
+    /**
      * Partition of the entity context this region worker currently executes
      * for: its island (coordinator or claimed island region) or the Main
      * remainder (a global-domain region of Main's entity phase).

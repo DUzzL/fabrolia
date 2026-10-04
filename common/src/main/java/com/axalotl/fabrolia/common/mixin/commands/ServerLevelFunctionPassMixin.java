@@ -10,9 +10,10 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Entity tick boundary of {@link FunctionPassMark}: every admitted vanilla
- * entity tick body (non-passenger and passenger) re-opens the entity's
- * per-tick function pass.
+ * Entity tick boundary of {@link FunctionPassMark}: an admitted vanilla
+ * {@code tickNonPassenger} body (no gate precedes its commonTick) re-opens the
+ * entity's per-tick function pass. Passengers re-open at their exact
+ * {@code commonTick} invoke (ServerLevelMixin), after vanilla's gates.
  */
 @Mixin(ServerLevel.class)
 public abstract class ServerLevelFunctionPassMixin {
@@ -20,11 +21,5 @@ public abstract class ServerLevelFunctionPassMixin {
     @Inject(method = "tickNonPassenger(Lnet/minecraft/world/entity/Entity;)V", at = @At("HEAD"))
     private void fabrolia$functionPassTick(Entity entity, CallbackInfo ci) {
         IslandFunctionHead.entityTicked((FunctionPassMark) entity);
-    }
-
-    @Inject(method = "tickPassenger(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/entity/Entity;)V",
-            at = @At("HEAD"))
-    private void fabrolia$functionPassTickPassenger(Entity vehicle, Entity passenger, CallbackInfo ci) {
-        IslandFunctionHead.entityTicked((FunctionPassMark) passenger);
     }
 }

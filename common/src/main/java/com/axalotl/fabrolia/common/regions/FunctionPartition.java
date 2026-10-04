@@ -155,7 +155,7 @@ public abstract class FunctionPartition {
         private static void addRegion(List<Entity> out, Region r, EpochDomain d) {
             if (r == null || r.domain != d || r.state() != RegionState.ACTIVE) return;
             for (Entity e : r.entities) {
-                if (live(e)) out.add(e);
+                if (live(e) && tickOwnedByCurrentThread(e)) out.add(e);
             }
         }
 
@@ -274,9 +274,74 @@ public abstract class FunctionPartition {
         }
     }
 
+    /**
+     * Island head membership: only entities whose tick this coordinator owns. A
+     * player Main owns (A5 MAIN phase, fallbacks, MAIN_SYNC lane) is never run
+     * on the island — strict C1 would reject its award/revoke — and is served
+     * by its Main-sync body instead (IslandFunctionHead.runMainSyncEntityPass).
+     */
+    public static boolean tickOwnedByCurrentThread(Entity e) {
+        return !(e instanceof net.minecraft.server.level.ServerPlayer p)
+                || PlayerTurnOwnership.currentThreadOwns(p);
+    }
+
     private static boolean live(Entity e) {
         if (e.isRemoved()) return false;
         ParallelProcessor.TickGuard guard = (ParallelProcessor.TickGuard) e;
         return !guard.fabrolia$tickLease().isArrivalPending() && !guard.fabrolia$isPortalPending();
+    }
+
+    // ------------------------------------------------------------------
+    // One Main-sync entity tree (physical Main, inside its MAIN_SYNC body)
+    // ------------------------------------------------------------------
+
+    static FunctionPartition mainSyncTree(Entity root, IslandRegistry.PIsland heldIsland) {
+        return new MainSyncTreePartition(root, heldIsland);
+    }
+
+    /**
+     * The entity tree (root and its passengers) whose tick body physical Main
+     * is about to run under the claim of {@code heldIsland} (null: the global
+     * lane). A ridden vehicle's MAIN_SYNC body ticks its player passengers, so
+     * the tree is the pass. Chunks are owned under a held global fence or all
+     * claims of their level, or while they belong to {@code heldIsland}.
+     */
+    static final class MainSyncTreePartition extends FunctionPartition {
+        final Entity root;
+        final IslandRegistry.PIsland heldIsland;
+
+        MainSyncTreePartition(Entity root, IslandRegistry.PIsland heldIsland) {
+            this.root = root;
+            this.heldIsland = heldIsland;
+        }
+
+        @Override
+        protected List<Entity> candidates() {
+            ArrayList<Entity> out = new ArrayList<>(2);
+            root.getSelfAndPassengers().forEach(e -> {
+                if (live(e)) out.add(e);
+            });
+            return out;
+        }
+
+        @Override
+        public boolean owns(Entity e) {
+            return e == root || e.getRootVehicle() == root;
+        }
+
+        @Override
+        public boolean ownsChunk(ServerLevel level, int cx, int cz) {
+            if (IslandCommands.fenceWindowHeld()) return true;
+            RegionizedServer rs = RegionScheduler.forLevel(level);
+            if (rs == null || rs.currentThreadHoldsAllClaims()) return true;
+            IslandRegistry.PIsland owner =
+                    rs.islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(cx, cz));
+            return owner == heldIsland && (owner == null || IslandCommands.mainHolds(owner));
+        }
+
+        @Override
+        public String describe() {
+            return "main-sync " + root;
+        }
     }
 }

@@ -49,9 +49,28 @@ public final class IslandFunctionHead {
 
     /** Armed roots of exactly one plan generation. */
     record Armed(FunctionPlan plan, List<FunctionPlan.RootPlan> tickRoots,
-                 List<FunctionPlan.RootPlan> loops) {
+                 List<FunctionPlan.RootPlan> loops, boolean mayEscalate) {
+        Armed(FunctionPlan plan, List<FunctionPlan.RootPlan> tickRoots,
+              List<FunctionPlan.RootPlan> loops) {
+            this(plan, tickRoots, loops, mayEscalate(tickRoots) || mayEscalate(loops));
+        }
+
         boolean isEmpty() {
             return tickRoots.isEmpty() && loops.isEmpty();
+        }
+
+        /** Some line may need the global fence: ESCALATE, or fake-player inputs to precheck. */
+        private static boolean mayEscalate(List<FunctionPlan.RootPlan> roots) {
+            for (FunctionPlan.RootPlan root : roots) {
+                for (FunctionPlan.LinePlan line : root.lines()) {
+                    if (line.kind() == FunctionPlan.LineKind.ESCALATE
+                            || (line.kind() == FunctionPlan.LineKind.PARTITION
+                                && !line.fakeReads().isEmpty())) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
     }
 
@@ -391,6 +410,82 @@ public final class IslandFunctionHead {
                 functionFailure(root, failure);
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Main-sync entities (physical Main, inside the MAIN_SYNC body)
+    // ------------------------------------------------------------------
+
+    /**
+     * An entity tree whose tick physical Main runs (MAIN_SYNC lane, under its
+     * island's claim or in the global lane) and of which some member no pass
+     * took since its last tick: run the armed roots for those members now,
+     * before the tick body. Covers Main-owned players (an island head never
+     * runs them: strict C1), players riding a Main-ticked vehicle, and entities
+     * whose queued Main tick lagged behind their island's next head.
+     * Owner-local lines run here; an escalate match runs the rest of this pass
+     * inline under the global fence (islands Main holds count as quiescent),
+     * so neither this tick nor the members' next pass overtakes it.
+     */
+    public static void runMainSyncEntityPass(Entity root, IslandRegistry.PIsland heldIsland,
+                                             MinecraftServer server) {
+        Armed armed = ARMED;
+        if (armed.isEmpty() || FunctionAnalyzer.plan() != armed.plan()) return;
+        // Cheap common case first: the island head already took every member.
+        if (!treeOwed(root)) return;
+        FunctionPartition partition = FunctionPartition.mainSyncTree(root, heldIsland);
+        FunctionPartition.Pass pass = partition.open(NEXT_ISLAND_PASS.getAndIncrement(), false);
+        if (pass.isEmpty()) return;
+        ArrayList<FunctionPlan.RootPlan> roots = new ArrayList<>(armed.tickRoots());
+        roots.addAll(armed.loops());
+        List<Step> steps = steps(roots);
+        if (steps.isEmpty()) return;
+        RegionScheduler.commitSuccessIfHealthy(FunctionFenceDiag.MAIN_SYNC_ENTITY_PASSES::increment);
+        CommandSourceStack source = server.getFunctions().getGameLoopSender();
+        FunctionPlan.RootPlan aborted = null;
+        for (int i = 0; i < steps.size(); i++) {
+            Step step = steps.get(i);
+            if (step.root() == aborted) continue;
+            List<List<Entity>> matches;
+            try {
+                matches = partitionStep(step.line(), source, pass, server);
+            } catch (RuntimeException failure) {
+                functionFailure(step.root(), failure);
+                aborted = step.root();
+                continue;
+            }
+            if (matches == null) continue;
+            int from = i;
+            FunctionPlan.RootPlan abortedNow = aborted;
+            String label = step.root().id() + ":" + step.line().sourceLine();
+            RegionScheduler.commitSuccessIfHealthy(() -> {
+                FunctionFenceDiag.MAIN_ESCALATIONS.increment();
+                FunctionFenceDiag.escalated(label);
+            });
+            runFencedOnMain(() -> runRemainderFenced(
+                    armed.plan(), steps, from, matches, abortedNow, pass, server));
+            return;
+        }
+    }
+
+    /**
+     * Whether the MAIN_SYNC body of {@code root} would run a function pass that
+     * may need the global fence (entity-phase pumps postpone such bodies).
+     */
+    public static boolean mainSyncPassMayEscalate(Entity root) {
+        Armed armed = ARMED;
+        return armed.mayEscalate() && !armed.isEmpty()
+                && FunctionAnalyzer.plan() == armed.plan() && treeOwed(root);
+    }
+
+    /** Some member of {@code root}'s tree owes a pass (no allocation for a lone entity). */
+    private static boolean treeOwed(Entity root) {
+        if (((FunctionPassMark) root).fabrolia$functionPassOwed()) return true;
+        if (root.getPassengers().isEmpty()) return false;
+        for (Entity e : root.getPassengers()) {
+            if (treeOwed(e)) return true;
+        }
+        return false;
     }
 
     private static void runFencedOnMain(Runnable body) {

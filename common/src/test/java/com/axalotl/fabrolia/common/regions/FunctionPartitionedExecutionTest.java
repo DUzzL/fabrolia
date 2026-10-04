@@ -189,6 +189,35 @@ class FunctionPartitionedExecutionTest {
         assertEquals(4, new ListPartition(twice.markers, marks).open(-8, false).entities.size());
     }
 
+    /**
+     * An entity ticked by MAIN_SYNC whose Main tick lags its island: head U_n
+     * passes it, U_{n+1} finds it TAKEN (T_n not run yet), and the Main-sync
+     * body of T_{n+1} must recover the missing pass before that tick — one pass
+     * per tick, never two between ticks. Island and Main-sync passes use the
+     * same claim protocol (FunctionPartition.open).
+     */
+    @Test
+    void mainSyncBodyRecoversThePassALaggingMainTickMissed() throws Exception {
+        World w = new World(1);
+        Entity e = w.markers.getFirst();
+        HashMap<Entity, Long> marks = new HashMap<>();
+        java.util.function.LongFunction<Integer> pass =
+                id -> new ListPartition(List.of(e), marks).open(id, false).entities.size();
+        Runnable tick = () -> marks.remove(e);
+
+        int passes = pass.apply(1);   // island head U_n
+        passes += pass.apply(2);      // island head U_{n+1}: T_n still queued on Main
+        assertEquals(1, passes);
+        passes += pass.apply(3);      // Main-sync body of T_n: already passed
+        tick.run();                   // T_n
+        assertEquals(1, passes);
+        passes += pass.apply(4);      // Main-sync body of T_{n+1}: recovers the pass
+        tick.run();                   // T_{n+1}
+        assertEquals(2, passes, "one pass per tick across the lag");
+        passes += pass.apply(5);      // next island head
+        assertEquals(3, passes);
+    }
+
     @Test
     void loopRearmKeepsVanillaScheduleReplaceSemantics() throws Exception {
         FunctionPlanFixture f = new FunctionPlanFixture()

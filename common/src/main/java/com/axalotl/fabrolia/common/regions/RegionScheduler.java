@@ -144,7 +144,12 @@ public final class RegionScheduler {
         NetherPortalTransfers.serviceMain(mcServer);
         // Islands stopped by a MAIN_SYNC service request since the last entity
         // phase are served here, ahead of the tracker publications (pump/tail order).
+        // Parked island waiters (escalated function heads, routed commands):
+        // Main holds no claim or fence at this boundary. Routed before and after
+        // MAIN_SYNC so neither overtakes work published before the other.
+        if (IslandCommands.hasRoutedPending()) IslandCommands.drainRoutedBatch();
         drainMainSyncOutOfPhase();
+        if (IslandCommands.hasRoutedPending()) IslandCommands.drainRoutedBatch();
         drainReadyMainTracking();
         while (true) {
             DeferredLifecycleTransition task;
@@ -1457,6 +1462,9 @@ public final class RegionScheduler {
                 throw new IllegalStateException("MAIN_SYNC entity left its claimed server level");
             }
             if (((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return;
+            // Per-tick datapack roots for an entity no function pass took since
+            // its last tick (Main-owned players; Main ticks lagging their island).
+            IslandFunctionHead.runMainSyncEntityPass(entity, mainClaimOwnerOf(entity), level.getServer());
             entity.checkDespawn();
             if (!entity.isRemoved()) {
                 if (vanillaGuarded) ParallelProcessor.tickEntityVanillaGuarded(level, entity, false);
@@ -1931,6 +1939,12 @@ public final class RegionScheduler {
                 MainSyncTask::publishedNanos,
                 task -> ParallelProcessor.containsServerPlayerTick(task.entity()),
                 MainSyncService.INSTANCE);
+        if (mode == DrainMode.READY) {
+            // The entity-phase pump runs beside global-lane work: a Main-sync
+            // function pass that may need the global fence waits for a later
+            // drain (tail, out-of-phase, complete), its bucket order kept.
+            buckets.postponeWhile(task -> IslandFunctionHead.mainSyncPassMayEscalate(task.entity()));
+        }
         boolean ran = false;
         MainSyncTask queued;
         while ((queued = MAIN_SYNC.poll()) != null) {
@@ -2162,6 +2176,8 @@ public final class RegionScheduler {
         private final java.util.LinkedHashMap<IslandRegistry.PIsland, java.util.ArrayDeque<T>> buckets =
                 new java.util.LinkedHashMap<>();
         private final java.util.ArrayDeque<T> unclaimed = new java.util.ArrayDeque<>();
+        /** Nullable: a matching task (and the rest of its bucket) waits for a later drain. */
+        private java.util.function.Predicate<T> postpone;
 
         IslandBuckets(java.util.function.Consumer<T> body,
                       java.util.function.BiFunction<T, Throwable, Throwable> cancel) {
@@ -2192,6 +2208,15 @@ public final class RegionScheduler {
             this.publishedNanos = publishedNanos;
             this.urgent = urgent;
             this.requests = requests;
+        }
+
+        /**
+         * Tasks matching {@code test} are not run by this drain: the bucket
+         * stops at the first one and stays registered in order, so
+         * {@link #drainRemaining} hands it back to the queue head.
+         */
+        void postponeWhile(java.util.function.Predicate<T> test) {
+            this.postpone = test;
         }
 
         void add(IslandRegistry.PIsland owner, T item) {
@@ -2335,12 +2360,15 @@ public final class RegionScheduler {
             while (it.hasNext()) {
                 var entry = it.next();
                 IslandRegistry.PIsland owner = entry.getKey();
+                if (postpone != null && entry.getValue().peek() != null
+                        && postpone.test(entry.getValue().peek())) continue;
                 boolean inherited = inherits(owner);
                 if (!inherited && !IslandCommands.tryMainClaim(owner)) continue;
-                runBucket(owner, entry.getValue(), inherited, ownLevel);
-                // Registered until it completed: an abort cancels the rest.
-                it.remove();
+                boolean complete = runBucket(owner, entry.getValue(), inherited, ownLevel);
                 ran = true;
+                // Registered until it completed: an abort cancels the rest; a
+                // postponed remainder stays registered in order.
+                if (complete) it.remove();
             }
             return ran;
         }
@@ -2350,17 +2378,18 @@ public final class RegionScheduler {
          * island's standing service request ends only after the bucket's
          * completion tails ran, so they find the island still stopped.
          */
-        private void runBucket(IslandRegistry.PIsland owner, java.util.ArrayDeque<T> queue,
-                               boolean inherited, boolean ownLevel) {
+        private boolean runBucket(IslandRegistry.PIsland owner, java.util.ArrayDeque<T> queue,
+                                  boolean inherited, boolean ownLevel) {
             ServerLevel phaseLevel = mainCurrentLevel;
             if (ownLevel && owner.level != null) mainCurrentLevel = owner.level;
+            boolean complete;
             try {
-                if (inherited) runQueue(queue);
-                else runClaimed(owner, queue);
+                complete = inherited ? runQueue(queue) : runClaimed(owner, queue);
             } finally {
                 if (ownLevel) mainCurrentLevel = phaseLevel;
             }
-            if (requests != null) requests.serviced(owner);
+            if (complete && requests != null) requests.serviced(owner);
+            return complete;
         }
 
         private boolean overdue(java.util.ArrayDeque<T> queue, long now) {
@@ -2510,14 +2539,15 @@ public final class RegionScheduler {
                     || !IslandCommands.requiresMainFence(runtime);
         }
 
-        private void runClaimed(IslandRegistry.PIsland owner, java.util.ArrayDeque<T> queue) {
+        private boolean runClaimed(IslandRegistry.PIsland owner, java.util.ArrayDeque<T> queue) {
             Throwable failure = null;
+            boolean complete = false;
             java.util.ArrayList<MainSyncTask> outer = DEFERRED_TAILS.get();
             java.util.ArrayList<MainSyncTask> tails = new java.util.ArrayList<>();
             DEFERRED_TAILS.set(tails);
             try {
                 try {
-                    runQueue(queue);
+                    complete = runQueue(queue);
                 } catch (Throwable thrown) {
                     failure = thrown;
                     failure = publishFatalAndSelectWinner(thrown);
@@ -2540,11 +2570,18 @@ public final class RegionScheduler {
                 else failure = runDeferredTails(tails, failure);
             }
             if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+            return complete;
         }
 
-        private void runQueue(java.util.ArrayDeque<T> queue) {
+        /** @return false when a postponed task stopped the queue (it stays queued) */
+        private boolean runQueue(java.util.ArrayDeque<T> queue) {
             T item;
-            while ((item = queue.poll()) != null) body.accept(item);
+            while ((item = queue.peek()) != null) {
+                if (postpone != null && postpone.test(item)) return false;
+                queue.poll();
+                body.accept(item);
+            }
+            return true;
         }
     }
 

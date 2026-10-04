@@ -29,6 +29,11 @@ public abstract class EntityFunctionPassMixin implements FunctionPassMark {
     }
 
     @Override
+    public boolean fabrolia$functionPassOwed() {
+        return fabrolia$functionPass.get() == FunctionPassMark.OWED;
+    }
+
+    @Override
     public void fabrolia$functionPassTick() {
         fabrolia$functionPass.set(FunctionPassMark.OWED);
     }
