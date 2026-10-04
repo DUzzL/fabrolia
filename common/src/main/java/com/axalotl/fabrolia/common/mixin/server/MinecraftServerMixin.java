@@ -373,6 +373,11 @@ public class MinecraftServerMixin {
     /**
      * Keep the all-island receipt through server-global SavedDataStorage
      * encoding and dirty-bit retirement, after the nested level saves return.
+     *
+     * <p>The quiesce covers only snapshots: level.dat is queued on the save
+     * writer like the player files of the preceding saveAll. A flushing save
+     * ({@code save-all flush}, shutdown) waits for every queued save file after
+     * the islands run again.
      */
     @WrapMethod(method = "saveAllChunks(ZZZ)Z", require = 1, allow = 1)
     private boolean fabrolia$quiesceIslandsForServerSave(
@@ -383,7 +388,8 @@ public class MinecraftServerMixin {
         Throwable failure = null;
         try {
             result = RegionScheduler.callSuccessBooleanIfHealthy(
-                    () -> original.call(silent, flush, force));
+                    () -> com.axalotl.fabrolia.common.save.SaveDurability.callDeferred(
+                            () -> original.call(silent, flush, force)));
         } catch (Throwable primary) {
             failure = RegionScheduler.publishFatalAndSelectWinner(primary);
         }
@@ -395,7 +401,33 @@ public class MinecraftServerMixin {
         } else {
             RegionScheduler.commitSuccessIfHealthy(() -> {});
         }
+        if (flush) {
+            com.axalotl.fabrolia.common.save.AsyncSaveWriter.INSTANCE.awaitAll();
+        }
         return result;
+    }
+
+    /**
+     * Shutdown barrier for every queued save file. The normal path already
+     * drained in saveAllChunks(flush); this covers a stop that failed before it.
+     */
+    @WrapMethod(method = "stopServer()V", require = 1, allow = 1)
+    private void fabrolia$awaitSaveFilesOnStop(Operation<Void> original) {
+        Throwable failure = null;
+        try {
+            original.call();
+        } catch (Throwable thrown) {
+            failure = thrown;
+        }
+        try {
+            com.axalotl.fabrolia.common.save.AsyncSaveWriter.INSTANCE.awaitAll();
+        } catch (Throwable writeFailure) {
+            if (failure == null) failure = writeFailure;
+            else if (writeFailure != failure) failure.addSuppressed(writeFailure);
+        }
+        if (failure != null) {
+            MinecraftServerMixin.<RuntimeException>fabrolia$throwUnchecked(failure);
+        }
     }
 
     @WrapMethod(method = "reloadResources")
