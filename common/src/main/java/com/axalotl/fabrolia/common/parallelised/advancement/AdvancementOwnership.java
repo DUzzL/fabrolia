@@ -39,6 +39,18 @@ public final class AdvancementOwnership {
         return !IslandCommands.requiresMainFence() || IslandCommands.fenceWindowHeld();
     }
 
+    /**
+     * Quiescent AND outside an owner-local function pass. Inside a pass, work
+     * run "now" is either queued into the pass's ExecutionContext or executed
+     * under its ownership guards (vanilla nests a function call inside the
+     * active context), so the vanilla shortcut never applies there: reward
+     * functions, loot and announcements take the routing point's decision.
+     */
+    public static boolean quiescentOutsidePass() {
+        return com.axalotl.fabrolia.common.regions.IslandFunctionScope.current() == null
+                && quiescentContext();
+    }
+
     /** Physical Main (or the logical server thread when no server is published yet). */
     static boolean onPhysicalMain() {
         MinecraftServer server = ParallelProcessor.getServer();

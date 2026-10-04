@@ -76,6 +76,22 @@ public abstract class ServerFunctionManagerMixin {
                 ((FunctionLibraryAnalysisAccess) library).fabrolia$preparedFunctionAnalysis();
         FunctionAnalyzer.activateInitial(prepared,
                 FunctionAnalyzer.plan(prepared, library, server));
+        fabrolia$resolveRewardFunctions(server);
+    }
+
+    /**
+     * Vanilla's {@code CacheableFunction} resolves lazily through plain fields;
+     * island owners award concurrently, so every reward function of the active
+     * advancements is resolved here, on Main, before islands can award (boot,
+     * or inside the fenced library swap).
+     */
+    @org.spongepowered.asm.mixin.Unique
+    private void fabrolia$resolveRewardFunctions(MinecraftServer server) {
+        ServerFunctionManager self = (ServerFunctionManager) (Object) this;
+        for (net.minecraft.advancements.AdvancementHolder holder
+                : server.getAdvancements().getAllAdvancements()) {
+            holder.value().rewards().function().ifPresent(f -> f.get(self));
+        }
     }
 
     /**
@@ -96,7 +112,7 @@ public abstract class ServerFunctionManagerMixin {
                 FunctionAnalyzer.plan(prepared, library, this.server);
         if (!IslandCommands.requiresMainFence() || IslandCommands.fenceWindowHeld()) {
             FunctionAnalyzer.replaceAndActivate(prepared, plan,
-                    () -> original.call(library));
+                    () -> { original.call(library); fabrolia$resolveRewardFunctions(this.server); });
             return;
         }
         if (!IslandCommands.quiesceAllExcept(null)) {
@@ -106,13 +122,16 @@ public abstract class ServerFunctionManagerMixin {
                 return;
             }
             FunctionAnalyzer.replaceAndActivate(prepared, plan,
-                    () -> original.call(library));
+                    () -> { original.call(library); fabrolia$resolveRewardFunctions(this.server); });
             return;
         }
         Throwable failure = null;
         try {
             RegionScheduler.runSuccessBodyIfHealthy(() -> FunctionAnalyzer.replaceAndActivate(
-                    prepared, plan, () -> original.call(library)));
+                    prepared, plan, () -> {
+                        original.call(library);
+                        fabrolia$resolveRewardFunctions(this.server);
+                    }));
         } catch (Throwable thrown) {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         }
@@ -262,18 +281,25 @@ public abstract class ServerFunctionManagerMixin {
             return;
         }
         // C2 on physical Main: the advancement reward routing point proved this
-        // exact call owner-local for a Main-owned player; it runs without a fence.
+        // exact call owner-local (exact plan object, generation lease) and runs it
+        // inside the scope of a partition owning the player; no fence.
         if (com.axalotl.fabrolia.common.parallelised.advancement.AdvancementRewardRouting
-                .isOwnerLocalReward(function)) {
+                .isOwnerLocalReward(function, source)) {
+            if (IslandFunctionScope.current() == null) {
+                IslandCommands.publishAndPropagate(new IllegalStateException("owner-local reward "
+                        + function.id() + " reached execute outside its ownership scope"));
+                return;
+            }
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> original.call(function, source));
             return;
         }
         if (IslandFunctionScope.current() != null) {
-            // A whole function reached from inside a Main owner-local pass (an
-            // advancement reward of a trigger the pass fired) is not covered by
-            // that pass's proof: it takes the normal Main path, unscoped.
-            IslandFunctionScope.runUnscoped(() -> fabrolia$fenceFunction(function, source, original));
+            // Inside an owner-local pass vanilla only queues this body into the
+            // pass's ExecutionContext: it would run under the pass's guards
+            // without a proof. The routing point never sends work here.
+            IslandCommands.publishAndPropagate(new IllegalStateException("function "
+                    + function.id() + " dispatched inside an owner-local pass without an owner-local proof"));
             return;
         }
         if (!IslandCommands.requiresMainFence()) {

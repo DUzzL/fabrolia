@@ -325,6 +325,89 @@ final class AdvancementOwnerRoutingTest {
         }
     }
 
+    /** A function-pass ownership scope over exactly {@code player} (guards only). */
+    private static com.axalotl.fabrolia.common.regions.FunctionPartition passOver(ServerPlayer player) {
+        return new com.axalotl.fabrolia.common.regions.FunctionPartition() {
+            @Override protected List<net.minecraft.world.entity.Entity> candidates() { return List.of(player); }
+            @Override public boolean owns(net.minecraft.world.entity.Entity e) { return e == player; }
+            @Override public boolean ownsChunk(net.minecraft.server.level.ServerLevel l, int x, int z) { return true; }
+            @Override public String describe() { return "test pass"; }
+        };
+    }
+
+    /**
+     * HIGH-1: inside a Main function pass under the held fence the vanilla
+     * shortcut must not run a reward function no plan proved owner-local (vanilla
+     * would queue it into the pass's ExecutionContext and run it under the pass's
+     * guards — a fail-stop), nor loot or the chat announcement: all are routed.
+     */
+    @Test
+    void rewardWorkRaisedInsideAFenceHeldFunctionPassIsRoutedNotRunUnderThePass() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            fixture.publishAsyncLevel();
+            fixture.holdAllClaims();
+            ServerPlayer player = fixture.player();
+            fixture.advancements(player);
+            CommandFunction<CommandSourceStack> reward =
+                    new PlainTextFunction<>(Identifier.fromNamespaceAndPath("test", "global_reward"), List.of());
+            CommandSourceStack source = new CommandSourceStack(CommandSource.NULL, Vec3.ZERO, Vec2.ZERO,
+                    null, LevelBasedPermissionSet.GAMEMASTER, fixture.server, player);
+            AdvancementRewards loot = new AdvancementRewards(0,
+                    HolderSet.direct(Holder.direct(LootTable.EMPTY)), List.of(), Optional.empty());
+            RecordingPlayerList chat = fixture.playerList(new ArrayList<>(), null, null);
+            AtomicBoolean executed = new AtomicBoolean();
+            AtomicBoolean grantRouted = new AtomicBoolean();
+            AtomicBoolean announcementRouted = new AtomicBoolean();
+
+            com.axalotl.fabrolia.common.regions.IslandFunctionScope.run(passOver(player), () -> {
+                AdvancementRewardRouting.dispatchRewardFunction(reward, source, () -> executed.set(true));
+                grantRouted.set(AdvancementRewardRouting.routeGrant(loot, player));
+                announcementRouted.set(AdvancementRewardRouting.routeAnnouncement(
+                        chat, Component.empty(), false, player));
+            });
+
+            assertFalse(executed.get(), "not run (or queued) under the pass's guards");
+            assertInstanceOf(AdvancementBuffer.RoutedReward.class, fixture.routed.peek());
+            assertTrue(grantRouted.get(), "loot leaves the pass");
+            assertTrue(announcementRouted.get(), "the announcement leaves the pass");
+            fixture.clearRouted();
+
+            AdvancementRewardRouting.dispatchRewardFunction(reward, source, () -> executed.set(true));
+            assertTrue(executed.get(), "outside any pass the held fence still runs it as vanilla");
+        }
+    }
+
+    /**
+     * HIGH-2: an island head only takes players whose tick its thread owns. A
+     * player physical Main owns (here: no island session) is not an island-head
+     * member — strict C1 would reject its award/revoke there — while any other
+     * entity is.
+     */
+    @Test
+    void anIslandHeadNeverTakesAPlayerItsThreadDoesNotOwn() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            fixture.publishAsyncLevel();
+            ServerPlayer player = fixture.player();
+            net.minecraft.world.entity.Entity other =
+                    (net.minecraft.world.entity.Entity) fixture.unsafe.allocateInstance(
+                            net.minecraft.world.entity.Marker.class);
+            AtomicReference<Boolean> playerMember = new AtomicReference<>();
+            AtomicReference<Boolean> otherMember = new AtomicReference<>();
+            Thread coordinator = new Thread(() -> {
+                playerMember.set(com.axalotl.fabrolia.common.regions.FunctionPartition
+                        .tickOwnedByCurrentThread(player));
+                otherMember.set(com.axalotl.fabrolia.common.regions.FunctionPartition
+                        .tickOwnedByCurrentThread(other));
+            });
+            coordinator.start();
+            coordinator.join();
+            assertFalse(playerMember.get());
+            assertTrue(otherMember.get());
+            assertTrue(com.axalotl.fabrolia.common.regions.FunctionPartition.tickOwnedByCurrentThread(player)
+                    || !AdvancementOwnership.ownsPlayer(player), "Main's own answer is the C1 answer");
+        }
+    }
+
     private static boolean award(PlayerAdvancements advancements, ServerPlayer player,
                                  AdvancementHolder holder, String criterion) {
         return AdvancementOwnership.mutateOnOwner("award", player, holder.id(),

@@ -40,15 +40,21 @@ public final class AdvancementRewardRouting {
 
     private AdvancementRewardRouting() {}
 
-    private static final ScopedValue<CommandFunction<?>> OWNER_LOCAL_REWARD = ScopedValue.newInstance();
+    /** The exact inline owner-local reward call this routing point admitted. */
+    private record OwnerLocalCall(CommandFunction<?> function, CommandSourceStack source) {}
+
+    private static final ScopedValue<OwnerLocalCall> OWNER_LOCAL_REWARD = ScopedValue.newInstance();
 
     /**
      * True only on the thread running this routing point's inline owner-local
-     * execution of exactly {@code function}. {@code ServerFunctionManagerMixin}
-     * runs that call unfenced on the owner (worker or Main).
+     * execution of exactly {@code function} with exactly {@code source}: proven by
+     * the active plan's exact object under the live-generation lease and running
+     * inside the ownership scope of a partition that owns the player.
      */
-    public static boolean isOwnerLocalReward(CommandFunction<?> function) {
-        return OWNER_LOCAL_REWARD.isBound() && OWNER_LOCAL_REWARD.get() == function;
+    public static boolean isOwnerLocalReward(CommandFunction<?> function, CommandSourceStack source) {
+        if (!OWNER_LOCAL_REWARD.isBound()) return false;
+        OwnerLocalCall call = OWNER_LOCAL_REWARD.get();
+        return call.function() == function && call.source() == source;
     }
 
     /**
@@ -57,7 +63,7 @@ public final class AdvancementRewardRouting {
      */
     public static void dispatchRewardFunction(CommandFunction<CommandSourceStack> function,
                                               CommandSourceStack source, Runnable execute) {
-        if (AdvancementOwnership.quiescentContext()) {
+        if (AdvancementOwnership.quiescentOutsidePass()) {
             execute.run();
             return;
         }
@@ -65,9 +71,12 @@ public final class AdvancementRewardRouting {
         PlayerAdvancements advancements = player == null ? null : player.getAdvancements();
         if (player != null && !AdvancementBuffer.hasBacklog(advancements)
                 && FunctionPlans.ownerLocal(function.id())
-                && AdvancementOwnership.ownsPlayer(player)) {
+                && AdvancementOwnership.ownsPlayer(player)
+                && com.axalotl.fabrolia.common.regions.IslandFunctionScope.runOwnerLocalReward(
+                        source.getServer(), player, function,
+                        () -> ScopedValue.where(OWNER_LOCAL_REWARD, new OwnerLocalCall(function, source))
+                                .run(execute))) {
             AdvancementDiag.REWARD_FUNCTIONS_OWNER.increment();
-            ScopedValue.where(OWNER_LOCAL_REWARD, function).run(execute);
             return;
         }
         AdvancementBuffer.publish(new AdvancementBuffer.RoutedReward(advancements, function, source),
@@ -82,7 +91,7 @@ public final class AdvancementRewardRouting {
 
     /** @return {@code true} when the whole grant was routed and must not run now. */
     public static boolean routeGrant(AdvancementRewards rewards, ServerPlayer player) {
-        if (grantsNothing(rewards) || AdvancementOwnership.quiescentContext()) return false;
+        if (grantsNothing(rewards) || AdvancementOwnership.quiescentOutsidePass()) return false;
         PlayerAdvancements advancements = player.getAdvancements();
         if (rewards.loot().size() == 0 && !AdvancementBuffer.hasBacklog(advancements)) return false;
         AdvancementBuffer.publish(new AdvancementBuffer.RoutedGrant(advancements, player, rewards),
@@ -97,8 +106,8 @@ public final class AdvancementRewardRouting {
      */
     public static boolean routeAnnouncement(PlayerList playerList, Component message, boolean overlay,
                                             ServerPlayer player) {
+        if (AdvancementOwnership.quiescentOutsidePass()) return false;
         boolean functionPass = com.axalotl.fabrolia.common.regions.IslandFunctionScope.current() != null;
-        if (!functionPass && AdvancementOwnership.quiescentContext()) return false;
         if (!functionPass && AdvancementOwnership.onPhysicalMain()
                 && !AdvancementBuffer.hasBacklog(player.getAdvancements())) {
             return false;

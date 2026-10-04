@@ -155,13 +155,7 @@ public abstract class FunctionPartition {
         private static void addRegion(List<Entity> out, Region r, EpochDomain d) {
             if (r == null || r.domain != d || r.state() != RegionState.ACTIVE) return;
             for (Entity e : r.entities) {
-                // Only entities whose tick this coordinator owns: a player Main
-                // owns (A5 MAIN phase, fallbacks, MAIN_SYNC lane) is served by
-                // its Main-sync body (IslandFunctionHead.runMainSyncEntityPass).
-                if (!live(e)) continue;
-                if (e instanceof net.minecraft.server.level.ServerPlayer p
-                        && !PlayerTurnOwnership.currentThreadOwns(p)) continue;
-                out.add(e);
+                if (live(e) && tickOwnedByCurrentThread(e)) out.add(e);
             }
         }
 
@@ -278,6 +272,17 @@ public abstract class FunctionPartition {
         public String describe() {
             return only != null ? "main/" + only.dimension().identifier() : "main";
         }
+    }
+
+    /**
+     * Island head membership: only entities whose tick this coordinator owns. A
+     * player Main owns (A5 MAIN phase, fallbacks, MAIN_SYNC lane) is never run
+     * on the island — strict C1 would reject its award/revoke — and is served
+     * by its Main-sync body instead (IslandFunctionHead.runMainSyncEntityPass).
+     */
+    public static boolean tickOwnedByCurrentThread(Entity e) {
+        return !(e instanceof net.minecraft.server.level.ServerPlayer p)
+                || PlayerTurnOwnership.currentThreadOwns(p);
     }
 
     private static boolean live(Entity e) {
