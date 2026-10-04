@@ -32,19 +32,72 @@
 
 ### Changed
 
-- Main no longer scans every region every 2 ms while it waits for an island
-  to yield its claim (level-tick tail catch-up). Island coordinators heal
-  their own barrier while they wait, so the full sweep now runs at most once
-  per 50 ms during such a wait, and at full cadence only once the wait itself
-  is older than 50 ms. The sweep cost 10-15 ms/tick of Main on a 40-player
-  production profile.
-- Idle region workers no longer take every Nether transfer queue's monitor
-  on each loop pass to find it empty (35 s blocked over 3 minutes on the same
-  profile).
-- Advancement triggers that fire on Main outside a player tick (packet
-  driven, direct replays) no longer cost an extra all-island fence at each
-  level's entity-batch end; they apply at the next tick head under the fence
-  the tick functions already take, as the standalone drain already did.
+- Main no longer waits at the end of each level's entity phase for a busy
+  island's running unit before running Main-owned entity bodies (player
+  fallbacks, unsupported or forced-main entities). The island gets a standing
+  service request, pauses at its next unit boundary, and Main runs the work
+  at its next safe point (barrier pump, level head or tail, post-tick
+  boundary, idle wait). A request still standing after 5 s is logged with
+  claim forensics. This wait cost Main 18 ms/tick on the 2026-10-03
+  production profile and 42 ms/tick on the perf stand.
+- The region liveness backstop (heal) checks only regions that can hold a
+  pending entity barrier; the full region scan runs once per second (every
+  250 ms while a barrier is late). Routine region completions no longer keep
+  it at its 2 ms cadence (10-15 ms/tick of Main at 40 players).
+- Main's interest in an island claim is a per-waiter count instead of a
+  saved/restored flag: an interleaved wait can no longer leave an island
+  stopped forever or let a behind island chain units past a waiting Main.
+  Island units also yield to a pending global fence.
+- Advancements are evaluated and awarded on the player's own thread when the
+  criterion fires, as in vanilla. The global island pause they caused
+  several times per tick (tick head, worker lane, each level's batch end) is
+  gone; only reward work that cannot run there (non-owner-local reward
+  functions, loot, chat announcements of island players) is applied by Main
+  at the next tick head, and only then is the pause taken.
+  `PlayerAdvancements.award/revoke` return vanilla's result on the owner and
+  fail loudly on any other thread. `/fabrolia regions debug advstats` shows
+  pause counts per site and routing counts per reason. The obsolete
+  `enableFabroliaAdvancements` option is removed.
+- Datapack `#minecraft:tick` roots and unconditional `schedule … 1t`
+  self-rearming loops run per island at island cadence, from a plan built on
+  vanilla's parse (`/fabrolia functions plan` shows each root's verdict and
+  the blocking line; `/fabrolia functions fences` the per-tick fence causes).
+  Only non-partitionable roots and lines that actually match an escalation
+  take the global pause. On the production datapacks BACAP `tick_timer`,
+  `track_stats:tick` and `armor_statues:tick` are partitioned. Region workers
+  execute only functions the active plan proves owner-local, inside ownership
+  guards; anything else fails loudly. Deviations (documented in
+  docs/ASYNC-ISLANDS.md §16): island cadence for those roots, per-island order
+  of escalated lines, ≤1 tick skew for reads of Main-only state.
+- Entity tracking: the per-tick tracker pass no longer re-stages pairings
+  whose vanilla outcome is unchanged (static item frames, idle mobs), takes
+  one position snapshot per tracker, and lets Main work through the viewer
+  batches instead of parking for the tick pool. Non-player tracker add/remove
+  on region workers no longer waits for the VMP tracker lock (queued, applied
+  at the next tracker tick; the immediate pairing still happens at add).
+  Pairing of entities in loaded but non-entity-ticking chunks commits on their
+  island instead of Main. Stand: Main `ChunkMap.tick` 4.5 -> 1.5 ms/tick.
+- Autosave no longer stalls the tick on player files: player `.dat`,
+  advancements, stats and `level.dat` are snapshotted on the owner and written
+  by an ordered background writer (per-file FIFO, byte-identical output); the
+  scoreboard is encoded in its own write task. `save-all flush`, `/stop` and
+  logout still wait until the files are on disk; loads wait for that file's
+  queued write. Advancements/stats JSON are replaced atomically. Stand:
+  `save-all` Main time 425 -> 125 ms. An unfenced player save pass
+  (autosave) holds Main's claim interest on every island with players for
+  the whole pass, so it waits for each island's running unit at most once
+  instead of once per player (57 -> 39 ms per autosave `saveAll`).
+  Recommended production setting: ServerCore
+  `features.autosave-interval-seconds: 300` (production runs 60).
+- Region workers no longer block on Nether portal queues (per-source
+  lock-free attempt gate, only queued sources are polled, bounded retry of a
+  head that is not ready); island units close their entity-dispatch
+  membership under a per-island creation gate instead of one level-wide lock;
+  the per-block-entity ticking gate reads a shared copy-on-write paged view;
+  barrier and dispatch waiters are woken instead of polling.
+- MCFC (separate jar): compiled functions run only on the server thread;
+  island threads use vanilla's interpreter. The score epoch and per-type
+  entity index are thread-safe.
 - Async islands: natural spawning, thunder and random/fluid block ticks for
   island-owned chunks now run inside the island's own tick unit at the
   island's cadence on its logical clock (vanilla's chunkSource.tick slot:
@@ -65,24 +118,14 @@
   Main-owned entity ticks (wither, dragon, player fallbacks) and
   Main tracker publications, and no longer parks for them inside the entity
   barrier: idle islands are served at once, busy ones stay queued (same order
-  per island), and once per level tick Main waits at most one running unit
-  for islands whose work is older than 50 ms or holds a player tick. Before,
+  per island) and are served at the island's next unit boundary (see the
+  service requests above). Before,
   Main parked behind every island's running unit per entity (33-60 % of Main
   on the production profiles) and each wait made that island yield a unit.
   Fixture (100 bots, 4000 item frames, 4000 zombies): Main 23.9 -> 18.4
   ms/tick, islands 20 TPS in both. `-Dfabrolia.mainClaimBatching=false`
   restores the per-entity drains; `flightrec status` shows claim counts,
   contention, wait time and Main's average tick time.
-- Deferred advancement predicates are evaluated in parallel on the tick pool
-  while Main holds the award fence (one task per player, awards applied
-  serially in the original order, later pendings re-evaluated after a real
-  grant). Island players' deferred awards, frameless Main awards and the
-  `#minecraft:tick` functions share one fence window at the function tick
-  head instead of quiescing every island once per level and once more for
-  the functions. Island players' awards therefore apply at the next tick
-  head, before that tick's functions - the same point where vanilla's tick
-  functions first observe an award made during the previous tick's level
-  pass.
 - Region workers: removing or re-pairing a viewer on a tracked entity is
   O(1) (identity-keyed ordered map instead of a list scan), and the
   portal-custody check on every entity push/collision no longer takes a
@@ -99,6 +142,21 @@
 
 ### Fixed
 
+- Fatal "Nether player entry lacks exact transfer authority" crash. Short
+  region seals or claims raised by Main's heal or by a refused stale
+  claimant could revoke a Nether transfer's already-held island authority
+  mid-attempt; they now only refuse new admission.
+- A unit coordinator's raid/lifecycle authority could read false while a
+  stale region claimant briefly held an already-finished region, which
+  crashed raid ticks or Nether lifecycle cancellation.
+- Advancement work pending for a player who disconnects in the same tick is
+  applied before the player's advancements are saved (it was lost), and
+  deferred rewards of a respawned player go to the new player object.
+- A late tracker cleanup could send a second entity-remove packet after the
+  entity was already removed, hiding a respawned player or reloaded entity
+  with the same id on that client.
+- Revoke-and-rerun advancement counters (BACAP) keep every fire while their
+  reward is pending.
 - Server crash ("Exception in server tick loop") when another mod's packet
   handler threw, e.g. GroupChat 1.2.0 when a player pressed Tab on its
   `/gc player` command ("No such argument 'group' exists on this command").
