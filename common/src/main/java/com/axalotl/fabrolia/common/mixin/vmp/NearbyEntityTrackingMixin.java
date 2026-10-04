@@ -19,7 +19,6 @@ import com.ishland.vmp.mixins.access.IThreadedAnvilChunkStorageLevelManager;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
-import it.unimi.dsi.fastutil.objects.Reference2LongMap;
 import it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Reference2ReferenceLinkedOpenHashMap;
@@ -43,8 +42,10 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.locks.ReentrantLock;
 
 
 /**
@@ -57,9 +58,11 @@ import java.util.concurrent.locks.LockSupport;
  * and the next tick's movement test; pairs whose exact vanilla outcome equals
  * the current pairing are not re-staged. The viewer passes are spread over the
  * tick pool and the calling thread. Non-player tracker add/remove never waits for
- * the tick: the structural change is queued and applied at the next tick head
- * (the immediate all-player pairing still happens at add, as the owner-tail bulk
- * bit), so island workers no longer convoy behind the tracker lock.</p>
+ * the tick: the structural change is queued and applied by the off-tick applier
+ * session on the tick pool, or at the latest at the next tick head (the immediate
+ * all-player pairing still happens at add, as the owner-tail bulk bit), so island
+ * workers no longer convoy behind the tracker lock and the tick head no longer
+ * pays the AreaMap insert/remove squares serially.</p>
  */
 @Pseudo
 @Mixin(targets = "com.ishland.vmp.common.playerwatching.NearbyEntityTracking", remap = false)
@@ -78,9 +81,10 @@ public abstract class NearbyEntityTrackingMixin
     @Shadow
     private ChunkMap.DistanceManager ticketManager;
 
-    /** Serializes VMP's structures: the tick, player membership, locked add/remove. */
+    /** Serializes VMP's structures: the tick, player membership, locked add/remove,
+     *  and the off-tick applier of queued index changes. */
     @Unique
-    private final Object fabrolia$lock = new Object();
+    private final ReentrantLock fabrolia$lock = new ReentrantLock();
 
     /**
      * Non-player tracker add/remove published without the lock and applied at
@@ -107,14 +111,36 @@ public abstract class NearbyEntityTrackingMixin
     private final Reference2ObjectOpenHashMap<ServerPlayer, ViewerCursor> fabrolia$viewerCursors =
             new Reference2ObjectOpenHashMap<>();
 
+    /**
+     * Dense mirror of {@code tracker2ChunkPos} (tracker + its indexed area chunk),
+     * maintained at the only two places VMP changes that map's membership
+     * ({@code addEntityTrackerAreaMap}, {@code removeEntityTracker}) and at the
+     * snapshot's area update. Lets the per-tick position pre-pass run straight
+     * over arrays in parallel batches instead of copying the hash map on the
+     * calling thread every tick. Guarded by the lock.
+     */
     @Unique
-    private ChunkMap.TrackedEntity[] fabrolia$snapshotTrackers = new ChunkMap.TrackedEntity[0];
+    private ChunkMap.TrackedEntity[] fabrolia$dense = new ChunkMap.TrackedEntity[256];
 
     @Unique
-    private long[] fabrolia$snapshotPreviousChunks = new long[0];
+    private long[] fabrolia$denseChunks = new long[256];
 
+    @Unique
+    private int fabrolia$denseSize;
+
+    /** Per-tick scratch: snapshot chunk per dense slot, moved slots per batch. */
     @Unique
     private long[] fabrolia$snapshotChunks = new long[0];
+
+    @Unique
+    private int[] fabrolia$snapshotMoved = new int[0];
+
+    /** Off-tick applier session state (see {@link #fabrolia$runApplier}). */
+    @Unique
+    private final AtomicBoolean fabrolia$applierLive = new AtomicBoolean();
+
+    @Unique
+    private volatile Thread fabrolia$applierThread;
 
     @Shadow
     protected abstract void tickStaging();
@@ -178,9 +204,17 @@ public abstract class NearbyEntityTrackingMixin
     private void fabrolia$lockAdd(ChunkMap.TrackedEntity tracker, Operation<Void> original) {
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
             // A removal that already entered for this generation wins: never index it.
-            if (!((TrackedEntityPassAccess) tracker).fabrolia$vmpRemoved()
-                    && !this.fabrolia$queueAdd(tracker)) {
-                synchronized (fabrolia$lock) { original.call(tracker); }
+            if (!((TrackedEntityPassAccess) tracker).fabrolia$vmpRemoved()) {
+                if (this.fabrolia$queueAdd(tracker)) {
+                    this.fabrolia$nudgeApplier();
+                } else {
+                    fabrolia$lock.lock();
+                    try {
+                        original.call(tracker);
+                    } finally {
+                        fabrolia$lock.unlock();
+                    }
+                }
             }
             FabroliaTrackingDirtyFlag.markDirty();
         });
@@ -197,31 +231,87 @@ public abstract class NearbyEntityTrackingMixin
     @WrapMethod(method = "removeEntityTracker")
     private void fabrolia$lockRemove(ChunkMap.TrackedEntity tracker, Operation<Void> original) {
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            if (this.fabrolia$applyingStructuralChange && Thread.holdsLock(fabrolia$lock)) {
+            if (this.fabrolia$applyingStructuralChange && fabrolia$lock.isHeldByCurrentThread()) {
                 original.call(tracker);
+                this.fabrolia$denseRemove(tracker);
                 return;
             }
             ((TrackedEntityPassAccess) tracker).fabrolia$markVmpRemoved();
             if (fabrolia$enabled() && !(tracker.entity instanceof ServerPlayer)) {
                 this.fabrolia$indexChanges.queueRemove(tracker);
+                this.fabrolia$nudgeApplier();
             } else {
-                synchronized (fabrolia$lock) {
+                fabrolia$lock.lock();
+                try {
                     original.call(tracker);
+                    this.fabrolia$denseRemove(tracker);
                     this.fabrolia$indexChanges.forget(tracker);
+                } finally {
+                    fabrolia$lock.unlock();
                 }
             }
             FabroliaTrackingDirtyFlag.markDirty();
         });
     }
 
-    /** Every insertion (queued add, VMP staging expiry, VMP direct add) honours the tombstone. */
+    /** Every insertion (queued add, VMP staging expiry, VMP direct add) honours the
+     *  tombstone, and a real insertion enters the dense mirror. All callers hold
+     *  the lock (queued apply, VMP staging inside tick0, locked VMP direct add). */
     @WrapMethod(method = "addEntityTrackerAreaMap")
     private void fabrolia$skipRemovedIndexInsertion(ChunkMap.TrackedEntity tracker,
                                                     Operation<Void> original) {
         TrackedEntityPassAccess pass = (TrackedEntityPassAccess) tracker;
         if (pass.fabrolia$vmpRemoved() || pass.fabrolia$islandTrackingStateRelaxed()
                 == IslandTrackedEntityAccess.TRACKING_RETIRED) return;
+        if (!fabrolia$lock.isHeldByCurrentThread()) {
+            throw new IllegalStateException("VMP area-index insertion without the tracker index lock");
+        }
         original.call(tracker);
+        if (this.tracker2ChunkPos.containsKey(tracker)) {
+            this.fabrolia$denseAdd(tracker, this.tracker2ChunkPos.getLong(tracker));
+        }
+    }
+
+    @Unique
+    private void fabrolia$denseAdd(ChunkMap.TrackedEntity tracker, long chunk) {
+        TrackedEntityPassAccess pass = (TrackedEntityPassAccess) tracker;
+        int slot = pass.fabrolia$denseSlot();
+        if (slot != 0) {
+            // Re-insertion of an indexed tracker: VMP re-centred it.
+            this.fabrolia$denseChunks[slot - 1] = chunk;
+            return;
+        }
+        int size = this.fabrolia$denseSize;
+        if (size == this.fabrolia$dense.length) {
+            int capacity = size + (size >> 1);
+            this.fabrolia$dense = Arrays.copyOf(this.fabrolia$dense, capacity);
+            this.fabrolia$denseChunks = Arrays.copyOf(this.fabrolia$denseChunks, capacity);
+        }
+        this.fabrolia$dense[size] = tracker;
+        this.fabrolia$denseChunks[size] = chunk;
+        this.fabrolia$denseSize = size + 1;
+        pass.fabrolia$setDenseSlot(size + 1);
+    }
+
+    @Unique
+    private void fabrolia$denseRemove(ChunkMap.TrackedEntity tracker) {
+        TrackedEntityPassAccess pass = (TrackedEntityPassAccess) tracker;
+        int slot = pass.fabrolia$denseSlot();
+        if (slot == 0) return;
+        int index = slot - 1;
+        int last = this.fabrolia$denseSize - 1;
+        if (index > last || this.fabrolia$dense[index] != tracker) {
+            throw new IllegalStateException("VMP dense tracker mirror lost its slot invariant");
+        }
+        if (index != last) {
+            ChunkMap.TrackedEntity moved = this.fabrolia$dense[last];
+            this.fabrolia$dense[index] = moved;
+            this.fabrolia$denseChunks[index] = this.fabrolia$denseChunks[last];
+            ((TrackedEntityPassAccess) moved).fabrolia$setDenseSlot(index + 1);
+        }
+        this.fabrolia$dense[last] = null;
+        this.fabrolia$denseSize = last;
+        pass.fabrolia$setDenseSlot(0);
     }
 
     /**
@@ -354,9 +444,12 @@ public abstract class NearbyEntityTrackingMixin
     @WrapMethod(method = "addPlayer")
     private void fabrolia$lockAddPlayer(ServerPlayer player, Operation<Void> original) {
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            synchronized (fabrolia$lock) {
+            fabrolia$lock.lock();
+            try {
                 original.call(player);
                 this.fabrolia$viewerCursors.remove(player);
+            } finally {
+                fabrolia$lock.unlock();
             }
             fabrolia$resetVmpPositionCache(player);
             FabroliaTrackingDirtyFlag.markDirty();
@@ -374,11 +467,14 @@ public abstract class NearbyEntityTrackingMixin
     @WrapMethod(method = "removePlayer")
     private void fabrolia$lockRemovePlayer(ServerPlayer player, Operation<Void> original) {
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            synchronized (fabrolia$lock) {
+            fabrolia$lock.lock();
+            try {
                 this.fabrolia$indexChanges.apply(this);
                 original.call(player);
                 this.fabrolia$indexChanges.removeViewer(player, this);
                 this.fabrolia$viewerCursors.remove(player);
+            } finally {
+                fabrolia$lock.unlock();
             }
             FabroliaTrackingDirtyFlag.markDirty();
         });
@@ -387,8 +483,99 @@ public abstract class NearbyEntityTrackingMixin
     /** The lock protects native tracker iteration; it does not confer gameplay authority. */
     @WrapMethod(method = "tick")
     private void fabrolia$lockTick(ChunkMap.DistanceManager ticketManager, Operation<Void> original) {
-        synchronized (fabrolia$lock) {
-            RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(ticketManager));
+        fabrolia$lock.lock();
+        try {
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                original.call(ticketManager);
+                this.fabrolia$startApplier();
+            });
+        } finally {
+            fabrolia$lock.unlock();
+        }
+    }
+
+    /** Published changes that make the off-tick applier wake before its backstop. */
+    @Unique
+    private static final int fabrolia$APPLIER_BATCH = 8;
+
+    @Unique
+    private static final long fabrolia$APPLIER_PARK_NANOS = 5_000_000L;
+
+    /** A session with no change to apply for this long ends (restarted by the next tick). */
+    @Unique
+    private static final long fabrolia$APPLIER_IDLE_NANOS = 100_000_000L;
+
+    /** Any thread, after publishing a queued change: wake the live applier. */
+    @Unique
+    private void fabrolia$nudgeApplier() {
+        Thread applier = this.fabrolia$applierThread;
+        if (applier != null && this.fabrolia$indexChanges.queued() >= fabrolia$APPLIER_BATCH) {
+            LockSupport.unpark(applier);
+        }
+    }
+
+    /**
+     * Main, end of the tracker tick (lock held, healthy body): make sure an
+     * off-tick applier session is live. Queued add/remove used to wait for the
+     * next tick head and were applied there by Main — AreaMap insertion/removal
+     * touches every chunk set of the tracker's view square, the single largest
+     * serial cost of the tracker tick. The session applies them on the tick pool
+     * between ticks under the same lock; the tick head applies only the rest.
+     */
+    @Unique
+    private void fabrolia$startApplier() {
+        if (!fabrolia$enabled() || !RegionScheduler.admitsRoots()) return;
+        ExecutorService executor = fabrolia$dispatchExecutor();
+        if (executor == null || !this.fabrolia$applierLive.compareAndSet(false, true)) return;
+        boolean published = false;
+        try {
+            RegionScheduler.executeTrackedExternal(executor, this::fabrolia$runApplier);
+            published = true;
+        } finally {
+            if (!published) this.fabrolia$applierLive.set(false);
+        }
+    }
+
+    /**
+     * One applier session: applies published changes whenever the lock is free,
+     * parks between batches (woken by {@link #fabrolia$nudgeApplier}), and ends
+     * after {@link #fabrolia$APPLIER_IDLE_NANOS} without work or when the
+     * scheduler generation ends. A failure is a tracked-body failure (fail-stop).
+     */
+    @Unique
+    private void fabrolia$runApplier() {
+        Thread self = Thread.currentThread();
+        try {
+            while (true) {
+                this.fabrolia$applierThread = self;
+                long lastWork = System.nanoTime();
+                while (RegionScheduler.admitsRoots() && fabrolia$enabled()
+                        && System.nanoTime() - lastWork < fabrolia$APPLIER_IDLE_NANOS) {
+                    if (this.fabrolia$indexChanges.queued() > 0 && this.fabrolia$lock.tryLock()) {
+                        try {
+                            RegionScheduler.runSuccessBodyIfHealthy(
+                                    () -> this.fabrolia$indexChanges.apply(this));
+                        } finally {
+                            this.fabrolia$lock.unlock();
+                        }
+                        lastWork = System.nanoTime();
+                    }
+                    LockSupport.parkNanos(this, fabrolia$APPLIER_PARK_NANOS);
+                }
+                this.fabrolia$applierThread = null;
+                this.fabrolia$applierLive.set(false);
+                // A change published between the last check and the flag clear
+                // keeps this session alive rather than waiting for a restart.
+                if (!RegionScheduler.admitsRoots() || !fabrolia$enabled()
+                        || this.fabrolia$indexChanges.queued() == 0
+                        || !this.fabrolia$applierLive.compareAndSet(false, true)) {
+                    return;
+                }
+            }
+        } catch (Throwable failure) {
+            this.fabrolia$applierThread = null;
+            this.fabrolia$applierLive.set(false);
+            throw failure;
         }
     }
 
@@ -398,7 +585,7 @@ public abstract class NearbyEntityTrackingMixin
      */
     @WrapMethod(method = "tick0")
     private void fabrolia$tick0(Operation<Void> original) {
-        if (!Thread.holdsLock(fabrolia$lock)) {
+        if (!fabrolia$lock.isHeldByCurrentThread()) {
             throw new IllegalStateException("VMP tracker tick entered without its structural lock");
         }
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
@@ -474,68 +661,79 @@ public abstract class NearbyEntityTrackingMixin
     }
 
     /**
-     * One position snapshot per indexed tracker (parallel when large), then the
-     * serial area-index update for trackers whose chunk changed.
+     * One position snapshot per indexed tracker over the dense mirror (parallel
+     * batches when large; each batch also collects its trackers whose area chunk
+     * changed), then the serial area-index update for exactly those trackers.
      */
     @Unique
     private void fabrolia$snapshotTrackers(ExecutorService executor) {
-        int count = this.tracker2ChunkPos.size();
+        int count = this.fabrolia$denseSize;
+        if (count != this.tracker2ChunkPos.size()) {
+            throw new IllegalStateException("VMP dense tracker mirror diverged from its area index: "
+                    + count + " != " + this.tracker2ChunkPos.size());
+        }
         if (count == 0) return;
-        if (this.fabrolia$snapshotTrackers.length < count) {
-            int capacity = Math.max(count, this.fabrolia$snapshotTrackers.length * 3 / 2);
-            this.fabrolia$snapshotTrackers = new ChunkMap.TrackedEntity[capacity];
-            this.fabrolia$snapshotPreviousChunks = new long[capacity];
+        if (this.fabrolia$snapshotChunks.length < count) {
+            int capacity = Math.max(count, this.fabrolia$snapshotChunks.length * 3 / 2);
             this.fabrolia$snapshotChunks = new long[capacity];
+            this.fabrolia$snapshotMoved = new int[capacity];
         }
-        ChunkMap.TrackedEntity[] trackers = this.fabrolia$snapshotTrackers;
-        long[] previousChunks = this.fabrolia$snapshotPreviousChunks;
+        ChunkMap.TrackedEntity[] trackers = this.fabrolia$dense;
+        long[] indexedChunks = this.fabrolia$denseChunks;
         long[] chunks = this.fabrolia$snapshotChunks;
-        int index = 0;
-        for (Reference2LongMap.Entry<ChunkMap.TrackedEntity> entry
-                : this.tracker2ChunkPos.reference2LongEntrySet()) {
-            trackers[index] = entry.getKey();
-            previousChunks[index] = entry.getLongValue();
-            index++;
+        int[] moved = this.fabrolia$snapshotMoved;
+        int batch;
+        int[] movedCounts;
+        if (executor == null || count < 4096) {
+            batch = count;
+            movedCounts = new int[1];
+            RegionScheduler.runSuccessBodyIfHealthy(() -> movedCounts[0] = fabrolia$snapshotRange(
+                    trackers, indexedChunks, chunks, moved, 0, count));
+        } else {
+            int slots = Math.max(1, ParallelProcessor.getPoolSize()) << 1;
+            batch = Math.max(512, (count + slots - 1) / slots);
+            int batches = (count + batch - 1) / batch;
+            movedCounts = new int[batches];
+            int batchSize = batch;
+            fabrolia$runFanout(executor, batches, (gate, batchIndex) -> {
+                int from = batchIndex * batchSize;
+                int to = Math.min(from + batchSize, count);
+                gate.runNext(() -> movedCounts[batchIndex] = fabrolia$snapshotRange(
+                        trackers, indexedChunks, chunks, moved, from, to));
+            });
         }
-        try {
-            if (executor == null || count < 4096) {
-                RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$snapshotRange(
-                        trackers, previousChunks, chunks, 0, count));
-            } else {
-                int slots = Math.max(1, ParallelProcessor.getPoolSize()) << 1;
-                int batch = Math.max(512, (count + slots - 1) / slots);
-                int batches = (count + batch - 1) / batch;
-                fabrolia$runFanout(executor, batches, (gate, batchIndex) -> {
-                    int from = batchIndex * batch;
-                    int to = Math.min(from + batch, count);
-                    gate.runNext(() -> fabrolia$snapshotRange(
-                            trackers, previousChunks, chunks, from, to));
-                });
-            }
-            for (int k = 0; k < count; k++) {
+        for (int b = 0; b < movedCounts.length; b++) {
+            int from = b * batch;
+            for (int i = 0, n = movedCounts[b]; i < n; i++) {
+                int k = moved[from + i];
                 long chunk = chunks[k];
-                if (chunk == previousChunks[k]) continue;
                 ChunkMap.TrackedEntity tracker = trackers[k];
                 this.areaMap.update(tracker, (int) chunk, (int) (chunk >>> 32),
                         this.getChunkViewDistance(tracker));
                 this.tracker2ChunkPos.put(tracker, chunk);
+                indexedChunks[k] = chunk;
             }
-        } finally {
-            // The scratch array must not retain removed trackers (and their entities).
-            Arrays.fill(trackers, 0, count, null);
         }
     }
 
+    /**
+     * Snapshots dense slots {@code [from, to)}; records the slots whose area chunk
+     * changed in {@code moved[from..]} and returns their count.
+     */
     @Unique
-    private static void fabrolia$snapshotRange(ChunkMap.TrackedEntity[] trackers,
-                                               long[] previousChunks, long[] chunks,
-                                               int from, int to) {
+    private static int fabrolia$snapshotRange(ChunkMap.TrackedEntity[] trackers,
+                                              long[] indexedChunks, long[] chunks,
+                                              int[] moved, int from, int to) {
+        int movedCount = 0;
         for (int k = from; k < to; k++) {
             ChunkMap.TrackedEntity tracker = trackers[k];
             long chunk = getEntityChunkPos(tracker.entity).pack();
             chunks[k] = chunk;
-            ((TrackedEntityPassAccess) tracker).fabrolia$passSnapshot(chunk != previousChunks[k]);
+            boolean changed = chunk != indexedChunks[k];
+            ((TrackedEntityPassAccess) tracker).fabrolia$passSnapshot(changed);
+            if (changed) moved[from + movedCount++] = k;
         }
+        return movedCount;
     }
 
     @Unique

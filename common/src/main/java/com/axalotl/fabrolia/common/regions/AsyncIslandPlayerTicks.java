@@ -5405,8 +5405,14 @@ public final class AsyncIslandPlayerTicks {
         boolean[] packetBodyEntered = new boolean[1];
         Throwable failure = null;
         ServerPlayer entityFallback = null;
+        // Island claim this drain holds across consecutive own-venue heads (see
+        // retargetMainIngressVenueClaim); released before any other head and
+        // before every exit of the loop.
+        IslandRegistry.PIsland venueClaim = null;
+        boolean disconnectedReturn = false;
         while (true) {
             InboundPacket inbound;
+            boolean ownVenueHead;
             synchronized (state) {
                 if (state.netherReservation != null
                         && state.mainIngress.peekFirst() == state.netherReservation.marker) {
@@ -5417,7 +5423,8 @@ public final class AsyncIslandPlayerTicks {
                     if (state.listenerGate == listener
                             && state.session.view().phase()
                             == IslandPlayerTurnSession.Phase.DISCONNECTED) {
-                        return;
+                        disconnectedReturn = true;
+                        break;
                     }
                     failure = publishFatalFailure(merge(failure,
                             new IllegalStateException(
@@ -5510,12 +5517,27 @@ public final class AsyncIslandPlayerTicks {
                                     "A5 Main packet handler overlapped an entity ordinal")));
                     break;
                 }
+                ownVenueHead = state.mainInteractionPacket != inbound
+                        && isOwnVenueIngressHead(inbound);
                 state.mainIngressHandlerActive = true;
             }
 
             Throwable packetFailure = null;
             packetBodyEntered[0] = false;
             try {
+                IslandRegistry.PIsland venue = ownVenueHead
+                        ? ownVenueIsland(inbound, listener) : null;
+                if (venueClaim != null && venueClaim != venue) {
+                    IslandRegistry.PIsland released = venueClaim;
+                    venueClaim = null;
+                    IslandCommands.mainRelease(released);
+                }
+                if (venue != null && venueClaim == null && !IslandCommands.mainHolds(venue)) {
+                    // The same blocking claim the head's own owner wrapper would
+                    // take; nested mainClaimScoped calls inside the body inherit it.
+                    IslandCommands.mainClaim(venue);
+                    venueClaim = venue;
+                }
                 Runnable body = () -> {
                     packetBodyEntered[0] = true;
                     if (inbound.listenerTick != null) inbound.listenerTick.run();
@@ -5580,6 +5602,15 @@ public final class AsyncIslandPlayerTicks {
                 break;
             }
         }
+        try {
+            if (venueClaim != null) IslandCommands.mainRelease(venueClaim);
+        } catch (Throwable releaseFailure) {
+            failure = publishFatalFailure(merge(failure, releaseFailure));
+        }
+        if (disconnectedReturn) {
+            if (failure != null) throwUnchecked(publishFatalFailure(failure));
+            return;
+        }
         if (failure != null) failure = publishFatalFailure(failure);
         if (failure == null && entityFallback != null) {
             try {
@@ -5593,6 +5624,35 @@ public final class AsyncIslandPlayerTicks {
             scheduleFirstDeferredMainCommand(state, listener);
             finishReadyTrackingTopologyGap(state);
         }
+    }
+
+    /**
+     * Heads whose only island venue is the receiving player's own body: the
+     * deferred listener tick (claims the player's chunk island) and the vehicle
+     * control packets (claim the root vehicle's chunk island). A MAIN-phase rider
+     * sends both every tick; each used to take — and wait for — that same island
+     * claim separately, and the island could start a whole new unit in every gap
+     * between two heads. One drain now holds the claim across such a run.
+     */
+    private static boolean isOwnVenueIngressHead(InboundPacket inbound) {
+        if (inbound.listenerTick != null) return true;
+        Packet<?> packet = inbound.packet;
+        return packet instanceof net.minecraft.network.protocol.game.ServerboundMoveVehiclePacket
+                || packet instanceof net.minecraft.network.protocol.game.ServerboundPaddleBoatPacket;
+    }
+
+    /** The live island an own-venue head's body would claim, or null when it would take none. */
+    private static IslandRegistry.PIsland ownVenueIsland(InboundPacket inbound,
+                                                         ServerGamePacketListenerImpl listener) {
+        ServerPlayer player = listener.player;
+        if (player == null || !(player.level() instanceof ServerLevel level)) return null;
+        RegionizedServer runtime = RegionScheduler.forLevel(level);
+        if (runtime == null || !runtime.asyncActive || runtime.currentThreadHoldsAllClaims()) {
+            return null;
+        }
+        Entity venue = inbound.listenerTick != null ? player : player.getRootVehicle();
+        IslandRegistry.PIsland owner = runtime.islandOwnerOfChunk(venue.chunkPosition().pack());
+        return owner == null || owner.retired ? null : owner;
     }
 
     /** Restore only a Main envelope whose scheduler permit refused before handle entry. */

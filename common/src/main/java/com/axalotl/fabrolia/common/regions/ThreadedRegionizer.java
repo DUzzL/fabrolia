@@ -176,6 +176,11 @@ public final class ThreadedRegionizer {
         return regionsByGridKey.valuesSnapshot();
     }
 
+    /** Copy-free, weakly consistent traversal of the region map (read-only scans). */
+    public void forEachRegion(java.util.function.Consumer<Region> action) {
+        regionsByGridKey.forEachValue(action);
+    }
+
     /**
      * Capture one finite region-map generation and publish its entity-dispatch
      * cutoff atomically with respect to cold create/replace admissions.
@@ -195,33 +200,50 @@ public final class ThreadedRegionizer {
         return regionsByGridKey.size();
     }
 
-    /** Idle-region grace: consecutive tick-head observations of full idleness before
-     *  a region is reclaimed. ~5s — long enough that the moving load frontier (regions
-     *  that go briefly empty between the player leaving and chunks unloading) is not
-     *  thrashed, short enough that an exploring player's wake doesn't pile up. */
-    private static final int EVICT_GRACE_TICKS = 100;
+    /** Idle-region grace in game ticks of continuous full idleness (as observed by
+     *  reclamation passes) before a region is reclaimed. ~5s — long enough that the
+     *  moving load frontier (regions that go briefly empty between the player leaving
+     *  and chunks unloading) is not thrashed, short enough that an exploring player's
+     *  wake doesn't pile up. */
+    static final int EVICT_GRACE_TICKS = 100;
 
     /**
      * Reclaim regions that have stayed completely idle — no FULL chunks, no entities,
-     * empty work queues, unclaimed — for {@link #EVICT_GRACE_TICKS}. MUST be called on
-     * the server thread at level-tick HEAD: region workers are parked between barriers
-     * there, and the only region mutators (entity index via EntityTickList, FULL-count
-     * via updateChunkScheduling) are server-thread too, so the read-then-reclaim is not
-     * racing a concurrent populate. A late lookup of a reclaimed cell self-heals through
-     * {@link #regionForGridKey} (compute() reinstalls a fresh ACTIVE region).
+     * empty work queues, unclaimed — for {@link #EVICT_GRACE_TICKS} game ticks. MUST be
+     * called on the server thread at a point where no other thread can populate an
+     * idle region without its admissionLock: the wall/sync level-tick HEAD (region
+     * workers are parked between barriers there, and the only region mutators — entity
+     * index via EntityTickList, FULL-count via updateChunkScheduling — are
+     * server-thread too), or, in async-island mode, while Main holds every island
+     * claim (topology rebuild quiesce) with {@code onlyDomain} = the level's global
+     * domain: island-domain regions (core and halo) are never reclaimed, and no island
+     * unit can run an index mutation meanwhile. A late lookup of a reclaimed cell
+     * self-heals through {@link #regionForGridKey} (compute() reinstalls a fresh ACTIVE
+     * region with the topology's creation domain).
      *
      * <p>Without this the map grew without bound: regions are created lazily as players
      * explore and were NEVER removed, so every O(regions) scan (island rebuild snapshot+BFS,
-     * worker dispatch) climbed and mspt rose monotonically on a long flight (live: 49 bots
-     * flying to z=56535 → tens of thousands of permanent regions, 2026-06-27).
+     * worker dispatch, the global-lane done sweep, the Main function remainder) climbed
+     * and mspt rose monotonically on a long flight (live: 49 bots flying to z=56535 →
+     * tens of thousands of permanent regions, 2026-06-27).
      *
+     * @param onlyDomain when non-null, only regions currently on this timeline are
+     *                   candidates (others restart their grace)
+     * @param gameTime   the level's current game time (grace clock)
      * @return number of regions reclaimed this pass.
      */
-    public int evictIdle(RegionizedServer rs) {
+    public int evictIdle(RegionizedServer rs, EpochDomain onlyDomain, long gameTime) {
         int removed = 0;
         for (Region r : regionsByGridKey.values()) {
+            if (onlyDomain != null && r.domain != onlyDomain) {
+                // Main-thread field: domains change only at Main's topology
+                // safe points or before a newborn region is published.
+                r.idleSinceGameTime = Long.MIN_VALUE;
+                continue;
+            }
             synchronized (r.admissionLock) {
-                if (r.state() != RegionState.ACTIVE) {
+                if (r.state() != RegionState.ACTIVE
+                        || (onlyDomain != null && r.domain != onlyDomain)) {
                     continue;
                 }
                 if (r.fullChunkCount.get() != 0
@@ -229,10 +251,14 @@ public final class ThreadedRegionizer {
                         || !r.queue().isEmpty()
                         || !r.helpQueue.isEmpty()
                         || r.hasClaimOrDoneSeal()) {
-                    r.idleStreak = 0;
+                    r.idleSinceGameTime = Long.MIN_VALUE;
                     continue;
                 }
-                if (++r.idleStreak < EVICT_GRACE_TICKS) {
+                if (r.idleSinceGameTime == Long.MIN_VALUE) {
+                    r.idleSinceGameTime = gameTime;
+                    continue;
+                }
+                if (gameTime - r.idleSinceGameTime < EVICT_GRACE_TICKS) {
                     continue;
                 }
                 // Removing a region tears it out of the color-DAG. If it was a lower-color

@@ -61,4 +61,10 @@ public interface TrackedEntityPassAccess {
     void fabrolia$markVmpRemoved();
 
     boolean fabrolia$vmpRemoved();
+
+    /** Position + 1 in the tracker index's dense area-index mirror, 0 when absent
+     *  (index lock). */
+    int fabrolia$denseSlot();
+
+    void fabrolia$setDenseSlot(int slot);
 }

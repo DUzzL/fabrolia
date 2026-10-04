@@ -20,8 +20,12 @@ import java.util.function.Consumer;
  * viewer that left the tracker's area before its first pass). A lifecycle viewer
  * removal visits the fresh trackers as well as the viewer's tracked set.</p>
  *
- * <p>Thread contract: {@link #queueAdd}/{@link #queueRemove} from any thread;
- * every other method only while holding the index lock.</p>
+ * <p>Thread contract: {@link #queueAdd}/{@link #queueRemove}/{@link #queued} from
+ * any thread; every other method only while holding the index lock. The holder
+ * may be the tracker tick, a lifecycle viewer removal, or the off-tick applier
+ * that drains published changes between ticks — applying a change earlier than
+ * the next tick head is indistinguishable for every reader, since all readers
+ * of the index hold the same lock.</p>
  */
 public final class TrackerIndexChanges<T, P> {
 
@@ -58,19 +62,30 @@ public final class TrackerIndexChanges<T, P> {
 
     private final ConcurrentLinkedQueue<Change<T>> changes = new ConcurrentLinkedQueue<>();
     private final ReferenceLinkedOpenHashSet<T> fresh = new ReferenceLinkedOpenHashSet<>();
+    /** Published, not yet applied changes (exact once a polling apply returns). */
+    private final java.util.concurrent.atomic.AtomicInteger queued =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     public void queueAdd(T tracker) {
         changes.add(new Change<>(tracker, true));
+        queued.incrementAndGet();
     }
 
     public void queueRemove(T tracker) {
         changes.add(new Change<>(tracker, false));
+        queued.incrementAndGet();
+    }
+
+    /** Number of published changes not yet applied (any thread). */
+    public int queued() {
+        return queued.get();
     }
 
     /** Applies every published change in order. */
     public void apply(Index<T, P> index) {
         Change<T> change;
         while ((change = changes.poll()) != null) {
+            queued.decrementAndGet();
             T tracker = change.tracker();
             if (!change.add()) {
                 index.fabrolia$remove(tracker);

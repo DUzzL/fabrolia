@@ -185,6 +185,14 @@ public final class Long2ObjectConcurrentHashMap<V> implements Long2ObjectMap<V> 
         return snapshot;
     }
 
+    /**
+     * Weakly consistent traversal of the current values without a snapshot copy
+     * (same encounter-order and visibility contract as {@link #valuesSnapshot()}).
+     */
+    public void forEachValue(Consumer<? super V> action) {
+        map.values().forEach(action);
+    }
+
     @Override public ObjectCollection<V> values() {
         return valuesSnapshot();
     }

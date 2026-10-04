@@ -141,6 +141,55 @@ final class AsyncIslandPlayerLifecycleWiringTest {
     }
 
     @Test
+    void consecutiveOwnVenueMainHeadsShareOneIslandClaim() throws Exception {
+        try (Fixture f = new Fixture()) {
+            Object previousEnabled = get(RegionalPlayerEntityTicksV2.class, null, "enabled");
+            Object previousMain = get(com.axalotl.fabrolia.common.ParallelProcessor.class,
+                    null, "server");
+            set(RegionalPlayerEntityTicksV2.class, null, "enabled", true);
+            set(com.axalotl.fabrolia.common.ParallelProcessor.class,
+                    null, "server", f.level.getServer());
+            try {
+                // A MAIN-phase player (riders never attach) with two deferred
+                // listener ticks queued at its Main ingress boundary.
+                var handoff = f.player.state.session.beginMainHandoff(f.owner).orElseThrow();
+                assertTrue(f.player.state.session.completeMainHandoff(handoff).orElseThrow().isEmpty());
+                assertTrue(f.player.state.session.finishMainHandoff(handoff));
+                assertEquals(IslandPlayerTurnSession.Phase.MAIN, f.player.state.session.view().phase());
+                var held = new java.util.ArrayList<Boolean>();
+                Runnable listenerTick = () -> held.add(IslandCommands.mainHolds(f.island));
+                synchronized (f.player.state) {
+                    f.player.state.listenerGate = f.player.connection;
+                    f.player.state.mainIngress.add(AsyncIslandPlayerTicks.InboundPacket.listenerTick(
+                            f.player.connection, listenerTick));
+                    f.player.state.mainIngress.add(AsyncIslandPlayerTicks.InboundPacket.listenerTick(
+                            f.player.connection, listenerTick));
+                    f.player.state.mainIngressScheduled = true;
+                }
+                long claimsBefore = IslandCommands.MAIN_CLAIMS.sum();
+
+                var drain = AsyncIslandPlayerTicks.class.getDeclaredMethod("drainMainIngress",
+                        AsyncIslandPlayerTicks.PlayerState.class, ServerGamePacketListenerImpl.class);
+                drain.setAccessible(true);
+                drain.invoke(null, f.player.state, f.player.connection);
+
+                assertEquals(java.util.List.of(true, true), held,
+                        "every listener tick still runs under the player's island claim");
+                assertEquals(1L, IslandCommands.MAIN_CLAIMS.sum() - claimsBefore,
+                        "consecutive heads of the same venue take that island claim once");
+                assertFalse(IslandCommands.mainHolds(f.island), "the drain releases its venue claim");
+                assertFalse(f.island.unitClaim.get());
+                assertTrue(f.player.state.mainIngress.isEmpty());
+                assertFalse(f.player.state.mainIngressScheduled);
+            } finally {
+                set(com.axalotl.fabrolia.common.ParallelProcessor.class,
+                        null, "server", previousMain);
+                set(RegionalPlayerEntityTicksV2.class, null, "enabled", previousEnabled);
+            }
+        }
+    }
+
+    @Test
     void replacedListenerAndRetiredIslandCannotLendOwnership() throws Exception {
         try (Fixture f = new Fixture()) {
             f.onWorker(worker -> f.withClaim(worker, () -> {
