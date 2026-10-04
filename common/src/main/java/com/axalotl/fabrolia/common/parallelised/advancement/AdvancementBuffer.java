@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 /**
@@ -69,6 +70,9 @@ public final class AdvancementBuffer {
 
     /** Outstanding routed items per PlayerAdvancements (identity keys); absent means zero. */
     private static final ConcurrentHashMap<PlayerAdvancements, Integer> BACKLOG = new ConcurrentHashMap<>();
+
+    /** Sum of {@link #BACKLOG}: the per-trigger probe is one volatile read while nothing is routed. */
+    private static final AtomicInteger BACKLOG_TOTAL = new AtomicInteger();
 
     // ------------------------------------------------------------------ trigger
 
@@ -135,10 +139,19 @@ public final class AdvancementBuffer {
         List<PlayerAdvancements.TriggerInstanceKey> matched =
                 (List<PlayerAdvancements.TriggerInstanceKey>) evaluated;
         if (matched == null) return;
+        awardOnOwner(advancements, matched);
+    }
+
+    /**
+     * Awards one trigger call's fire-time match list in vanilla order on the owner.
+     * A completion whose reward the owner may not run is routed whole — its listener
+     * stays registered, so a refire before the drain is seen — and every later award
+     * of the list follows it through the FIFO.
+     */
+    static void awardOnOwner(PlayerAdvancements advancements,
+                             List<PlayerAdvancements.TriggerInstanceKey> matched) {
         for (int i = 0, n = matched.size(); i < n; i++) {
             PlayerAdvancements.TriggerInstanceKey key = matched.get(i);
-            // Vanilla awards the fire-time match list in order; once one award of it is
-            // routed, its successors follow it through the FIFO.
             if (hasBacklog(advancements)) {
                 publish(new RoutedAward(advancements, key), AdvancementDiag.Route.AWARD_BACKLOG);
             } else if (AdvancementRewardRouting.completionNeedsFence(
@@ -253,7 +266,7 @@ public final class AdvancementBuffer {
         public boolean needsFence() { return true; }
 
         public void apply() {
-            ServerPlayer target = currentPlayer(advancements, player);
+            ServerPlayer target = currentPlayer(player);
             LootContext evaluation = target == player ? context : EntityPredicate.createContext(target, target);
             @SuppressWarnings("unchecked")
             List<PlayerAdvancements.TriggerInstanceKey> matched =
@@ -287,7 +300,7 @@ public final class AdvancementBuffer {
         public boolean needsFence() { return true; }
 
         public void apply() {
-            triggerQuiescent(currentPlayer(advancements, player), advancements, matcher, trigger);
+            triggerQuiescent(currentPlayer(player), advancements, matcher, trigger);
         }
     }
 
@@ -311,8 +324,9 @@ public final class AdvancementBuffer {
         public void apply() {
             CommandSourceStack effective = source;
             if (source.getEntity() instanceof ServerPlayer captured) {
-                ServerPlayer current = currentPlayer(advancements, captured);
-                if (current != captured) effective = source.withEntity(current);
+                ServerPlayer current = currentPlayer(captured);
+                // Vanilla builds the reward source from the player it rewards now.
+                if (current != captured) effective = AdvancementRewardRouting.rewardSource(current);
             }
             effective.getServer().getFunctions().execute(function, effective);
         }
@@ -325,7 +339,7 @@ public final class AdvancementBuffer {
         public boolean needsFence() { return true; }
 
         public void apply() {
-            rewards.grant(currentPlayer(advancements, player));
+            rewards.grant(currentPlayer(player));
         }
     }
 
@@ -342,22 +356,28 @@ public final class AdvancementBuffer {
 
     /**
      * The lifecycle object vanilla would reward now. Respawn replaces the
-     * ServerPlayer but keeps its PlayerAdvancements ({@code setPlayer}).
+     * ServerPlayer but keeps its PlayerAdvancements; the player list maps the UUID
+     * to the current object until {@code PlayerList.remove}, which drains first.
      */
-    private static ServerPlayer currentPlayer(PlayerAdvancements advancements, ServerPlayer captured) {
-        if (advancements == null || !captured.isRemoved()) return captured;
-        ServerPlayer current = ((PlayerAdvancementsAccess) advancements).fabrolia$player();
+    static ServerPlayer currentPlayer(ServerPlayer captured) {
+        if (!captured.isRemoved()) return captured;
+        MinecraftServer server = com.axalotl.fabrolia.common.ParallelProcessor.getServer();
+        PlayerList players = server == null ? null : server.getPlayerList();
+        ServerPlayer current = players == null ? null : players.getPlayer(captured.getUUID());
         return current != null ? current : captured;
     }
 
     static boolean hasBacklog(PlayerAdvancements advancements) {
-        return advancements != null && !BACKLOG.isEmpty() && BACKLOG.containsKey(advancements);
+        return advancements != null && BACKLOG_TOTAL.get() != 0 && BACKLOG.containsKey(advancements);
     }
 
     /** Publish one routed item; its backlog position is counted before it is visible. */
     static void publish(Routed item, AdvancementDiag.Route route) {
         PlayerAdvancements owner = item.backlogOwner();
-        if (owner != null) BACKLOG.merge(owner, 1, Integer::sum);
+        if (owner != null) {
+            BACKLOG_TOTAL.incrementAndGet();
+            BACKLOG.merge(owner, 1, Integer::sum);
+        }
         RegionScheduler.runSuccessBodyIfHealthy(() -> ROUTED.add(item));
         AdvancementDiag.routed(route);
     }
@@ -380,9 +400,15 @@ public final class AdvancementBuffer {
     private static boolean applyOneRouted() {
         Routed item = ROUTED.poll();
         if (item == null) return false;
-        fabrolia$runRewardBody(item::apply);
+        // A drain nested in a running command (a kick reaching PlayerList.remove)
+        // applies the item as its own top-level execution, never queued behind
+        // that command where it would run after the leaving player was saved.
+        fabrolia$runRewardBody(() -> CommandContextIsolation.runTopLevel(item::apply));
         PlayerAdvancements owner = item.backlogOwner();
-        if (owner != null) BACKLOG.computeIfPresent(owner, (ignored, count) -> count > 1 ? count - 1 : null);
+        if (owner != null) {
+            BACKLOG.computeIfPresent(owner, (ignored, count) -> count > 1 ? count - 1 : null);
+            BACKLOG_TOTAL.decrementAndGet();
+        }
         AdvancementDiag.ROUTED_APPLIED.increment();
         return true;
     }
@@ -596,14 +622,16 @@ public final class AdvancementBuffer {
      * the FIFO must already be empty after the causal fixed point and the shared
      * executor join. A surviving item is a shutdown failure.
      */
-    public static void verifyAndResetAfterShutdown() {
+    public static void verifyEmptyAfterShutdown() {
         MinecraftServer server = com.axalotl.fabrolia.common.ParallelProcessor.getServer();
         if (server != null && !RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
             throw new IllegalStateException("advancement shutdown verification entered off physical Main");
         }
-        if (!ROUTED.isEmpty() || !BACKLOG.isEmpty() || !AdvancementBatchScope.shutdownClean()) {
+        if (!ROUTED.isEmpty() || !BACKLOG.isEmpty() || BACKLOG_TOTAL.get() != 0
+                || !AdvancementBatchScope.shutdownClean()) {
             throw new IllegalStateException("advancement work survived the healthy shutdown fixed point"
-                    + " (routed=" + ROUTED.size() + ", backlog=" + BACKLOG.size() + ")");
+                    + " (routed=" + ROUTED.size() + ", backlog=" + BACKLOG.size()
+                    + ", backlogTotal=" + BACKLOG_TOTAL.get() + ")");
         }
     }
 

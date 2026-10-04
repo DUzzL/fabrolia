@@ -163,14 +163,87 @@ final class AdvancementOwnerRoutingTest {
 
             long quiesces = AdvancementDiag.QUIESCE_TAKES.sum();
             fixture.holdAllClaims();
-            AdvancementBuffer.drainBeforeRemoval(player);
+            // The removal is reached from inside a running command (a kick).
+            ThreadLocal<Object> commandContext = commandExecutionContext();
+            Object enclosing = new Object();
+            commandContext.set(enclosing);
+            try {
+                AdvancementBuffer.drainBeforeRemoval(player);
+            } finally {
+                assertTrue(commandContext.get() == enclosing, "the enclosing command context is restored");
+                commandContext.remove();
+            }
             assertTrue(advancements.getOrStartProgress(holder).getCriterion("a").isDone(),
                     "the routed award reached the PlayerAdvancements before its save");
             assertEquals(List.of("award-applied:made it"), effects, "FIFO order is kept");
+            assertEquals(List.of(Boolean.TRUE), chat.topLevel,
+                    "routed work runs as its own execution, not queued behind the enclosing command");
             assertTrue(fixture.routed.isEmpty());
             assertFalse(AdvancementBuffer.hasBacklog(advancements));
             assertEquals(quiesces, AdvancementDiag.QUIESCE_TAKES.sum(), "the removal fence was borrowed");
             assertFalse(AdvancementBatchScope.active());
+        }
+    }
+
+    @Test
+    void aCompletionNeedingTheFenceIsRoutedWholeSoRefiresBeforeTheDrainAreKept() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            fixture.publishAsyncLevel();
+            ServerPlayer player = fixture.player();
+            PlayerAdvancements advancements = fixture.advancements(player);
+            AdvancementRewards function = new AdvancementRewards(0, HolderSet.empty(), List.of(),
+                    Optional.of(new CacheableFunction(Identifier.fromNamespaceAndPath("test", "count"))));
+            AdvancementHolder counter = advancement("counter", function, "hit");
+            AdvancementHolder pair = advancement("pair", AdvancementRewards.EMPTY, "a", "b");
+            registerListeners(advancements, counter);
+            registerListeners(advancements, pair);
+            PlayerAdvancements.TriggerInstanceKey hit = new PlayerAdvancements.TriggerInstanceKey(counter, "hit");
+            PlayerAdvancements.TriggerInstanceKey pairA = new PlayerAdvancements.TriggerInstanceKey(pair, "a");
+            PlayerAdvancements.TriggerInstanceKey pairB = new PlayerAdvancements.TriggerInstanceKey(pair, "b");
+
+            AdvancementBuffer.awardOnOwner(advancements, List.of(pairA));
+            assertTrue(advancements.getOrStartProgress(pair).getCriterion("a").isDone(),
+                    "an award running no global reward applies inline on the owner");
+            assertTrue(fixture.routed.isEmpty());
+
+            AdvancementBuffer.awardOnOwner(advancements, List.of(hit));
+            assertFalse(advancements.getOrStartProgress(counter).getCriterion("hit").isDone(),
+                    "the completion whose reward needs the fence is routed whole");
+            assertTrue(listeners(advancements).containsKey(hit),
+                    "its listener stays registered until the drain applies it");
+
+            // The same tick fires the counter again, then completes the pair.
+            AdvancementBuffer.awardOnOwner(advancements, List.of(hit, pairB));
+            List<PlayerAdvancements.TriggerInstanceKey> order = new ArrayList<>();
+            for (Object item : fixture.routed) {
+                order.add(assertInstanceOf(AdvancementBuffer.RoutedAward.class, item).key());
+            }
+            assertEquals(List.of(hit, hit, pairB), order,
+                    "every refire is kept and later awards follow it through the FIFO");
+            assertFalse(advancements.getOrStartProgress(pair).getCriterion("b").isDone());
+        }
+    }
+
+    @Test
+    void routedWorkForARespawnedPlayerTargetsTheCurrentLifecycleObject() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            ServerPlayer died = fixture.player();
+            ServerPlayer respawned = fixture.player();
+            java.util.UUID uuid = java.util.UUID.randomUUID();
+            set(net.minecraft.world.entity.Entity.class, died, "uuid", uuid);
+            set(net.minecraft.world.entity.Entity.class, respawned, "uuid", uuid);
+            PlayerList players = fixture.dedicatedPlayerList();
+            set(PlayerList.class, players, "playersByUUID", new HashMap<>(Map.of(uuid, respawned)));
+            set(MinecraftServer.class, fixture.server, "playerList", players);
+
+            assertTrue(AdvancementBuffer.currentPlayer(died) == died, "a live player is rewarded itself");
+            set(net.minecraft.world.entity.Entity.class, died, "removalReason",
+                    net.minecraft.world.entity.Entity.RemovalReason.KILLED);
+            assertTrue(AdvancementBuffer.currentPlayer(died) == respawned,
+                    "work routed before a respawn rewards the player list's current object");
+            set(PlayerList.class, players, "playersByUUID", new HashMap<>());
+            assertTrue(AdvancementBuffer.currentPlayer(died) == died,
+                    "without a successor the captured object is kept");
         }
     }
 
@@ -274,11 +347,31 @@ final class AdvancementOwnerRoutingTest {
         return new AdvancementHolder(Identifier.fromNamespaceAndPath("test", path), advancement);
     }
 
+    private static void registerListeners(PlayerAdvancements advancements, AdvancementHolder holder)
+            throws Exception {
+        java.lang.reflect.Method register = PlayerAdvancements.class.getDeclaredMethod(
+                "registerListeners", AdvancementHolder.class);
+        register.setAccessible(true);
+        register.invoke(advancements, holder);
+    }
+
+    private static Map<PlayerAdvancements.TriggerInstanceKey, ?> listeners(PlayerAdvancements advancements) {
+        Map<PlayerAdvancements.TriggerInstanceKey, ?> map =
+                advancements.getTriggerMapForType(CriteriaTriggers.IMPOSSIBLE);
+        return map == null ? Map.of() : map;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ThreadLocal<Object> commandExecutionContext() {
+        return (ThreadLocal<Object>) get(net.minecraft.commands.Commands.class, null, "CURRENT_EXECUTION_CONTEXT");
+    }
+
     /** Records the announcement together with the award state it observed. */
     static class RecordingPlayerList extends PlayerList {
         List<String> effects;
         PlayerAdvancements advancements;
         AdvancementHolder holder;
+        List<Boolean> topLevel;
 
         private RecordingPlayerList() {
             super(null, null, null, null);
@@ -289,6 +382,7 @@ final class AdvancementOwnerRoutingTest {
             boolean applied = advancements != null
                     && advancements.getOrStartProgress(holder).getCriterion("a").isDone();
             effects.add((applied ? "award-applied:" : "award-missing:") + message.getString());
+            topLevel.add(commandExecutionContext().get() == null);
         }
     }
 
@@ -373,7 +467,13 @@ final class AdvancementOwnerRoutingTest {
             list.effects = effects;
             list.advancements = advancements;
             list.holder = holder;
+            list.topLevel = new ArrayList<>();
             return list;
+        }
+
+        /** The server's own player-list type, with only its UUID index. */
+        PlayerList dedicatedPlayerList() throws Exception {
+            return (PlayerList) unsafe.allocateInstance(net.minecraft.server.dedicated.DedicatedPlayerList.class);
         }
 
         void clearRouted() {

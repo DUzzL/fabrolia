@@ -801,7 +801,7 @@ public final class ParallelProcessor {
                 RegionScheduler.throwWorkerFailureIfAny();
                 NetherPortalTransfers.flushQuiescent();
                 AdvancementBuffer.drainShutdownPassIfPending();
-                AdvancementBuffer.verifyAndResetAfterShutdown();
+                AdvancementBuffer.verifyEmptyAfterShutdown();
             } catch (Throwable cleanup) {
                 failure = fabrolia$mergeFailure(failure, cleanup);
             }

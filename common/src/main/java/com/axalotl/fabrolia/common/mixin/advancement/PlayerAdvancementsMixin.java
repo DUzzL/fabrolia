@@ -2,7 +2,6 @@ package com.axalotl.fabrolia.common.mixin.advancement;
 
 import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementOwnership;
 import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementRewardRouting;
-import com.axalotl.fabrolia.common.parallelised.advancement.PlayerAdvancementsAccess;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -23,14 +22,9 @@ import org.spongepowered.asm.mixin.injection.At;
  * off-owner trigger's listener snapshot consistent against the owner's mutations.
  */
 @Mixin(PlayerAdvancements.class)
-public abstract class PlayerAdvancementsMixin implements PlayerAdvancementsAccess {
+public abstract class PlayerAdvancementsMixin {
 
     @Shadow private ServerPlayer player;
-
-    @Override
-    public ServerPlayer fabrolia$player() {
-        return this.player;
-    }
 
     @WrapMethod(method = "registerListeners(Lnet/minecraft/server/ServerAdvancementManager;)V")
     private void fabrolia$lockRegisterAll(ServerAdvancementManager manager, Operation<Void> original) {

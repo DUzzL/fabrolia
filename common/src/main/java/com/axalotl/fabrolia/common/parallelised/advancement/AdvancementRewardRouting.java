@@ -12,6 +12,7 @@ import net.minecraft.commands.functions.CommandFunction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.PlayerAdvancements;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.permissions.LevelBasedPermissionSet;
 import net.minecraft.server.players.PlayerList;
 
 import java.util.Optional;
@@ -71,6 +72,12 @@ public final class AdvancementRewardRouting {
         }
         AdvancementBuffer.publish(new AdvancementBuffer.RoutedReward(advancements, function, source),
                 AdvancementDiag.Route.REWARD_FUNCTION);
+    }
+
+    /** The source {@code AdvancementRewards.grant} builds for {@code player}'s reward function. */
+    static CommandSourceStack rewardSource(ServerPlayer player) {
+        return player.createCommandSourceStack().withSuppressedOutput()
+                .withPermission(LevelBasedPermissionSet.GAMEMASTER);
     }
 
     /** @return {@code true} when the whole grant was routed and must not run now. */
