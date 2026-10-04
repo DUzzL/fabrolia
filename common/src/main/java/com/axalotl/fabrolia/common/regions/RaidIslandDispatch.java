@@ -1,6 +1,7 @@
 package com.axalotl.fabrolia.common.regions;
 
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.raid.Raid;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.gamerules.GameRules;
@@ -45,7 +46,14 @@ public final class RaidIslandDispatch {
         RegionScheduler.enqueueGlobalMainOnly(() -> RaidIslandMerge.onRaidDispatched(level, raid));
     }
 
-    public static void dispatch(ServerLevel level, Raid raid) {
+    /**
+     * Main, {@code Raids.tick} slot. An island-owned raid is handed to its island;
+     * an unowned raid whose vanilla step is a no-op is skipped.
+     *
+     * @return whether Main must tick this raid under the all-island fence
+     *         ({@link #tickOnMainFenced}, once for every such raid of the level tick)
+     */
+    public static boolean dispatch(ServerLevel level, Raid raid) {
         RegionizedServer rs = RegionScheduler.forLevel(level);
         RaidOwnerAccess.View view = ((RaidOwnerAccess) raid).fabrolia$raidView();
         if (rs != null && rs.asyncActive) {
@@ -53,10 +61,41 @@ public final class RaidIslandDispatch {
             if (owner != null && !owner.retired) {
                 assign(owner, raid);
                 RaidIslandMerge.onRaidDispatched(level, raid);
-                return;
+                return false;
             }
         }
-        RaidOwnership.runMainFenced(() -> tickOwned(level, raid));
+        // No island owns the center. A raid whose step only re-reads whether its
+        // center chunk is loaded (a Main-safe read) needs no all-island fence.
+        return !isInertWhileCenterUnloaded(level, raid);
+    }
+
+    /** One fence for every unowned raid of this level tick, in map order. */
+    public static void tickOnMainFenced(ServerLevel level, java.util.List<Raid> raids) {
+        RaidOwnership.runMainFenced(() -> {
+            for (int i = 0, n = raids.size(); i < n; i++) {
+                Raid raid = raids.get(i);
+                RegionScheduler.runSuccessBodyIfHealthy(() -> tickOwned(level, raid));
+            }
+        });
+    }
+
+    /**
+     * Whether vanilla's level step for this raid ({@code Raids.tick}: gamerule check,
+     * stopped-raid removal, {@code Raid.tick}) is a no-op: an ongoing, already
+     * inactive raid whose center chunk is not loaded only recomputes
+     * {@code active = hasChunkAt(center)} (still false, so no boss-bar visibility
+     * change) and returns. Such raids never expire in vanilla ({@code ticksActive}
+     * advances only while active), so a raid left in an unloaded area would otherwise
+     * take the all-island fence every tick forever. Physical Main only, for a raid no
+     * island owns: its status, active flag and center are written only by its tick,
+     * {@code stop()} and {@code setCenter}, which for such a raid run only on Main.
+     */
+    static boolean isInertWhileCenterUnloaded(ServerLevel level, Raid raid) {
+        return level.getGameRules().get(GameRules.RAIDS)
+                && level.getDifficulty() != Difficulty.PEACEFUL
+                && !raid.isStopped() && !raid.isOver()
+                && !raid.isActive()
+                && !level.hasChunkAt(raid.getCenter());
     }
 
     /** Rebuild fence held: move subscriptions without adding an extra raid tick. */

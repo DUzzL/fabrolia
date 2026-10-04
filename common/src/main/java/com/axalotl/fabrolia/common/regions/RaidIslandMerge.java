@@ -42,10 +42,12 @@ public final class RaidIslandMerge {
 
     /** Re-arm the raid-area ticket. Called from the raid dispatch on main
      *  (ticket structures are main-confined — never call off-main). Cheap:
-     *  one map update per existing ticket. */
+     *  one map update per existing ticket. An inactive raid (center chunk not
+     *  loaded) gets no ticket: as in vanilla it stays parked until its center
+     *  loads by itself, instead of being revived by an island's halo. */
     public static void onRaidDispatched(ServerLevel level, Raid raid) {
         RaidOwnerAccess.View view = ((RaidOwnerAccess) raid).fabrolia$raidView();
-        if (view.stopped()) {
+        if (view.stopped() || !view.active()) {
             return;
         }
         level.getChunkSource().addTicketWithRadius(TicketType.PORTAL,

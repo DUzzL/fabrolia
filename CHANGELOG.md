@@ -32,6 +32,15 @@
 
 ### Changed
 
+- A raid no island owns whose center chunk is not loaded (for example one left
+  behind by an unloaded raid farm; vanilla keeps such raids forever, inactive)
+  no longer makes Main pause every island each tick: its vanilla tick is a
+  no-op and is skipped. Raids Main still has to tick share one pause per tick
+  instead of one each. This cost production Main about 10 ms/tick, and the
+  pause also held back every island. An island no longer re-arms the raid-area
+  ticket of an inactive raid, so such a raid stays parked until its center
+  loads by itself, as in vanilla, instead of being revived by a nearby
+  island.
 - Main no longer waits at the end of each level's entity phase for a busy
   island's running unit before running Main-owned entity bodies (player
   fallbacks, unsupported or forced-main entities). The island gets a standing

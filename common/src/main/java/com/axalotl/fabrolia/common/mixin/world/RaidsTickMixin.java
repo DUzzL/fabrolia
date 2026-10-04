@@ -11,6 +11,9 @@ import net.minecraft.world.entity.raid.Raids;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
+
+import java.util.ArrayList;
 
 /** Main enumerates published registrations; stop/removal and tick share the regional raid slot. */
 @Mixin(Raids.class)
@@ -18,11 +21,24 @@ public abstract class RaidsTickMixin {
     @Shadow @Final private Int2ObjectMap<Raid> raidMap;
     @Shadow private int tick;
 
+    /** Main-confined scratch list of the raids Main ticks this level tick. */
+    @Unique private final ArrayList<Raid> fabrolia$mainTicks = new ArrayList<>();
+
     @WrapMethod(method = "tick")
     private void fabrolia$dispatchRaidLifecycle(ServerLevel level, Operation<Void> original) {
         tick++;
-        for (Raid raid : raidMap.values()) {
-            RegionScheduler.runSuccessBodyIfHealthy(() -> RaidIslandDispatch.dispatch(level, raid));
+        ArrayList<Raid> mainTicks = fabrolia$mainTicks;
+        try {
+            for (Raid raid : raidMap.values()) {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    if (RaidIslandDispatch.dispatch(level, raid)) mainTicks.add(raid);
+                });
+            }
+            // Unowned raids tick in map order under ONE all-island fence; stopped
+            // ones leave raidMap there, after the enumeration.
+            if (!mainTicks.isEmpty()) RaidIslandDispatch.tickOnMainFenced(level, mainTicks);
+        } finally {
+            mainTicks.clear();
         }
         if (tick % 200 == 0) ((Raids) (Object) this).setDirty();
         RegionScheduler.commitSuccessIfHealthy(() -> {});
