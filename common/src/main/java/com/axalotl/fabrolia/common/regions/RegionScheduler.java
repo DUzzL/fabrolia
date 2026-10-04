@@ -329,6 +329,7 @@ public final class RegionScheduler {
             return true;
         });
         if (!regionThreadingEnabled) return;
+        CarpetTpsLines.install();
         final long generation;
         synchronized (LIFECYCLE_LOCK) {
             Throwable failure = orphanFatalFailure;
