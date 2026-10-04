@@ -111,6 +111,55 @@ class NetherTransferAdmissionTest {
         }
     }
 
+    /**
+     * 2026-10-04 production crash: Main's heal DONE_SEAL (or a refused stale
+     * claimant's transient claim transaction) landed on a claimed island's
+     * region between the attempt's validation and reserveExecution, and the
+     * held authority read false. The transaction is opened here through the
+     * main-safe receipt API only as a deterministic way to raise that signal.
+     */
+    @Test
+    void transientRegionSignalsRefuseAdmissionButNeverRevokeHeldAuthority() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            Region region = fixture.runtime.regionizer().regionForChunk(0L);
+            assertSame(fixture.owner.domain, region.domain);
+            long epoch = region.domain.epoch;
+            synchronized (region.admissionLock) {
+                assertTrue(region.tryOpenMainSafeBodyTransaction(region.domain, epoch));
+            }
+            try {
+                assertNull(fixture.tryClaims(), "a live region receipt still refuses NEW admission");
+                assertFalse(fixture.owner.unitClaim.get());
+            } finally {
+                region.finishClaimTransaction();
+            }
+            synchronized (region.admissionLock) {
+                assertTrue(region.tryBeginDoneSeal(epoch));
+            }
+            try {
+                assertNull(fixture.tryClaims(), "a held done seal still refuses NEW admission");
+                assertFalse(fixture.owner.unitClaim.get());
+            } finally {
+                region.releaseDoneSeal();
+            }
+            try (Fixture.Claim claim = fixture.acquire()) {
+                synchronized (region.admissionLock) {
+                    assertTrue(region.tryBeginDoneSeal(epoch));
+                    assertTrue(region.tryOpenMainSafeBodyTransaction(region.domain, epoch));
+                }
+                try {
+                    assertTrue(NetherPortalTransfers.owns(fixture.level, BlockPos.ZERO));
+                    assertTrue(claim.reservation.reserveExecution(),
+                            "held island claims must keep exact transfer authority");
+                    assertTrue(NetherPortalTransfers.owns(fixture.entity));
+                } finally {
+                    region.finishClaimTransaction();
+                    region.releaseDoneSeal();
+                }
+            }
+        }
+    }
+
     private static void await(CountDownLatch latch) {
         try {
             assertTrue(latch.await(5, TimeUnit.SECONDS), "Main did not publish the fence");

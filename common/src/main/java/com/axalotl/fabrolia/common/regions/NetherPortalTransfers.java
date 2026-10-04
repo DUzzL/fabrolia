@@ -958,7 +958,7 @@ public final class NetherPortalTransfers {
                     }
                 }
                 for (NetherPortalPreparation.ChunkRef chunk : footprint) {
-                    if (!claims.owns(chunk.level(), BlockPos.containing(
+                    if (!claims.admits(chunk.level(), BlockPos.containing(
                             ChunkPos.unpack(chunk.chunkKey()).getMinBlockX(), 0,
                             ChunkPos.unpack(chunk.chunkKey()).getMinBlockZ()))) {
                         claims.close();
@@ -993,6 +993,31 @@ public final class NetherPortalTransfers {
                     && !runtime.mainClaimsFenceActive() && !runtime.globalSprintAdmissionFenced
                     && !owner.globalSprintFenced;
         }
+        /**
+         * Admission-only belt, checked once while acquiring: no region of the
+         * footprint shows a claim, done seal or open claim transaction right now.
+         * These are TRANSIENT signals other threads raise without this island's
+         * claim (Main's heal takes DONE_SEAL blindly on unsealed halo/member
+         * regions; a refused stale ready claimant CASes currentWorker and opens
+         * a claim transaction before backing out), so they may only refuse entry,
+         * never revoke authority already held (2026-10-04 production crash:
+         * "Nether player entry lacks exact transfer authority").
+         */
+        boolean admits(ServerLevel level, BlockPos pos) {
+            if (!owns(level, pos)) return false;
+            RegionizedServer runtime = RegionScheduler.forLevel(level);
+            Region region = runtime.regionizer().peekRegionForChunk(ChunkPos.pack(pos));
+            return region == null || !region.hasClaimOrDoneSeal()
+                    && region.activeClaimTransactions() == 0;
+        }
+        /**
+         * Exact authority for the attempt and its body: only state that cannot
+         * change while this thread holds the owners' island claims. No island
+         * region body can start between units (ColorGate's unit window is
+         * checked before and after every region claim CAS), and claim-rebase
+         * closure needs all-island quiesce, which these held claims exclude
+         * (gap adoption only touches dead owners, which fail above).
+         */
         boolean owns(ServerLevel level, BlockPos pos) {
             if (quiescent) return RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer());
             RegionizedServer runtime = RegionScheduler.forLevel(level);
@@ -1004,8 +1029,7 @@ public final class NetherPortalTransfers {
             if (owner.domain.entityBarrier != null && (!owner.domain.entityBarrier.isDone()
                     || owner.domain.entityBarrier.isCompletedExceptionally())) return false;
             Region region = runtime.regionizer().peekRegionForChunk(ChunkPos.pack(pos));
-            return region == null || !region.hasClaimOrDoneSeal()
-                    && !region.claimRebaseClosed() && region.activeClaimTransactions() == 0;
+            return region == null || !region.claimRebaseClosed();
         }
         private static boolean mainOwns(RegionizedServer runtime, IslandRegistry.PIsland owner) {
             return runtime != null && owner != null
