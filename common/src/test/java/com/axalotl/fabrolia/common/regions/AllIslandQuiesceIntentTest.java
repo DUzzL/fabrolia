@@ -24,14 +24,14 @@ final class AllIslandQuiesceIntentTest {
         IslandRegistry.PIsland second = new IslandRegistry.PIsland(2L, 0L);
         IslandRegistry.PIsland third = new IslandRegistry.PIsland(3L, 0L);
         first.unitClaim.set(true);
-        second.claimWanted = true;
+        second.announceClaimInterest();
         ArrayList<IslandRegistry.PIsland> live = new ArrayList<>(List.of(first, second, third));
 
         Object attempt = publish(live);
         try {
-            assertTrue(first.claimWanted);
-            assertTrue(second.claimWanted);
-            assertTrue(third.claimWanted);
+            assertTrue(first.claimInterestAnnounced());
+            assertTrue(second.claimInterestAnnounced());
+            assertTrue(third.claimInterestAnnounced());
             // A retry/failure must restore the captured attempt, not re-enumerate
             // the registry after its membership changes.
             live.clear();
@@ -39,9 +39,9 @@ final class AllIslandQuiesceIntentTest {
             assertNull(clear(attempt, null));
         }
 
-        assertFalse(first.claimWanted);
-        assertTrue(second.claimWanted, "a pre-existing Main interest survives this attempt");
-        assertFalse(third.claimWanted);
+        assertFalse(first.claimInterestAnnounced());
+        assertTrue(second.claimInterestAnnounced(), "a pre-existing Main interest survives this attempt");
+        assertFalse(third.claimInterestAnnounced());
         assertTrue(first.unitClaim.get(),
                 "intent restoration must not release somebody else's physical claim");
     }
@@ -54,20 +54,20 @@ final class AllIslandQuiesceIntentTest {
         try {
             Object inner = publish(List.of(island));
             assertNull(clear(inner, null));
-            assertTrue(island.claimWanted, "inner cleanup must retain outer acquisition priority");
+            assertTrue(island.claimInterestAnnounced(), "inner cleanup must retain outer acquisition priority");
         } finally {
             assertNull(clear(outer, null));
         }
-        assertFalse(island.claimWanted);
+        assertFalse(island.claimInterestAnnounced());
 
         Object next = publish(List.of(island));
         try {
             assertNull(clear(outer, null));
-            assertTrue(island.claimWanted, "repeated cleanup must not revoke a later attempt");
+            assertTrue(island.claimInterestAnnounced(), "repeated cleanup must not revoke a later attempt");
         } finally {
             assertNull(clear(next, null));
         }
-        assertFalse(island.claimWanted);
+        assertFalse(island.claimInterestAnnounced());
     }
 
     @Test
@@ -76,16 +76,16 @@ final class AllIslandQuiesceIntentTest {
         IslandRegistry.PIsland first = new IslandRegistry.PIsland(1L, 0L);
         IslandRegistry.PIsland second = new IslandRegistry.PIsland(2L, 0L);
         IslandRegistry.PIsland third = new IslandRegistry.PIsland(3L, 0L);
-        second.claimWanted = true;
+        second.announceClaimInterest();
         first.unitClaim.set(true);
         third.unitClaim.set(true);
         Object attempt = publish(List.of(first, second, third));
         Throwable primary = new IllegalStateException("quiesce acquisition failed");
 
         assertSame(primary, clear(attempt, primary));
-        assertFalse(first.claimWanted);
-        assertTrue(second.claimWanted);
-        assertFalse(third.claimWanted);
+        assertFalse(first.claimInterestAnnounced());
+        assertTrue(second.claimInterestAnnounced());
+        assertFalse(third.claimInterestAnnounced());
         assertTrue(first.unitClaim.get());
         assertTrue(third.unitClaim.get());
         assertSame(primary, clear(attempt, primary));
@@ -109,8 +109,8 @@ final class AllIslandQuiesceIntentTest {
             IslandRegistry.PIsland first = new IslandRegistry.PIsland(1L, 0L);
             IslandRegistry.PIsland second = new IslandRegistry.PIsland(2L, 0L);
             IslandRegistry.PIsland unpublished = new IslandRegistry.PIsland(3L, 0L);
-            second.claimWanted = true;
-            unpublished.claimWanted = true;
+            second.announceClaimInterest();
+            unpublished.announceClaimInterest();
             first.unitClaim.set(true);
 
             InvocationTargetException thrown = assertThrows(InvocationTargetException.class,
@@ -119,9 +119,9 @@ final class AllIslandQuiesceIntentTest {
             assertSame(primary, thrown.getCause());
             assertTrue(Arrays.stream(primary.getSuppressed())
                     .anyMatch(NullPointerException.class::isInstance));
-            assertFalse(first.claimWanted, "partial publication must restore its earlier slots");
-            assertTrue(second.claimWanted, "published outer interest must survive failure");
-            assertTrue(unpublished.claimWanted, "unpublished slots must not be reset");
+            assertFalse(first.claimInterestAnnounced(), "partial publication must restore its earlier slots");
+            assertTrue(second.claimInterestAnnounced(), "published outer interest must survive failure");
+            assertTrue(unpublished.claimInterestAnnounced(), "unpublished slots must not be reset");
             assertTrue(first.unitClaim.get());
         } finally {
             pool.set(null, previousPool);

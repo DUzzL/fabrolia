@@ -721,10 +721,16 @@ public final class TemporalControl {
                 finishAndReseed(e, CONTROL_RETRY_NANOS);
                 return null;
             }
-            if (e.island.claimWanted || e.island.statusClaimWanted
+            if (e.island.mainInterest()
                     || e.rs.mainClaimsFenceActive()
                     || e.island.unitClaim.get()
                     || e.island.submitQueued.get()) {
+                // A MAIN_SYNC service request whose island sits idle (its last
+                // unit ended before the request, or a short non-unit hold made
+                // Main's double check miss it): nobody else wakes an idle Main.
+                if (e.island.mainSyncWanted && !e.island.unitClaim.get()) {
+                    RegionScheduler.requestMainSyncService();
+                }
                 finishAndReseed(e, CLAIM_RETRY_NANOS);
                 return null;
             }

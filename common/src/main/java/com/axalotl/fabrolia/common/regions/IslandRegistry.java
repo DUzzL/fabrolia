@@ -242,17 +242,53 @@ public final class IslandRegistry {
         final java.util.Set<Long> pendingSnapshotKeys =
                 java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-        /** Main-side claim spins announce interest here so rate/sprint
-         *  chaining yields (2026-07-14 fence-starvation fix). Every writer
-         *  saves and restores it around one synchronous spin (LIFO scopes).
-         *  Yield decisions must OR it with {@link #statusClaimWanted}. */
-        public volatile boolean claimWanted;
+        /** Main-side claim waiters (mainClaim spins, the global fence, island
+         *  bucket waits, topology/save quiesce intents) announce interest here
+         *  so rate/sprint chaining yields (2026-07-14 fence-starvation fix).
+         *  A COUNT, not a saved/restored flag: every waiter announces once on
+         *  entry and withdraws exactly once on exit, so an interleaved scope
+         *  (nested, failed, or a belt-logged off-main one) can neither drop a
+         *  live waiter's interest nor restore a stale one that would stop the
+         *  island forever. Yield decisions read {@link #mainInterest()}. */
+        private final java.util.concurrent.atomic.AtomicInteger claimWaiters =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        public void announceClaimInterest() {
+            claimWaiters.incrementAndGet();
+        }
+
+        public void withdrawClaimInterest() {
+            if (claimWaiters.decrementAndGet() < 0) {
+                claimWaiters.incrementAndGet();
+                throw new IllegalStateException("island#" + id + "/gen" + gen
+                        + " claim interest withdrawn more often than announced");
+            }
+        }
+
+        /** True while at least one Main-side claim waiter is announced. */
+        public boolean claimInterestAnnounced() {
+            return claimWaiters.get() > 0;
+        }
         /** Second, independent interest flag raised and lowered ONLY by the
          *  entity-status tick-head drain (escalation after repeated deferrals,
          *  see PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions).
          *  Never saved/restored by anyone, so no mainClaim scope can strand
-         *  it; read wherever {@link #claimWanted} decides a yield. */
+         *  it; read through {@link #mainInterest()}. */
         public volatile boolean statusClaimWanted;
+        /** Third, independent interest flag: a standing MAIN_SYNC service
+         *  request. Raised and lowered ONLY by Main's MAIN_SYNC drain
+         *  ({@code RegionScheduler.MainSyncService}) when this island holds
+         *  overdue Main-owned entity work while a unit runs: the island stops
+         *  at its next unit boundary and Main runs the work at its next safe
+         *  point instead of spinning on the running unit. Never saved/restored. */
+        public volatile boolean mainSyncWanted;
+        /** Main-confined: when {@link #mainSyncWanted} was raised (stuck forensics). */
+        long mainSyncWantedSinceNanos;
+        /** True while Main has announced interest in this island's claim:
+         *  unit admission, chaining and the pacer yield. */
+        public boolean mainInterest() {
+            return claimInterestAnnounced() || statusClaimWanted || mainSyncWanted;
+        }
         /** Diagnostics: units launched by chaining/pacer since creation. */
         public volatile long chainedUnits;
 

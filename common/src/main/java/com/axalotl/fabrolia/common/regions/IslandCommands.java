@@ -891,6 +891,11 @@ public final class IslandCommands {
     private static final java.util.ArrayList<IslandRegistry.PIsland> MAIN_HELD =
             new java.util.ArrayList<>();
 
+    /** Main-confined: true while Main holds any single-island claim. */
+    static boolean mainHoldsAnyClaim() {
+        return !MAIN_HELD.isEmpty();
+    }
+
     /**
      * Thread-owned capability for the two vanilla scheduled-function callback
      * types at their exact {@code TimerQueue.tick -> TimerCallback.handle}
@@ -1049,6 +1054,9 @@ public final class IslandCommands {
         sb.append("island#").append(p.id).append("/gen").append(p.gen)
           .append(" retired=").append(p.retired)
           .append(" waitingOnRoutedCommand=").append(p.waitingOnRoutedCommand)
+          .append(" interest[claim=").append(p.claimInterestAnnounced())
+          .append(" status=").append(p.statusClaimWanted)
+          .append(" mainSync=").append(p.mainSyncWanted).append(']')
           .append(" mainHeldOccurrences=").append(safeCount(MAIN_HELD, p))
           .append(" fenceHeldOccurrences=").append(safeGlobalFenceCount(p))
           .append("\n    ledger: ").append(p.claimReport())
@@ -1084,8 +1092,7 @@ public final class IslandCommands {
                     + "/gen" + owner.gen + " already held by Main: " + claimForensics(owner));
         }
         MAIN_CLAIMS.increment();
-        boolean priorClaimWanted = owner.claimWanted;
-        owner.claimWanted = true; // rate/sprint chaining + pacer yield to us
+        owner.announceClaimInterest(); // rate/sprint chaining + pacer yield to us
         long spinStart = 0L;
         long waitStart = 0L;
         boolean contended = false;
@@ -1127,7 +1134,7 @@ public final class IslandCommands {
                 LockSupport.parkNanos(20_000L);
             }
         } finally {
-            owner.claimWanted = priorClaimWanted;
+            owner.withdrawClaimInterest();
             if (contended) MAIN_CLAIM_WAIT_NANOS.add(System.nanoTime() - waitStart);
         }
         // ACQUIRED. Publication must be leak-proof: every caller arms its
@@ -1286,8 +1293,7 @@ public final class IslandCommands {
                                         + "/gen" + island.gen + ": " + claimForensics(island));
                     }
                     boolean claimed = false;
-                    boolean priorClaimWanted = island.claimWanted;
-                    island.claimWanted = true;
+                    island.announceClaimInterest();
                     try {
                         long spinStarted = System.nanoTime();
                         int stuck = 0;
@@ -1320,7 +1326,7 @@ public final class IslandCommands {
                             LockSupport.parkNanos(20_000L);
                         }
                     } finally {
-                        island.claimWanted = priorClaimWanted;
+                        island.withdrawClaimInterest();
                     }
                     if (claimed) {
                         try {

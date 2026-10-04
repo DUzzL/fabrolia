@@ -75,6 +75,14 @@ final class EpochDomain {
     volatile long entityBarrierArmedNanos;
 
     /**
+     * Member list of the dispatch that armed {@link #dispatchedEpoch}
+     * (participants and swept non-participants), published with that
+     * dispatch and never mutated afterwards: the dirty set of Main's heal
+     * backstop for this domain ({@code RegionScheduler.healDomainScope}).
+     */
+    volatile java.util.List<Region> healScope = java.util.List.of();
+
+    /**
      * Publication receipt for the current entity-dispatch generation. Ready
      * entries may be visible before every group/region has been offered, but a
      * consumer cannot claim one until the dispatcher accepts the whole plan.
