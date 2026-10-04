@@ -148,9 +148,6 @@ public class FabroliaConfig {
         e.add(bool("enableFabroliaDespawn", null,
                 "Pre-pass despawn checks on workers (TickGuard entity reentry path). Halves the per-entity main-thread despawn cost on high-mob servers.",
                 () -> enableFabroliaDespawn, v -> enableFabroliaDespawn = v));
-        e.add(bool("enableFabroliaAdvancements", null,
-                "Buffer SimpleCriterionTrigger.trigger calls during ServerPlayer.tick, evaluate listener predicates in parallel, apply matches serially on main. Aimed at heavy advancement packs (e.g. BlazeAndCave ~3000 advancements).",
-                () -> enableFabroliaAdvancements, v -> enableFabroliaAdvancements = v));
         e.add(bool("enableFabroliaVmpTracking", null,
                 "Offload VMP's NearbyEntityTracking work (tryTickTracker + tryUpdateTracker, grouped per-tracker to avoid seenBy races) to the fabrolia pool. No effect without VMP installed.",
                 () -> enableFabroliaVmpTracking, v -> enableFabroliaVmpTracking = v));

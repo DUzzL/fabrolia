@@ -222,11 +222,11 @@ public final class ParallelProcessor {
         // Each fallible stage is admitted atomically against the generation fatal
         // cut.  Once admitted it may exhaust its own finally chain, but a W which
         // wins before the next stage prevents that successor from entering.
-        // Grants queued by generic off-main advancement paths apply here, on main,
-        // before the portal drain. The exact player actor bypasses this buffer and
-        // preserves its synchronous vanilla trigger -> reward -> flush order.
+        // Routed advancement work applies here only when it can borrow a held fence
+        // or no island is live (AdvancementBuffer.applyDeferred never acquires one).
+        // Fire-time awards already ran on each player's owner; the exact player
+        // actor keeps its synchronous vanilla trigger -> reward -> flush order.
         RegionScheduler.runSuccessBodyIfHealthy(AdvancementBuffer::applyDeferred);
-        RegionScheduler.runSuccessBodyIfHealthy(AdvancementBuffer::drainPendingFlushes);
         // Seal main's cross-dimension stage for the level just ticked (one
         // cohort per source entity batch, same contract as island units).
         var srcLevel = com.axalotl.fabrolia.common.regions.RegionScheduler.mainCurrentLevel;
@@ -801,7 +801,7 @@ public final class ParallelProcessor {
                 RegionScheduler.throwWorkerFailureIfAny();
                 NetherPortalTransfers.flushQuiescent();
                 AdvancementBuffer.drainShutdownPassIfPending();
-                AdvancementBuffer.verifyAndResetAfterShutdown();
+                AdvancementBuffer.verifyEmptyAfterShutdown();
             } catch (Throwable cleanup) {
                 failure = fabrolia$mergeFailure(failure, cleanup);
             }

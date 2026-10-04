@@ -15,17 +15,17 @@ import java.lang.invoke.MethodType;
 import java.util.function.Predicate;
 
 /**
- * Routes {@code SimpleCriterionTrigger.trigger(ServerPlayer, Predicate)} into the
- * {@link AdvancementBuffer} deferred-mutation harness when buffering is active for the
- * calling thread.
+ * Runs {@code SimpleCriterionTrigger.trigger(ServerPlayer, Predicate)} through
+ * {@link AdvancementBuffer#trigger}: vanilla's evaluation and awards on the player's
+ * owner thread at fire time, with only the work the owner may not do routed to the
+ * fenced Main lane.
  *
  * <p>26.2 model: Mojang removed {@code SimpleCriterionTrigger.players} (the
  * {@code Map<PlayerAdvancements, Set<Listener>>} we used to {@code @Shadow}) and moved the
  * listener-set onto each {@link PlayerAdvancements} ({@link PlayerAdvancements#getTriggerMapForType
- * getTriggerMapForType} → {@code Map<TriggerInstanceKey, SimpleInstance>}). Grants now go
+ * getTriggerMapForType} → {@code Map<TriggerInstanceKey, SimpleInstance>}). Grants go
  * through {@link PlayerAdvancements#award(net.minecraft.advancements.AdvancementHolder, String)
- * award}. We hand the per-player map directly to the buffer; the buffer snapshots key+instance
- * pairs and awards by key at drain time.
+ * award}.
  *
  * <p><b>Vanish integration:</b> when the Vanish mod is present, its
  * {@code me.drex.vanish.mixin.interaction.SimpleCriterionTriggerMixin} adds a second
@@ -97,7 +97,7 @@ public abstract class SimpleCriterionTriggerMixin {
     }
 
     @WrapMethod(method = "trigger(Lnet/minecraft/server/level/ServerPlayer;Ljava/util/function/Predicate;)V")
-    private void fabrolia$bufferOrTrigger(ServerPlayer player, Predicate<?> predicate, Operation<Void> original) {
+    private void fabrolia$triggerOnOwner(ServerPlayer player, Predicate<?> predicate, Operation<Void> original) {
         // Vanish skip-check (inlined from me.drex.vanish.mixin.interaction.SimpleCriterionTriggerMixin —
         // their mixin is disabled via MixinCanceller when we ship). Same semantics: skip when player
         // is vanished AND the config flag is on, or spectator AND the spectator flag is on.
@@ -117,18 +117,13 @@ public abstract class SimpleCriterionTriggerMixin {
             }
         }
 
-        // Trigger-map fetch happens INSIDE the buffer's pa monitor (2026-07-17
-        // torn-read fix): the outer activeTriggers map resizes under main's
-        // registerListeners; a lock-free get from a worker raced it.
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        CriterionTrigger<?> selfTrigger = (CriterionTrigger) (Object) this;
-        if (AdvancementBuffer.tryBuffer(player, predicate, selfTrigger)) {
+        if (com.axalotl.fabrolia.common.config.FabroliaConfig.disabled) {
+            original.call(player, predicate);
             return;
         }
-        // Reaches vanilla inline only when the mod is disabled or async is
-        // fully inactive — single-threaded, no monitor needed (the SyncAll
-        // blanket monitor on this class is gone, 2026-07-17 deadlock).
-        original.call(player, predicate);
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        CriterionTrigger<?> selfTrigger = (CriterionTrigger) (Object) this;
+        AdvancementBuffer.trigger(player, predicate, selfTrigger);
     }
 
     @Unique

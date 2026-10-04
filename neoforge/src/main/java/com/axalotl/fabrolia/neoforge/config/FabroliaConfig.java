@@ -32,7 +32,6 @@ public class FabroliaConfig {
     private static final ModConfigSpec.BooleanValue enableFabroliaRandomTicks;
     private static final ModConfigSpec.BooleanValue enableFabroliaChunkSend;
     private static final ModConfigSpec.BooleanValue enableFabroliaDespawn;
-    private static final ModConfigSpec.BooleanValue enableFabroliaAdvancements;
     private static final ModConfigSpec.BooleanValue enableFabroliaVmpTracking;
 
     // ── Region threading ────────────────────────────────────────────────
@@ -87,8 +86,6 @@ public class FabroliaConfig {
                 .define("enableFabroliaChunkSend", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaChunkSend);
         enableFabroliaDespawn = BUILDER.comment("Pre-pass despawn checks on workers (TickGuard entity reentry path). Halves the per-entity main-thread despawn cost on high-mob servers.")
                 .define("enableFabroliaDespawn", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaDespawn);
-        enableFabroliaAdvancements = BUILDER.comment("Buffer SimpleCriterionTrigger.trigger calls during ServerPlayer.tick, evaluate listener predicates in parallel, apply matches serially on main. Aimed at heavy advancement packs (e.g. BlazeAndCave ~3000 advancements).")
-                .define("enableFabroliaAdvancements", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaAdvancements);
         enableFabroliaVmpTracking = BUILDER.comment("Offload VMP's NearbyEntityTracking work (tryTickTracker + tryUpdateTracker, grouped per-tracker to avoid seenBy races) to the fabrolia pool. No effect without VMP installed.")
                 .define("enableFabroliaVmpTracking", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaVmpTracking);
 
@@ -159,7 +156,6 @@ public class FabroliaConfig {
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaRandomTicks = enableFabroliaRandomTicks.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaChunkSend = enableFabroliaChunkSend.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaDespawn = enableFabroliaDespawn.get();
-        com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaAdvancements = enableFabroliaAdvancements.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaVmpTracking = enableFabroliaVmpTracking.get();
 
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableRegionThreading = enableRegionThreading.get();
@@ -199,7 +195,6 @@ public class FabroliaConfig {
         enableFabroliaRandomTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaRandomTicks);
         enableFabroliaChunkSend.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaChunkSend);
         enableFabroliaDespawn.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaDespawn);
-        enableFabroliaAdvancements.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaAdvancements);
         enableFabroliaVmpTracking.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaVmpTracking);
 
         enableRegionThreading.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableRegionThreading);

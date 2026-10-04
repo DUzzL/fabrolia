@@ -968,7 +968,7 @@ class FullModpackMixinExportVerifierTest {
     private static void verifyServerPlayer(ClassNode player) {
         MethodNode tick = method(player, "tick", "()V");
         assertEquals(1, generatedCallCount(tick, player.name,
-                "$fabrolia$bufferAdvancementsDuringTick"));
+                "$fabrolia$accountPlayerTick"));
 
         MethodNode body = uniqueMethod(player,
                 candidate -> candidate.name.startsWith("tick$mixinextras$wrapped$")

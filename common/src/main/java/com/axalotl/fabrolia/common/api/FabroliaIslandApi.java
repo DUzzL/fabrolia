@@ -22,8 +22,11 @@ import net.minecraft.world.level.ChunkPos;
  * chunks, or containers you did not reach through your own tick context must
  * go through {@link #executeOnOwner} (or trigger a merge via interaction, when
  * async time is active). Global collections (player lists, global entity
- * iteration), scoreboards, advancements, bossbars and other W-lane state stay
- * safe to touch from the global/main context only.
+ * iteration), scoreboards, bossbars and other W-lane state stay safe to touch
+ * from the global/main context only. A player's advancements may be awarded or
+ * revoked only on the thread that currently owns that player (its island turn,
+ * or Main for a Main-owned player or under the global fence); elsewhere
+ * {@code PlayerAdvancements.award/revoke} throw.
  */
 public final class FabroliaIslandApi {
 

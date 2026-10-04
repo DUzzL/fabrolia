@@ -31,6 +31,8 @@ public abstract class EntityNbtPredicateMixin {
             Boolean fast = NbtPredicateFastPath.tryMatch(entity, expected);
             if (fast != null) return fast;
         }
+        com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCacheContext
+                .checkFireTimeCompare(entity, expected);
         return original.call(entity, level, position);
     }
 }

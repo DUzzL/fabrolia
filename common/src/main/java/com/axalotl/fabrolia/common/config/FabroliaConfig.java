@@ -23,7 +23,6 @@ public class FabroliaConfig {
     public static boolean enableFabroliaVmpTracking = true;
     public static boolean enableFabroliaDespawn = true;
     public static boolean enableFabroliaChunkSend = true;
-    public static boolean enableFabroliaAdvancements = true;
     public static boolean enableRegionThreading = true;
     /**
      * Persisted operator preference for the exact-ordinal player-tick actor.

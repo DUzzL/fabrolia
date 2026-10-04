@@ -15,9 +15,8 @@ import java.util.Set;
  * <p>Vanilla's path: {@code matches(Entity) → getEntityTagToCompare(entity) → entity.saveWithoutId(new CompoundTag())},
  * which on a {@code ServerPlayer} encodes inventory + ender chest + abilities + game-type + stats
  * + advancements + bukkit/forge extra data + … via a deep Codec tree. Profiled at ~0.7% of server
- * thread on a 23-player session (and indirectly drives 11% main-thread parkNanos in
- * {@link AdvancementBuffer#drain} when the eval pool is saturated), all to compare a one-key
- * predicate like {@code {TicksFrozen:140}} or {@code {ShoulderEntityLeft:{id:"minecraft:parrot"}}}.
+ * thread on a 23-player session, all to compare a one-key predicate like
+ * {@code {TicksFrozen:140}} or {@code {ShoulderEntityLeft:{id:"minecraft:parrot"}}}.
  *
  * <p>The pack of advancements responsible (BACAP):
  * <ul>

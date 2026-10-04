@@ -66,35 +66,47 @@ logical Main alias or foreign-thread world authority is implied.
 not transferable world access. `executeOnOwner` queues callbacks when a foreign
 caller lacks owner authority.
 
-`AdvancementBuffer` resolves each trigger's matcher at the trigger call under the
-player's advancements monitor; the retained instances, their player condition and
-the awards are evaluated at a monitor-free Main drain against the loot context
-captured at fire time. Under the drain's held global fence the player conditions
-are fanned over the idle tick pool (`AdvancementPredicateEval`: every pending of one
-player in one task, results keyed by pending index) and the awards then apply
-serially on Main in vanilla order. Those tick-pool reads are legitimate only
-because physical Main holds every claim and stays parked in the fan-in until the
-last task terminated — a task never outlives the window. Vanilla evaluates each
-trigger call after the previous call's awards; the fan-out sees one pre-award
-snapshot, so a player's later pendings are re-evaluated inline once that player
-received an award in the pass. A `random_chance` player condition draws from the
-level RNG's worker stripe on those threads (the same striping every worker uses).
-Per-drain criterion deduplication is scoped to each player/key. The buffer cannot
-transport an entered callback or acquire a global fence while its caller holds
-arbitrary monitors and claims. Worker triggers outside a buffering frame publish
-directly to the retained Main lane.
+Advancements are evaluated and awarded on the thread that owns the player
+(`AdvancementBuffer.trigger`, `PlayerTurnOwnership`): the player's own A5 turn, an
+island worker of the island attached to the player's resting session (the
+lifecycle-mutation authority), physical Main for a player no island session
+holds (or under the island's claim / the global fence), the V2 actor, or Main
+with no live island. At that point, vanilla's position inside
+`SimpleCriterionTrigger.trigger`, every listener's matcher and `player:`
+condition are evaluated, then each match is awarded synchronously.
+`PlayerAdvancements.award/revoke/flushDirty` run with vanilla's return value on
+the owner and throw anywhere else. A fire-time evaluation serializes a player
+without its ender pearls (they may live on any island); a compare that
+references them routes the call. Player NBT is computed once per trigger call.
 
-Drain points: Main-ticked players' parked batch applies at that level's entity-batch
-end (vanilla awards them inside the entity phase). The worker lane (island players,
-whose ticks have no Main-phase anchor) applies once per tick at the tick head, in
-the window `ServerFunctionManager.tick` opens before the `#minecraft:tick`
-functions: the worker lane, then frameless Main awards and direct replays, share
-ONE sticky fence which the tick functions then run inside (`fenceWindowHeld` →
-inline; with functions queued the window takes that fence even without pending
-awards), and cascades the functions raise settle before the window releases. A
-batch end drains the worker lane only when it already holds the fence (or none is
-required); the scheduled inter-tick belt likewise runs only under a free fence
-while islands are live; the shutdown pass drains every lane unconditionally.
+Work the owner may not do goes to ONE Main FIFO (`AdvancementBuffer.ROUTED`),
+per-player ordered:
+- a trigger fired off the owner, or while that player has routed work
+  outstanding: the matcher is resolved at fire time; the condition and award run
+  at the drain;
+- an award whose completion would run a reward the owner may not run. The
+  award is routed whole, so its listener stays registered and revoke-and-rerun
+  counters see every fire;
+- the reward routing point (`AdvancementRewardRouting`, C2):
+  - a reward function runs inline on the owner iff
+    `FunctionPlans.ownerLocal(id)`;
+  - loot grants are routed;
+  - completion announcements broadcast inline only on physical Main.
+
+Xp, recipes and progress packets stay owner-local.
+
+Drain points:
+- **Tick head** (`beginTickHeadWindow`, before `#minecraft:tick`): the only point
+  that acquires the global fence, and only for a routed item that needs it. With
+  tick functions queued it still takes the fence those functions share.
+- **Level entity-batch end:** borrows a held fence or runs with no live island;
+  never quiesces.
+- **`PlayerList.remove` HEAD** (under the removal fence): applies the FIFO before
+  the leaving player is saved, so no award is lost on disconnect.
+- **Server stop.**
+
+With nothing routed, no advancement site quiesces. Per-site quiesce
+counts/time and per-reason route counts are in `/fabrolia regions debug advstats`.
 
 **Cost:** Main-only native bodies and unknown dependencies still fall back to
 physical Main. Independent clocks and concurrent admission do not establish a
@@ -144,7 +156,7 @@ inventory from the 26.2 sources:
 | crop growth / random ticks | per-tick chance in owner's tick | L | none (a 10 TPS island grows crops at half wall-clock rate — the defined, documented semantic of a slow island; identical to what a globally-lagging vanilla server does today) |
 | daylight/weather checks (`isBrightOutside`, thunder) | read W | W | none |
 | `/schedule` datapack timers, TimerQueue | absolute W ticks | W | global timer queue runs on the W authority; function EXECUTION that targets island-owned state is dispatched to owners (A5). **Exception (§16):** an unconditional 1t self-rearming loop that the function plan partitions is an island-tick root — re-armed on W, executed per island at L (coalesced) |
-| scoreboards/advancements/bossbars | event-driven | n/a | global updates and deferred advancement awards/rewards use owned Main drains; trigger matchers are resolved on the producer at trigger time and the retained instances are evaluated at the Main drain (§0) |
+| scoreboards/advancements/bossbars | event-driven | n/a | advancement criteria are evaluated and awarded on the player's owner thread at fire time; global reward work (non-owner-local functions, loot, announcements) uses the routed Main FIFO (§0) |
 | portal cooldown (`portalCooldown`) | relative | L | none |
 | active Nether portal charge | relative | L | advances with the entity owner; the accepted source-unit cohort transfers on a worker holding every source/destination owner claim |
 | world border | W-anchored lerp | W | global |
@@ -369,9 +381,9 @@ Explicitly rejected, with their own evidence:
   with a two-client differential gate rather than the "easy" swap.
 - **Global barrier per tick** — the two-Phaser-per-tick clock model remains
   distinct from Fabrolia's per-island deadlines.
-- **Exclusive-on-write scoreboards** — global updates and advancement awards
-  stay on the owned Main lane. Advancement matching is not wholly W-lane work:
-  trigger matchers are resolved on the producer's timeline; awards drain on Main (§0).
+- **Exclusive-on-write scoreboards** — global updates and routed advancement
+  rewards stay on the owned Main lane; advancement criteria themselves are
+  evaluated and awarded on the player's owner thread (§0).
 
 Failure-derived test additions (all from their TODO/DESIGN/commits, now part
 of the A5/A6 gate suites): leashed mobs following a player through a portal
@@ -535,7 +547,8 @@ via the result future.
 **Datapacks (Main-resident roots).** Functions the plan does not partition keep
 vanilla W-cadence and main execution, fenced per function body; the
 Main-resident `#minecraft:tick` functions run inside the tick-head advancement
-window (§0) and reuse its sticky fence when that window took one. Scheduled
+window (§0) and share the fence that window takes for them, so routed
+advancement work in that tick costs no second quiesce. Scheduled
 functions (overworld `tickTime`) keep their own fence; a `TimerQueue` tick with
 two or more due Main-resident function callbacks takes one fence around the
 whole dispatch (`TimerQueueMixin`). /schedule stays on the vanilla game-time
@@ -719,11 +732,12 @@ advancement rewards, and classifies every line of each per-tick root —
 loops:
 - PARTITION — `execute … as <@a|@e[…]> …` (no limit/sort/@p/@r/@n, no player
   NBT) whose body touches only `@s` (its scores, tags, inventory, effects,
-  `advancement revoke @s` via C1), reads Main-written state (constants,
-  storage, teams) and sends particles near `@s`;
+  `advancement grant|revoke @s` via C1 — a grant's announcement, loot and
+  non-owner-local reward functions are routed to fenced Main by the C2 routing
+  point), reads Main-written state (constants, storage, teams) and sends
+  particles near `@s`;
 - ESCALATE — same fan-out, global body (fake-player writes, storage/team
-  writes, unbounded selectors, entity NBT writes, `advancement grant` — its
-  announcement and rewards are global tails —, macros, unknown commands), or
+  writes, unbounded selectors, entity NBT writes, macros, unknown commands), or
   a write that Main-resident code also reads/writes (conflict rule);
 - REARM — the loop's own re-arm; GLOBAL — anything else (the root stays
   Main-resident: fenced, vanilla, as before).
