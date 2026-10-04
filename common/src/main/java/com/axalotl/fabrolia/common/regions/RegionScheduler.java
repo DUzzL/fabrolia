@@ -1932,10 +1932,12 @@ public final class RegionScheduler {
                 if (mode == DrainMode.OUT_OF_PHASE) {
                     // Serve only the islands queued before it; the fenced body
                     // and everything after it wait for an entity-phase drain.
-                    MAIN_SYNC.addFirst(queued);
+                    // It is republished only after those buckets ran, so a
+                    // nested drain from a body or tail cannot overtake them.
                     try {
                         ran |= buckets.flushIdleIslands(true);
                     } finally {
+                        MAIN_SYNC.addFirst(queued);
                         requeueMainSync(buckets.drainRemaining());
                     }
                     return ran;
@@ -3611,6 +3613,8 @@ public final class RegionScheduler {
     static final long ISLAND_HEAL_BACKSTOP_NANOS = 50_000_000L;
     /** Two stranded-queue sightings count as consecutive only this close together. */
     static final long STRANDED_SIGHTING_WINDOW_NANOS = 100_000_000L;
+    /** The full sweep's own pair window: consecutive full sweeps are up to 1 s apart. */
+    static final long FULL_SWEEP_SIGHTING_WINDOW_NANOS = 2 * FULL_HEAL_INTERVAL_NANOS;
 
     /** Called at a global-domain entity dispatch on Main: a new Main-awaited
      *  epoch is exactly when new orphans can appear, so heal at full cadence
@@ -3655,7 +3659,7 @@ public final class RegionScheduler {
                 var regions = rs.healSnapshot(now);
                 for (int i = 0, n = regions.size(); i < n; i++) {
                     throwWorkerFailureIfAny();
-                    if (healRegion(rs, regions.get(i), now)) effect = true;
+                    if (healRegion(rs, regions.get(i), now, FULL_SWEEP_SIGHTING_WINDOW_NANOS)) effect = true;
                 }
             } else {
                 if (healDomainScope(rs, rs.globalDomain, now, 0L)) effect = true;
@@ -3724,7 +3728,7 @@ public final class RegionScheduler {
             throwWorkerFailureIfAny();
             Region member = scope.get(i);
             visited.add(member);
-            if (healRegion(rs, member, now)) effect = true;
+            if (healRegion(rs, member, now, STRANDED_SIGHTING_WINDOW_NANOS)) effect = true;
             frontier.add(member);
         }
         ThreadedRegionizer reg = rs.regionizer();
@@ -3743,7 +3747,7 @@ public final class RegionScheduler {
                             || !visited.add(nb)) {
                         continue;
                     }
-                    if (healRegion(rs, nb, now)) effect = true;
+                    if (healRegion(rs, nb, now, STRANDED_SIGHTING_WINDOW_NANOS)) effect = true;
                     // Still not done (queue work, a claim): whatever blocks it
                     // may lie one cell further out.
                     if (!nb.hasSealedDone(epoch) && nb.doneEpoch < epoch) frontier.add(nb);
@@ -3809,8 +3813,11 @@ public final class RegionScheduler {
      * only for a real rescue (orphan sealed, stranded owed/queue work re-armed
      * with no live ready receipt, barrier contribution, dead-holder recovery):
      * routine seals racing the participant's own completion keep the backoff.
+     * {@code sightingWindowNanos}: how far apart two stranded-queue sightings
+     * may be and still count as consecutive — the cadence of the calling pass.
      */
-    private static boolean healRegion(RegionizedServer rs, Region r, long now) {
+    private static boolean healRegion(RegionizedServer rs, Region r, long now,
+                                      long sightingWindowNanos) {
         boolean effect = false;
         if (r.state() != RegionState.ACTIVE) return false;
         // A2: every check runs in the REGION's own timeline — with async
@@ -3854,7 +3861,7 @@ public final class RegionScheduler {
             // Two consecutive sightings with no retained notification. A
             // scoped pass may skip a region for a while: an old sighting
             // does not count as the first of a consecutive pair.
-            if (now - r.strandedQueueSeenNanos > STRANDED_SIGHTING_WINDOW_NANOS) {
+            if (now - r.strandedQueueSeenNanos > sightingWindowNanos) {
                 r.strandedQueueSightings = 0;
             }
             r.strandedQueueSeenNanos = now;
