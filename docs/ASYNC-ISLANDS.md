@@ -636,10 +636,11 @@ advancement rewards, and classifies every line of each per-tick root —
 loops:
 - PARTITION — `execute … as <@a|@e[…]> …` (no limit/sort/@p/@r/@n, no player
   NBT) whose body touches only `@s` (its scores, tags, inventory, effects,
-  advancements via C1/C2), reads Main-written state (constants, storage, teams)
-  and sends particles near `@s`;
+  `advancement revoke @s` via C1), reads Main-written state (constants,
+  storage, teams) and sends particles near `@s`;
 - ESCALATE — same fan-out, global body (fake-player writes, storage/team
-  writes, unbounded selectors, entity NBT writes, macros, unknown commands), or
+  writes, unbounded selectors, entity NBT writes, `advancement grant` — its
+  announcement and rewards are global tails —, macros, unknown commands), or
   a write that Main-resident code also reads/writes (conflict rule);
 - REARM — the loop's own re-arm; GLOBAL — anything else (the root stays
   Main-resident: fenced, vanilla, as before).
