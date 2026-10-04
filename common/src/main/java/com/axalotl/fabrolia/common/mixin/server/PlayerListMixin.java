@@ -407,8 +407,33 @@ public abstract class PlayerListMixin {
         return java.util.Collections.emptySet();
     }
 
+    /**
+     * Autosave, plain save-all and reload: the snapshots are taken here and the
+     * files are written by {@link com.axalotl.fabrolia.common.save.AsyncSaveWriter};
+     * {@code save-all flush} and shutdown wait for them in saveAllChunks.
+     */
+    @WrapMethod(method = "saveAll()V", require = 1, allow = 1)
+    private void fabrolia$deferPlayerFileWrites(Operation<Void> original) {
+        com.axalotl.fabrolia.common.save.SaveDurability.runDeferred(() -> original.call());
+    }
+
     @WrapMethod(method = "save(Lnet/minecraft/server/level/ServerPlayer;)V")
     private void fabrolia$ownerSafePlayerSave(ServerPlayer player, Operation<Void> original) {
+        // Outside saveAll (logout, mods) the files must be on disk when save
+        // returns, as in vanilla; wait for them after the owner claim is gone.
+        com.axalotl.fabrolia.common.save.SaveDurability.Batch batch =
+                com.axalotl.fabrolia.common.save.SaveDurability.openBatch(
+                        FabroliaRemovalContext.CURRENT.get() == player);
+        try {
+            fabrolia$ownerSafePlayerSaveBody(player, original);
+        } finally {
+            batch.close();
+        }
+        batch.awaitDurable();
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private void fabrolia$ownerSafePlayerSaveBody(ServerPlayer player, Operation<Void> original) {
         // PlayerList.remove saves before removing the current map entry.  A
         // second remove sees null; a late old-session remove sees the new
         // ServerPlayer.  In both cases writing the stale object's now-empty

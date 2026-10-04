@@ -55,3 +55,8 @@ accessible field net/minecraft/world/level/Level tickingBlockEntities Z
 accessible field net/minecraft/server/level/ChunkMap updatingChunkMap Lit/unimi/dsi/fastutil/longs/Long2ObjectLinkedOpenHashMap;
 accessible field net/minecraft/server/level/ChunkMap pendingUnloads Lit/unimi/dsi/fastutil/longs/Long2ObjectLinkedOpenHashMap;
 accessible method net/minecraft/world/entity/ai/village/poi/PoiRecord acquireTicket ()Z
+accessible class net/minecraft/server/PlayerAdvancements$Data
+accessible method net/minecraft/server/PlayerAdvancements$Data <init> (Ljava/util/Map;)V
+accessible method net/minecraft/advancements/AdvancementProgress <init> (Ljava/util/Map;)V
+accessible field net/minecraft/advancements/AdvancementProgress criteria Ljava/util/Map;
+accessible field net/minecraft/advancements/AdvancementProgress requirements Lnet/minecraft/advancements/AdvancementRequirements;
