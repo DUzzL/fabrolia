@@ -112,6 +112,16 @@ public final class TemporalControl {
          *  flag carries the wake-up across it. */
         private final java.util.concurrent.atomic.AtomicBoolean signalled =
                 new java.util.concurrent.atomic.AtomicBoolean();
+        /** Islands whose ticket {@link #fire} re-armed at the claim-retry cadence
+         *  while their unit claim was held, with that exact retry ticket. Main's
+         *  claim release pulls only that retry forward ({@link #claimReleased})
+         *  instead of leaving it up to 2 ms late. */
+        private final java.util.concurrent.ConcurrentHashMap<IslandRegistry.PIsland, ClaimWaiter>
+                claimRetryWaiters = new java.util.concurrent.ConcurrentHashMap<>();
+        private final java.util.concurrent.ConcurrentLinkedQueue<ClaimWaiter> releasedClaims =
+                new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+        private record ClaimWaiter(RegionizedServer rs, IslandRegistry.PIsland island, long ticketId) {}
 
         /** Re-evaluate the daemon's park deadline. A flag write plus a bare unpark:
          *  it runs no callback and publishes nothing, so it is safe inside any
@@ -123,6 +133,19 @@ public final class TemporalControl {
             if (owner != null && owner != Thread.currentThread()) {
                 java.util.concurrent.locks.LockSupport.unpark(owner);
             }
+        }
+
+        /**
+         * Main, after clearing a Main-held island claim: if the pacer refused that
+         * island's attempt on the held claim, re-evaluate its retry now. Only a
+         * map removal when nothing waits; the daemon does the re-arm in its own
+         * pacer body (see {@link #pullReleasedClaimRetries}).
+         */
+        void claimReleased(IslandRegistry.PIsland island) {
+            ClaimWaiter waiter = claimRetryWaiters.remove(island);
+            if (waiter == null) return;
+            releasedClaims.add(waiter);
+            wake();
         }
 
         static long retryDelayNanos(IslandTickUnit.AttemptOutcome outcome) {
@@ -144,6 +167,10 @@ public final class TemporalControl {
             private Ticket current;
             private boolean queued;
             private boolean inFlight;
+            /** Pacer-daemon confined: last claim-release pull (bounds pulls to one
+             *  per claim-retry period, so short Main claim churn cannot turn the
+             *  2 ms retry into one attempt per release). */
+            long lastPullNanos = Long.MIN_VALUE;
 
             synchronized Ticket arm(long pacingGen, long deadlineNanos,
                                     long fireAtNanos, boolean replaceInFlight) {
@@ -171,6 +198,22 @@ public final class TemporalControl {
                     return null;
                 }
                 return new Ticket(++nextId, pacingGen, deadlineNanos, fireAtNanos);
+            }
+
+            /**
+             * The queued ticket {@code expectedId} pulled forward to its own pacing
+             * frontier (never before its deadline): the replacement supersedes it
+             * once accepted. Null when that exact ticket is no longer the queued
+             * authority of this generation or already fires no later.
+             */
+            synchronized Ticket prepareEarlier(long expectedId, long pacingGen, long nowNanos) {
+                Ticket old = current;
+                if (!queued || old == null || old.id != expectedId
+                        || old.pacingGen != pacingGen) return null;
+                long fireAt = old.deadlineNanos == 0
+                        ? nowNanos : Math.max(nowNanos, old.deadlineNanos);
+                if (fireAt >= old.fireAtNanos) return null;
+                return new Ticket(++nextId, pacingGen, old.deadlineNanos, fireAt);
             }
 
             /** Publication receipt commit; caller still holds this monitor. */
@@ -294,13 +337,22 @@ public final class TemporalControl {
             private final TicketState.Ticket ticket;
             private final Entry entry;
             private final TicketState.Ticket expectedInFlight;
+            /** Claim-release pull: the exact queued ticket this one supersedes. */
+            private final TicketState.Ticket expectedQueued;
 
             private PreparedArm(TicketState state, TicketState.Ticket ticket, Entry entry,
                                 TicketState.Ticket expectedInFlight) {
+                this(state, ticket, entry, expectedInFlight, null);
+            }
+
+            private PreparedArm(TicketState state, TicketState.Ticket ticket, Entry entry,
+                                TicketState.Ticket expectedInFlight,
+                                TicketState.Ticket expectedQueued) {
                 this.state = state;
                 this.ticket = ticket;
                 this.entry = entry;
                 this.expectedInFlight = expectedInFlight;
+                this.expectedQueued = expectedQueued;
             }
 
             void commit() {
@@ -311,6 +363,13 @@ public final class TemporalControl {
                             && (current != expectedInFlight || !state.inFlight)) {
                         // Unit completion/control already replaced the attempt
                         // between prepare and the global success cut.
+                        entry.cancelPublication();
+                        return;
+                    }
+                    if (expectedQueued != null
+                            && (current != expectedQueued || !state.queued)) {
+                        // The pulled retry was consumed, replaced or cancelled
+                        // meanwhile; never resurrect authority over it.
                         entry.cancelPublication();
                         return;
                     }
@@ -490,6 +549,8 @@ public final class TemporalControl {
                 }
             });
             queue.removeIf(entry -> entry.rs == rs && !live.contains(entry.island));
+            claimRetryWaiters.keySet().removeIf(
+                    island -> island.level == rs.level && !live.contains(island));
             for (IslandRegistry.PIsland island : live) ensure(rs, island);
         }
 
@@ -502,9 +563,11 @@ public final class TemporalControl {
                 }
             });
             queue.removeIf(entry -> entry.rs == rs);
+            claimRetryWaiters.values().removeIf(waiter -> waiter.rs() == rs);
         }
 
         private void cancel(IslandRegistry.PIsland island) {
+            claimRetryWaiters.remove(island);
             TicketState state = states.remove(island);
             if (state != null) state.cancel();
         }
@@ -513,6 +576,8 @@ public final class TemporalControl {
             states.forEach((island, state) -> state.cancel());
             states.clear();
             queue.clear();
+            claimRetryWaiters.clear();
+            releasedClaims.clear();
         }
 
         private static boolean eligible(RegionizedServer rs, IslandRegistry.PIsland island) {
@@ -657,6 +722,7 @@ public final class TemporalControl {
 
                     // Interrupt semantics of the former interruptible poll.
                     if (Thread.interrupted()) throw new InterruptedException();
+                    pullReleasedClaimRetries();
                     Entry e = queue.poll();
                     if (e == null) {
                         // Every event that can make work due earlier unparks
@@ -789,7 +855,21 @@ public final class TemporalControl {
                 if (e.island.mainSyncWanted && !e.island.unitClaim.get()) {
                     RegionScheduler.requestMainSyncService();
                 }
-                finishAndReseed(e, CLAIM_RETRY_NANOS);
+                TicketState.Ticket retry = finishAndReseed(e, CLAIM_RETRY_NANOS);
+                long now = System.nanoTime();
+                long lastPull = e.state.lastPullNanos;
+                if (retry != null && e.island.unitClaim.get()
+                        && (lastPull == Long.MIN_VALUE || now - lastPull >= CLAIM_RETRY_NANOS)) {
+                    // Register, then re-read: Main clears the claim before it
+                    // looks the waiter up, so a release either finds this
+                    // registration or is observed here (pulled at once).
+                    ClaimWaiter waiter = new ClaimWaiter(e.rs, e.island, retry.id());
+                    claimRetryWaiters.put(e.island, waiter);
+                    if (!e.island.unitClaim.get()
+                            && claimRetryWaiters.remove(e.island, waiter)) {
+                        pullForward(waiter);
+                    }
+                }
                 return null;
             }
 
@@ -901,7 +981,8 @@ public final class TemporalControl {
             }
         }
 
-        private void finishAndReseed(Entry e, long delayNanos) {
+        /** @return the committed retry ticket, or null when none was armed. */
+        private TicketState.Ticket finishAndReseed(Entry e, long delayNanos) {
             PreparedArm retry = null;
             try {
                 retry = prepareRetryAfterAttempt(e, delayNanos);
@@ -913,12 +994,62 @@ public final class TemporalControl {
                 if (!committed) {
                     retry.cancel(null);
                     cancel(e.island);
+                    return null;
                 }
+                return retry.ticket;
             } catch (Throwable completionFailure) {
                 Throwable primary = RegionScheduler.publishFatalAndSelectWinner(
                         e.rs, completionFailure);
                 if (retry != null) primary = retry.cancel(primary);
                 TemporalControl.<RuntimeException>rethrow(primary);
+                return null;
+            }
+        }
+
+        /**
+         * Daemon: re-arm every island whose held claim Main released since the
+         * last pass to fire at its pacing frontier now, superseding exactly the
+         * claim retry that was refused. A stale runtime, an ineligible island or
+         * a retry already consumed/replaced is left to the existing authority.
+         */
+        private void pullReleasedClaimRetries() throws InterruptedException {
+            ClaimWaiter released;
+            while ((released = releasedClaims.poll()) != null) {
+                ClaimWaiter waiter = released;
+                RegionScheduler.runPacerBodyIfCurrent(waiter.rs(), () -> pullForward(waiter));
+            }
+        }
+
+        private void pullForward(ClaimWaiter waiter) {
+            RegionizedServer rs = waiter.rs();
+            IslandRegistry.PIsland island = waiter.island();
+            if (!eligible(rs, island) || isCoherent(rs, island)) return;
+            TicketState state = states.get(island);
+            if (state == null) return;
+            long now = System.nanoTime();
+            TicketState.Ticket superseded;
+            TicketState.Ticket ticket;
+            synchronized (state) {
+                superseded = state.current;
+                ticket = state.prepareEarlier(waiter.ticketId(), island.pacingGen, now);
+            }
+            if (ticket == null) return;
+            state.lastPullNanos = now;
+            Entry entry = new Entry(this, rs, island, state, ticket);
+            PreparedArm prepared = null;
+            try {
+                queue.add(entry);
+                prepared = new PreparedArm(state, ticket, entry, null, superseded);
+                PreparedArm commit = prepared;
+                if (!RegionScheduler.commitUnitSuccessIfCurrent(rs, commit::commit)) {
+                    commit.cancel(null);
+                    cancel(island);
+                }
+            } catch (Throwable armFailure) {
+                Throwable failure = RegionScheduler.publishFatalAndSelectWinner(rs, armFailure);
+                failure = prepared != null ? prepared.cancel(failure) : failure;
+                if (prepared == null) entry.cancelPublication();
+                TemporalControl.<RuntimeException>rethrow(failure);
             }
         }
 

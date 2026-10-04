@@ -479,13 +479,13 @@ public abstract class NearbyEntityTrackingMixin
     private void fabrolia$lockTick(ChunkMap.DistanceManager ticketManager, Operation<Void> original) {
         fabrolia$lock.lock();
         try {
-            RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                original.call(ticketManager);
-                this.fabrolia$scheduleIndexApply();
-            });
+            RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(ticketManager));
         } finally {
             fabrolia$lock.unlock();
         }
+        // Published after the unlock: the applier only tryLocks, so a task taken
+        // while this tick still held the lock would exit without applying.
+        RegionScheduler.runSuccessBodyIfHealthy(this::fabrolia$scheduleIndexApply);
     }
 
     /**
@@ -496,8 +496,14 @@ public abstract class NearbyEntityTrackingMixin
      * the single largest serial cost of the tracker tick. Main publishes this at
      * the level tick head (the changes of the whole inter-tick interval, applied
      * while Main runs time/raids/chunk work) and at the end of the tracker tick.
-     * The task applies once under the same lock and exits: it holds a tracked
-     * obligation only while applying, never idles in the shared tick pool.
+     * The task never waits for the lock: when another holder has it, the task
+     * exits and the queue stays for the holder or the next application point —
+     * the tracker tick (tick0) and removePlayer apply it first under the lock,
+     * and a direct add/remove/addPlayer holder is followed by the next
+     * publication or tick0, so a change is deferred, never lost. Its tracked
+     * obligation still exists from publication until exit (exact-turn pause and
+     * pool stop wait for it while it is queued in the pool), but it is bounded
+     * by one application and never parks a pool worker behind the tracker tick.
      */
     @Override
     public void fabrolia$scheduleIndexApply() {
@@ -518,7 +524,7 @@ public abstract class NearbyEntityTrackingMixin
     @Unique
     private void fabrolia$runApplier() {
         try {
-            this.fabrolia$lock.lock();
+            if (!this.fabrolia$lock.tryLock()) return;
             try {
                 RegionScheduler.runSuccessBodyIfHealthy(
                         () -> this.fabrolia$indexChanges.apply(this));

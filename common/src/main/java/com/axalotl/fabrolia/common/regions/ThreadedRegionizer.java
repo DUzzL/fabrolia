@@ -200,6 +200,30 @@ public final class ThreadedRegionizer {
         return regionsByGridKey.size();
     }
 
+    /**
+     * Enter {@code e} into the entity index of {@code gridKey}'s region, mutually
+     * exclusive with {@link #evictIdle}: the insertion runs under the region's
+     * admissionLock with an ACTIVE re-check, the same monitor the evictor holds
+     * from its {@code entityCount == 0} check through ACTIVE -> STOPPING and unmap.
+     * A region retired between the lookup and the monitor is retried through
+     * {@link #regionForGridKey}, which installs its fresh successor. Index entry
+     * runs on any owner thread (spawn, 8x8-cell crossing) while the async
+     * evictor reclaims idle GLOBAL regions under an island-only quiesce, so a
+     * lock-free insertion could otherwise land in a dead region. Leaf monitor:
+     * nothing else is acquired or awaited inside it.
+     */
+    Region admitEntity(long gridKey, net.minecraft.world.entity.Entity e) {
+        for (;;) {
+            Region r = regionForGridKey(gridKey);
+            synchronized (r.admissionLock) {
+                if (r.state() == RegionState.ACTIVE) {
+                    if (r.entities.add(e)) r.entityCount.incrementAndGet();
+                    return r;
+                }
+            }
+        }
+    }
+
     /** Idle-region grace in game ticks of continuous full idleness (as observed by
      *  reclamation passes) before a region is reclaimed. ~5s — long enough that the
      *  moving load frontier (regions that go briefly empty between the player leaving
@@ -217,9 +241,11 @@ public final class ThreadedRegionizer {
      * server-thread too), or, in async-island mode, while Main holds every island
      * claim (topology rebuild quiesce) with {@code onlyDomain} = the level's global
      * domain: island-domain regions (core and halo) are never reclaimed, and no island
-     * unit can run an index mutation meanwhile. A late lookup of a reclaimed cell
-     * self-heals through {@link #regionForGridKey} (compute() reinstalls a fresh ACTIVE
-     * region with the topology's creation domain).
+     * unit can run an index mutation meanwhile. Global-lane bodies keep running under
+     * that quiesce; their entity index entry goes through {@link #admitEntity}, which
+     * serializes with this pass on the region's admissionLock. A late lookup of a
+     * reclaimed cell self-heals through {@link #regionForGridKey} (compute() reinstalls
+     * a fresh ACTIVE region with the topology's creation domain).
      *
      * <p>Without this the map grew without bound: regions are created lazily as players
      * explore and were NEVER removed, so every O(regions) scan (island rebuild snapshot+BFS,

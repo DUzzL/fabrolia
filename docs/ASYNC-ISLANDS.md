@@ -795,9 +795,17 @@ and fork quotas count per line and pass.
   domain — island core and halo regions keep their identity — once two
   reclamation passes at least 100 game ticks apart both saw the region idle
   (passes run only at rebuilds in async mode). Idle also requires no open
-  claim transaction or rebase cut (claim-free main-safe bodies), and a ColorGate
-  re-arm publishes a peeked neighbour only while it is still ACTIVE under its
-  admission monitor. The level-tick head stays fail-closed in async mode. A
+  claim transaction or rebase cut (claim-free main-safe bodies). The island
+  quiesce does not stop global-lane bodies, so entity index entry (spawn or a
+  cell crossing, on any owner thread) takes the target region's admission
+  monitor with an ACTIVE re-check and retries a retired region through the
+  lookup: entry and the evictor's idle check → retire → unmap are mutually
+  exclusive, and no entity lands in a dead region. A ColorGate re-arm publishes
+  a peeked neighbour only while it is still ACTIVE: the pool's ready admission
+  re-checks that under the neighbour's admission monitor and refuses a retired
+  one (`RegionScheduler.tryEnqueueReady`); no neighbour monitor is held across
+  root admission (only Main's evictor holds its own retiring region's monitor
+  there). The level-tick head stays fail-closed in async mode. A
   reclaimed cell is reinstalled on its next lookup with the topology's creation
   domain.
 - **Lazy topology drift.** A committed island core cell losing its last FULL
@@ -809,7 +817,9 @@ and fork quotas count per line and pass.
   `LAZY_TOPOLOGY_TICKS` (100) on its own; region-map growth of 64 since the last
   rebuild also makes such a refresh due, so reclamation keeps up. Every other
   boundary — a non-core (halo/gap) cell, or any boundary between the BFS read
-  and the registry commit — stays an urgent rebuild as before. A lazily kept
+  and the registry commit — stays an urgent rebuild as before, and outside
+  async-island mode every boundary is urgent (the sync evictor reclaims any
+  idle region, so no core cell is kept lazily there). A lazily kept
   cell that repopulates runs on its old island's timeline until the next
   rebuild, even if a fresh BFS would have made it a separate island.
 - **Main function remainder.** `MainPartition.candidates` walks the region map
@@ -819,10 +829,16 @@ and fork quotas count per line and pass.
   (AreaMap insert/remove of the tracker's whole view square) are applied by a
   one-shot task on the tick pool, published by Main at the level tick head (the
   whole inter-tick interval's changes, applied while Main runs time, raids and
-  chunk work) and at the end of the tracker tick, under the tracker lock; the
+  chunk work) and at the end of the tracker tick, right after it releases the
+  tracker lock (applied under that lock); the
   tick head applies only what arrived since. Every reader of the index holds
-  that lock, so an earlier application is indistinguishable. The task holds its
-  tracked obligation only while applying and never idles in the pool.
+  that lock, so an earlier application is indistinguishable. The task only
+  `tryLock`s: if another holder has the lock it exits, leaving the queue to
+  the next publication or to tick0/removePlayer, which apply it first under the
+  lock (deferred, never lost). Its tracked obligation counts from publication
+  until exit, so exact-turn pause and pool stop also wait for it while queued,
+  but it is bounded by one application and never parks a pool worker behind
+  the tracker tick.
 - **Dense tracker mirror.** The per-tick position pre-pass runs over a dense
   array mirror of VMP's `tracker2ChunkPos` (kept at its only membership sites)
   instead of copying the hash map on Main every tick; parallel batches collect
@@ -837,3 +853,7 @@ and fork quotas count per line and pass.
   whole unit in every gap (riders are never A5-owned, so their vehicle packets
   and listener ticks always take this path). Any other head releases the claim
   first, so no body runs holding a claim on a different island than today.
+  Releasing a Main claim re-arms a pacer attempt that this claim refused to
+  fire at its pacing frontier immediately instead of after the 2 ms claim
+  retry (at most one such pull per island per retry period, so short Main
+  claim churn cannot multiply attempts).

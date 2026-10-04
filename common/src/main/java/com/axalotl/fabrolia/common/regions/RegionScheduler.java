@@ -2840,6 +2840,28 @@ public final class RegionScheduler {
     }
 
     /**
+     * Ready publication for a region that may be retired concurrently (a peeked
+     * neighbour). Returns false when the region is no longer ACTIVE and owned by
+     * this runtime; the pool re-checks that under the region's admissionLock, so
+     * the caller needs no monitor of the neighbour across root admission (only
+     * the evictor re-arms while holding its own retiring region's monitor:
+     * region -> neighbour -> pool, Main only). Region state and map identity
+     * are monotonic, so a refusal re-read as still owned is a real lifecycle
+     * rejection and stays loud.
+     */
+    static boolean tryEnqueueReady(Region r) {
+        RegionizedServer owner = PER_LEVEL.get(r.level);
+        if (owner == null) {
+            throw new IllegalStateException("stale region ready task crossed scheduler generation");
+        }
+        if (r.state() != RegionState.ACTIVE || !owner.ownsRegion(r)) return false;
+        RegionWorkerPool p = pool;
+        if (p != null && p.enqueueReady(r)) return true;
+        if (r.state() != RegionState.ACTIVE || !owner.ownsRegion(r)) return false;
+        throw new IllegalStateException("region ready task rejected by worker-pool lifecycle");
+    }
+
+    /**
      * Publish a ready entry carrying the exact current entity-dispatch receipt.
      * The receipt opens before CLQ visibility and follows the detached entry
      * through its complete workOnce outcome/contribution tail.

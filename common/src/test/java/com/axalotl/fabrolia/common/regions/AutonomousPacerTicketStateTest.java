@@ -133,6 +133,32 @@ class AutonomousPacerTicketStateTest {
     }
 
     @Test
+    void claimReleasePullsExactlyTheRefusedRetryAndNeverBeforeTheDeadline() {
+        TemporalControl.Pacer.TicketState state = new TemporalControl.Pacer.TicketState();
+        var refused = state.arm(41, 5_000, 5_000, false);
+        assertTrue(state.begin(refused));
+        assertNull(state.prepareEarlier(refused.id(), 41, 6_000),
+                "an in-flight attempt is not a queued retry");
+        assertTrue(state.finish(refused.id()));
+        var claimRetry = state.arm(41, 5_000, 8_000, false);
+
+        assertNull(state.prepareEarlier(refused.id(), 41, 6_000),
+                "only the exact refused retry is pulled, not whatever is queued now");
+        var pulled = state.prepareEarlier(claimRetry.id(), 41, 6_000);
+        assertNotNull(pulled);
+        assertEquals(6_000, pulled.fireAtNanos(), "a released claim fires at release");
+        assertEquals(5_000, pulled.deadlineNanos());
+        assertTrue(pulled.id() > claimRetry.id(), "the pulled ticket supersedes the queued retry");
+
+        var future = state.arm(42, 10_000, 10_000, false);
+        assertNull(state.prepareEarlier(future.id(), 42, 6_000),
+                "a ticket already at its deadline is not pulled earlier");
+        assertNull(state.prepareEarlier(claimRetry.id(), 41, 6_000),
+                "a replaced retry is not resurrected");
+        assertTrue(state.begin(future));
+    }
+
+    @Test
     void normalStopRetiresTheExactDaemonAndAllowsAFreshOwner() throws Exception {
         TemporalControl.Pacer pacer = new TemporalControl.Pacer();
         Thread first = null;

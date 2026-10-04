@@ -1498,6 +1498,15 @@ public final class IslandCommands {
         } catch (Throwable cleanup) {
             failure = publishFatalPreserving(mergeFailure(failure, cleanup));
         }
+        if (failure == null) {
+            // A pacer attempt refused on this held claim fires at release, not
+            // up to one claim-retry period later.
+            try {
+                TemporalControl.PACER.claimReleased(owner);
+            } catch (Throwable cleanup) {
+                failure = publishFatalPreserving(cleanup);
+            }
+        }
         return failure;
     }
 

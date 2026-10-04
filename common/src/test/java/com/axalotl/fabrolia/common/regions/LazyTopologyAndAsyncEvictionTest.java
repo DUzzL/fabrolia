@@ -101,6 +101,21 @@ final class LazyTopologyAndAsyncEvictionTest {
     }
 
     @Test
+    void syncModeNeverDefersCoreDepopulation() throws Exception {
+        Fixture f = new Fixture();
+        set(RegionizedServer.class, f.runtime, "asyncActive", false);
+        long core = cellKey(3, -2);
+        f.commitCores(core);
+        long chunk = chunkIn(core);
+        f.runtime.onChunkFullTransition(chunk, true, null);
+        f.setDirty(false);
+
+        f.runtime.onChunkFullTransition(chunk, false, null);
+        assertTrue(f.dirty(), "the sync evictor may reclaim the cell's region: no lazily kept core cell");
+        assertFalse(f.lazyDue());
+    }
+
+    @Test
     void asyncReclamationKeepsIslandRegionsAndHonoursTheGrace() throws Exception {
         Fixture f = new Fixture();
         IslandRegistry.PIsland island = new IslandRegistry.PIsland(1L, 0L);
@@ -148,6 +163,74 @@ final class LazyTopologyAndAsyncEvictionTest {
                 60L + ThreadedRegionizer.EVICT_GRACE_TICKS));
     }
 
+    /**
+     * Drives the reclamation race deterministically: the adder resolves the ACTIVE
+     * region and is inside its index insertion (paused in the set's comparator) when
+     * the evictor runs. Entry and eviction must be mutually exclusive: the evictor
+     * waits for the insertion, then sees the entity and keeps the region.
+     */
+    @Test
+    void entityEntryAndIdleReclamationAreMutuallyExclusive() throws Exception {
+        Fixture f = new Fixture();
+        long key = cellKey(12, -5);
+        Region region = f.regionizer.regionForGridKey(key);
+        assertEquals(0, f.regionizer.evictIdle(f.runtime, f.global, 0L));
+
+        java.util.concurrent.atomic.AtomicReference<Thread> evictor =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        int[] evicted = {-1};
+        PausingEntity entity = (PausingEntity) ((sun.misc.Unsafe) get(sun.misc.Unsafe.class, null, "theUnsafe"))
+                .allocateInstance(PausingEntity.class);
+        entity.onFirstId = () -> {
+            Thread t = new Thread(() -> evicted[0] = f.regionizer.evictIdle(
+                    f.runtime, f.global, ThreadedRegionizer.EVICT_GRACE_TICKS), "test-evictor");
+            evictor.set(t);
+            t.start();
+            // Resume the insertion only once the evictor finished or is parked on
+            // exactly this region's admission monitor.
+            java.lang.management.ThreadMXBean mx = java.lang.management.ManagementFactory.getThreadMXBean();
+            int monitor = System.identityHashCode(region.admissionLock);
+            long deadline = System.nanoTime() + 10_000_000_000L;
+            for (;;) {
+                if (t.getState() == Thread.State.TERMINATED) return;
+                java.lang.management.ThreadInfo info = mx.getThreadInfo(t.threadId());
+                if (info != null && info.getThreadState() == Thread.State.BLOCKED
+                        && info.getLockInfo() != null
+                        && info.getLockInfo().getIdentityHashCode() == monitor) return;
+                if (System.nanoTime() > deadline) {
+                    throw new AssertionError("evictor neither finished nor blocked on the region monitor: "
+                            + (info == null ? "<no info>" : info.toString()));
+                }
+                Thread.onSpinWait();
+            }
+        };
+
+        Region admitted = f.regionizer.admitEntity(key, entity);
+        evictor.get().join();
+
+        assertEquals(0, evicted[0], "a region an entity is entering is not idle");
+        assertSame(admitted, f.regionizer.peekByGridKey(key));
+        assertEquals(RegionState.ACTIVE, admitted.state());
+        assertTrue(admitted.entities.contains(entity));
+        assertEquals(1L, admitted.entityCount.get());
+    }
+
+    private static final class PausingEntity extends net.minecraft.world.entity.item.ItemEntity {
+        Runnable onFirstId;
+
+        private PausingEntity() { super(null, null); }
+
+        @Override
+        public int getId() {
+            Runnable hook = onFirstId;
+            if (hook != null) {
+                onFirstId = null;
+                hook.run();
+            }
+            return 7;
+        }
+    }
+
     private static long cellKey(int cx, int cz) {
         return (cx & 0xFFFFFFFFL) | ((cz & 0xFFFFFFFFL) << 32);
     }
@@ -187,6 +270,7 @@ final class LazyTopologyAndAsyncEvictionTest {
                     new java.util.concurrent.atomic.AtomicLong());
             set(RegionizedServer.class, runtime, "popIgnoredRemoves",
                     new java.util.concurrent.atomic.AtomicLong());
+            set(RegionizedServer.class, runtime, "asyncActive", true);
             setDirty(false);
         }
 

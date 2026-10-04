@@ -512,10 +512,14 @@ public final class RegionizedServer {
      * losing its last FULL chunk is lazy drift (see {@link #lazyDepopulatedCells});
      * the same cell regaining one before the next rebuild cancels it — the BFS
      * over the actual population would reproduce the committed shape, so the
-     * all-island quiesce would buy nothing.
+     * all-island quiesce would buy nothing. Deferral is an async-island
+     * optimization only: the sync (wall) evictor reclaims every idle region
+     * regardless of domain, so outside async mode a depopulated core cell is
+     * always rebuilt promptly and never outlives its reclaimed region.
      */
     private void notePopulationBoundary(long cell, boolean nowFull) {
-        if (topologyRebuildInFlight || islandRegistry.byCell(cell) == null) {
+        if (topologyRebuildInFlight || !(asyncActive || domainsIslandized)
+                || islandRegistry.byCell(cell) == null) {
             islandsDirty = true;
             return;
         }
@@ -2737,8 +2741,7 @@ public final class RegionizedServer {
 
     void indexAdd(Entity e) {
         long key = regionizer.grid.keyFor(e.chunkPosition().pack());
-        Region r = regionizer.regionForGridKey(key);
-        if (r.entities.add(e)) r.entityCount.incrementAndGet();
+        Region r = regionizer.admitEntity(key, e);
         ((RegionKeyed) e).fabrolia$setRegionKey(key);
         // VANILLA ADD-DURING-ITERATION DEFERRAL (2026-07-22 duper lifecycle
         // parity, pushtrace-proven): vanilla's EntityTickList never visits an
@@ -2782,8 +2785,7 @@ public final class RegionizedServer {
 
     private void indexMove(Entity e, Region from, long newKey) {
         if (from.entities.remove(e)) from.entityCount.decrementAndGet();
-        Region to = regionizer.regionForGridKey(newKey);
-        if (to.entities.add(e)) to.entityCount.incrementAndGet();
+        Region to = regionizer.admitEntity(newKey, e);
         ((RegionKeyed) e).fabrolia$setRegionKey(newKey);
         // audit10: an island MERGE keeps the survivor's tick identity, so entities
         // re-indexed in from a merged-away island still carry that island's token
