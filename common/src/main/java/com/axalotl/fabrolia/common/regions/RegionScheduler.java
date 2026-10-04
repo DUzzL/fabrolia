@@ -3256,6 +3256,13 @@ public final class RegionScheduler {
         return p != null && p.isRunning();
     }
 
+    /** The live region generation still admits ordinary roots (false once its
+     *  normal stop has begun or it failed); false without a region generation. */
+    public static boolean admitsRoots() {
+        RegionWorkerPool p = pool;
+        return p != null && p.admitsRoots();
+    }
+
     /** True when the calling thread is the coordinator currently running
      *  {@code owner}'s unit (sender redesign 2026-07-14: the unit's own
      *  packet-snapshot builds need no claim — they ARE the claim). */

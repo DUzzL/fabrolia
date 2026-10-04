@@ -1036,7 +1036,8 @@ class PlayerTickV2WiringTest {
 
         ClassNode regionizer = readClass(ThreadedRegionizer.class);
         MethodNode evict = method(regionizer, "evictIdle",
-                "(Lcom/axalotl/fabrolia/common/regions/RegionizedServer;)I");
+                "(Lcom/axalotl/fabrolia/common/regions/RegionizedServer;"
+                        + "Lcom/axalotl/fabrolia/common/regions/EpochDomain;J)I");
         MethodNode drop = method(regionizer, "drop",
                 "(Lcom/axalotl/fabrolia/common/regions/Region;)V");
         assertRetiresInsideAdmissionLock(evict);

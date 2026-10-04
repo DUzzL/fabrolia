@@ -237,12 +237,17 @@ public abstract class FunctionPartition {
                         if (live(e)) out.add(e);
                     });
                 } else {
-                    for (Region r : rs.regionizer().snapshot()) {
-                        if (r.domain != rs.globalDomain) continue;
+                    // Copy-free walk; an empty region (exact entityCount) is
+                    // skipped before a skip-list iterator is built. The Main
+                    // remainder of an async level is almost always empty, and
+                    // this runs once per partitioned root/loop callback.
+                    EpochDomain global = rs.globalDomain;
+                    rs.regionizer().forEachRegion(r -> {
+                        if (r.domain != global || r.entityCount.get() == 0L) return;
                         for (Entity e : r.entities) {
                             if (live(e)) out.add(e);
                         }
-                    }
+                    });
                 }
             }
             return out;

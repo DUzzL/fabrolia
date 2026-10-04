@@ -75,6 +75,11 @@ public abstract class ChunkMapTrackedEntityMixin
     @Unique
     private AtomicLong fabrolia$passTickClaim;
 
+    /** Position + 1 in the VMP tracker's dense area-index mirror; 0 = absent.
+     *  Guarded by the tracker index lock. */
+    @Unique
+    private int fabrolia$denseSlot;
+
     /**
      * Set when VMP's removeEntityTracker is entered for this generation, before
      * the removal is queued or applied: a concurrent (or queued) insertion into
@@ -586,6 +591,16 @@ public abstract class ChunkMapTrackedEntityMixin
     @Override
     public boolean fabrolia$vmpRemoved() {
         return this.fabrolia$vmpRemoved;
+    }
+
+    @Override
+    public int fabrolia$denseSlot() {
+        return this.fabrolia$denseSlot;
+    }
+
+    @Override
+    public void fabrolia$setDenseSlot(int slot) {
+        this.fabrolia$denseSlot = slot;
     }
 
     @Inject(method = "updatePlayer(Lnet/minecraft/server/level/ServerPlayer;)V", at = @At("HEAD"), cancellable = true)

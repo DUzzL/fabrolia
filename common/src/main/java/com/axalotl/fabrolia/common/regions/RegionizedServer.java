@@ -419,6 +419,33 @@ public final class RegionizedServer {
     private volatile boolean islandsDirty = true;
     private volatile List<Island> islands = List.of();
 
+    /** Upper bound on how long lazy topology drift (committed core cells that
+     *  depopulated, region-map growth awaiting async reclamation) may wait for
+     *  an urgent rebuild before one is run for it alone. */
+    static final int LAZY_TOPOLOGY_TICKS = 100;
+
+    /** Region-map growth since the last rebuild that makes a lazy refresh due
+     *  (async reclamation only runs inside the rebuild quiesce). */
+    static final int LAZY_REGION_GROWTH = 64;
+
+    /**
+     * Committed island core cells whose population dropped to zero since the
+     * last rebuild. Main-thread confined (population seam + rebuild). Keeping
+     * such a cell as core over-approximates its island: it holds no FULL chunk
+     * (so no entity, block or chunk work), its region keeps the island's domain,
+     * and every separation/halo invariant computed over the old, larger
+     * populated set still holds for the actual one. Repopulating it before the
+     * next rebuild therefore restores the committed shape exactly.
+     */
+    private final it.unimi.dsi.fastutil.longs.LongOpenHashSet lazyDepopulatedCells =
+            new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+
+    /** Main thread: the rebuild body is between its BFS population read and
+     *  the committed registry/cell snapshot. */
+    private boolean topologyRebuildInFlight;
+    private long lastTopologyRebuildGameTime;
+    private int regionCountAtLastRebuild;
+
     /**
      * Populated static cells which can still contain physical-Main scheduled
      * work. Main-thread confined: the FULL-status seam is the producer and the
@@ -469,11 +496,43 @@ public final class RegionizedServer {
             } else {
                 scheduledTickDiscoveryCells.remove(r.gridKey);
             }
-            islandsDirty = true;
+            notePopulationBoundary(r.gridKey, nowFull);
         } else if (transition == Region.FullChunkTransition.REDUNDANT) {
             if (nowFull) popIgnoredAdds.incrementAndGet();
             else popIgnoredRemoves.incrementAndGet();
         }
+    }
+
+    /**
+     * Topology consequence of one cell's 0 <-> 1 population boundary (Main).
+     * Only a cell outside the committed core set can change island shape
+     * urgently: a newly populated gap/halo cell may merge islands or must be
+     * adopted before the next entity dispatch, and a non-core cell losing
+     * population was itself an unadopted urgent change. A committed core cell
+     * losing its last FULL chunk is lazy drift (see {@link #lazyDepopulatedCells});
+     * the same cell regaining one before the next rebuild cancels it — the BFS
+     * over the actual population would reproduce the committed shape, so the
+     * all-island quiesce would buy nothing.
+     */
+    private void notePopulationBoundary(long cell, boolean nowFull) {
+        if (topologyRebuildInFlight || islandRegistry.byCell(cell) == null) {
+            islandsDirty = true;
+            return;
+        }
+        if (nowFull) {
+            lazyDepopulatedCells.remove(cell);
+        } else {
+            lazyDepopulatedCells.add(cell);
+        }
+    }
+
+    /** Main thread: lazy drift has waited long enough for a rebuild of its own. */
+    private boolean lazyTopologyRefreshDue() {
+        boolean pending = !lazyDepopulatedCells.isEmpty()
+                || (asyncActive
+                    && regionizer.regionCount() - regionCountAtLastRebuild >= LAZY_REGION_GROWTH);
+        return pending
+                && level.getGameTime() - lastTopologyRebuildGameTime >= LAZY_TOPOLOGY_TICKS;
     }
 
     /** Main-only mutable view used by the physical LevelTicks slots. */
@@ -1596,9 +1655,15 @@ public final class RegionizedServer {
 
     /** Main thread, level tick HEAD (after the epoch bump). BFS over the
      *  populated set with radius-2 connectivity; ~450 regions × 25 lock-free
-     *  peeks — µs-scale, and only on ticket-transition ticks. */
+     *  peeks — µs-scale, and only on ticket-transition ticks. A committed core
+     *  cell's population boundary is not a shape change by itself (see
+     *  {@link #notePopulationBoundary}); such lazy drift is folded in at the next
+     *  urgent rebuild, or after {@link #LAZY_TOPOLOGY_TICKS}. */
     public void rebuildIslandsIfDirty() {
-        if (!islandsDirty) return;
+        if (!islandsDirty) {
+            if (!lazyTopologyRefreshDue()) return;
+            islandsDirty = true;
+        }
         // A2 deadline drive: units may be in flight at any slot — topology
         // work (BFS, unstash, registry diff, domain reassignment) requires
         // every unit quiescent. Sync drive: claims are always free, so this
@@ -1628,6 +1693,7 @@ public final class RegionizedServer {
                     trackingTransition[0] = beginTrackingTopologyTransition();
                 }
                 islandsDirty = false;
+                lazyDepopulatedCells.clear();
                 if (collapsingToWall) {
                     // A5 owners are identities of the old autonomous topology.  The
                     // topology rebuild below retires those identities, so detach every
@@ -1641,7 +1707,22 @@ public final class RegionizedServer {
                         AsyncIslandPlayerTicks.clearIsland(island);
                     }
                 }
-                rebuildIslandsBody();
+                if (asyncActive && currentThreadHoldsAllClaims()) {
+                    // The one async point where no island unit runs: reclaim idle
+                    // global regions before the rebuild snapshots the map.
+                    evictIdleGlobalRegionsAtQuiesce();
+                }
+                // Between the BFS population read and the registry/cell-snapshot
+                // commit a boundary cannot be judged against the committed core
+                // set: every transition in this window is an urgent rebuild.
+                topologyRebuildInFlight = true;
+                try {
+                    rebuildIslandsBody();
+                } finally {
+                    topologyRebuildInFlight = false;
+                }
+                lastTopologyRebuildGameTime = level.getGameTime();
+                regionCountAtLastRebuild = regionizer.regionCount();
                 if (trackingTransition[0] != null) {
                     // Begin, every topology mutation/reroute, and compare-clear
                     // are one already-admitted transaction. A peer W may prevent
@@ -2509,7 +2590,7 @@ public final class RegionizedServer {
     }
 
     private long evictedTotal;
-    private int evictLogThrottle;
+    private long lastEvictLogGameTime = Long.MIN_VALUE;
 
     /** Queue a cross-region effect (see {@link CrossRegionGuard}) for post-barrier
      *  replay, routed by TARGET position: effects landing in an island go to that
@@ -2568,7 +2649,7 @@ public final class RegionizedServer {
      * Reclaim idle regions (server thread, level-tick HEAD). Lazily-created regions
      * were never removed, so the region map — and every O(regions) scan over it
      * (island rebuild, worker dispatch) — grew without bound as players explored,
-     * climbing mspt monotonically. See {@link ThreadedRegionizer#evictIdle()}.
+     * climbing mspt monotonically. See {@link ThreadedRegionizer#evictIdle}.
      */
     public void evictIdleRegions() {
         if (FabroliaConfig.disabled || !FabroliaConfig.fabroliaRegionEviction) {
@@ -2577,26 +2658,48 @@ public final class RegionizedServer {
         // A level-tick HEAD is a quiescent boundary only in wall/sync mode. An async
         // island unit may concurrently move an entity into an otherwise idle destination
         // Region without publishing a task there; task admissionLock cannot serialize that
-        // direct index mutation. Reclamation therefore remains fail-closed until async mode
-        // provides an explicit all-island quiescence handshake for eviction.
+        // direct index mutation. Async reclamation runs only inside the topology
+        // rebuild's all-island quiesce (evictIdleGlobalRegionsAtQuiesce).
         if (asyncActive || domainsIslandized) {
             return;
         }
-        int removed = regionizer.evictIdle(this);
-        if (removed > 0) {
-            // Evicting a blocker re-armed (enqueued) its higher-colour dependents via
-            // ColorGate.markDone — wake the pool so those re-armed regions are actually
-            // claimed before the chunk phase's stale-spawn-future await can park on them.
-            RegionScheduler.wakeWorkers();
-            evictedTotal += removed;
-            // Throttle: a long flight reclaims a steady trickle; surface a heartbeat
-            // roughly once a minute so the operator can see it working without spam.
-            if (++evictLogThrottle >= 1200) {
-                evictLogThrottle = 0;
-                LOGGER.info("[region-evict] {} reclaimed this pass, {} total, {} live ({})",
-                        removed, evictedTotal, regionizer.regionCount(),
-                        level.dimension().identifier());
-            }
+        afterEviction(regionizer.evictIdle(this, null, level.getGameTime()));
+    }
+
+    /**
+     * Async-island reclamation: Main holds every island claim (the topology
+     * rebuild's quiesce), so no island unit can mutate a region index meanwhile;
+     * only global-domain regions are candidates (island core/halo regions keep
+     * their identity). Without this an async level never reclaimed a region, and
+     * the global lane's per-tick done sweep, the Main function remainder scan and
+     * every rebuild snapshot walked every cell ever visited since startup.
+     */
+    private void evictIdleGlobalRegionsAtQuiesce() {
+        if (FabroliaConfig.disabled || !FabroliaConfig.fabroliaRegionEviction) {
+            return;
+        }
+        if (!asyncActive || !currentThreadHoldsAllClaims()) {
+            throw new IllegalStateException(
+                    "async region reclamation outside the all-island topology quiesce");
+        }
+        afterEviction(regionizer.evictIdle(this, globalDomain, level.getGameTime()));
+    }
+
+    private void afterEviction(int removed) {
+        if (removed <= 0) return;
+        // Evicting a blocker re-armed (enqueued) its higher-colour dependents via
+        // ColorGate.markDone — wake the pool so those re-armed regions are actually
+        // claimed before the chunk phase's stale-spawn-future await can park on them.
+        RegionScheduler.wakeWorkers();
+        evictedTotal += removed;
+        // Throttle: a long flight reclaims a steady trickle; surface a heartbeat
+        // at most once a minute so the operator can see it working without spam.
+        long now = level.getGameTime();
+        if (lastEvictLogGameTime == Long.MIN_VALUE || now - lastEvictLogGameTime >= 1200L) {
+            lastEvictLogGameTime = now;
+            LOGGER.info("[region-evict] {} reclaimed this pass, {} total, {} live ({})",
+                    removed, evictedTotal, regionizer.regionCount(),
+                    level.dimension().identifier());
         }
     }
 

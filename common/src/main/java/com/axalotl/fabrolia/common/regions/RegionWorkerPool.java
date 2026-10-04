@@ -84,6 +84,15 @@ public final class RegionWorkerPool {
 
     boolean isRunning() { return running; }
 
+    /** The generation still admits ordinary roots: running, before its STOPPING
+     *  cut and without a fatal failure. Long-lived tracked bodies poll this to end
+     *  themselves instead of holding the normal-stop fixed point open. */
+    boolean admitsRoots() {
+        synchronized (lifecycleLock) {
+            return running && accepting && fatalFailure == null;
+        }
+    }
+
     /** Rethrow the generation's exact first worker failure on the caller. */
     void throwIfFailed() {
         Throwable failure = fatalFailure;

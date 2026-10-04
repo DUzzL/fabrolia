@@ -46,6 +46,9 @@ public abstract class ServerLevelNearestPlayerMixin implements HardColliderIndex
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
             ServerLevel level = (ServerLevel) (Object) this;
             PlayerChunkIndex.rebuild(level);
+            // Queued tracker add/remove of the inter-tick interval are applied on
+            // the tick pool while Main runs time, raids and chunk work.
+            com.axalotl.fabrolia.common.regions.VmpTrackerIndexApply.scheduleFor(level);
             RegionizedServer rs = RegionScheduler.forLevel(level);
             if (rs != null) {
                 rs.onLevelTickStart();

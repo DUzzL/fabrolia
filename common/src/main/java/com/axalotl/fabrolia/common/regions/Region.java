@@ -288,12 +288,13 @@ public final class Region {
         lastReleasePath = path;
     }
 
-    /** Consecutive level-tick-head observations of this region being fully idle
-     *  (no full chunks, no entities, empty queues, unclaimed). Server-thread only —
-     *  mutated solely by {@link ThreadedRegionizer#evictIdle()} at tick HEAD, where
-     *  region workers are parked between barriers. Crosses the grace threshold →
-     *  the region is reclaimed (see ThreadedRegionizer doc for why this is needed). */
-    int idleStreak;
+    /** Game time of the first consecutive reclamation-pass observation of this
+     *  region being fully idle (no full chunks, no entities, empty queues,
+     *  unclaimed); {@code Long.MIN_VALUE} = not idle at the last pass.
+     *  Server-thread only — mutated solely by {@link ThreadedRegionizer#evictIdle}
+     *  under the region's admissionLock. Idle for the grace window → the region is
+     *  reclaimed (see ThreadedRegionizer doc for why this is needed). */
+    long idleSinceGameTime = Long.MIN_VALUE;
 
     Region(ServerLevel level, long gridKey) {
         this.level = level;
