@@ -147,7 +147,6 @@ class BlockEntityRegistrationRaceTest {
             IslandBlockEntityTicks.tickMerged(f.runtime, captured, dead, gates, null, null);
             assertEquals(java.util.List.of(0, 3), order);
             assertEquals(java.util.List.of(removed), new ArrayList<>(dead));
-            assertEquals(2, f.level.gateReads);
 
             // A stale unit keeps its ticker/sequence pairs after metadata release.
             synchronized (f.level.lock) { f.runtime.releaseBeIndexForVanillaFallback(); }
@@ -156,10 +155,17 @@ class BlockEntityRegistrationRaceTest {
             sleeping.sleeping = false; // same registered wrapper, rebound to its live ticker
             order.clear();
             gates = IslandBlockEntityTicks.ChunkTickGate.forLevel(f.level);
-            f.level.gateReads = 0;
             IslandBlockEntityTicks.tickMerged(f.runtime, captured, dead, gates, null, null);
             assertEquals(java.util.List.of(0, 1, 3), order);
-            assertEquals(2, f.level.gateReads, "one gate read per chunk, not per wrapper");
+            order.clear();
+            // The pass snapshot gates by the ticker's CHUNK: (65,64,1) and
+            // (66,64,1) share chunk (4,0); only that chunk leaves block-ticking.
+            f.level.blockTicking = chunkKey -> chunkKey != net.minecraft.world.level.ChunkPos.pack(4, 0);
+            IslandBlockEntityTicks.tickMerged(f.runtime, captured, dead,
+                    IslandBlockEntityTicks.ChunkTickGate.forLevel(f.level), null, null);
+            assertEquals(java.util.List.of(0), order,
+                    "a non-block-ticking chunk skips exactly its own tickers");
+            f.level.blockTicking = null;
             order.clear();
             IslandBlockEntityTicks.tickMerged(f.runtime,
                     new ArrayList<>(f.runtime.beCells.values()), dead, gates, null, null);
@@ -269,7 +275,8 @@ class BlockEntityRegistrationRaceTest {
             implements BlockEntityTickerAccess, BlockTickingPassAccess {
         Object lock;
         ServerTickRateManager rate;
-        int gateReads;
+        /** Pass snapshot answer; null = every chunk block-ticking. */
+        java.util.function.LongPredicate blockTicking;
         private TestLevel() {
             super(null, null, null, null, null, null, false, 0L, null, false);
             throw new AssertionError("constructor bypassed");
@@ -277,9 +284,10 @@ class BlockEntityRegistrationRaceTest {
         @Override public Object fabrolia$blockEntityTickerLock() { return lock; }
         @Override public ResourceKey<Level> dimension() { return Level.OVERWORLD; }
         @Override public ServerTickRateManager tickRateManager() { return rate; }
-        @Override public boolean shouldTickBlocksAt(BlockPos pos) { gateReads++; return true; }
+        @Override public boolean shouldTickBlocksAt(BlockPos pos) { return true; }
         @Override public java.util.function.LongPredicate fabrolia$blockTickingPass() {
-            return chunkKey -> { gateReads++; return true; };
+            java.util.function.LongPredicate pass = blockTicking;
+            return pass != null ? pass : chunkKey -> true;
         }
     }
 

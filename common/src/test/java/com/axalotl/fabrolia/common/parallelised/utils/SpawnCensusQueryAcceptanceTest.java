@@ -203,6 +203,83 @@ class SpawnCensusQueryAcceptanceTest {
         assertArrayEquals(expected, SpawnCensus.fabrolia$snapshotCellKeys(census, own));
     }
 
+    @Test
+    void cellIndexEqualsLedgerKeySetAfterConcurrentUpdatesAndSweeps() throws Exception {
+        SpawnCensus.LevelCensus census = new SpawnCensus.LevelCensus();
+        int live = 1 | (MobCategory.MONSTER.ordinal() << 3);
+        int corpse = 2 | (MobCategory.MONSTER.ordinal() << 3);
+        // 48 chunks over 12 cells on both sides of the origin.
+        long[] keys = new long[48];
+        for (int i = 0; i < keys.length; i++) {
+            keys[i] = net.minecraft.world.level.ChunkPos.pack((i % 8) * 5 - 20, (i / 8) * 5 - 15);
+        }
+        int writers = 4;
+        ExecutorService pool = Executors.newFixedThreadPool(writers + 1);
+        AtomicBoolean writing = new AtomicBoolean(true);
+        try {
+            List<Future<int[][]>> outstanding = new ArrayList<>();
+            for (int w = 0; w < writers; w++) {
+                long seed = 0x5EED0000L + w;
+                outstanding.add(pool.submit(() -> {
+                    java.util.Random random = new java.util.Random(seed);
+                    int[][] net = new int[2][keys.length];
+                    ArrayList<int[]> held = new ArrayList<>();
+                    for (int op = 0; op < 4000; op++) {
+                        int k = random.nextInt(keys.length);
+                        int kind = random.nextInt(2);
+                        applyAt(census, keys[k], kind == 0 ? live : corpse, 1);
+                        net[kind][k]++;
+                        held.add(new int[]{kind, k});
+                        if (random.nextInt(10) < 6) {
+                            int[] gone = held.remove(random.nextInt(held.size()));
+                            applyAt(census, keys[gone[1]], gone[0] == 0 ? live : corpse, -1);
+                            net[gone[0]][gone[1]]--;
+                        }
+                    }
+                    return net;
+                }));
+            }
+            Future<?> sweeper = pool.submit(() -> {
+                while (writing.get()) {
+                    sweep(census.live, census.liveCells);
+                    sweep(census.corpse, census.corpseCells);
+                }
+            });
+            int[][] total = new int[2][keys.length];
+            for (Future<int[][]> f : outstanding) {
+                int[][] net = f.get(60, TimeUnit.SECONDS);
+                for (int kind = 0; kind < 2; kind++) {
+                    for (int k = 0; k < keys.length; k++) total[kind][k] += net[kind][k];
+                }
+            }
+            writing.set(false);
+            sweeper.get(60, TimeUnit.SECONDS);
+            sweep(census.live, census.liveCells);
+            sweep(census.corpse, census.corpseCells);
+
+            java.util.TreeSet<Long> expected = new java.util.TreeSet<>();
+            java.util.TreeSet<Long> expectedLive = new java.util.TreeSet<>();
+            java.util.TreeSet<Long> expectedCorpse = new java.util.TreeSet<>();
+            for (int k = 0; k < keys.length; k++) {
+                if (total[0][k] != 0) expectedLive.add(keys[k]);
+                if (total[1][k] != 0) expectedCorpse.add(keys[k]);
+            }
+            expected.addAll(expectedLive);
+            expected.addAll(expectedCorpse);
+            assertEquals(expectedLive, new java.util.TreeSet<>(census.live.keySet()));
+            assertEquals(expectedCorpse, new java.util.TreeSet<>(census.corpse.keySet()));
+            long[] cells = java.util.Arrays.stream(keys).map(SpawnCensus.CELL_GRID::keyFor)
+                    .distinct().toArray();
+            assertArrayEquals(expected.stream().mapToLong(Long::longValue).toArray(),
+                    SpawnCensus.fabrolia$snapshotCellKeys(census, cells),
+                    "the per-cell index must mirror the ledger key sets exactly");
+        } finally {
+            writing.set(false);
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
     private static PausingVectors installVectors(
             SpawnCensus.LevelCensus census, boolean corpse, boolean pauseWriter) throws Exception {
         PausingVectors vectors = new PausingVectors(pauseWriter);

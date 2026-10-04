@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import java.util.concurrent.CompletableFuture;
 
-@Mixin(value = ServerChunkCache.class, priority = 3000)
+@Mixin(value = ServerChunkCache.class, priority = 500)
 public abstract class PortalPreparationChunkMixin implements NetherPortalPreparation.ChunkAccessBridge {
     @Shadow @Final private net.minecraft.world.level.TicketStorage ticketStorage;
 
@@ -42,12 +42,13 @@ public abstract class PortalPreparationChunkMixin implements NetherPortalPrepara
             int x, int z, ChunkStatus status, boolean load);
 
     /**
-     * Portal read/generation scopes route this thread's chunk reads. Applied
-     * in an earlier injector order than every default-order HEAD callback
-     * (c2me's off-Main shortcut among them), so it runs first exactly as the
-     * former whole-method wrap did — without that wrap's per-call Operation,
-     * argument boxing and two ThreadLocal probes on the hottest chunk entry
-     * point: outside any scope (the steady state) the cost is one shared read.
+     * Portal read/generation scopes route this thread's chunk reads, so this
+     * callback must run before every other HEAD callback of {@code getChunk}
+     * (Fabrolia's off-Main bridge, c2me's off-Main shortcut): injector order
+     * 900 &lt; the default 1000, and the low mixin priority applies it first
+     * even where {@code order} were ignored. Outside any scope (the steady
+     * state) the cost is one shared read — no per-call Operation, argument
+     * boxing or ThreadLocal probe.
      */
     @Inject(method = "getChunk(IILnet/minecraft/world/level/chunk/status/ChunkStatus;Z)Lnet/minecraft/world/level/chunk/ChunkAccess;",
             at = @At("HEAD"), cancellable = true, order = 900)

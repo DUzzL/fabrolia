@@ -2253,7 +2253,8 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         it.unimi.dsi.fastutil.longs.LongIterator candidateIt = candidates.iterator();
         while (candidateIt.hasNext()) {
             long key = candidateIt.nextLong();
-            // Never write a chunk another lane owns (transient topology skew).
+            // Candidates around island players reach past its own cells (halo
+            // edge, another lane's chunks): spawn only into chunks this lane owns.
             if (!laneKeys.test(key)) continue;
             ChunkHolder holder = this.getVisibleChunkIfPresent(key);
             if (holder == null) continue;

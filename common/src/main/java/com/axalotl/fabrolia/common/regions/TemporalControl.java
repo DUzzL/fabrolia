@@ -106,11 +106,19 @@ public final class TemporalControl {
         private volatile Thread thread;
         /** Exact thread identity authorized to consume one normal-stop interrupt. */
         private Thread normalStopOwner;
+        /** Raised by {@link #wake} before its unpark and consumed right before the
+         *  daemon parks. The daemon also parks inside the DelayQueue lock and
+         *  scheduler monitors, and such a park can absorb the bare unpark; the
+         *  flag carries the wake-up across it. */
+        private final java.util.concurrent.atomic.AtomicBoolean signalled =
+                new java.util.concurrent.atomic.AtomicBoolean();
 
-        /** Re-evaluate the daemon's park deadline. A bare unpark: it runs no
-         *  callback and publishes nothing, so it is safe inside any success cut;
-         *  the woken daemon re-reads every fact under its own fail-stop envelope. */
+        /** Re-evaluate the daemon's park deadline. A flag write plus a bare unpark:
+         *  it runs no callback and publishes nothing, so it is safe inside any
+         *  success cut; the woken daemon re-reads every fact under its own
+         *  fail-stop envelope. */
         void wake() {
+            signalled.set(true);
             Thread owner = thread;
             if (owner != null && owner != Thread.currentThread()) {
                 java.util.concurrent.locks.LockSupport.unpark(owner);
@@ -242,10 +250,14 @@ public final class TemporalControl {
             }
 
             /** The node became visible before its publisher's success cut decided
-             *  it; park (not spin) until that decision unparks the daemon. */
-            boolean awaitAcceptedPublication() {
+             *  it; park (not spin) until that decision unparks the daemon. A stop
+             *  interrupt or a selected W ends the wait: an interrupted park returns
+             *  at once and would otherwise spin until the publisher decides. */
+            boolean awaitAcceptedPublication() throws InterruptedException {
                 int state;
                 while ((state = publication.get()) == OFFERING) {
+                    if (Thread.interrupted()) throw new InterruptedException();
+                    RegionScheduler.throwWorkerFailureIfAny();
                     java.util.concurrent.locks.LockSupport.parkNanos(this, OFFERING_PARK_NANOS);
                 }
                 return state == ACCEPTED;
@@ -666,8 +678,8 @@ public final class TemporalControl {
                         if (e.firedAttempt != null) {
                             activeAttempts.add(new ActiveAttempt(e, e.firedAttempt));
                             // Registered before the next isDone sweep: a terminal
-                            // edge either precedes that read or unparks us.
-                            e.firedAttempt.wakeOnTerminal(Thread.currentThread());
+                            // edge either precedes that read or wakes us.
+                            e.firedAttempt.wakeOnTerminal(this);
                         }
                     } catch (InterruptedException interrupted) {
                         throw interrupted;
@@ -717,14 +729,19 @@ public final class TemporalControl {
             if (failure != null) TemporalControl.<RuntimeException>rethrow(failure);
         }
 
-        private void parkUntilDue() {
+        /** Park until the head is due (capped). A wake signalled since the last
+         *  park is consumed here instead: its unpark may already have been
+         *  absorbed by a park inside the queue lock or a scheduler monitor, and
+         *  any signal raised after this read leaves the permit for parkNanos. */
+        void parkUntilDue() {
             Entry head = queue.peek();
             long waitNanos = CONTROL_RETRY_NANOS;
             if (head != null) {
                 waitNanos = Math.min(waitNanos,
                         head.getDelay(java.util.concurrent.TimeUnit.NANOSECONDS));
             }
-            if (waitNanos > 0L) java.util.concurrent.locks.LockSupport.parkNanos(this, waitNanos);
+            if (waitNanos <= 0L || signalled.getAndSet(false)) return;
+            java.util.concurrent.locks.LockSupport.parkNanos(this, waitNanos);
         }
 
         private Throwable terminalizeEntryFailure(Entry entry, Throwable thrown) {

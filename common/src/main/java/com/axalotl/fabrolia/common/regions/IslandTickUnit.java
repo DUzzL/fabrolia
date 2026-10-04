@@ -76,8 +76,8 @@ public final class IslandTickUnit {
      * could win after the completion permit but before those callbacks entered.
      * The outcome below is committed under the scheduler lifecycle cut and
      * terminal publication invokes no callback and enqueues no continuation;
-     * it only unparks the one registered watcher thread (a bare wake-up, which
-     * then polls under its own envelope).
+     * it only wakes the one registered pacer (a flag write and a bare unpark;
+     * the pacer then polls under its own envelope).
      */
     public static final class AttemptReceipt {
         private final java.util.concurrent.atomic.AtomicBoolean terminal =
@@ -86,7 +86,7 @@ public final class IslandTickUnit {
         private volatile long fromLogicalTick = Long.MIN_VALUE;
         private volatile long toLogicalTick = Long.MIN_VALUE;
         private volatile Throwable failure;
-        private volatile Thread watcher;
+        private volatile TemporalControl.Pacer watcher;
 
         private AttemptReceipt() {}
 
@@ -94,11 +94,11 @@ public final class IslandTickUnit {
             return terminal.get();
         }
 
-        /** Unpark {@code thread} at the terminal edge. Register BEFORE the next
+        /** Wake {@code pacer} at the terminal edge. Register BEFORE the next
          *  {@link #isDone} read: the edge then either precedes that read or
          *  observes the registration. */
-        void wakeOnTerminal(Thread thread) {
-            watcher = thread;
+        void wakeOnTerminal(TemporalControl.Pacer pacer) {
+            watcher = pacer;
         }
 
         AttemptOutcome outcome() {
@@ -148,8 +148,8 @@ public final class IslandTickUnit {
         }
 
         private void wakeWatcher() {
-            Thread waiting = watcher;
-            if (waiting != null) LockSupport.unpark(waiting);
+            TemporalControl.Pacer waiting = watcher;
+            if (waiting != null) waiting.wake();
         }
 
         public void throwIfFailed() {

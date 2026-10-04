@@ -43,24 +43,19 @@ public final class IslandBlockEntityTicks {
 
     /**
      * Vanilla's per-ticker {@code shouldTickBlocksAt} gate for ONE pass,
-     * memoized to one read per CHUNK. Vanilla reads per-BE but is naturally
-     * coherent — main is the only thread and no ticket mutation can land
-     * mid-loop. Here a pass runs on a worker WHILE main's straggler pump
-     * executes chunk-system tasks (ticket placements → level recomputes), so a
-     * live per-BE read could flip mid-loop: a moving-piston BE skipped for one
-     * tick while the rest of its contraption advanced = flying machines
-     * breaking at one chunk's entry/exit (bomber fleet report, 2026-07-06).
-     *
-     * <p>{@link #forLevel} answers every chunk from ONE completed-simulation
-     * snapshot captured at pass start (the same view
-     * {@code DistanceManager.inBlockTickingRange} reads), through a page cursor:
-     * a pass's chunks cluster in a few 32×32 pages, so a first-time chunk costs
-     * one array read instead of a volatile snapshot read, an interface hop and
-     * a cold page-table probe per chunk.
+     * answered from ONE completed-simulation snapshot captured at pass start
+     * (the immutable view {@code DistanceManager.inBlockTickingRange} reads).
+     * Vanilla reads per-BE but is naturally coherent — main is the only thread
+     * and no ticket mutation can land mid-loop. Here a pass runs on a worker
+     * WHILE main's straggler pump executes chunk-system tasks (ticket
+     * placements → level recomputes), so a live per-BE read could flip
+     * mid-loop: a moving-piston BE skipped for one tick while the rest of its
+     * contraption advanced = flying machines breaking at one chunk's
+     * entry/exit (bomber fleet report, 2026-07-06). The pinned snapshot
+     * restores vanilla's whole-phase coherence; its page cursor makes a
+     * per-BE read one array index while the pass stays inside a 32×32 page.
      */
     static final class ChunkTickGate {
-        private final it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap memo =
-                new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(64);
         private final java.util.function.LongPredicate blockTicking;
 
         private ChunkTickGate(java.util.function.LongPredicate blockTicking) {
@@ -72,12 +67,7 @@ public final class IslandBlockEntityTicks {
         }
 
         boolean ticks(long chunkKey) {
-            byte gate = memo.get(chunkKey); // 0 = unknown, 1 = tick, 2 = skip
-            if (gate == 0) {
-                gate = blockTicking.test(chunkKey) ? (byte) 1 : (byte) 2;
-                memo.put(chunkKey, gate);
-            }
-            return gate == 1;
+            return blockTicking.test(chunkKey);
         }
     }
 
@@ -452,7 +442,7 @@ public final class IslandBlockEntityTicks {
      *  moving-piston pairs straddling a cell seam that mutual order is
      *  load-bearing. Each cell list is already seq-ascending (appends), so a
      *  k-way heap merge restores the exact vanilla order at O(n log cells);
-     *  one shared per-chunk gate memo, exactly as before. Generic lists retain
+     *  one pinned block-ticking snapshot for the slice. Generic lists retain
      *  the missing-sequence MIN_VALUE rule and original heap tie behavior. */
     private static void tickCells(ServerLevel level, RegionizedServer rs,
                                   ArrayList<BlockEntityTickerList> cells,
