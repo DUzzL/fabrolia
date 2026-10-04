@@ -6,16 +6,27 @@ import com.google.gson.JsonIOException;
 import com.google.gson.JsonObject;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.JsonOps;
+import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.OutputStream;
 import java.io.IOException;
 import java.io.StringWriter;
+import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+import java.util.zip.GZIPOutputStream;
 import net.minecraft.SharedConstants;
 import net.minecraft.advancements.AdvancementProgress;
 import net.minecraft.advancements.CriterionProgress;
@@ -31,60 +42,111 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Detached snapshots and the background halves of vanilla's player-file and
- * level.dat saves. Each job body is vanilla's IO sequence with vanilla's own
- * catch clause and message; the bytes written are those vanilla's synchronous
- * method would have produced from the same state.
+ * level.dat saves. The snapshot is taken by the saving thread exactly where
+ * vanilla reads the live state; the job produces the bytes vanilla's
+ * synchronous code would have written and keeps vanilla's failure handling.
  */
 public final class PlayerFileJobs {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("Fabrolia-Save");
+    /** {@code NbtIo.SYNC_OUTPUT_OPTIONS}. */
+    private static final OpenOption[] SYNC_OUTPUT_OPTIONS = {
+            StandardOpenOption.SYNC, StandardOpenOption.WRITE,
+            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING};
 
     private PlayerFileJobs() {}
 
-    /** {@code PlayerDataStorage.save} after {@code buildResult()}. */
-    public static AsyncSaveWriter.Job playerData(Path playerDir, String uuid, String playerName,
-                                                 CompoundTag snapshot) {
-        return state -> {
+    /**
+     * The uncompressed stream {@code NbtIo.writeCompressed} feeds its gzip
+     * stream, serialized now in the tag's current iteration order so later
+     * mutation of live (possibly shared) sub-tags cannot reach the file. Deflate
+     * output depends on how its input is chunked, so the chunks that vanilla's
+     * {@code DataOutputStream(BufferedOutputStream(gzip))} hands to the gzip
+     * stream are recorded as well and replayed by {@link #gzip}.
+     */
+    public static NbtSnapshot nbtBytes(CompoundTag tag) {
+        ChunkRecorder recorder = new ChunkRecorder();
+        try (DataOutputStream output = new DataOutputStream(new BufferedOutputStream(recorder))) {
+            NbtIo.write(tag, output);
+        } catch (IOException impossible) {
+            throw new UncheckedIOException(impossible);
+        }
+        return new NbtSnapshot(recorder.bytes.toByteArray(), recorder.chunkLengths());
+    }
+
+    /** Uncompressed NBT plus the write boundaries vanilla's gzip stream would see. */
+    public record NbtSnapshot(byte[] bytes, int[] chunks) {}
+
+    private static final class ChunkRecorder extends OutputStream {
+        final ByteArrayOutputStream bytes = new ByteArrayOutputStream(8192);
+        private int[] lengths = new int[16];
+        private int count;
+
+        @Override
+        public void write(int b) {
+            bytes.write(b);
+            add(1);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) {
+            if (len == 0) return;
+            bytes.write(b, off, len);
+            add(len);
+        }
+
+        private void add(int length) {
+            if (count == lengths.length) lengths = Arrays.copyOf(lengths, count * 2);
+            lengths[count++] = length;
+        }
+
+        int[] chunkLengths() {
+            return Arrays.copyOf(lengths, count);
+        }
+    }
+
+    /**
+     * {@code NbtIo.writeCompressed(tag, tmpFile)} + {@code Util.safeReplaceFile},
+     * as in PlayerDataStorage.save and LevelStorageAccess.saveLevelData: the same
+     * gzip stream, written with vanilla's synchronous open options in one write.
+     */
+    public static AsyncSaveWriter.Job nbtFile(Path tmpFile, NbtSnapshot nbt, Path target, Path backup,
+                                              Consumer<Exception> onFailure) {
+        return () -> {
             try {
-                Path tmpFile = Files.createTempFile(playerDir, uuid + "-", ".dat");
-                NbtIo.writeCompressed(snapshot, tmpFile);
-                Path realFile = playerDir.resolve(uuid + ".dat");
-                Path oldFile = playerDir.resolve(uuid + ".dat_old");
-                Util.safeReplaceFile(realFile, tmpFile, oldFile);
+                Files.write(tmpFile, gzip(nbt), SYNC_OUTPUT_OPTIONS);
+                Util.safeReplaceFile(target, tmpFile, backup);
             } catch (Exception e) {
-                LOGGER.warn("Failed to save player data for {}", playerName, e);
+                onFailure.accept(e);
             }
         };
     }
 
-    /** {@code LevelStorageAccess.saveLevelData(CompoundTag)}. */
-    public static AsyncSaveWriter.Job levelData(Path worldDir, Path currentFile, Path oldDataFile,
-                                                CompoundTag root) {
-        return state -> {
-            try {
-                Path dataFile = Files.createTempFile(worldDir, "level", ".dat");
-                NbtIo.writeCompressed(root, dataFile);
-                Util.safeReplaceFile(currentFile, dataFile, oldDataFile);
-            } catch (Exception e) {
-                LOGGER.error("Failed to save level {}", worldDir, e);
+    static byte[] gzip(NbtSnapshot nbt) throws IOException {
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream(Math.max(64, nbt.bytes().length / 4));
+        try (GZIPOutputStream gzip = new GZIPOutputStream(compressed)) {
+            int offset = 0;
+            for (int length : nbt.chunks()) {
+                gzip.write(nbt.bytes(), offset, length);
+                offset += length;
             }
-        };
+        }
+        return compressed.toByteArray();
     }
 
     /** {@code PlayerAdvancements.save} after {@code asData()}. */
     public static AsyncSaveWriter.Job advancements(Path file, Codec<PlayerAdvancements.Data> codec,
                                                    PlayerAdvancements.Data snapshot, Gson gson) {
-        return state -> {
+        return () -> {
             JsonElement json = codec.encodeStart(JsonOps.INSTANCE, snapshot).getOrThrow();
-            writeJson(file, json, gson, state, "Couldn't save player advancements to {}");
+            writeJson(file, json, gson, "Couldn't save player advancements to {}");
         };
     }
 
     /** {@code ServerStatsCounter.save}: {@code toJson()} of the snapshot, then the write. */
     public static AsyncSaveWriter.Job stats(Path file, Codec<Map<Stat<?>, Integer>> codec,
                                             Map<Stat<?>, Integer> snapshot, Gson gson) {
-        return state -> writeJson(file, statsJson(codec, snapshot), gson, state,
-                "Couldn't save stats to {}");
+        return () -> writeJson(file, statsJson(codec, snapshot), gson, "Couldn't save stats to {}");
     }
 
     /** Body of {@code ServerStatsCounter.toJson()} over a detached map. */
@@ -135,47 +197,40 @@ public final class PlayerFileJobs {
     }
 
     /**
-     * Vanilla's in-place JSON write ({@code createDirectoriesSafe} +
-     * {@code newBufferedWriter} + {@code gson.toJson(json, gson.newJsonWriter(w))}),
-     * skipped when the file still holds exactly the bytes this writer last put there.
+     * Vanilla's JSON save ({@code createDirectoriesSafe}, then
+     * {@code gson.toJson(json, gson.newJsonWriter(...))} through a strict UTF-8
+     * writer, IOException/JsonIOException logged). The same bytes go to a
+     * sibling temp file that atomically replaces the target, so a process kill
+     * during a background write leaves the previous file instead of a truncated
+     * one that the next login would fail to parse.
      */
-    static void writeJson(Path file, JsonElement json, Gson gson, AsyncSaveWriter.FileState state,
-                          String failureMessage) {
+    static void writeJson(Path file, JsonElement json, Gson gson, String failureMessage) {
+        Path tmp = null;
         try {
+            FileUtil.createDirectoriesSafe(file.getParent());
             StringWriter text = new StringWriter();
             gson.toJson(json, gson.newJsonWriter(text));
-            byte[] bytes = text.toString().getBytes(StandardCharsets.UTF_8);
-            if (unchangedOnDisk(file, bytes, state)) return;
-            state.forget();
-            FileUtil.createDirectoriesSafe(file.getParent());
-            Files.write(file, bytes);
-            remember(file, bytes, state);
+            ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder().encode(CharBuffer.wrap(text.getBuffer()));
+            byte[] bytes = new byte[encoded.remaining()];
+            encoded.get(bytes);
+            tmp = Files.createTempFile(file.getParent(), file.getFileName() + "-", ".tmp");
+            Files.write(tmp, bytes);
+            try {
+                Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException notAtomic) {
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+            tmp = null;
         } catch (IOException | JsonIOException e) {
-            state.forget();
             LOGGER.error(failureMessage, file, e);
-        }
-    }
-
-    private static boolean unchangedOnDisk(Path file, byte[] bytes, AsyncSaveWriter.FileState state) {
-        if (state.lastBytes == null || !Arrays.equals(state.lastBytes, bytes)) return false;
-        try {
-            BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
-            return attributes.isRegularFile()
-                    && attributes.size() == state.lastSize
-                    && attributes.lastModifiedTime().to(TimeUnit.NANOSECONDS) == state.lastModifiedNanos;
-        } catch (IOException missingOrUnreadable) {
-            return false;
-        }
-    }
-
-    private static void remember(Path file, byte[] bytes, AsyncSaveWriter.FileState state) {
-        try {
-            BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
-            state.lastSize = attributes.size();
-            state.lastModifiedNanos = attributes.lastModifiedTime().to(TimeUnit.NANOSECONDS);
-            state.lastBytes = bytes;
-        } catch (IOException unreadable) {
-            state.forget();
+        } finally {
+            if (tmp != null) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (IOException cleanup) {
+                    LOGGER.error("Couldn't delete temporary save file {}", tmp, cleanup);
+                }
+            }
         }
     }
 }

@@ -2,7 +2,6 @@ package com.axalotl.fabrolia.common.save;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.JsonOps;
 import net.minecraft.SharedConstants;
@@ -31,7 +30,6 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -106,7 +104,7 @@ class PlayerFileJobsTest {
             }
         }
         Path file = dir.resolve("advancements").resolve("player.json");
-        PlayerFileJobs.advancements(file, codec, snapshot, gson).run(new AsyncSaveWriter.FileState());
+        PlayerFileJobs.advancements(file, codec, snapshot, gson).run();
 
         assertArrayEquals(vanilla, Files.readAllBytes(file));
         assertNotEquals(new String(vanilla, StandardCharsets.UTF_8),
@@ -141,58 +139,41 @@ class PlayerFileJobsTest {
         Codec<Map<Stat<?>, Integer>> codec = vanillaStatic(ServerStatsCounter.class, "STATS_CODEC");
         Gson gson = vanillaStatic(ServerStatsCounter.class, "GSON");
         Path asyncFile = dir.resolve("async").resolve("stats.json");
-        PlayerFileJobs.stats(asyncFile, codec, snapshot, gson).run(new AsyncSaveWriter.FileState());
+        PlayerFileJobs.stats(asyncFile, codec, snapshot, gson).run();
         assertArrayEquals(Files.readAllBytes(vanillaFile), Files.readAllBytes(asyncFile));
     }
 
     @Test
-    void playerDataRotatesDatAndDatOldWithoutLeftovers() throws Exception {
+    void nbtSnapshotGzipsToTheBytesOfVanillaWriteCompressedAndRotates() throws Exception {
         CompoundTag first = new CompoundTag();
         first.putString("save", "first");
         CompoundTag second = new CompoundTag();
-        second.putString("save", "second");
-        second.putIntArray("payload", IntStream.range(0, 4096).toArray());
-
-        PlayerFileJobs.playerData(dir, "uuid", "Player", first).run(new AsyncSaveWriter.FileState());
-        PlayerFileJobs.playerData(dir, "uuid", "Player", second).run(new AsyncSaveWriter.FileState());
+        for (int i = 0; i < 400; i++) {
+            CompoundTag item = new CompoundTag();
+            item.putString("id", "minecraft:item_" + (i * 7919 % 1000));
+            item.putInt("count", i % 64);
+            second.put("slot_" + i, item);
+        }
+        // Removals leave a larger table than a fresh copy would have.
+        for (int i = 0; i < 400; i += 3) second.remove("slot_" + i);
+        second.putIntArray("payload", IntStream.range(0, 20_000).map(i -> i * 31 % 977).toArray());
 
         Path reference = dir.resolve("reference.nbt");
         NbtIo.writeCompressed(second, reference);
-        assertArrayEquals(Files.readAllBytes(reference), Files.readAllBytes(dir.resolve("uuid.dat")));
-        assertEquals(first, NbtIo.readCompressed(dir.resolve("uuid.dat_old"), NbtAccounter.unlimitedHeap()));
+        byte[] vanilla = Files.readAllBytes(reference);
         Files.delete(reference);
+
+        for (CompoundTag tag : List.of(first, second)) {
+            Path tmp = Files.createTempFile(dir, "uuid-", ".dat");
+            PlayerFileJobs.nbtFile(tmp, PlayerFileJobs.nbtBytes(tag), dir.resolve("uuid.dat"),
+                    dir.resolve("uuid.dat_old"), failure -> { throw new AssertionError(failure); }).run();
+        }
+
+        assertArrayEquals(vanilla, Files.readAllBytes(dir.resolve("uuid.dat")));
+        assertEquals(first, NbtIo.readCompressed(dir.resolve("uuid.dat_old"), NbtAccounter.unlimitedHeap()));
         try (var files = Files.list(dir)) {
             assertEquals(List.of("uuid.dat", "uuid.dat_old"),
                     files.map(p -> p.getFileName().toString()).sorted().toList());
         }
-    }
-
-    @Test
-    void unchangedJsonIsSkippedButExternalChangesAreOverwritten() throws Exception {
-        Gson gson = vanillaStatic(PlayerAdvancements.class, "GSON");
-        JsonObject a = new JsonObject();
-        a.addProperty("value", "a");
-        JsonObject b = new JsonObject();
-        b.addProperty("value", "b");
-        byte[] aBytes = vanillaJsonBytes(gson, a);
-        Path file = dir.resolve("players").resolve("p.json");
-        AsyncSaveWriter.FileState state = new AsyncSaveWriter.FileState();
-
-        PlayerFileJobs.writeJson(file, a, gson, state, "{}");
-        FileTime written = Files.getLastModifiedTime(file);
-        Thread.sleep(50);
-        PlayerFileJobs.writeJson(file, a, gson, state, "{}");
-        assertEquals(written, Files.getLastModifiedTime(file));
-
-        Files.writeString(file, "{\"edited\": true}");
-        PlayerFileJobs.writeJson(file, a, gson, state, "{}");
-        assertArrayEquals(aBytes, Files.readAllBytes(file));
-
-        Files.delete(file);
-        PlayerFileJobs.writeJson(file, a, gson, state, "{}");
-        assertArrayEquals(aBytes, Files.readAllBytes(file));
-
-        PlayerFileJobs.writeJson(file, b, gson, state, "{}");
-        assertArrayEquals(vanillaJsonBytes(gson, b), Files.readAllBytes(file));
     }
 }

@@ -49,7 +49,7 @@ class AsyncSaveWriterTest {
     void jobsOfOneFileRunInSubmissionOrderAndNeverOverlap() {
         ExecutorService pool = Executors.newFixedThreadPool(4);
         try {
-            AsyncSaveWriter writer = new AsyncSaveWriter(4, 10_000, failure -> {}, pool);
+            AsyncSaveWriter writer = new AsyncSaveWriter(4, failure -> {}, pool);
             int files = 4;
             int perFile = 300;
             List<List<Integer>> order = new ArrayList<>();
@@ -63,7 +63,7 @@ class AsyncSaveWriterTest {
                 for (int f = 0; f < files; f++) {
                     int file = f;
                     int seq = i;
-                    writer.submit(file("f" + f), state -> {
+                    writer.submit(file("f" + f), () -> {
                         if (inFlight.get(file).incrementAndGet() != 1) overlaps.incrementAndGet();
                         LockSupport.parkNanos((seq * 7919L % 50) * 1_000L);
                         order.get(file).add(seq);
@@ -88,11 +88,11 @@ class AsyncSaveWriterTest {
     void differentFilesAreWrittenInParallel() throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
-            AsyncSaveWriter writer = new AsyncSaveWriter(2, 100, failure -> {}, pool);
+            AsyncSaveWriter writer = new AsyncSaveWriter(2, failure -> {}, pool);
             CountDownLatch bothRunning = new CountDownLatch(2);
             AtomicReference<Boolean> overlapped = new AtomicReference<>(true);
             for (String name : List.of("a", "b")) {
-                writer.submit(file(name), state -> {
+                writer.submit(file(name), () -> {
                     bothRunning.countDown();
                     if (!bothRunning.await(10, TimeUnit.SECONDS)) overlapped.set(false);
                 });
@@ -110,15 +110,15 @@ class AsyncSaveWriterTest {
         CountDownLatch release = new CountDownLatch(1);
         CountDownLatch blockerStarted = new CountDownLatch(1);
         try {
-            AsyncSaveWriter writer = new AsyncSaveWriter(1, 100, failure -> {}, pool);
-            AsyncSaveWriter.Ticket blocker = writer.submit(file("autosave-backlog"), state -> {
+            AsyncSaveWriter writer = new AsyncSaveWriter(1, failure -> {}, pool);
+            AsyncSaveWriter.Ticket blocker = writer.submit(file("autosave-backlog"), () -> {
                 blockerStarted.countDown();
                 release.await();
             });
             assertTrue(blockerStarted.await(10, TimeUnit.SECONDS));
             AtomicReference<Thread> ranOn = new AtomicReference<>();
             AsyncSaveWriter.Ticket logout = writer.submit(file("leaving-player"),
-                    state -> ranOn.set(Thread.currentThread()));
+                    () -> ranOn.set(Thread.currentThread()));
             writer.await(logout);
             assertSame(Thread.currentThread(), ranOn.get());
             release.countDown();
@@ -132,11 +132,11 @@ class AsyncSaveWriterTest {
     @Test
     void awaitCoversEarlierJobsOfTheSameFile() {
         ManualExecutor never = new ManualExecutor();
-        AsyncSaveWriter writer = new AsyncSaveWriter(1, 100, failure -> {}, never);
+        AsyncSaveWriter writer = new AsyncSaveWriter(1, failure -> {}, never);
         List<String> written = new ArrayList<>();
-        writer.submit(file("p"), state -> written.add("autosave"));
-        writer.submit(file("other"), state -> written.add("other"));
-        AsyncSaveWriter.Ticket logout = writer.submit(file("p"), state -> written.add("logout"));
+        writer.submit(file("p"), () -> written.add("autosave"));
+        writer.submit(file("other"), () -> written.add("other"));
+        AsyncSaveWriter.Ticket logout = writer.submit(file("p"), () -> written.add("logout"));
         writer.await(logout);
         assertEquals(List.of("autosave", "logout"), written);
         writer.awaitAll();
@@ -148,27 +148,43 @@ class AsyncSaveWriterTest {
     }
 
     @Test
-    void fullQueueFailsLoudlyAndRecoversAfterDraining() {
+    void aSecondUnstartedWriteOfOneFileWritesTheFirstOneFirst() {
         ManualExecutor never = new ManualExecutor();
-        AsyncSaveWriter writer = new AsyncSaveWriter(1, 3, failure -> {}, never);
-        for (int i = 0; i < 3; i++) writer.submit(file("f" + i), state -> {});
-        IllegalStateException full = assertThrows(IllegalStateException.class,
-                () -> writer.submit(file("f3"), state -> {}));
-        assertTrue(full.getMessage().contains("queue is full"));
+        AsyncSaveWriter writer = new AsyncSaveWriter(1, failure -> {}, never);
+        List<String> written = new ArrayList<>();
+        writer.submit(file("p"), () -> written.add("autosave 1"));
+        writer.submit(file("other"), () -> written.add("other"));
+        assertEquals(List.of(), written);
+        writer.submit(file("p"), () -> written.add("autosave 2"));
+        assertEquals(List.of("autosave 1"), written);
+        assertEquals(2, writer.pendingCount());
         writer.awaitAll();
-        writer.submit(file("f3"), state -> {});
-        assertEquals(1, writer.pendingCount());
+        assertEquals(List.of("autosave 1", "other", "autosave 2"), written);
+    }
+
+    @Test
+    void readBarrierWritesQueuedJobsOfThatFileOnly() {
+        ManualExecutor never = new ManualExecutor();
+        AsyncSaveWriter writer = new AsyncSaveWriter(1, failure -> {}, never);
+        List<String> written = new ArrayList<>();
+        writer.submit(file("p"), () -> written.add("p"));
+        writer.submit(file("other"), () -> written.add("other"));
+        writer.awaitFile(file("p"));
+        assertEquals(List.of("p"), written);
+        writer.awaitFile(file("never-saved"));
+        assertEquals(List.of("p"), written);
+        writer.awaitAll();
     }
 
     @Test
     void escapedJobFailureIsFatalAndDoesNotStopLaterWrites() {
         ManualExecutor never = new ManualExecutor();
         List<Throwable> fatal = new ArrayList<>();
-        AsyncSaveWriter writer = new AsyncSaveWriter(1, 100, fatal::add, never);
+        AsyncSaveWriter writer = new AsyncSaveWriter(1, fatal::add, never);
         IllegalStateException boom = new IllegalStateException("encode failed");
-        AsyncSaveWriter.Ticket failed = writer.submit(file("p"), state -> { throw boom; });
+        AsyncSaveWriter.Ticket failed = writer.submit(file("p"), () -> { throw boom; });
         List<String> written = new ArrayList<>();
-        AsyncSaveWriter.Ticket next = writer.submit(file("p"), state -> written.add("next"));
+        AsyncSaveWriter.Ticket next = writer.submit(file("p"), () -> written.add("next"));
         assertSame(boom, assertThrows(IllegalStateException.class, () -> writer.await(failed)));
         assertEquals(List.of(boom), fatal);
         writer.await(next);
@@ -179,9 +195,9 @@ class AsyncSaveWriterTest {
     @Test
     void awaitAllReportsAFailureOfAnyAwaitedFile() {
         ManualExecutor never = new ManualExecutor();
-        AsyncSaveWriter writer = new AsyncSaveWriter(1, 100, failure -> {}, never);
-        writer.submit(file("ok"), state -> {});
-        writer.submit(file("bad"), state -> { throw new IllegalArgumentException("bad"); });
+        AsyncSaveWriter writer = new AsyncSaveWriter(1, failure -> {}, never);
+        writer.submit(file("ok"), () -> {});
+        writer.submit(file("bad"), () -> { throw new IllegalArgumentException("bad"); });
         assertThrows(IllegalArgumentException.class, writer::awaitAll);
         assertEquals(0, writer.pendingCount());
     }
@@ -189,16 +205,16 @@ class AsyncSaveWriterTest {
     @Test
     void durabilityScopes() {
         ManualExecutor never = new ManualExecutor();
-        AsyncSaveWriter writer = new AsyncSaveWriter(1, 100, failure -> {}, never);
+        AsyncSaveWriter writer = new AsyncSaveWriter(1, failure -> {}, never);
         List<String> written = new ArrayList<>();
 
         // Outside any scope a save is on disk before afterSubmit returns (vanilla).
-        SaveDurability.afterSubmit(writer, writer.submit(file("p"), state -> written.add("plain")));
+        SaveDurability.afterSubmit(writer, writer.submit(file("p"), () -> written.add("plain")));
         assertEquals(List.of("plain"), written);
 
         // saveAll/autosave: returns after the snapshot; the flush barrier writes it.
         SaveDurability.runDeferred(() -> SaveDurability.afterSubmit(writer,
-                writer.submit(file("p"), state -> written.add("autosave"))));
+                writer.submit(file("p"), () -> written.add("autosave"))));
         assertEquals(List.of("plain"), written);
         writer.awaitAll();
         assertEquals(List.of("plain", "autosave"), written);
@@ -206,7 +222,7 @@ class AsyncSaveWriterTest {
         // A logout batch writes when awaited (after the owner claim is released).
         SaveDurability.Batch logout = SaveDurability.openBatch(true);
         try {
-            SaveDurability.afterSubmit(writer, writer.submit(file("p"), state -> written.add("logout")));
+            SaveDurability.afterSubmit(writer, writer.submit(file("p"), () -> written.add("logout")));
             assertEquals(2, written.size());
         } finally {
             logout.close();
@@ -218,7 +234,7 @@ class AsyncSaveWriterTest {
         SaveDurability.runDeferred(() -> {
             SaveDurability.Batch inSaveAll = SaveDurability.openBatch(false);
             try {
-                SaveDurability.afterSubmit(writer, writer.submit(file("p"), state -> written.add("saveAll")));
+                SaveDurability.afterSubmit(writer, writer.submit(file("p"), () -> written.add("saveAll")));
             } finally {
                 inSaveAll.close();
             }

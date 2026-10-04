@@ -56,34 +56,32 @@ public final class SaveDurability {
     }
 
     /**
-     * Opens the batch of one {@code PlayerList.save}. {@code leaving}: the player
-     * is being removed, so the writer drops its unchanged-skip memory for these
-     * files once they are written.
+     * Opens the batch of one {@code PlayerList.save}. A {@code leaving} player's
+     * save is always durable, even when it runs nested inside a deferred saveAll
+     * (a routed /kick on a claim spin): PlayerList.remove discards the player's
+     * vehicle and pearls right after it.
      */
     public static Batch openBatch(boolean leaving) {
-        Batch batch = new Batch(BATCH.get(), leaving, deferred());
+        Batch batch = new Batch(BATCH.get(), deferred() && !leaving);
         BATCH.set(batch);
         return batch;
     }
 
     public static final class Batch implements AutoCloseable {
         private final Batch previous;
-        private final boolean leaving;
         private final boolean deferred;
         private final List<AsyncSaveWriter> writers = new ArrayList<>(3);
         private final List<AsyncSaveWriter.Ticket> tickets = new ArrayList<>(3);
         private boolean closed;
 
-        private Batch(Batch previous, boolean leaving, boolean deferred) {
+        private Batch(Batch previous, boolean deferred) {
             this.previous = previous;
-            this.leaving = leaving;
             this.deferred = deferred;
         }
 
         private void add(AsyncSaveWriter writer, AsyncSaveWriter.Ticket ticket) {
             writers.add(writer);
             tickets.add(ticket);
-            if (leaving) writer.forgetAfter(ticket);
         }
 
         /** Detaches the batch from the thread; does not wait. */
