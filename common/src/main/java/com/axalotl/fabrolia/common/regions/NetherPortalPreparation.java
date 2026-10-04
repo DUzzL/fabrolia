@@ -62,6 +62,12 @@ public final class NetherPortalPreparation {
     private static final ConcurrentLinkedQueue<Request> STAGED = new ConcurrentLinkedQueue<>();
     private static final Set<Request> ACTIVE = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final ConcurrentLinkedQueue<Request> RELEASE = new ConcurrentLinkedQueue<>();
+    /** READ/GENERATING scopes open on any thread. Raised before a scope's
+     *  ThreadLocal is set and lowered after it is cleared, so a thread inside
+     *  a scope always observes it non-zero: the per-call ServerChunkCache.getChunk
+     *  hook reads this one shared word and touches no ThreadLocal while zero. */
+    private static final java.util.concurrent.atomic.AtomicInteger OPEN_CHUNK_SCOPES =
+            new java.util.concurrent.atomic.AtomicInteger();
     // Unique, nonpersistent, loading-only type per request prevents shared-ticket removal.
     private NetherPortalPreparation() {}
 
@@ -239,7 +245,28 @@ public final class NetherPortalPreparation {
         return request != null && request.destination == level;
     }
 
+    /** Whether any thread is inside a portal read or generation scope. */
+    public static boolean chunkScopesOpen() { return OPEN_CHUNK_SCOPES.get() != 0; }
+
     public static boolean readScopeActive() { return READ.get() != null; }
+
+    private static void openScope(ThreadLocal<Request> scope, Request request) {
+        OPEN_CHUNK_SCOPES.incrementAndGet();
+        try {
+            scope.set(request);
+        } catch (Throwable failure) {
+            OPEN_CHUNK_SCOPES.decrementAndGet();
+            throw failure;
+        }
+    }
+
+    private static void closeScope(ThreadLocal<Request> scope) {
+        try {
+            scope.remove();
+        } finally {
+            OPEN_CHUNK_SCOPES.decrementAndGet();
+        }
+    }
 
     /** Only the two portal-calculation callsites use this accepted immutable input. */
     public static EntityDimensions portalCalculationDimensions(Entity entity) {
@@ -414,7 +441,7 @@ public final class NetherPortalPreparation {
             if (denied) return true;
             if (border == null || BORDERS.get(destination) != border) return false;
             transferIdentity = NetherPortalTransfers.currentTransfer();
-            READ.set(this);
+            openScope(READ, this);
             try {
                 BlockState state = source.getBlockState(entry);
                 Vec3 relative;
@@ -456,7 +483,7 @@ public final class NetherPortalPreparation {
             } catch (ReadinessMiss miss) {
                 return false;
             } finally {
-                READ.remove();
+                closeScope(READ);
             }
         }
 
@@ -576,7 +603,7 @@ public final class NetherPortalPreparation {
             positions = snapshotPositions(true);
             if (positions == null || needsMain || !published(destination)) { needsMain = true; return; }
             List<BlockPos> freshPositions = positions;
-            GENERATING.set(this);
+            openScope(GENERATING, this);
             try {
                 boolean decided = generationDecision(((PoiAccess) destination).fabrolia$portalPublications(),
                         () -> closest(freshPositions, center, radius, pos -> border.isWithinBounds(pos)
@@ -589,7 +616,7 @@ public final class NetherPortalPreparation {
                 generate = !decided;
                 needsMain = !decided || !published(source) || !published(destination);
             } finally {
-                GENERATING.remove();
+                closeScope(GENERATING);
             }
         }
 

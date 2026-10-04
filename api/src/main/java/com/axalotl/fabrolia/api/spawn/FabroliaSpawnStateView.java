@@ -44,4 +44,9 @@ public interface FabroliaSpawnStateView {
      *  {@link #fabrolia$tryReserveLocalPack} (token passed through verbatim). */
     default void fabrolia$releaseLocalPack(MobCategory category, long packedChunkPos, int token) {
     }
+
+    /** True when this cookie's calculator is confined to one sequential chunk
+     *  pass ({@link FabroliaLocalCapView#fabrolia$useSerialLane}): vanilla's
+     *  plain local-cap check is then exact and no reservation is needed. */
+    boolean fabrolia$serialLocalCap();
 }

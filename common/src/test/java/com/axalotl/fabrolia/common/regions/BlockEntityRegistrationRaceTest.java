@@ -143,8 +143,8 @@ class BlockEntityRegistrationRaceTest {
             sleeping.sleeping = true;
             removed.removed = true;
             java.util.Queue<TickingBlockEntity> dead = new java.util.ArrayDeque<>();
-            var gates = new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap();
-            IslandBlockEntityTicks.tickMerged(f.level, f.runtime, captured, dead, gates, null, null);
+            var gates = IslandBlockEntityTicks.ChunkTickGate.forLevel(f.level);
+            IslandBlockEntityTicks.tickMerged(f.runtime, captured, dead, gates, null, null);
             assertEquals(java.util.List.of(0, 3), order);
             assertEquals(java.util.List.of(removed), new ArrayList<>(dead));
             assertEquals(2, f.level.gateReads);
@@ -155,13 +155,13 @@ class BlockEntityRegistrationRaceTest {
             IslandBlockEntityTicks.preUnitMaintenance(f.level, f.runtime);
             sleeping.sleeping = false; // same registered wrapper, rebound to its live ticker
             order.clear();
-            gates.clear();
+            gates = IslandBlockEntityTicks.ChunkTickGate.forLevel(f.level);
             f.level.gateReads = 0;
-            IslandBlockEntityTicks.tickMerged(f.level, f.runtime, captured, dead, gates, null, null);
+            IslandBlockEntityTicks.tickMerged(f.runtime, captured, dead, gates, null, null);
             assertEquals(java.util.List.of(0, 1, 3), order);
             assertEquals(2, f.level.gateReads, "one gate read per chunk, not per wrapper");
             order.clear();
-            IslandBlockEntityTicks.tickMerged(f.level, f.runtime,
+            IslandBlockEntityTicks.tickMerged(f.runtime,
                     new ArrayList<>(f.runtime.beCells.values()), dead, gates, null, null);
             assertEquals(java.util.List.of(0, 1, 3), order);
         }
@@ -180,9 +180,9 @@ class BlockEntityRegistrationRaceTest {
             java.util.Set<TickingBlockEntity> seen =
                     java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             skip.add(carried);
-            IslandBlockEntityTicks.tickMerged(f.level, f.runtime,
+            IslandBlockEntityTicks.tickMerged(f.runtime,
                     new ArrayList<>(f.runtime.beCells.values()), new java.util.ArrayDeque<>(),
-                    new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(), skip, seen);
+                    IslandBlockEntityTicks.ChunkTickGate.forLevel(f.level), skip, seen);
             assertEquals(0, carried.ticks);
             assertEquals(1, ordinary.ticks);
             assertEquals(skip, seen);
@@ -211,10 +211,10 @@ class BlockEntityRegistrationRaceTest {
                     "no position means no proof for a same-unit island mutation");
             f.runtime.drainPendingBeAdds();
             sleeper.sleeping = false;
-            IslandBlockEntityTicks.tickMerged(f.level, f.runtime,
+            IslandBlockEntityTicks.tickMerged(f.runtime,
                     java.util.List.of(f.runtime.beCells.get(Long.MIN_VALUE)),
                     new java.util.ArrayDeque<>(),
-                    new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(), null, null);
+                    IslandBlockEntityTicks.ChunkTickGate.forLevel(f.level), null, null);
             assertEquals(1, sleeper.ticks, "the unresolved registration must survive for Main");
         }
     }
@@ -265,7 +265,8 @@ class BlockEntityRegistrationRaceTest {
         @Override public String getType() { return "test:registry"; }
     }
 
-    private static final class TestLevel extends ServerLevel implements BlockEntityTickerAccess {
+    private static final class TestLevel extends ServerLevel
+            implements BlockEntityTickerAccess, BlockTickingPassAccess {
         Object lock;
         ServerTickRateManager rate;
         int gateReads;
@@ -277,6 +278,9 @@ class BlockEntityRegistrationRaceTest {
         @Override public ResourceKey<Level> dimension() { return Level.OVERWORLD; }
         @Override public ServerTickRateManager tickRateManager() { return rate; }
         @Override public boolean shouldTickBlocksAt(BlockPos pos) { gateReads++; return true; }
+        @Override public java.util.function.LongPredicate fabrolia$blockTickingPass() {
+            return chunkKey -> { gateReads++; return true; };
+        }
     }
 
     private static final class Fixture implements AutoCloseable {

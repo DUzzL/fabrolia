@@ -56,6 +56,11 @@ public abstract class NaturalSpawnerMixin {
      * canSpawnForCategoryLocal is bypassed (as the removed per-candidate
      * recheck effectively did); the vanilla path (gate off / no executor)
      * calls through unchanged.
+     *
+     * <p>An island lane's cookie ({@link FabroliaSpawnStateView#fabrolia$serialLocalCap})
+     * is consumed by one sequential chunk pass, where the fused step reduces
+     * to vanilla's plain check: it takes the vanilla call, with no
+     * reservation to take or return.
      */
     @WrapOperation(method = "spawnForChunk",
             at = @At(value = "INVOKE",
@@ -65,7 +70,8 @@ public abstract class NaturalSpawnerMixin {
             @Share("fabrolia$packReservation") LocalIntRef reservation) {
         if (FabroliaConfig.disabled || !FabroliaConfig.enableFabroliaSpawn
                 || !FabroliaConfig.fabroliaSpawnLocalCapReservation
-                || ParallelProcessor.executor == null) {
+                || ParallelProcessor.executor == null
+                || ((FabroliaSpawnStateView) state).fabrolia$serialLocalCap()) {
             reservation.set(0);
             return original.call(state, category, pos);
         }

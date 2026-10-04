@@ -179,7 +179,7 @@ class AutonomousPacerNormalStopTest {
             AtomicBoolean firstPoll = new AtomicBoolean(true);
             queue = new DelayQueue<>() {
                 @Override
-                public Delayed poll(long timeout, TimeUnit unit) throws InterruptedException {
+                public Delayed poll() {
                     if (firstPoll.compareAndSet(true, false)) {
                         level.lookupThread = Thread.currentThread();
                         try {
@@ -197,7 +197,7 @@ class AutonomousPacerNormalStopTest {
                             throw new AssertionError(thrown);
                         }
                     }
-                    return super.poll(timeout, unit);
+                    return super.poll();
                 }
             };
             field(TemporalControl.Pacer.class, "queue").set(pacer, queue);

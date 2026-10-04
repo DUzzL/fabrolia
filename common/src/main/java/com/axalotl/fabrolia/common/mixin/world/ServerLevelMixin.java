@@ -64,7 +64,8 @@ import com.axalotl.fabrolia.common.regions.FabroliaLocks;
 @SuppressWarnings("all")
 @Mixin(value = ServerLevel.class, priority = 1500)
 public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
-        com.axalotl.fabrolia.common.regions.BlockEventQueueAccess {
+        com.axalotl.fabrolia.common.regions.BlockEventQueueAccess,
+        com.axalotl.fabrolia.common.regions.BlockTickingPassAccess {
 
     @org.spongepowered.asm.mixin.injection.Inject(method = "isHandlingTick", at = @At("HEAD"), cancellable = true)
     private void fabrolia$contextHandlingTick(
@@ -84,6 +85,18 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     @Shadow @Mutable @Final private Int2ObjectMap<EnderDragonPart> dragonParts;
 
     @Shadow public abstract @NotNull ServerLevel getLevel();
+
+    /** {@code shouldTickBlocksAt(long)} = {@code inBlockTickingRange} = the completed
+     *  simulation level (DistanceManagerMixin), read from one captured snapshot. */
+    @Override
+    public java.util.function.LongPredicate fabrolia$blockTickingPass() {
+        var tracker = ((com.axalotl.fabrolia.common.mixin.server.DistanceManagerAccessor)
+                this.chunkSource.chunkMap.getDistanceManager()).fabrolia$simulationChunkTracker();
+        com.axalotl.fabrolia.common.regions.CompletedChunkLevels.Reader levels =
+                ((com.axalotl.fabrolia.common.regions.CompletedSimulationView) tracker)
+                        .fabrolia$completedLevels().reader();
+        return chunkKey -> net.minecraft.server.level.ChunkLevel.isBlockTicking(levels.get(chunkKey));
+    }
 
     @Unique
     private final Object fabrolia$explosionLock = new Object();

@@ -125,20 +125,22 @@ class SpawnCensusQueryAcceptanceTest {
         ExecutorService worker = Executors.newSingleThreadExecutor();
         try {
             vectors.armed.set(true);
-            Future<?> sweep = worker.submit(() -> sweep(vectors));
+            Future<?> sweep = worker.submit(() -> sweep(vectors, census.liveCells));
             assertTrue(vectors.paused.await(10, TimeUnit.SECONDS));
             apply(census, mob, 1);
             apply(census, nonMob, 1);
             vectors.resume.countDown();
             sweep.get(10, TimeUnit.SECONDS);
             assertCounts(census, 2, 1);
+            assertArrayEquals(new long[]{1L}, indexedKeys(census));
 
             apply(census, mob, -1);
-            sweep(vectors);
+            sweep(vectors, census.liveCells);
             assertCounts(census, 1, 0);
             apply(census, nonMob, -1);
-            sweep(vectors);
+            sweep(vectors, census.liveCells);
             assertTrue(vectors.isEmpty());
+            assertArrayEquals(new long[0], indexedKeys(census));
         } finally {
             vectors.resume.countDown();
             worker.shutdownNow();
@@ -158,20 +160,47 @@ class SpawnCensusQueryAcceptanceTest {
             vectors.armed.set(true);
             Future<?> update = worker.submit(() -> apply(census, mob, 1));
             assertTrue(vectors.paused.await(10, TimeUnit.SECONDS));
-            sweep(vectors);
+            sweep(vectors, census.corpseCells);
             assertTrue(vectors.isEmpty());
             vectors.resume.countDown();
             update.get(10, TimeUnit.SECONDS);
             assertCounts(census, 1, 1);
+            assertArrayEquals(new long[]{1L}, indexedKeys(census),
+                    "a vector re-created after the sweep is indexed again");
 
             apply(census, mob, -1);
-            sweep(vectors);
+            sweep(vectors, census.corpseCells);
             assertTrue(vectors.isEmpty());
+            assertArrayEquals(new long[0], indexedKeys(census));
         } finally {
             vectors.resume.countDown();
             worker.shutdownNow();
             assertTrue(worker.awaitTermination(10, TimeUnit.SECONDS));
         }
+    }
+
+    @Test
+    void islandSnapshotReadsExactlyItsOwnCellsLiveAndCorpseKeys() {
+        SpawnCensus.LevelCensus census = new SpawnCensus.LevelCensus();
+        int live = 1 | (MobCategory.MONSTER.ordinal() << 3);
+        int corpse = 2 | (MobCategory.MONSTER.ordinal() << 3);
+        long a = net.minecraft.world.level.ChunkPos.pack(-1, -1);  // cell (-1,-1)
+        long b = net.minecraft.world.level.ChunkPos.pack(-8, 0);   // cell (-1, 0)
+        long c = net.minecraft.world.level.ChunkPos.pack(7, 7);    // cell ( 0, 0)
+        long d = net.minecraft.world.level.ChunkPos.pack(8, 7);    // cell ( 1, 0)
+        long e = net.minecraft.world.level.ChunkPos.pack(-9, -9);  // cell (-2,-2)
+        applyAt(census, a, live, 1);
+        applyAt(census, b, corpse, 1);
+        applyAt(census, c, live, 1);
+        applyAt(census, c, corpse, 1);
+        applyAt(census, d, live, 1);
+        applyAt(census, e, corpse, 1);
+
+        long[] own = {SpawnCensus.CELL_GRID.keyFor(a), SpawnCensus.CELL_GRID.keyFor(c),
+                SpawnCensus.CELL_GRID.keyFor(e)};
+        long[] expected = {a, c, e};
+        java.util.Arrays.sort(expected);
+        assertArrayEquals(expected, SpawnCensus.fabrolia$snapshotCellKeys(census, own));
     }
 
     private static PausingVectors installVectors(
@@ -184,13 +213,24 @@ class SpawnCensusQueryAcceptanceTest {
     }
 
     private static void apply(SpawnCensus.LevelCensus census, int state, int sign) {
-        invokeCensus("fabrolia$apply",
-                new Class<?>[]{SpawnCensus.LevelCensus.class, long.class, int.class, int.class},
-                census, 1L, state, sign);
+        applyAt(census, 1L, state, sign);
     }
 
-    private static void sweep(ConcurrentHashMap<Long, AtomicIntegerArray> vectors) {
-        invokeCensus("fabrolia$sweepZeroVectors", new Class<?>[]{ConcurrentHashMap.class}, vectors);
+    private static void applyAt(SpawnCensus.LevelCensus census, long chunkKey, int state, int sign) {
+        invokeCensus("fabrolia$apply",
+                new Class<?>[]{SpawnCensus.LevelCensus.class, long.class, int.class, int.class},
+                census, chunkKey, state, sign);
+    }
+
+    private static void sweep(ConcurrentHashMap<Long, AtomicIntegerArray> vectors,
+                              SpawnCensus.CellIndex index) {
+        SpawnCensus.fabrolia$sweepZeroVectors(vectors, index);
+    }
+
+    /** The ledger keys an island lane owning chunk 1's cell would snapshot. */
+    private static long[] indexedKeys(SpawnCensus.LevelCensus census) {
+        return SpawnCensus.fabrolia$snapshotCellKeys(census,
+                new long[]{SpawnCensus.CELL_GRID.keyFor(1L)});
     }
 
     private static void invokeCensus(String name, Class<?>[] parameterTypes, Object... arguments) {

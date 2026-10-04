@@ -18,11 +18,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * and a new map allocates its id through {@code computeIfAbsent(MapIndex)}.
  * Vanilla's cache is a plain HashMap written on a miss.
  *
- * <p>Hits stay lock-free on a concurrent map. A miss (disk read), {@code set}
- * and {@code computeIfAbsent} run under the storage monitor, so one type is
- * loaded or created exactly once and a disk miss can never overwrite a newer
- * {@code set}. The save pass iterates the concurrent map (weakly consistent,
- * as vanilla's own single-threaded order is).
+ * <p>Hits stay lock-free on a concurrent map — for {@code get} and for
+ * {@code computeIfAbsent}, whose vanilla hit path is exactly "return the cached
+ * value" (island spawn checks read the world border through it per candidate).
+ * A miss (disk read), {@code set} and a creating {@code computeIfAbsent} run
+ * under the storage monitor, so one type is loaded or created exactly once and
+ * a disk miss can never overwrite a newer {@code set}. The save pass iterates
+ * the concurrent map (weakly consistent, as vanilla's own single-threaded order is).
  */
 @Mixin(SavedDataStorage.class)
 public abstract class SavedDataStorageMixin {
@@ -38,9 +40,14 @@ public abstract class SavedDataStorageMixin {
     }
 
     @WrapMethod(method = "computeIfAbsent")
-    private synchronized <T extends SavedData> T fabrolia$serializedCreate(
+    @SuppressWarnings("unchecked")
+    private <T extends SavedData> T fabrolia$serializedCreate(
             SavedDataType<T> type, Operation<T> original) {
-        return original.call(type);
+        Optional<SavedData> cached = this.cache.get(type);
+        if (cached != null && cached.isPresent()) return (T) cached.get();
+        synchronized (this) {
+            return original.call(type);
+        }
     }
 
     @WrapMethod(method = "set")
