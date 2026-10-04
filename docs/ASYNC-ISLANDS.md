@@ -660,3 +660,33 @@ only take snapshots now. `common/save/AsyncSaveWriter` writes the files.
   (`save-all flush`, shutdown) and `stopServer` wait for every queued file
   after the islands run again. `PlayerDataStorage.load`, `PlayerAdvancements`
   (re)load and the stats file load wait for that file's queued write first.
+
+## 15. Entity tracking tick (opt/tracking, 2026-10-04)
+
+The VMP tracker tick (`NearbyEntityTrackingMixin`) is a discovery pass without
+gameplay authority; every pairing mutation is staged on the tracker and
+committed by its owner (island tail, or the claimed Main publication).
+
+- One position snapshot per indexed tracker per tick (parallel when large):
+  the decisions of a tick and the next tick's movement test use the same
+  position, so any later move is a move next tick. A re-indexed tracker always
+  counts as moved.
+- Viewer passes (`TrackingViewerPass`) run on the tick pool and on Main
+  (claim counter, unstarted helpers cancelled). A pair is re-staged only when
+  the exact vanilla outcome (distance with VMP's always-tracked chunk test,
+  `broadcastToPlayer`) differs from the current pairing, or while the tracker
+  has staged/committing membership. Removals from retired trackers are dropped
+  silently; a retired tracker never sends a second remove packet.
+- Already-attached island cadences are not re-routed by the tick (the tail
+  publishes them every unit).
+- Non-player tracker add/remove never takes the tracker lock
+  (`TrackerIndexChanges`): add stages the owner-tail bulk pairing immediately
+  and queues the area-index insertion; remove sets a tombstone and queues the
+  index removal. VMP's 200-tick staging is no longer used for them. Fresh
+  trackers are covered by lifecycle viewer removal and join the viewers'
+  tracked sets once their staged membership settled. Player trackers keep the
+  locked VMP path; VMP's recursive refresh tick on player removal is skipped.
+- Staged membership of island-compatible entities outside entity-ticking
+  range commits at the owning island's tail (same chunk claim the Main
+  publication used) while the server runs normally; no persistent publication
+  clock is kept there.
