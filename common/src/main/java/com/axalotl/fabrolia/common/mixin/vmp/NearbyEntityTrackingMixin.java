@@ -240,14 +240,20 @@ public abstract class NearbyEntityTrackingMixin
         original.call(self);
     }
 
+    /**
+     * The bulk bit and the queued insertion are published in one tracker
+     * transaction: the owner tail commits the bulk pairing under the same
+     * monitor, so no viewer can see this tracker before a lifecycle removal is
+     * able to find it through the queue.
+     */
     @Unique
     private boolean fabrolia$queueAdd(ChunkMap.TrackedEntity tracker) {
         if (!fabrolia$enabled() || tracker.entity instanceof ServerPlayer
-                || !(tracker instanceof IslandTrackedEntityAccess access)
-                || !IslandEntityTracking.stageBulkPairingRefreshIfOwned(access)) {
-            return false;
+                || !(tracker instanceof IslandTrackedEntityAccess access)) return false;
+        synchronized (tracker) {
+            if (!IslandEntityTracking.stageBulkPairingRefreshIfOwned(access)) return false;
+            this.fabrolia$indexChanges.queueAdd(tracker);
         }
-        this.fabrolia$indexChanges.queueAdd(tracker);
         return true;
     }
 
