@@ -46,6 +46,29 @@
   island), in Carpet's style. Both TPS values are measured ticks per second;
   Carpet's own figure is derived from MSPT and reads 20.0 whenever MSPT stays
   under 50 ms. Players on Main's lane keep Carpet's line unchanged.
+- Idle global regions are reclaimed inside the topology-rebuild pause (island
+  core and halo regions are kept). The region map no longer grows with every
+  cell ever visited, which made Main's per-tick global-lane sweep, the
+  datapack Main-remainder scan and rebuild snapshots slower with uptime
+  (production: entity dispatch 6.5 ms/tick on Main).
+- An island core cell losing its last loaded chunk no longer forces an
+  all-island topology rebuild; the change is folded into the next real
+  rebuild or applied after 5 s, and repopulating before then costs nothing.
+- Entity tracking on Main: queued tracker add/remove are applied on the tick
+  pool, and the per-tick tracker snapshot runs over a dense mirror instead of
+  copying VMP's map (stand: Main tracker tick 1.56 -> 1.20 ms/tick).
+- A rider's consecutive vehicle/listener packets on Main share one island
+  claim per drain instead of one claim each.
+- Region workers: an island's chunk pass resolves its own cells once and
+  takes its spawn census through a per-cell index of the mob ledger instead
+  of filtering the whole level ledger with a lookup per key (production:
+  ~15 ms/tick of map lookups and an 18 ms/tick census lane). The island's
+  local mob cap uses vanilla's plain calculator and per-pack check.
+- `ServerChunkCache.getChunk`: the Nether-portal read scope is a cheap HEAD
+  check instead of a whole-method wrap (stand: 6.7 ms/tick of worker time).
+  Island block-entity passes read block-ticking eligibility from one pinned
+  snapshot. The rate pacer is event-driven instead of polling every 100 µs
+  (production: 0.22 core).
 - Main no longer waits at the end of each level's entity phase for a busy
   island's running unit before running Main-owned entity bodies (player
   fallbacks, unsupported or forced-main entities). The island gets a standing
