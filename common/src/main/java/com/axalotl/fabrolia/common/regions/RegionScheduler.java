@@ -144,9 +144,11 @@ public final class RegionScheduler {
         NetherPortalTransfers.serviceMain(mcServer);
         // Islands stopped by a MAIN_SYNC service request since the last entity
         // phase are served here, ahead of the tracker publications (pump/tail order).
-        drainMainSyncOutOfPhase();
         // Parked island waiters (escalated function heads, routed commands):
-        // Main holds no claim or fence at this boundary.
+        // Main holds no claim or fence at this boundary. Routed before and after
+        // MAIN_SYNC so neither overtakes work published before the other.
+        if (IslandCommands.hasRoutedPending()) IslandCommands.drainRoutedBatch();
+        drainMainSyncOutOfPhase();
         if (IslandCommands.hasRoutedPending()) IslandCommands.drainRoutedBatch();
         drainReadyMainTracking();
         while (true) {
@@ -1462,7 +1464,7 @@ public final class RegionScheduler {
             if (((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return;
             // Per-tick datapack roots for an entity no function pass took since
             // its last tick (Main-owned players; Main ticks lagging their island).
-            IslandFunctionHead.runMainSyncEntityPass(entity, level.getServer());
+            IslandFunctionHead.runMainSyncEntityPass(entity, mainClaimOwnerOf(entity), level.getServer());
             entity.checkDespawn();
             if (!entity.isRemoved()) {
                 if (vanillaGuarded) ParallelProcessor.tickEntityVanillaGuarded(level, entity, false);

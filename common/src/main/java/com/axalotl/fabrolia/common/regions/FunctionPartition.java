@@ -292,48 +292,56 @@ public abstract class FunctionPartition {
     }
 
     // ------------------------------------------------------------------
-    // One Main-sync entity (physical Main, inside its MAIN_SYNC body)
+    // One Main-sync entity tree (physical Main, inside its MAIN_SYNC body)
     // ------------------------------------------------------------------
 
-    static FunctionPartition single(Entity entity) {
-        return new SinglePartition(entity);
+    static FunctionPartition mainSyncTree(Entity root, IslandRegistry.PIsland heldIsland) {
+        return new MainSyncTreePartition(root, heldIsland);
     }
 
     /**
-     * Exactly one entity whose tick body physical Main is about to run under
-     * the claim of its island (or in the global lane): chunks are owned while
-     * they belong to no island or to an island whose claim Main holds.
+     * The entity tree (root and its passengers) whose tick body physical Main
+     * is about to run under the claim of {@code heldIsland} (null: the global
+     * lane). A ridden vehicle's MAIN_SYNC body ticks its player passengers, so
+     * the tree is the pass. Chunks are owned under a held global fence or all
+     * claims of their level, or while they belong to {@code heldIsland}.
      */
-    static final class SinglePartition extends FunctionPartition {
-        final Entity entity;
+    static final class MainSyncTreePartition extends FunctionPartition {
+        final Entity root;
+        final IslandRegistry.PIsland heldIsland;
 
-        SinglePartition(Entity entity) {
-            this.entity = entity;
+        MainSyncTreePartition(Entity root, IslandRegistry.PIsland heldIsland) {
+            this.root = root;
+            this.heldIsland = heldIsland;
         }
 
         @Override
         protected List<Entity> candidates() {
-            return live(entity) ? List.of(entity) : List.of();
+            ArrayList<Entity> out = new ArrayList<>(2);
+            root.getSelfAndPassengers().forEach(e -> {
+                if (live(e)) out.add(e);
+            });
+            return out;
         }
 
         @Override
         public boolean owns(Entity e) {
-            return e == entity;
+            return e == root || e.getRootVehicle() == root;
         }
 
         @Override
         public boolean ownsChunk(ServerLevel level, int cx, int cz) {
             if (IslandCommands.fenceWindowHeld()) return true;
             RegionizedServer rs = RegionScheduler.forLevel(level);
-            if (rs == null) return true;
+            if (rs == null || rs.currentThreadHoldsAllClaims()) return true;
             IslandRegistry.PIsland owner =
                     rs.islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(cx, cz));
-            return owner == null || IslandCommands.mainHolds(owner);
+            return owner == heldIsland && (owner == null || IslandCommands.mainHolds(owner));
         }
 
         @Override
         public String describe() {
-            return "main-sync " + entity;
+            return "main-sync " + root;
         }
     }
 }

@@ -398,21 +398,30 @@ public final class IslandFunctionHead {
     // ------------------------------------------------------------------
 
     /**
-     * An entity whose tick physical Main runs (MAIN_SYNC lane, under its
-     * island's claim or in the global lane) and which no pass took since its
-     * last tick: run the armed roots for it now, before its tick body. Covers
-     * Main-owned players (an island head never runs them: strict C1) and any
-     * entity whose queued Main tick lagged behind its island's next head.
-     * Owner-local lines run here; an escalate match runs inline under a held
-     * global fence, otherwise the rest of that entity's pass is handed to the
-     * fenced routed batch (Main holds an island claim here and must not
-     * quiesce from inside it).
+     * An entity tree whose tick physical Main runs (MAIN_SYNC lane, under its
+     * island's claim or in the global lane) and of which some member no pass
+     * took since its last tick: run the armed roots for those members now,
+     * before the tick body. Covers Main-owned players (an island head never
+     * runs them: strict C1), players riding a Main-ticked vehicle, and entities
+     * whose queued Main tick lagged behind their island's next head.
+     * Owner-local lines run here; an escalate match runs the rest of this pass
+     * inline under the global fence (islands Main holds count as quiescent),
+     * so neither this tick nor the members' next pass overtakes it.
      */
-    public static void runMainSyncEntityPass(Entity entity, MinecraftServer server) {
+    public static void runMainSyncEntityPass(Entity root, IslandRegistry.PIsland heldIsland,
+                                             MinecraftServer server) {
         Armed armed = ARMED;
         if (armed.isEmpty() || FunctionAnalyzer.plan() != armed.plan()) return;
-        // Cheap common case first: the island head already took this entity.
-        FunctionPartition partition = FunctionPartition.single(entity);
+        // Cheap common case first: the island head already took every member.
+        boolean owed = false;
+        for (Entity e : root.getSelfAndPassengers().toList()) {
+            if (((FunctionPassMark) e).fabrolia$functionPassOwed()) {
+                owed = true;
+                break;
+            }
+        }
+        if (!owed) return;
+        FunctionPartition partition = FunctionPartition.mainSyncTree(root, heldIsland);
         FunctionPartition.Pass pass = partition.open(NEXT_ISLAND_PASS.getAndIncrement(), false);
         if (pass.isEmpty()) return;
         ArrayList<FunctionPlan.RootPlan> roots = new ArrayList<>(armed.tickRoots());
@@ -441,14 +450,8 @@ public final class IslandFunctionHead {
                 FunctionFenceDiag.MAIN_ESCALATIONS.increment();
                 FunctionFenceDiag.escalated(label);
             });
-            Runnable rest = () -> IslandFunctionScope.runUnscoped(() -> runRemainderFenced(
+            runFencedOnMain(() -> runRemainderFenced(
                     armed.plan(), steps, from, matches, abortedNow, pass, server));
-            if (IslandCommands.fenceWindowHeld()) {
-                rest.run();
-            } else {
-                RegionScheduler.commitSuccessIfHealthy(FunctionFenceDiag.DEFERRED_ESCALATIONS::increment);
-                IslandCommands.enqueueFencedBody(rest);
-            }
             return;
         }
     }

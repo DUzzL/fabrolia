@@ -24,4 +24,7 @@ public interface FunctionPassMark {
 
     /** Tick boundary: the next interval owes a pass again. */
     void fabrolia$functionPassTick();
+
+    /** Whether no pass took this entity since its last tick (plain read). */
+    boolean fabrolia$functionPassOwed();
 }

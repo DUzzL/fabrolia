@@ -38,8 +38,6 @@ public final class FunctionFenceDiag {
     public static final LongAdder MAIN_REMAINDER_FENCES = new LongAdder();
     /** Per-entity passes run inside MAIN_SYNC bodies (Main-owned players, lagged Main ticks). */
     public static final LongAdder MAIN_SYNC_ENTITY_PASSES = new LongAdder();
-    /** Main-sync escalations handed to the fenced routed batch. */
-    public static final LongAdder DEFERRED_ESCALATIONS = new LongAdder();
     /** Island loop callbacks re-armed on Main without executing the function. */
     public static final LongAdder LOOP_REARMS = new LongAdder();
     /** Escalated bodies dropped because a reload replaced the plan meanwhile. */
@@ -72,7 +70,7 @@ public final class FunctionFenceDiag {
         for (LongAdder a : new LongAdder[]{TICK_FUNCTIONS_QUEUED, TICK_HEAD_FENCED, TIMER_DUE_FENCES,
                 FUNCTION_FENCES, ISLAND_ROOT_PASSES, ISLAND_ESCALATIONS, MAIN_ROOT_PASSES,
                 MAIN_ESCALATIONS, MAIN_ESCALATION_FENCES, MAIN_REMAINDER_FENCES, MAIN_SYNC_ENTITY_PASSES,
-                DEFERRED_ESCALATIONS, LOOP_REARMS, STALE_ESCALATIONS,
+                LOOP_REARMS, STALE_ESCALATIONS,
                 WORKER_OWNER_LOCAL}) {
             a.reset();
         }
@@ -97,8 +95,7 @@ public final class FunctionFenceDiag {
                 + " (fences " + rate(MAIN_ESCALATION_FENCES, ticks) + ")"
                 + ", Main remainder passes fenced for async-level members: "
                 + rate(MAIN_REMAINDER_FENCES, ticks));
-        out.add(" Main-sync entity passes: " + rate(MAIN_SYNC_ENTITY_PASSES, ticks)
-                + ", their escalations deferred to the fenced batch: " + rate(DEFERRED_ESCALATIONS, ticks));
+        out.add(" Main-sync entity passes: " + rate(MAIN_SYNC_ENTITY_PASSES, ticks));
         out.add(" loop re-arms without fence: " + rate(LOOP_REARMS, ticks)
                 + ", stale escalations: " + STALE_ESCALATIONS.sum()
                 + ", worker owner-local functions: " + WORKER_OWNER_LOCAL.sum());
