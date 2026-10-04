@@ -1,7 +1,5 @@
 package com.axalotl.fabrolia.common.regions;
 
-import it.unimi.dsi.fastutil.longs.Long2ByteMap;
-
 /**
  * Duck installed on {@code SimulationChunkTracker}: simulation levels as of the
  * last COMPLETED propagation wave.
@@ -23,13 +21,15 @@ import it.unimi.dsi.fastutil.longs.Long2ByteMap;
  * <p>The view is republished at {@code runAllUpdates} RETURN (same monitor as
  * mutation) and is immutable after publish: every reader — worker or main —
  * observes only completed waves, restoring vanilla's "ticket changes apply at
- * defined points" semantics. Between waves, view == live.
+ * defined points" semantics. Between waves, view == live. Publication is
+ * paged copy-on-write ({@link CompletedChunkLevels}): only pages a wave
+ * touched are copied, the rest are shared with the previous snapshot.
  */
 public interface CompletedSimulationView {
 
     /** Simulation level from the last completed wave; 33 (= not simulated) when absent. */
     int fabrolia$completedLevel(long chunkPos);
 
-    /** The published snapshot itself (read-only — NEVER mutate). */
-    Long2ByteMap fabrolia$completedView();
+    /** The published snapshot itself (immutable). */
+    CompletedChunkLevels fabrolia$completedLevels();
 }

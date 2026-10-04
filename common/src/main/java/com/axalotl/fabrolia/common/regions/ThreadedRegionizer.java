@@ -23,8 +23,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * up as worker-wave latency on the 2026-06-13 color-gate profile. Reads are
  * now plain CHM gets (~10ns); creation is an atomic compute behind a cold-path
  * fair READ gate. Ordinary snapshots stay weakly consistent (sweep/heal both
- * re-run continuously); a topology-domain rebuild takes the matching WRITE so
- * creation and its final successor-snapshot publication cannot straddle.
+ * re-run continuously); a topology-domain rebuild or the global-domain
+ * dispatch cut takes the matching level WRITE so creation and its final
+ * successor-snapshot publication cannot straddle. An island's dispatch cut
+ * takes only its own domain's {@link EpochDomain#regionCreationGate} WRITE.
  */
 public final class ThreadedRegionizer {
 
@@ -75,38 +77,53 @@ public final class ThreadedRegionizer {
             if (r != null && r.state() == RegionState.ACTIVE) {
                 return r;
             }
-            // Absent, or a region the idle-evictor is retiring (STOPPING/STOPPED): atomically
-            // install a fresh ACTIVE region, REPLACING any dying mapping. compute() races
-            // cleanly with evictIdle()'s conditional remove(key, dyingRegion) — whichever runs
-            // last, the cell ends up mapped to exactly one ACTIVE region, so a chunk/entity that
-            // lands here right as its region is reclaimed is never lost (boxing on the Long key
-            // is on this cold create path only, never the hot get above).
-            return regionsByGridKey.compute(gridKey, (k, existing) -> {
-                if (existing != null && existing.state() == RegionState.ACTIVE) {
-                    return existing;
-                }
-                Region created = new Region(level, k);
-                created.compareAndSetState(RegionState.NEW, RegionState.ACTIVE);
-                // A newborn region must enter one coherent point in its domain
-                // timeline. The creation READ is admitted either before the
-                // entity-dispatch WRITE cut (captured candidate, all stamps
-                // E-1) or after it (not barrier-counted, all stamps E).
-                // Publishing only doneEpoch used to strand a pre-cut island
-                // region: dispatch grouped it, ColorGate refused it as already
-                // done, and entityPending retained one contribution.
-                RegionizedServer o = owner;
-                if (o != null) {
-                    // Resolve the destination cell before publishing the region.
-                    // A cold cross-island task must not inherit the submitting
-                    // worker's claimed region or unit-coordinator timeline.
-                    EpochDomain d = o.domainForCreation(created.gridKey);
-                    created.initializeDomainAtCreation(d);
-                }
-                return created;
-            });
+            // Resolve the destination cell's domain before publishing the
+            // region. A cold cross-island task must not inherit the submitting
+            // worker's claimed region or unit-coordinator timeline. Stable for
+            // this whole admission: the cell snapshot is only republished
+            // under the level WRITE this READ excludes.
+            RegionizedServer o = owner;
+            EpochDomain d = o == null ? null : o.domainForCreation(gridKey);
+            if (d == null) {
+                return install(gridKey, null);
+            }
+            // The domain READ pairs with that domain's own dispatch cut.
+            d.regionCreationGate.readLock().lock();
+            try {
+                return install(gridKey, d);
+            } finally {
+                d.regionCreationGate.readLock().unlock();
+            }
         } finally {
             creationTopologyGate.readLock().unlock();
         }
+    }
+
+    private Region install(long gridKey, EpochDomain d) {
+        // Absent, or a region the idle-evictor is retiring (STOPPING/STOPPED): atomically
+        // install a fresh ACTIVE region, REPLACING any dying mapping. compute() races
+        // cleanly with evictIdle()'s conditional remove(key, dyingRegion) — whichever runs
+        // last, the cell ends up mapped to exactly one ACTIVE region, so a chunk/entity that
+        // lands here right as its region is reclaimed is never lost (boxing on the Long key
+        // is on this cold create path only, never the hot get above).
+        return regionsByGridKey.compute(gridKey, (k, existing) -> {
+            if (existing != null && existing.state() == RegionState.ACTIVE) {
+                return existing;
+            }
+            Region created = new Region(level, k);
+            created.compareAndSetState(RegionState.NEW, RegionState.ACTIVE);
+            // A newborn region must enter one coherent point in its domain
+            // timeline. The creation READ is admitted either before the
+            // entity-dispatch WRITE cut (captured candidate, all stamps
+            // E-1) or after it (not barrier-counted, all stamps E).
+            // Publishing only doneEpoch used to strand a pre-cut island
+            // region: dispatch grouped it, ColorGate refused it as already
+            // done, and entityPending retained one contribution.
+            if (d != null) {
+                created.initializeDomainAtCreation(d);
+            }
+            return created;
+        });
     }
 
     /** Topology writer admission. Never retain this while awaiting a claim tail
@@ -117,6 +134,20 @@ public final class ThreadedRegionizer {
 
     void unlockTopologyCreationWrite() {
         creationTopologyGate.writeLock().unlock();
+    }
+
+    /**
+     * One island domain's entity-dispatch membership cut. Excludes exactly the
+     * creators whose new region takes {@code domain}; never the level gate, so
+     * other islands' cuts and creators proceed. The holder may only read the
+     * region map (it must not create a Region or wait on anything).
+     */
+    void lockDomainCreationCut(EpochDomain domain) {
+        domain.regionCreationGate.writeLock().lock();
+    }
+
+    void unlockDomainCreationCut(EpochDomain domain) {
+        domain.regionCreationGate.writeLock().unlock();
     }
 
     /** Test/model hook for an already-admitted creator. Production creators use

@@ -1,12 +1,12 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap;
+import com.axalotl.fabrolia.common.regions.CompletedChunkLevels;
 import com.axalotl.fabrolia.common.regions.CompletedSimulationView;
 import com.axalotl.fabrolia.common.regions.RegionTickingAccess;
 import com.axalotl.fabrolia.common.regions.RegionTickingChunks;
 import com.axalotl.fabrolia.common.regions.RegionTickingTrackerBind;
 import it.unimi.dsi.fastutil.longs.Long2ByteMap;
-import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Mutable;
@@ -55,16 +55,30 @@ public abstract class SimulationChunkTrackerMixin implements RegionTickingTracke
 
     /**
      * Simulation levels as of the last COMPLETED propagation wave (see
-     * {@link CompletedSimulationView} for the incident). Plain immutable map,
-     * republished via this volatile at {@code runAllUpdates} RETURN — mutation
-     * and publish both run under the chunkMap monitor, so the dirty flag below
-     * needs no synchronization of its own. Readers see completed states only.
+     * {@link CompletedSimulationView} for the incident). Immutable paged
+     * snapshot, republished via this volatile at {@code runAllUpdates} RETURN.
+     * Readers see completed states only.
      */
     @Unique
-    private volatile Long2ByteOpenHashMap fabrolia$completedView;
+    private volatile CompletedChunkLevels fabrolia$completedView;
+
+    /**
+     * Live paged mirror of {@code chunks}. Mutation ({@code setLevel}) and
+     * publish both run under the chunkMap monitor, so it needs no
+     * synchronization of its own.
+     */
+    @Unique
+    private CompletedChunkLevels.Builder fabrolia$liveLevels;
+
+    /** {@code chunks.size() - mirror size} accepted at the last resync (entries equal to the default). */
+    @Unique
+    private int fabrolia$mirrorSkew;
 
     @Unique
-    private boolean fabrolia$viewDirty;
+    private boolean fabrolia$mirrorWarned;
+
+    @Unique
+    private static final org.slf4j.Logger FABROLIA$LOG = org.slf4j.LoggerFactory.getLogger("Fabrolia");
 
     @Override
     public void fabrolia$setChunkMap(ChunkMap chunkMap) {
@@ -77,7 +91,7 @@ public abstract class SimulationChunkTrackerMixin implements RegionTickingTracke
     }
 
     @Override
-    public Long2ByteMap fabrolia$completedView() {
+    public CompletedChunkLevels fabrolia$completedLevels() {
         return this.fabrolia$completedView;
     }
 
@@ -86,31 +100,39 @@ public abstract class SimulationChunkTrackerMixin implements RegionTickingTracke
         byte defaultVal = this.chunks.defaultReturnValue();
         this.chunks = new Long2ByteConcurrentHashMap();
         this.chunks.defaultReturnValue(defaultVal);
-        Long2ByteOpenHashMap emptyView = new Long2ByteOpenHashMap();
-        emptyView.defaultReturnValue(defaultVal);
-        this.fabrolia$completedView = emptyView;
+        this.fabrolia$liveLevels = new CompletedChunkLevels.Builder(defaultVal);
+        this.fabrolia$completedView = this.fabrolia$liveLevels.published();
     }
 
     /** Republish the completed view once the wave has fully relaxed. Runs under
-     *  the same chunkMap monitor as the mutations; the snapshot iteration sees a
-     *  quiescent map. No-change waves skip the copy entirely. */
+     *  the same chunkMap monitor as the mutations. No-change waves keep the
+     *  previous snapshot; a changed wave copies only the pages it touched. */
     @Inject(method = "runAllUpdates", at = @At("RETURN"))
     private void fabrolia$publishCompletedView(CallbackInfo ci) {
-        if (!this.fabrolia$viewDirty) {
-            return;
+        CompletedChunkLevels.Builder live = this.fabrolia$liveLevels;
+        int authoritative = this.chunks.size();
+        if (live.size() + this.fabrolia$mirrorSkew != authoritative) {
+            // Something mutated chunks without passing setLevel. The flat copy
+            // this replaced absorbed that silently; resync, and say so once.
+            live.resetFrom(this.chunks);
+            if (!this.fabrolia$mirrorWarned) {
+                this.fabrolia$mirrorWarned = true;
+                FABROLIA$LOG.warn("Simulation level map changed outside setLevel ({} live entries);"
+                        + " completed view resynchronized from the live map", authoritative);
+            }
+            this.fabrolia$mirrorSkew = authoritative - live.size();
         }
-        this.fabrolia$viewDirty = false;
-        Long2ByteOpenHashMap copy = new Long2ByteOpenHashMap(Math.max(16, this.chunks.size()));
-        copy.defaultReturnValue(this.chunks.defaultReturnValue());
-        for (Long2ByteMap.Entry e : this.chunks.long2ByteEntrySet()) {
-            copy.put(e.getLongKey(), e.getByteValue());
-        }
-        this.fabrolia$completedView = copy;
+        this.fabrolia$completedView = live.publish();
+    }
+
+    /** Mirrors the authoritative post-write value: vanilla removes at >= 33. */
+    @Inject(method = "setLevel(JI)V", at = @At("RETURN"))
+    private void fabrolia$mirrorLevel(long pos, int newLevel, CallbackInfo ci) {
+        this.fabrolia$liveLevels.set(pos, this.chunks.get(pos));
     }
 
     @Inject(method = "setLevel(JI)V", at = @At("HEAD"))
     private void fabrolia$trackEntityTicking(long pos, int newLevel, CallbackInfo ci) {
-        this.fabrolia$viewDirty = true;
         ChunkMap cm = this.fabrolia$chunkMap;
         if (cm == null) {
             return;

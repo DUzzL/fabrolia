@@ -47,6 +47,21 @@ public final class NetherPortalTransfers {
             ThreadLocal.withInitial(IdentityHashMap::new);
     private static final ThreadLocal<Scope> ACTIVE = new ThreadLocal<>();
     private static final ConcurrentHashMap<IslandRegistry.PIsland, Set<Transfer>> PRELUDES = new ConcurrentHashMap<>();
+    /**
+     * Domain sources whose cohort queue is non-empty, maintained under each
+     * source's monitor by {@link NetherSourceCohorts.Activity}. Workers poll only
+     * these, never every domain that ever submitted a transfer ({@link #DOMAINS}
+     * is pruned only at level unload), and leave in O(1) when it is empty.
+     */
+    private static final Set<Source> QUEUED_SOURCES = ConcurrentHashMap.newKeySet();
+    private static final AtomicInteger QUEUED_SOURCE_COUNT = new AtomicInteger();
+    /**
+     * Minimum spacing between attempts of the same not-yet-executable head. A
+     * head waits on island claims, player readiness or Main-side preparation;
+     * re-running publishPrelude + tryCohort back-to-back only burned a worker
+     * and churned the owners' claims. Bounded extra latency, far below a tick.
+     */
+    private static final long HEAD_RETRY_NANOS = 100_000L;
     private static final ThreadLocal<Boolean> CLAIMING = new ThreadLocal<>();
     private static volatile MinecraftServer server;
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger("Fabrolia-Nether");
@@ -203,44 +218,101 @@ public final class NetherPortalTransfers {
         if (source != null) source.queue.cancelOpen(failure);
     }
 
-    private static final NetherSourceCohorts<Transfer> EMPTY_SOURCE =
-            new NetherSourceCohorts<>(Transfer::cancel);
-
     private static final class Source {
         final EpochDomain domain;
         final ServerLevel level;
-        final NetherSourceCohorts<Transfer> queue = new NetherSourceCohorts<>(Transfer::cancel);
-        Source(EpochDomain domain, ServerLevel level) { this.domain = domain; this.level = level; }
+        final NetherSourceCohorts<Transfer> queue;
+        /** Gate-holder written (since before paced); a racy read only skips or repeats one poll. */
+        volatile long pacedSince;
+        volatile boolean paced;
+        Source(EpochDomain domain, ServerLevel level) {
+            this.domain = domain;
+            this.level = level;
+            this.queue = domain == null
+                    ? new NetherSourceCohorts<>(Transfer::cancel)
+                    : new NetherSourceCohorts<>(Transfer::cancel, this::queuedChanged);
+        }
+        /** Under this source's monitor: one source's transitions are totally ordered. */
+        private void queuedChanged(boolean nonEmpty) {
+            if (nonEmpty) {
+                if (QUEUED_SOURCES.add(this)) QUEUED_SOURCE_COUNT.incrementAndGet();
+            } else {
+                forgetQueued(this);
+            }
+        }
+        boolean pacedAt(long now) {
+            return paced && now - pacedSince < HEAD_RETRY_NANOS;
+        }
+    }
+
+    /** Exactly one remover decrements: CHM key-set removal is atomic. */
+    private static void forgetQueued(Source source) {
+        if (QUEUED_SOURCES.remove(source)) QUEUED_SOURCE_COUNT.decrementAndGet();
+    }
+
+    private static final NetherSourceCohorts<Transfer> EMPTY_SOURCE =
+            new NetherSourceCohorts<>(Transfer::cancel);
+
+    /** The idle worker-loop pass: a head that just failed is re-tried after {@link #HEAD_RETRY_NANOS}. */
+    static boolean serviceOne() {
+        return serviceOne(true);
     }
 
     /** Only the top-level worker loop calls this; never a region/help pump. */
-    static boolean serviceOne() {
+    private static boolean serviceOne(boolean honorPacing) {
         if (!(Thread.currentThread() instanceof RegionWorkerThread worker)
                 || worker.currentRegion != null || worker.currentDomain != null
                 || ParallelProcessor.IN_ENTITY_TICK.get()) return false;
+        // Idle exit before the pool lifecycle monitor: nothing transported and
+        // nothing for serviceClaimFree to move.
+        if (QUEUED_SOURCE_COUNT.get() == 0 && !NetherPortalPreparation.hasStaged()) return false;
         RegionWorkerPool causalPool = RegionWorkerPool.currentThreadCausalOwnerOrNull();
         if (causalPool == null || !causalPool.mayServiceDetachedTransfers()) return false;
         NetherPortalPreparation.serviceClaimFree();
-        refreshPreludes();
-        for (Source source : DOMAINS.values()) {
+        if (QUEUED_SOURCE_COUNT.get() == 0) return false;
+        for (Source source : QUEUED_SOURCES) {
+            if (honorPacing && source.pacedAt(System.nanoTime())) continue;
+            // At most one attempt per source; every other poller backs out on
+            // the cohort gate without touching the source monitor.
             NetherSourceCohorts.Cohort<Transfer> cohort = source.queue.tryAcquireHead();
             if (cohort == null) continue;
-            try (cohort) {
-                if (tryCohort(cohort, false)) {
-                    cohort.complete();
-                    clearPrelude(cohort.items().getFirst());
-                    return true;
+            boolean executed = false;
+            try {
+                try {
+                    executed = tryCohort(cohort, false);
+                    if (executed) {
+                        cohort.complete();
+                        clearPrelude(cohort.items().getFirst());
+                    } else {
+                        publishPrelude(cohort.items());
+                    }
+                } finally {
+                    // Pacing belongs to the gate holder: publish it before the gate opens.
+                    if (executed) {
+                        source.paced = false;
+                    } else {
+                        source.pacedSince = System.nanoTime();
+                        source.paced = true;
+                    }
+                    cohort.close();
                 }
-                publishPrelude(cohort.items());
+            } catch (Throwable failure) {
+                NetherPortalTransfers.<RuntimeException>rethrow(RegionScheduler.publishFatalAndSelectWinner(failure));
             } finally {
                 NetherPortalPreparation.serviceClaimFree();
             }
+            if (executed) return true;
         }
         return false;
     }
 
+    /**
+     * A unit about to claim its island is exactly when a head whose prelude
+     * holds that island can take the claim instead, so this path ignores
+     * pacing (a lagging or chained island must not lose its drive to it).
+     */
     static void beforeUnitAdmission() {
-        serviceOne();
+        serviceOne(false);
     }
 
     /** Read under unitAdmissionLock; never takes a player or preparation monitor. */
@@ -248,18 +320,6 @@ public final class NetherPortalTransfers {
         if (Boolean.TRUE.equals(CLAIMING.get())) return false;
         Set<Transfer> pending = PRELUDES.get(owner);
         return pending != null && !pending.isEmpty();
-    }
-
-    private static void refreshPreludes() {
-        for (Source source : DOMAINS.values()) {
-            NetherSourceCohorts.Cohort<Transfer> cohort = source.queue.tryAcquireHead();
-            if (cohort == null) continue;
-            try {
-                publishPrelude(cohort.items());
-            } catch (Throwable failure) {
-                NetherPortalTransfers.<RuntimeException>rethrow(RegionScheduler.publishFatalAndSelectWinner(failure));
-            } finally { cohort.close(); }
-        }
     }
 
     private static void publishPrelude(List<Transfer> items) {
@@ -349,6 +409,14 @@ public final class NetherPortalTransfers {
                 if (!transfer.addFootprint(footprint, quiescent)) return false;
             }
             if (live.isEmpty()) return true;
+            // resolve() refuses while Main still owes this destination its
+            // preparation; deciding that before Claims.tryAcquire spares the
+            // owners a claim/pose/restore round-trip per attempt meanwhile.
+            if (!quiescent) {
+                for (Transfer transfer : live) {
+                    if (transfer.preparation.awaitingMain()) return false;
+                }
+            }
             claims = Claims.tryAcquire(footprint, quiescent);
             if (claims == null) return false;
             for (Transfer transfer : live) {
@@ -1089,7 +1157,8 @@ public final class NetherPortalTransfers {
         if (RegionScheduler.isActive()) NetherPortalPreparation.serviceMain(current);
         else NetherPortalPreparation.serviceQuiescent(current);
         boolean compatibility = !FLAT_DOMAINS.isEmpty();
-        for (Source source : DOMAINS.values()) {
+        // serviceCompatibility is a no-op for an empty queue: scan only queued sources.
+        for (Source source : QUEUED_SOURCES) {
             RegionizedServer runtime = RegionScheduler.forLevel(source.level);
             if (runtime == null || !runtime.asyncActive) { compatibility = true; break; }
         }
@@ -1103,7 +1172,7 @@ public final class NetherPortalTransfers {
                 RegionScheduler.commitSuccessIfHealthy(seal::commit);
                 serviceCompatibility(source);
             }
-            for (Source source : DOMAINS.values()) {
+            for (Source source : QUEUED_SOURCES) {
                 RegionizedServer runtime = RegionScheduler.forLevel(source.level);
                 if (runtime == null || !runtime.asyncActive) serviceCompatibility(source);
             }
@@ -1175,7 +1244,12 @@ public final class NetherPortalTransfers {
         }
         ACTIVE_CHUNKS.entrySet().removeIf(entry -> entry.getValue().level == level);
         synchronized (PRELUDES) {
-            DOMAINS.entrySet().removeIf(entry -> entry.getValue().level == level);
+            DOMAINS.entrySet().removeIf(entry -> {
+                if (entry.getValue().level != level) return false;
+                // Its transfers were cancelled above; like DOMAINS, stop polling it.
+                forgetQueued(entry.getValue());
+                return true;
+            });
             FLAT_DOMAINS.remove(level);
             Set<Transfer> notices = ConcurrentHashMap.newKeySet();
             for (Set<Transfer> pending : PRELUDES.values()) notices.addAll(pending);
@@ -1194,6 +1268,8 @@ public final class NetherPortalTransfers {
     public static void shutdown() {
         if (!SOURCES.isEmpty()) throw new IllegalStateException("Nether shutdown retained accepted requests");
         DOMAINS.clear();
+        QUEUED_SOURCES.clear();
+        QUEUED_SOURCE_COUNT.set(0);
         FLAT_DOMAINS.clear();
         PRELUDES.clear();
         NetherPortalPreparation.resetAfterShutdown();
@@ -1210,6 +1286,7 @@ public final class NetherPortalTransfers {
             catch (Throwable cleanup) { failure = merge(failure, cleanup); }
         }
         DOMAINS.clear();
+        for (Source source : QUEUED_SOURCES) forgetQueued(source);
         FLAT_DOMAINS.clear();
         PRELUDES.clear();
         return failure;

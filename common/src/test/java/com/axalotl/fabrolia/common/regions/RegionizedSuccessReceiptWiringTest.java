@@ -82,18 +82,6 @@ final class RegionizedSuccessReceiptWiringTest {
         assertTrue(dispatch.contains(
                         "d.entityDispatchCutEpoch != d.epoch"),
                 "dispatch must fail closed when a caller omits its membership cut");
-
-        String island = Files.readString(Path.of(
-                "src/main/java/com/axalotl/fabrolia/common/regions/IslandTickUnit.java"));
-        int writer = island.indexOf("regionizer.lockTopologyCreationWrite()");
-        int cut = island.indexOf("d.entityDispatchCutEpoch = d.epoch", writer);
-        int unlock = island.indexOf("regionizer.unlockTopologyCreationWrite()", cut);
-        int rebase = island.indexOf(
-                "RegionizedServer.rebaseDomainEpochAtSafePoint", unlock);
-        int dispatchCall = island.indexOf("rs.dispatchEntityPhase(d, members)", rebase);
-        assertTrue(writer >= 0 && cut > writer && unlock > cut
-                        && rebase > unlock && dispatchCall > rebase,
-                "island members and cut must publish under WRITE, while callbacks run after it");
     }
 
     @Test

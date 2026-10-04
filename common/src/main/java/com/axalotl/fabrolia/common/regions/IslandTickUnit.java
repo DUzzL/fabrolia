@@ -1028,16 +1028,18 @@ public final class IslandTickUnit {
                     d.epoch++;
 
                     // Linearize this finite core+halo membership generation
-                    // against cold Region creation/replacement. A creator
-                    // already admitted through the matching READ finishes and
-                    // appears below; a later creator waits, observes cut=E,
-                    // and cannot owe or contribute to this barrier.
+                    // against cold Region creation/replacement for THIS
+                    // domain. A creator already admitted through the domain
+                    // READ finishes and appears below; a later one waits,
+                    // observes cut=E, and cannot owe or contribute to this
+                    // barrier. Creators for other domains cannot become
+                    // members here, so other islands' cuts do not wait.
                     ThreadedRegionizer regionizer = rs.regionizer();
                     ArrayList<Region> coreAtCut =
                             new ArrayList<>(island.cells.size());
                     ArrayList<Region> haloAtCut =
                             new ArrayList<>(island.haloCells.size());
-                    regionizer.lockTopologyCreationWrite();
+                    regionizer.lockDomainCreationCut(d);
                     try {
                         LongIterator it = island.cells.iterator();
                         while (it.hasNext()) {
@@ -1053,11 +1055,11 @@ public final class IslandTickUnit {
                         }
                         d.entityDispatchCutEpoch = d.epoch;
                     } finally {
-                        regionizer.unlockTopologyCreationWrite();
+                        regionizer.unlockDomainCreationCut(d);
                     }
 
                     // Do domain-rebase waits and callbacks only after releasing
-                    // topology WRITE: a drained callback may itself create a
+                    // the domain cut WRITE: a drained callback may itself create a
                     // destination Region. Every object below was already on the
                     // captured side of the cut.
                     ArrayList<Region> members =
@@ -1463,6 +1465,14 @@ public final class IslandTickUnit {
                 new EntityBarrierWatchdog(
                         d.entityPending.get(), System.nanoTime());
         OwnBarrierCursor ownHelpCursor = new OwnBarrierCursor();
+        // The last contribution usually lands on another worker while this
+        // coordinator sleeps in the 20 us poll below (~70 us with Linux timer
+        // slack); wake it at completion instead. A stale permit only shortens
+        // one later park, and every park in the pool re-checks its condition.
+        if (!barrier.isDone()) {
+            Thread coordinator = Thread.currentThread();
+            barrier.whenComplete((ignored, failure) -> LockSupport.unpark(coordinator));
+        }
         while (!barrier.isDone() && RegionScheduler.poolRunning()) {
             RegionScheduler.throwWorkerFailureIfAny();
             // The direct helper uses the ordinary ready transaction and leaves

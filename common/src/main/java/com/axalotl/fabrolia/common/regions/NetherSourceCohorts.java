@@ -1,5 +1,7 @@
 package com.axalotl.fabrolia.common.regions;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -9,23 +11,57 @@ import java.util.function.BiConsumer;
 
 /** Source-owned staging and ordered, retryable transport; acquiring a cohort never waits. */
 public final class NetherSourceCohorts<T> {
+    /**
+     * Observes the transported queue becoming non-empty / empty. Invoked while
+     * holding this source's monitor, so one source's notifications are totally
+     * ordered and always match {@code queued}; implementations must not block.
+     */
+    public interface Activity {
+        Activity NONE = nonEmpty -> { };
+
+        void changed(boolean nonEmpty);
+    }
+
+    private static final VarHandle ATTEMPT;
+
+    static {
+        try {
+            ATTEMPT = MethodHandles.lookup().findVarHandle(NetherSourceCohorts.class, "attempt", int.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
     private final Object monitor = new Object();
     private final BiConsumer<T, Throwable> cancellation;
+    private final Activity activity;
     private final ArrayDeque<Prepared<T>> queue = new ArrayDeque<>();
     private List<T> stage = new ArrayList<>();
     private final Prepared<T> empty = new Prepared<>(this, List.of());
     /**
      * {@code queue.size()}, republished under the monitor after every change.
-     * Every idle region worker polls every source's head on each loop pass
-     * ({@code NetherPortalTransfers.serviceOne}); with the queues almost always
-     * empty that monitor traffic was pure contention (35 s blocked + 25 s CPU
-     * over 3 min on the 2026-10-03 production profile). A read racing a
-     * concurrent prepare() may miss it once: the next pass sees it.
+     * Every idle region worker may poll a source between units; with the
+     * queue almost always empty, monitor traffic there was pure contention.
+     * A read racing a concurrent prepare() may miss it once: the next pass sees it.
      */
     private volatile int queued;
+    /**
+     * Single-attempt gate (0 free, 1 taken). Only the head can ever be handed
+     * out and only to one attempt at a time; deciding that BEFORE the monitor
+     * lets every other poller back out with one failed CAS instead of
+     * convoying on the monitor (2026-10-03 production: 35 s blocked). Taken
+     * only by {@link #tryAcquireHead}, released exactly once by the winning
+     * call's own refusal or by its cohort's first {@code complete/close}.
+     */
+    private volatile int attempt;
 
     public NetherSourceCohorts(BiConsumer<T, Throwable> cancellation) {
+        this(cancellation, Activity.NONE);
+    }
+
+    public NetherSourceCohorts(BiConsumer<T, Throwable> cancellation, Activity activity) {
         this.cancellation = Objects.requireNonNull(cancellation);
+        this.activity = Objects.requireNonNull(activity);
     }
 
     public void stage(T item) {
@@ -33,6 +69,11 @@ public final class NetherSourceCohorts<T> {
         synchronized (monitor) {
             stage.add(item);
         }
+    }
+
+    /** True while at least one detached cohort (offering, accepted or cancelled) is queued. */
+    public boolean hasQueued() {
+        return queued != 0;
     }
 
     /** Detaches the stage after the source phase has closed its writers, without accepting it. */
@@ -46,7 +87,7 @@ public final class NetherSourceCohorts<T> {
             stage = nextStage;
             try {
                 queue.addLast(prepared);
-                queued = queue.size();
+                publishQueuedSize();
             } catch (Throwable thrown) {
                 failure = thrown;
             }
@@ -68,24 +109,44 @@ public final class NetherSourceCohorts<T> {
     }
 
     public Cohort<T> tryAcquireHead() {
-        if (queued == 0) return null;
-        synchronized (monitor) {
-            Prepared<T> head = headAfterCancelled();
-            if (head == null || head.state != State.ACCEPTED || head.acquired != null) return null;
-            Cohort<T> cohort = new Cohort<>(head);
-            head.acquired = cohort;
-            return cohort;
+        // Read before CAS: losers back out without taking the line exclusive.
+        if (queued == 0 || attempt != 0 || !ATTEMPT.compareAndSet(this, 0, 1)) return null;
+        boolean handedOut = false;
+        try {
+            synchronized (monitor) {
+                Prepared<T> head = headAfterCancelled();
+                if (head == null || head.state != State.ACCEPTED) return null;
+                if (head.acquired != null) {
+                    throw new IllegalStateException("Nether cohort head acquired outside its attempt gate");
+                }
+                Cohort<T> cohort = new Cohort<>(head);
+                head.acquired = cohort;
+                handedOut = true;
+                return cohort;
+            }
+        } finally {
+            if (!handedOut) ATTEMPT.setRelease(this, 0);
         }
     }
 
     /** Called only while holding the monitor; cancellation callbacks already belong to the receipt. */
     private Prepared<T> headAfterCancelled() {
         Prepared<T> head;
+        boolean removed = false;
         while ((head = queue.peekFirst()) != null && head.state == State.CANCELLED) {
             queue.removeFirst();
-            queued = queue.size();
+            removed = true;
         }
+        if (removed) publishQueuedSize();
         return head;
+    }
+
+    /** Called only while holding the monitor, after every queue mutation. */
+    private void publishQueuedSize() {
+        int before = queued;
+        int after = queue.size();
+        queued = after;
+        if ((before == 0) != (after == 0)) activity.changed(after != 0);
     }
 
     private Throwable cancelItems(List<T> items, Throwable failure) {
@@ -154,24 +215,28 @@ public final class NetherSourceCohorts<T> {
 
         /** Consumes exactly this acquired head; a previously released attempt cannot consume a retry. */
         public void complete() {
-            synchronized (prepared.owner.monitor) {
+            NetherSourceCohorts<T> owner = prepared.owner;
+            synchronized (owner.monitor) {
                 if (released) return;
-                prepared.owner.queue.removeFirst();
-                prepared.owner.queued = prepared.owner.queue.size();
+                owner.queue.removeFirst();
+                owner.publishQueuedSize();
                 prepared.state = State.COMPLETE;
                 prepared.acquired = null;
                 released = true;
             }
+            ATTEMPT.setRelease(owner, 0);
         }
 
         /** Gives back the attempt, not its FIFO position or accepted items. */
         @Override
         public void close() {
-            synchronized (prepared.owner.monitor) {
+            NetherSourceCohorts<T> owner = prepared.owner;
+            synchronized (owner.monitor) {
                 if (released) return;
                 prepared.acquired = null;
                 released = true;
             }
+            ATTEMPT.setRelease(owner, 0);
         }
     }
 
