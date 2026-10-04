@@ -81,11 +81,13 @@ class RaidInertDispatchTest {
                 "raids=false stops the raid");
 
         TestLevel unloaded = TestLevel.create(false, Difficulty.NORMAL, true);
-        Raid over = new Raid(CENTER, Difficulty.NORMAL);
-        over.tick(unloaded);
-        setStatus(over, "LOSS");
-        assertFalse(RaidIslandDispatch.isInertWhileCenterUnloaded(unloaded, over),
-                "a finished raid counts its celebration ticks");
+        for (String finished : new String[] {"LOSS", "VICTORY"}) {
+            Raid over = new Raid(CENTER, Difficulty.NORMAL);
+            over.tick(unloaded);
+            setStatus(over, finished);
+            assertFalse(RaidIslandDispatch.isInertWhileCenterUnloaded(unloaded, over),
+                    "a finished raid counts its celebration ticks: " + finished);
+        }
 
         Raid stopped = new Raid(CENTER, Difficulty.NORMAL);
         stopped.tick(unloaded);
