@@ -354,8 +354,7 @@ public final class ColorGate {
                 }
                 EpochDomain neighborDomain = n.domain;
                 if (!n.queue().isEmpty() || !n.helpQueue.isEmpty()) {
-                    RegionScheduler.enqueueReady(n);
-                    if (wakeOnPush) RegionScheduler.wakeWorkers(1);
+                    if (enqueueLiveReady(n) && wakeOnPush) RegionScheduler.wakeWorkers(1);
                 } else if (neighborDomain.isEventEntityEpoch(neighborDomain.epoch)
                         && rs.owesEntityPhase(n) && eligible(n, rs)) {
                     // R5 event push: this completion may have been n's LAST lower-color
@@ -367,10 +366,24 @@ public final class ColorGate {
                     // Duplicate ready entries are benign; avoiding a separate
                     // entityEnqueuedEpoch CAS keeps the successor publication
                     // wholly behind enqueueReady's global receipt cut.
-                    RegionScheduler.enqueueReady(n);
-                    if (wakeOnPush) RegionScheduler.wakeWorkers(1);
+                    if (enqueueLiveReady(n) && wakeOnPush) RegionScheduler.wakeWorkers(1);
                 }
             }
+        }
+    }
+
+    /**
+     * Ready publication for a peeked neighbour, atomic with idle retirement: the
+     * evictor retires a region (ACTIVE -> STOPPING) under this same admission
+     * monitor, so a neighbour retired between the peek and here is skipped
+     * instead of publishing a stale-generation ready entry. Lock order:
+     * region -> pool.
+     */
+    private static boolean enqueueLiveReady(Region n) {
+        synchronized (n.admissionLock) {
+            if (n.state() != RegionState.ACTIVE) return false;
+            RegionScheduler.enqueueReady(n);
+            return true;
         }
     }
 

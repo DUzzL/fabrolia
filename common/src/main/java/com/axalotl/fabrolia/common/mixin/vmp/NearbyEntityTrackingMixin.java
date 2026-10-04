@@ -67,7 +67,8 @@ import java.util.concurrent.locks.ReentrantLock;
 @Pseudo
 @Mixin(targets = "com.ishland.vmp.common.playerwatching.NearbyEntityTracking", remap = false)
 public abstract class NearbyEntityTrackingMixin
-        implements TrackerIndexChanges.Index<ChunkMap.TrackedEntity, ServerPlayer> {
+        implements TrackerIndexChanges.Index<ChunkMap.TrackedEntity, ServerPlayer>,
+        com.axalotl.fabrolia.common.regions.VmpTrackerIndexApply {
 
     @Shadow @Final
     private AreaMap<ChunkMap.TrackedEntity> areaMap;
@@ -135,12 +136,9 @@ public abstract class NearbyEntityTrackingMixin
     @Unique
     private int[] fabrolia$snapshotMoved = new int[0];
 
-    /** Off-tick applier session state (see {@link #fabrolia$runApplier}). */
+    /** One off-Main index application is published or running (see {@link #fabrolia$runApplier}). */
     @Unique
     private final AtomicBoolean fabrolia$applierLive = new AtomicBoolean();
-
-    @Unique
-    private volatile Thread fabrolia$applierThread;
 
     @Shadow
     protected abstract void tickStaging();
@@ -204,16 +202,13 @@ public abstract class NearbyEntityTrackingMixin
     private void fabrolia$lockAdd(ChunkMap.TrackedEntity tracker, Operation<Void> original) {
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
             // A removal that already entered for this generation wins: never index it.
-            if (!((TrackedEntityPassAccess) tracker).fabrolia$vmpRemoved()) {
-                if (this.fabrolia$queueAdd(tracker)) {
-                    this.fabrolia$nudgeApplier();
-                } else {
-                    fabrolia$lock.lock();
-                    try {
-                        original.call(tracker);
-                    } finally {
-                        fabrolia$lock.unlock();
-                    }
+            if (!((TrackedEntityPassAccess) tracker).fabrolia$vmpRemoved()
+                    && !this.fabrolia$queueAdd(tracker)) {
+                fabrolia$lock.lock();
+                try {
+                    original.call(tracker);
+                } finally {
+                    fabrolia$lock.unlock();
                 }
             }
             FabroliaTrackingDirtyFlag.markDirty();
@@ -239,7 +234,6 @@ public abstract class NearbyEntityTrackingMixin
             ((TrackedEntityPassAccess) tracker).fabrolia$markVmpRemoved();
             if (fabrolia$enabled() && !(tracker.entity instanceof ServerPlayer)) {
                 this.fabrolia$indexChanges.queueRemove(tracker);
-                this.fabrolia$nudgeApplier();
             } else {
                 fabrolia$lock.lock();
                 try {
@@ -487,44 +481,28 @@ public abstract class NearbyEntityTrackingMixin
         try {
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
                 original.call(ticketManager);
-                this.fabrolia$startApplier();
+                this.fabrolia$scheduleIndexApply();
             });
         } finally {
             fabrolia$lock.unlock();
         }
     }
 
-    /** Published changes that make the off-tick applier wake before its backstop. */
-    @Unique
-    private static final int fabrolia$APPLIER_BATCH = 8;
-
-    @Unique
-    private static final long fabrolia$APPLIER_PARK_NANOS = 5_000_000L;
-
-    /** A session with no change to apply for this long ends (restarted by the next tick). */
-    @Unique
-    private static final long fabrolia$APPLIER_IDLE_NANOS = 100_000_000L;
-
-    /** Any thread, after publishing a queued change: wake the live applier. */
-    @Unique
-    private void fabrolia$nudgeApplier() {
-        Thread applier = this.fabrolia$applierThread;
-        if (applier != null && this.fabrolia$indexChanges.queued() >= fabrolia$APPLIER_BATCH) {
-            LockSupport.unpark(applier);
-        }
-    }
-
     /**
-     * Main, end of the tracker tick (lock held, healthy body): make sure an
-     * off-tick applier session is live. Queued add/remove used to wait for the
-     * next tick head and were applied there by Main — AreaMap insertion/removal
-     * touches every chunk set of the tracker's view square, the single largest
-     * serial cost of the tracker tick. The session applies them on the tick pool
-     * between ticks under the same lock; the tick head applies only the rest.
+     * Main only (healthy body): publish one off-Main application of the queued
+     * add/remove changes when any are waiting. Queued changes used to wait for
+     * the next tracker tick head and were applied there by Main — AreaMap
+     * insertion/removal touches every chunk set of the tracker's view square,
+     * the single largest serial cost of the tracker tick. Main publishes this at
+     * the level tick head (the changes of the whole inter-tick interval, applied
+     * while Main runs time/raids/chunk work) and at the end of the tracker tick.
+     * The task applies once under the same lock and exits: it holds a tracked
+     * obligation only while applying, never idles in the shared tick pool.
      */
-    @Unique
-    private void fabrolia$startApplier() {
-        if (!fabrolia$enabled() || !RegionScheduler.admitsRoots()) return;
+    @Override
+    public void fabrolia$scheduleIndexApply() {
+        if (!fabrolia$enabled() || !RegionScheduler.admitsRoots()
+                || this.fabrolia$indexChanges.queued() <= 0) return;
         ExecutorService executor = fabrolia$dispatchExecutor();
         if (executor == null || !this.fabrolia$applierLive.compareAndSet(false, true)) return;
         boolean published = false;
@@ -536,46 +514,19 @@ public abstract class NearbyEntityTrackingMixin
         }
     }
 
-    /**
-     * One applier session: applies published changes whenever the lock is free,
-     * parks between batches (woken by {@link #fabrolia$nudgeApplier}), and ends
-     * after {@link #fabrolia$APPLIER_IDLE_NANOS} without work or when the
-     * scheduler generation ends. A failure is a tracked-body failure (fail-stop).
-     */
+    /** One off-Main application of the queued changes; a failure is a tracked-body failure. */
     @Unique
     private void fabrolia$runApplier() {
-        Thread self = Thread.currentThread();
         try {
-            while (true) {
-                this.fabrolia$applierThread = self;
-                long lastWork = System.nanoTime();
-                while (RegionScheduler.admitsRoots() && fabrolia$enabled()
-                        && System.nanoTime() - lastWork < fabrolia$APPLIER_IDLE_NANOS) {
-                    if (this.fabrolia$indexChanges.queued() > 0 && this.fabrolia$lock.tryLock()) {
-                        try {
-                            RegionScheduler.runSuccessBodyIfHealthy(
-                                    () -> this.fabrolia$indexChanges.apply(this));
-                        } finally {
-                            this.fabrolia$lock.unlock();
-                        }
-                        lastWork = System.nanoTime();
-                    }
-                    LockSupport.parkNanos(this, fabrolia$APPLIER_PARK_NANOS);
-                }
-                this.fabrolia$applierThread = null;
-                this.fabrolia$applierLive.set(false);
-                // A change published between the last check and the flag clear
-                // keeps this session alive rather than waiting for a restart.
-                if (!RegionScheduler.admitsRoots() || !fabrolia$enabled()
-                        || this.fabrolia$indexChanges.queued() == 0
-                        || !this.fabrolia$applierLive.compareAndSet(false, true)) {
-                    return;
-                }
+            this.fabrolia$lock.lock();
+            try {
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        () -> this.fabrolia$indexChanges.apply(this));
+            } finally {
+                this.fabrolia$lock.unlock();
             }
-        } catch (Throwable failure) {
-            this.fabrolia$applierThread = null;
+        } finally {
             this.fabrolia$applierLive.set(false);
-            throw failure;
         }
     }
 
@@ -594,6 +545,12 @@ public abstract class NearbyEntityTrackingMixin
                 this.fabrolia$tickTrackers();
             } else {
                 original.call();
+                // VMP's own tick moves area chunks in tracker2ChunkPos; keep the
+                // dense mirror's chunk values exact for the next Fabrolia tick.
+                for (int k = 0, n = this.fabrolia$denseSize; k < n; k++) {
+                    this.fabrolia$denseChunks[k] =
+                            this.tracker2ChunkPos.getLong(this.fabrolia$dense[k]);
+                }
             }
             this.fabrolia$indexChanges.graduate(this);
         });

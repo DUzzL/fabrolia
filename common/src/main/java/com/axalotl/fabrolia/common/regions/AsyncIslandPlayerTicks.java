@@ -5410,6 +5410,7 @@ public final class AsyncIslandPlayerTicks {
         // before every exit of the loop.
         IslandRegistry.PIsland venueClaim = null;
         boolean disconnectedReturn = false;
+        try {
         while (true) {
             InboundPacket inbound;
             boolean ownVenueHead;
@@ -5532,11 +5533,25 @@ public final class AsyncIslandPlayerTicks {
                     venueClaim = null;
                     IslandCommands.mainRelease(released);
                 }
+                boolean terminalDuringClaim = false;
                 if (venue != null && venueClaim == null && !IslandCommands.mainHolds(venue)) {
                     // The same blocking claim the head's own owner wrapper would
                     // take; nested mainClaimScoped calls inside the body inherit it.
                     IslandCommands.mainClaim(venue);
                     venueClaim = venue;
+                    // The wait may pump a routed disconnect or a routed move. A
+                    // clean terminal disconnect ends a deferred listener tick
+                    // without its body (exactly the wrapper's post-claim rule); a
+                    // changed venue hands the head back to its own wrapper.
+                    synchronized (state) {
+                        terminalDuringClaim = inbound.listenerTick != null
+                                && isExactCleanTerminalDisconnectLocked(
+                                state, listener.player, listener);
+                    }
+                    if (!terminalDuringClaim && ownVenueIsland(inbound, listener) != venue) {
+                        venueClaim = null;
+                        IslandCommands.mainRelease(venue);
+                    }
                 }
                 Runnable body = () -> {
                     packetBodyEntered[0] = true;
@@ -5553,7 +5568,7 @@ public final class AsyncIslandPlayerTicks {
                     inbound.listener.onPacketError(inbound.packet,
                             new IllegalArgumentException("Expected packet sequence nr >= 0"));
                 } else if (inbound.listenerTick != null) {
-                    replayMainListenerTick(state, listener, body);
+                    if (!terminalDuringClaim) replayMainListenerTick(state, listener, body);
                 } else if (state.mainInteractionPacket == inbound) {
                     runFencedMainMutation("ordered interaction packet", body);
                 } else {
@@ -5601,6 +5616,20 @@ public final class AsyncIslandPlayerTicks {
                 // The fail-stop boundary, not a successor task/body, owns the suffix.
                 break;
             }
+        }
+        } catch (Throwable escaping) {
+            // An invariant failure in the loop head must not retain the venue
+            // claim: every later all-island quiesce would spin on Main's own claim.
+            if (venueClaim != null) {
+                IslandRegistry.PIsland held = venueClaim;
+                venueClaim = null;
+                try {
+                    IslandCommands.mainRelease(held);
+                } catch (Throwable releaseFailure) {
+                    escaping.addSuppressed(releaseFailure);
+                }
+            }
+            throw escaping;
         }
         try {
             if (venueClaim != null) IslandCommands.mainRelease(venueClaim);

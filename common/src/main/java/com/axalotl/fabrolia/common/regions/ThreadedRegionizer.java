@@ -250,7 +250,11 @@ public final class ThreadedRegionizer {
                         || r.entityCount.get() != 0
                         || !r.queue().isEmpty()
                         || !r.helpQueue.isEmpty()
-                        || r.hasClaimOrDoneSeal()) {
+                        || r.hasClaimOrDoneSeal()
+                        // An open claim-free main-safe body (or a rebase cut)
+                        // pins this region's topology cut without a claimant.
+                        || r.activeClaimTransactions() != 0
+                        || r.claimRebaseClosed()) {
                     r.idleSinceGameTime = Long.MIN_VALUE;
                     continue;
                 }

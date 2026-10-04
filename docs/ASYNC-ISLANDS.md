@@ -792,10 +792,14 @@ and fork quotas count per line and pass.
   Main function remainder scan and every rebuild snapshot walked them all.
   They are now reclaimed inside the topology rebuild's all-island quiesce (the
   one async point where no unit can mutate a region index), only on the global
-  domain — island core and halo regions keep their identity — after 100 game
-  ticks of continuous idleness. The level-tick head stays fail-closed in async
-  mode. A reclaimed cell is reinstalled on its next lookup with the topology's
-  creation domain.
+  domain — island core and halo regions keep their identity — once two
+  reclamation passes at least 100 game ticks apart both saw the region idle
+  (passes run only at rebuilds in async mode). Idle also requires no open
+  claim transaction or rebase cut (claim-free main-safe bodies), and a ColorGate
+  re-arm publishes a peeked neighbour only while it is still ACTIVE under its
+  admission monitor. The level-tick head stays fail-closed in async mode. A
+  reclaimed cell is reinstalled on its next lookup with the topology's creation
+  domain.
 - **Lazy topology drift.** A committed island core cell losing its last FULL
   chunk no longer forces the all-island quiesce: the island keeps the empty
   cell as core (no FULL chunk means no entity, block or chunk work there; every
@@ -805,21 +809,27 @@ and fork quotas count per line and pass.
   `LAZY_TOPOLOGY_TICKS` (100) on its own; region-map growth of 64 since the last
   rebuild also makes such a refresh due, so reclamation keeps up. Every other
   boundary — a non-core (halo/gap) cell, or any boundary between the BFS read
-  and the registry commit — stays an urgent rebuild as before.
+  and the registry commit — stays an urgent rebuild as before. A lazily kept
+  cell that repopulates runs on its old island's timeline until the next
+  rebuild, even if a fresh BFS would have made it a separate island.
 - **Main function remainder.** `MainPartition.candidates` walks the region map
   without a snapshot copy and skips empty regions before building a skip-list
   iterator (it runs once per partitioned root and loop callback).
 - **Tracker index changes off the tick.** Queued non-player tracker add/remove
-  (AreaMap insert/remove of the tracker's whole view square) are applied by an
-  applier session on the tick pool between tracker ticks under the tracker
-  lock; the tick head applies only what arrived since. Every reader of the
-  index holds that lock, so an earlier application is indistinguishable. The
-  session ends after 100 ms without work or at the generation's stop cut.
+  (AreaMap insert/remove of the tracker's whole view square) are applied by a
+  one-shot task on the tick pool, published by Main at the level tick head (the
+  whole inter-tick interval's changes, applied while Main runs time, raids and
+  chunk work) and at the end of the tracker tick, under the tracker lock; the
+  tick head applies only what arrived since. Every reader of the index holds
+  that lock, so an earlier application is indistinguishable. The task holds its
+  tracked obligation only while applying and never idles in the pool.
 - **Dense tracker mirror.** The per-tick position pre-pass runs over a dense
   array mirror of VMP's `tracker2ChunkPos` (kept at its only membership sites)
   instead of copying the hash map on Main every tick; parallel batches collect
   the trackers whose area chunk changed, and Main updates the area index for
-  exactly those. A size divergence between mirror and map is fail-stop.
+  exactly those. A size divergence between mirror and map is fail-stop; after a
+  VMP-native tick (Fabrolia tracking off) the mirror's chunk values are
+  resynchronised from VMP's map.
 - **Main ingress venue claim.** A MAIN-phase player's consecutive own-venue
   heads (deferred listener tick: player chunk; MoveVehicle/PaddleBoat: root
   vehicle chunk) run under ONE claim of that island taken by the drain;
