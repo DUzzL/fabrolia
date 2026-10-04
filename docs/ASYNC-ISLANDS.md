@@ -629,3 +629,32 @@ Not bit-exact vs. vanilla (all bounded, none accumulating):
   pure optimisation of the same predicate) do not see island passes;
   ServerCore's `chunkTickDistanceAffectsRandomTicks` is honoured on both
   lanes (the island filters the real `forEachBlockTickingChunk`).
+
+## 14. Autosave: snapshots under the claims, IO on the save writer (2026-10-04)
+
+Owner-side work stays where it was: `PlayerList.save` still runs under the
+player's owner claim and `saveAllChunks` under the all-island quiesce, but they
+only take snapshots now. `common/save/AsyncSaveWriter` writes the files.
+
+- Player `.dat` / `level.dat`: vanilla's body runs; `NbtIo.writeCompressed` is
+  replaced by serializing the NBT (plus the chunk boundaries vanilla's buffered
+  stream hands to gzip — deflate output depends on them) on the caller, and
+  `Util.safeReplaceFile` by a queued job: gzip, one `SYNC` write of the temp
+  file, the vanilla `.dat`/`.dat_old` rotation. Byte-identical to vanilla.
+- Advancements: `asData()` detached under the progress monitor (criteria in
+  stream order + requirements); encode, pretty print and write on the writer.
+  Stats: map copied in `toJson()`'s stream order (fastutil streams ≠ iterates).
+  JSON goes to a temp file + atomic move (same bytes, never truncated on kill).
+- Writer: per-file FIFO, files in parallel (≤4 daemon threads); waiters run
+  their own file's queued jobs inline; at most one unstarted job per file (a
+  second submit writes the first — backpressure instead of an unbounded queue;
+  a write stuck >10 s is logged as an error while the saver keeps waiting, like
+  vanilla's blocking write). An exception escaping a job (not vanilla's
+  tolerated IO errors) is published fatal and rethrown by every covering await.
+- Durability (`SaveDurability`): `PlayerList.saveAll` (autosave, plain
+  `save-all`, reload) and the `saveAllChunks` body are deferred; any other
+  `PlayerList.save` — logout above all, also nested in a deferred saveAll —
+  waits for its files after the owner claim is released; `saveAllChunks(flush)`
+  (`save-all flush`, shutdown) and `stopServer` wait for every queued file
+  after the islands run again. `PlayerDataStorage.load`, `PlayerAdvancements`
+  (re)load and the stats file load wait for that file's queued write first.
