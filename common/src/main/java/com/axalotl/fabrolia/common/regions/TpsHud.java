@@ -28,10 +28,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * ({@code MinecraftServer#getAverageTickTimeNanos}).
  * Ownerless positions show GLOBAL explicitly — never a stale island line.
  *
- * <p>Carpet note: carpet is not a compile dependency of Fabrolia, so
- * carpet's {@code /log tps} tab entry is not replaced; it keeps showing the
- * main loop only. This HUD provides the required per-island data with the
- * same subscribe-once UX regardless of carpet's presence.
+ * <p>With Carpet installed, its {@code /log tps} tab footer also shows the
+ * player's island ({@link CarpetTpsLines}). This action-bar HUD works without
+ * Carpet and adds the island label, roster and cross-dimension coupling.
  */
 public final class TpsHud {
 

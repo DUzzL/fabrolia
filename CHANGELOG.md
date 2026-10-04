@@ -32,6 +32,11 @@
 
 ### Changed
 
+- Carpet `/log tps`: a player standing on an async island now sees two lines
+  in the tab footer, `Main │ TPS: … MSPT: …` and `Local │ TPS: … MSPT: …` (their
+  island), in Carpet's style. Both TPS values are measured ticks per second;
+  Carpet's own figure is derived from MSPT and reads 20.0 whenever MSPT stays
+  under 50 ms. Players on Main's lane keep Carpet's line unchanged.
 - Main no longer waits at the end of each level's entity phase for a busy
   island's running unit before running Main-owned entity bodies (player
   fallbacks, unsupported or forced-main entities). The island gets a standing
