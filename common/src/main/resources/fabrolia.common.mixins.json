@@ -143,6 +143,7 @@
     "server.LevelStorageAccessSaveMixin",
     "server.PlayerAdvancementsSaveMixin",
     "server.PlayerDataStorageSaveMixin",
+    "server.SavedDataStorageEncodeMixin",
     "server.ServerStatsCounterSaveMixin",
     "server.NetherPlayerMetadataMixin",
     "server.NetherChunkMapMetadataMixin",
