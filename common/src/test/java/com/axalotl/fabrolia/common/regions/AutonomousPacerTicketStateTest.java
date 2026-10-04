@@ -24,6 +24,57 @@ class AutonomousPacerTicketStateTest {
     }
 
     @Test
+    void terminalReceiptWakesItsRegisteredPacer() throws Exception {
+        var constructor = IslandTickUnit.AttemptReceipt.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        IslandTickUnit.AttemptReceipt receipt = constructor.newInstance();
+        TemporalControl.Pacer pacer = new TemporalControl.Pacer();
+        java.util.concurrent.CountDownLatch registered = new java.util.concurrent.CountDownLatch(1);
+        // The pacer's shape: register, then park until terminal. A lost wake-up
+        // leaves it parked for the whole (here: one minute) park bound.
+        Thread watcher = new Thread(() -> {
+            receipt.wakeOnTerminal(pacer);
+            registered.countDown();
+            while (!receipt.isDone()) {
+                java.util.concurrent.locks.LockSupport.parkNanos(60_000_000_000L);
+            }
+        }, "receipt-watcher");
+        watcher.setDaemon(true);
+        pacerThread(pacer, watcher);
+        watcher.start();
+        assertTrue(registered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        receipt.commitOutcome(IslandTickUnit.AttemptOutcome.ADVANCED, 4L, 5L);
+        receipt.finishSuccessfully();
+        watcher.join(5_000L);
+        assertFalse(watcher.isAlive(), "the terminal edge must wake the watching pacer");
+    }
+
+    @Test
+    void aWakeWhoseUnparkAnotherParkAbsorbedStillCutsTheIdleParkShort() throws Exception {
+        TemporalControl.Pacer pacer = new TemporalControl.Pacer();
+        pacerThread(pacer, Thread.currentThread());
+        Thread waker = new Thread(pacer::wake, "receipt-terminal");
+        waker.start();
+        waker.join(5_000L);
+        assertFalse(waker.isAlive());
+        // The daemon parks inside the DelayQueue lock or a scheduler monitor
+        // between its isDone sweep and its idle park; such a park returns on
+        // (and so consumes) the wake's permit.
+        java.util.concurrent.locks.LockSupport.parkNanos(5_000_000_000L);
+        long start = System.nanoTime();
+        pacer.parkUntilDue();
+        long parkedNanos = System.nanoTime() - start;
+        assertTrue(parkedNanos < 10_000_000L,
+                "a signalled wake must not wait out the 25 ms idle park: " + parkedNanos + " ns");
+    }
+
+    private static void pacerThread(TemporalControl.Pacer pacer, Thread owner) throws Exception {
+        var field = TemporalControl.Pacer.class.getDeclaredField("thread");
+        field.setAccessible(true);
+        field.set(pacer, owner);
+    }
+
+    @Test
     void duplicateOrLaterArmCannotCreateASecondQueuedAuthority() {
         TemporalControl.Pacer.TicketState state = new TemporalControl.Pacer.TicketState();
         var first = state.arm(7, 1_000, 1_000, false);

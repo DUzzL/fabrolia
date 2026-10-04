@@ -167,6 +167,12 @@ public abstract class SpawnStateMixin implements FabroliaSpawnStateView {
     }
 
     @Override
+    public boolean fabrolia$serialLocalCap() {
+        return ((com.axalotl.fabrolia.api.spawn.FabroliaLocalCapView) this.localMobCapCalculator)
+                .fabrolia$serialLane();
+    }
+
+    @Override
     public void fabrolia$releaseLocalPack(MobCategory cat, long packedChunkPos, int token) {
         ((com.axalotl.fabrolia.api.spawn.FabroliaLocalCapView) this.localMobCapCalculator)
                 .fabrolia$releasePack(packedChunkPos, cat.ordinal(), token);

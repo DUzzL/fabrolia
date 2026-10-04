@@ -665,7 +665,7 @@ public final class ParallelSpawnHelper {
             });
             return probe;
         }
-        PotentialCalculator potential = fabrolia$potentialCharges(level, chunkGetter);
+        PotentialCalculator potential = fabrolia$potentialCharges(level, chunkGetter, null);
         // Keep the census seed weighted through provider/capability decline.
         // An accepted arena marshals it directly into the reusable primitive
         // ABI buffers; the Java fallback remains count-weighted as well.
@@ -690,14 +690,19 @@ public final class ParallelSpawnHelper {
     /** Potential charges: only cost-bearing types can contribute; evaluate
      *  their exact position/biome now (vanilla-identical), tiny N. The
      *  {@code chunkGetter} decides lane membership exactly as it does for
-     *  the census. */
+     *  the census. A non-null {@code laneKeys} (an island lane's own-cell
+     *  predicate, the same rule its getter applies first) skips another
+     *  lane's entities before any per-entity body: the level-wide set is
+     *  shared by every lane, the charges are not. */
     private static PotentialCalculator fabrolia$potentialCharges(
-            ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter) {
+            ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter,
+            java.util.function.LongPredicate laneKeys) {
         PotentialCalculator[] potentialSlot = new PotentialCalculator[1];
         RegionScheduler.runSuccessBodyIfHealthy(
                 () -> potentialSlot[0] = new PotentialCalculator());
         PotentialCalculator potential = potentialSlot[0];
         for (Entity e : SpawnCensus.census(level).costBearing) {
+            if (laneKeys != null && !laneKeys.test(ChunkPos.pack(e.blockPosition()))) continue;
             ChargeEntry[] chargeSlot = new ChargeEntry[1];
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
                 if (e == null || e.isRemoved()) return;
@@ -733,10 +738,12 @@ public final class ParallelSpawnHelper {
 
     /**
      * Island chunk-pass census, run by the island's coordinator on its own
-     * thread. {@code laneKeys} pre-selects the island's chunk keys out of the
-     * level ledger; {@code laneGetter} admits exactly the island's FULL chunks, so
-     * the ledger reduce, the potential charges and the local-cap seed are all
-     * the island's own — vanilla's createState restricted to one island.
+     * thread. {@code ownCells} are the island's grid cells (cut on
+     * {@code cellShift}): only their ledger keys are reduced. {@code laneGetter}
+     * admits exactly the island's FULL chunks ({@code laneKeys} is its
+     * own-cell half), so the ledger reduce, the potential charges and the
+     * local-cap seed are all the island's own — vanilla's createState
+     * restricted to one island.
      *
      * <p>The local cap stays on the plain Java {@code LocalMobCapCalculator}:
      * the island's chunk pass is sequential (one coordinator), which is
@@ -748,13 +755,14 @@ public final class ParallelSpawnHelper {
     public static LaneCensus censusIslandLane(ServerLevel level,
                                               NaturalSpawner.ChunkGetter laneGetter,
                                               java.util.function.LongPredicate laneKeys,
+                                              long[] ownCells, int cellShift,
                                               LocalMobCapCalculator localMobCap) {
         RegionScheduler.throwWorkerFailureIfAny();
         SpawnCensus.Reduced[] reducedSlot = new SpawnCensus.Reduced[1];
         RegionScheduler.runSuccessBodyIfHealthy(
-                () -> reducedSlot[0] = SpawnCensus.reduceSerial(level, laneGetter, laneKeys));
+                () -> reducedSlot[0] = SpawnCensus.reduceSerialCells(level, laneGetter, ownCells, cellShift));
         SpawnCensus.Reduced red = reducedSlot[0];
-        PotentialCalculator potential = fabrolia$potentialCharges(level, laneGetter);
+        PotentialCalculator potential = fabrolia$potentialCharges(level, laneGetter, laneKeys);
         fabrolia$seedJavaCountWeighted(localMobCap, red.mobSeed());
         RegionScheduler.commitSuccessIfHealthy(SpawnCensusDiag.CENSUS_FAST::incrementAndGet);
         return new LaneCensus(red.counts(), potential);

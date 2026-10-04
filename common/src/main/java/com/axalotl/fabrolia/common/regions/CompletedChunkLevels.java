@@ -47,6 +47,39 @@ public final class CompletedChunkLevels {
         return page == null ? defaultLevel : page[slot(x, z)];
     }
 
+    /** A single-thread cursor over this snapshot (see {@link Reader}). */
+    public Reader reader() {
+        return new Reader(this);
+    }
+
+    /**
+     * Reads one snapshot for one pass on one thread. The last resolved page is
+     * kept, so a run of lookups inside the same 32×32 page — the common shape
+     * of a pass over one island's chunks — skips the page-table probe.
+     */
+    public static final class Reader {
+        private final CompletedChunkLevels levels;
+        private boolean resolved;
+        private long pageKey;
+        private byte[] page;
+
+        private Reader(CompletedChunkLevels levels) {
+            this.levels = levels;
+        }
+
+        public int get(long chunkPos) {
+            int x = (int) chunkPos;
+            int z = (int) (chunkPos >>> 32);
+            long key = pageKey(x, z);
+            if (!resolved || key != pageKey) {
+                page = levels.pages.get(key);
+                pageKey = key;
+                resolved = true;
+            }
+            return page == null ? levels.defaultLevel : page[slot(x, z)];
+        }
+    }
+
     /** Every present (non-default) chunk whose level matches, page by page. */
     public void forEach(IntPredicate levelFilter, LongConsumer consumer) {
         for (Long2ObjectMap.Entry<byte[]> entry : Long2ObjectMaps.fastIterable(pages)) {

@@ -2192,23 +2192,40 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         }
         long time = islandTime;
 
-        // --- createState, this island's lane ---------------------------------
+        // --- this island's lane: its own cells, resolved ONCE per pass ----------
+        // A cell's owner only changes in a topology rebuild, which quiesces every
+        // unit first, so the pass-entry answer is the answer for the whole pass.
+        // Ownership ⊆ cells ∪ halo (rebuild assigns the island's domain to
+        // exactly that closure). One owner lookup per own cell replaces one
+        // regionizer-map probe per ledger key / charge / candidate / player.
         RegionGrid grid = rs.regionizer().grid;
-        java.util.function.LongPredicate laneKeys =
-                key -> rs.islandOwnerOfCell(grid.keyFor(key)) == island;
+        it.unimi.dsi.fastutil.longs.LongArrayList ownCellList =
+                new it.unimi.dsi.fastutil.longs.LongArrayList(island.cells.size() + island.haloCells.size());
+        it.unimi.dsi.fastutil.longs.LongIterator islandCells = new IslandRegistry.DualLongIterator(
+                island.cells.iterator(), island.haloCells.iterator());
+        while (islandCells.hasNext()) {
+            long cell = islandCells.nextLong();
+            if (rs.islandOwnerOfCell(cell) == island) ownCellList.add(cell);
+        }
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet ownCells =
+                new it.unimi.dsi.fastutil.longs.LongOpenHashSet(ownCellList);
+        java.util.function.LongPredicate laneKeys = key -> ownCells.contains(grid.keyFor(key));
+
+        // --- createState, this island's lane ---------------------------------
         NaturalSpawner.ChunkGetter laneGetter = (key, output) -> {
             if (laneKeys.test(key)) this.getFullChunk(key, output);
         };
         LocalMobCapCalculator localMobCap = new LocalMobCapCalculator(this.chunkMap);
-        ParallelSpawnHelper.LaneCensus census =
-                ParallelSpawnHelper.censusIslandLane(lvl, laneGetter, laneKeys, localMobCap);
+        ((com.axalotl.fabrolia.api.spawn.FabroliaLocalCapView) localMobCap).fabrolia$useSerialLane();
+        ParallelSpawnHelper.LaneCensus census = ParallelSpawnHelper.censusIslandLane(
+                lvl, laneGetter, laneKeys, ownCellList.toLongArray(), grid.shift, localMobCap);
 
         var chunkMapAccess = (com.axalotl.fabrolia.common.regions.RegionTickingAccess) this.chunkMap;
         ArrayList<ServerPlayer> islandPlayers = new ArrayList<>(4);
         it.unimi.dsi.fastutil.longs.LongArrayList playerChunks =
                 new it.unimi.dsi.fastutil.longs.LongArrayList(4);
         chunkMapAccess.fabrolia$forEachSpawnCountedPlayer((player, chunkKey) -> {
-            if (rs.islandOwnerOfCell(grid.keyFor(chunkKey)) == island) {
+            if (laneKeys.test(chunkKey)) {
                 islandPlayers.add(player);
                 playerChunks.add(chunkKey);
             }
@@ -2236,12 +2253,13 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         it.unimi.dsi.fastutil.longs.LongIterator candidateIt = candidates.iterator();
         while (candidateIt.hasNext()) {
             long key = candidateIt.nextLong();
+            // Candidates around island players reach past its own cells (halo
+            // edge, another lane's chunks): spawn only into chunks this lane owns.
+            if (!laneKeys.test(key)) continue;
             ChunkHolder holder = this.getVisibleChunkIfPresent(key);
             if (holder == null) continue;
             LevelChunk chunk = holder.getTickingChunk();
             if (chunk == null) continue;
-            // Never write a chunk another lane owns (transient topology skew).
-            if (!laneKeys.test(key)) continue;
             ChunkPos pos = holder.getPos();
             boolean close = false;
             for (int i = 0, n = islandPlayers.size(); i < n && !close; i++) {
@@ -2289,11 +2307,8 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         }
         int shift = grid.shift;
         int side = 1 << shift;
-        it.unimi.dsi.fastutil.longs.LongIterator cells = new IslandRegistry.DualLongIterator(
-                island.cells.iterator(), island.haloCells.iterator());
-        while (cells.hasNext()) {
-            long cell = cells.nextLong();
-            if (rs.islandOwnerOfCell(cell) != island) continue;
+        for (int c = 0, cellCount = ownCellList.size(); c < cellCount; c++) {
+            long cell = ownCellList.getLong(c);
             int baseX = grid.regionX(cell) << shift;
             int baseZ = grid.regionZ(cell) << shift;
             for (int dz = 0; dz < side; dz++) {

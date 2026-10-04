@@ -41,6 +41,36 @@ public final class IslandBlockEntityTicks {
 
     private IslandBlockEntityTicks() {}
 
+    /**
+     * Vanilla's per-ticker {@code shouldTickBlocksAt} gate for ONE pass,
+     * answered from ONE completed-simulation snapshot captured at pass start
+     * (the immutable view {@code DistanceManager.inBlockTickingRange} reads).
+     * Vanilla reads per-BE but is naturally coherent — main is the only thread
+     * and no ticket mutation can land mid-loop. Here a pass runs on a worker
+     * WHILE main's straggler pump executes chunk-system tasks (ticket
+     * placements → level recomputes), so a live per-BE read could flip
+     * mid-loop: a moving-piston BE skipped for one tick while the rest of its
+     * contraption advanced = flying machines breaking at one chunk's
+     * entry/exit (bomber fleet report, 2026-07-06). The pinned snapshot
+     * restores vanilla's whole-phase coherence; its page cursor makes a
+     * per-BE read one array index while the pass stays inside a 32×32 page.
+     */
+    static final class ChunkTickGate {
+        private final java.util.function.LongPredicate blockTicking;
+
+        private ChunkTickGate(java.util.function.LongPredicate blockTicking) {
+            this.blockTicking = blockTicking;
+        }
+
+        static ChunkTickGate forLevel(ServerLevel level) {
+            return new ChunkTickGate(((BlockTickingPassAccess) level).fabrolia$blockTickingPass());
+        }
+
+        boolean ticks(long chunkKey) {
+            return blockTicking.test(chunkKey);
+        }
+    }
+
     private static Object registryLock(Level level) {
         return ((BlockEntityTickerAccess) level).fabrolia$blockEntityTickerLock();
     }
@@ -136,8 +166,7 @@ public final class IslandBlockEntityTicks {
         System.arraycopy(owned, 0, keys, 0, owned.length);
         System.arraycopy(halo, 0, keys, owned.length, halo.length);
         java.util.Arrays.sort(keys);
-        final it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable =
-                new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(64);
+        final ChunkTickGate tickable = ChunkTickGate.forLevel(level);
         // ONE TICK PER WRAPPER PER UNIT (2026-07-15 production trace, 11-then-fail):
         // a fresh BE is dual-written to pendingUnitBes (same-unit tick, vanilla
         // direct-add parity) AND pendingBeAdds, which MAIN folds into beCells every
@@ -184,7 +213,7 @@ public final class IslandBlockEntityTicks {
         }
         // task #14: registration-order merge across the unit's cells — same
         // vanilla mutual-order restoration as the sync slices.
-        tickMerged(level, rs, unitLists, rs.unitRemovedBes, tickable, pendingSet, seen);
+        tickMerged(rs, unitLists, rs.unitRemovedBes, tickable, pendingSet, seen);
         if (!pendingTail.isEmpty()) {
             // OWNERSHIP GATE (2026-07-17 fail-closed): a carried wrapper whose
             // cell no longer belongs to this island (rebuild reassigned it —
@@ -200,7 +229,7 @@ public final class IslandBlockEntityTicks {
                 return rs.islandOwnerOfChunk(ChunkPos.pack(tp)) != island;
             });
             if (!pendingTail.isEmpty()) {
-                tickSlice(level, pendingTail, rs.unitRemovedBes, tickable, null, null);
+                tickSlice(pendingTail, rs.unitRemovedBes, tickable, null, null);
             }
             // retire carried entries the fold has delivered (seen in a cell
             // list this unit) or that finalized/died — the rest keep ticking
@@ -294,11 +323,10 @@ public final class IslandBlockEntityTicks {
             }
             if (slices.isEmpty()) {
                 if (isolatedCells != null) {
-                    tickCells(level, rs, isolatedCells, removed);
+                    tickCells(sl, rs, isolatedCells, removed);
                 }
                 if (posless != null) {
-                    tickSlice(level, posless, removed,
-                            new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(4));
+                    tickSlice(posless, removed, ChunkTickGate.forLevel(sl));
                 }
                 sweepRemoved(level, rs, removed);
                 return true;
@@ -341,7 +369,7 @@ public final class IslandBlockEntityTicks {
                 int idx;
                 while ((idx = gate.claimSlice()) >= 0) {
                     try {
-                        tickCells(level, rs, slices.get(idx).cells(), removed);
+                        tickCells(sl, rs, slices.get(idx).cells(), removed);
                         RegionScheduler.throwWorkerFailureIfAny();
                     } catch (Throwable th) {
                         Throwable winner = gate.failAndSelect(th);
@@ -369,7 +397,7 @@ public final class IslandBlockEntityTicks {
             }
             if (isolatedFinal != null && gate.claimMainLane()) {
                 try {
-                    tickCells(level, rs, isolatedFinal, removed);
+                    tickCells(sl, rs, isolatedFinal, removed);
                     RegionScheduler.throwWorkerFailureIfAny();
                 } catch (Throwable th) {
                     gate.failAndSelect(th);
@@ -400,8 +428,7 @@ public final class IslandBlockEntityTicks {
                 rethrow(failure);
             }
             if (posless != null) {
-                tickSlice(level, posless, removed,
-                        new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(4));
+                tickSlice(posless, removed, ChunkTickGate.forLevel(sl));
             }
             sweepRemoved(level, rs, removed);
             return true;
@@ -415,20 +442,18 @@ public final class IslandBlockEntityTicks {
      *  moving-piston pairs straddling a cell seam that mutual order is
      *  load-bearing. Each cell list is already seq-ascending (appends), so a
      *  k-way heap merge restores the exact vanilla order at O(n log cells);
-     *  one shared per-chunk gate memo, exactly as before. Generic lists retain
+     *  one pinned block-ticking snapshot for the slice. Generic lists retain
      *  the missing-sequence MIN_VALUE rule and original heap tie behavior. */
-    private static void tickCells(Level level, RegionizedServer rs,
+    private static void tickCells(ServerLevel level, RegionizedServer rs,
                                   ArrayList<BlockEntityTickerList> cells,
                                   java.util.Queue<TickingBlockEntity> removed) {
-        final it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable =
-                new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(64);
-        tickMerged(level, rs, cells, removed, tickable, null, null);
+        tickMerged(rs, cells, removed, ChunkTickGate.forLevel(level), null, null);
     }
 
-    static void tickMerged(Level level, RegionizedServer rs,
+    static void tickMerged(RegionizedServer rs,
                            java.util.List<? extends java.util.List<TickingBlockEntity>> lists,
                            java.util.Queue<TickingBlockEntity> removed,
-                           it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable,
+                           ChunkTickGate tickable,
                            java.util.Set<TickingBlockEntity> skip,
                            java.util.Set<TickingBlockEntity> seen) {
         int live = 0;
@@ -442,12 +467,12 @@ public final class IslandBlockEntityTicks {
         }
         if (live == 0) return;
         if (live == 1) {
-            tickSlice(level, only, removed, tickable, skip, seen);
+            tickSlice(only, removed, tickable, skip, seen);
             return;
         }
         BlockEntityTickerList.Merge merge = new BlockEntityTickerList.Merge(lists, rs.beSeqOf);
         while (merge.advance()) {
-            tickOne(level, merge.ticker(), removed, tickable, skip, seen);
+            tickOne(merge.ticker(), removed, tickable, skip, seen);
         }
     }
 
@@ -463,34 +488,26 @@ public final class IslandBlockEntityTicks {
      * branch.
      */
 
-    private static void tickSlice(Level level, java.util.List<TickingBlockEntity> slice,
+    private static void tickSlice(java.util.List<TickingBlockEntity> slice,
                                   java.util.Queue<TickingBlockEntity> removed,
-                                  it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable) {
-        tickSlice(level, slice, removed, tickable, null, null);
+                                  ChunkTickGate tickable) {
+        tickSlice(slice, removed, tickable, null, null);
     }
 
-    private static void tickSlice(Level level, java.util.List<TickingBlockEntity> slice,
+    private static void tickSlice(java.util.List<TickingBlockEntity> slice,
                                   java.util.Queue<TickingBlockEntity> removed,
-                                  it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable,
+                                  ChunkTickGate tickable,
                                   java.util.Set<TickingBlockEntity> skip,
                                   java.util.Set<TickingBlockEntity> seen) {
-        // Vanilla's per-ticker shouldTickBlocksAt gate, memoized to ONE read per CHUNK
-        // per slice pass. Vanilla reads per-BE but is naturally coherent — main is the
-        // only thread and no ticket mutation can land mid-loop. Here the slice runs on
-        // a worker WHILE main's straggler pump executes chunk-system tasks (ticket
-        // placements → level recomputes), so a live per-BE read could flip mid-loop:
-        // a moving-piston BE skipped for one tick while the rest of its contraption
-        // advanced = flying machines breaking at one chunk's entry/exit (bomber fleet
-        // report, 2026-07-06). The memo restores vanilla's whole-phase coherence per
-        // chunk — and drops N map lookups per chunk to one as a bonus.
+        // One gate per pass: see ChunkTickGate for the coherence argument.
         for (int i = 0, m = slice.size(); i < m; i++) {
-            tickOne(level, slice.get(i), removed, tickable, skip, seen);
+            tickOne(slice.get(i), removed, tickable, skip, seen);
         }
     }
 
-    private static void tickOne(Level level, TickingBlockEntity t,
+    private static void tickOne(TickingBlockEntity t,
                                 java.util.Queue<TickingBlockEntity> removed,
-                                it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap tickable,
+                                ChunkTickGate tickable,
                                 java.util.Set<TickingBlockEntity> skip,
                                 java.util.Set<TickingBlockEntity> seen) {
         if (skip != null && skip.contains(t)) {
@@ -500,13 +517,7 @@ public final class IslandBlockEntityTicks {
         if (t.isRemoved()) { removed.add(t); return; }
         BlockPos pos = t.getPos();
         if (pos == null) return; // Lithium sleeping stub — keep it, it wakes later
-        long chunkKey = ChunkPos.pack(pos);
-        byte gate = tickable.get(chunkKey); // 0 = unknown, 1 = tick, 2 = skip
-        if (gate == 0) {
-            gate = level.shouldTickBlocksAt(pos) ? (byte) 1 : (byte) 2;
-            tickable.put(chunkKey, gate);
-        }
-        if (gate == 1) RegionScheduler.runSuccessBodyIfHealthy(t::tick);
+        if (tickable.ticks(ChunkPos.pack(pos))) RegionScheduler.runSuccessBodyIfHealthy(t::tick);
     }
 
     @SuppressWarnings("unchecked")

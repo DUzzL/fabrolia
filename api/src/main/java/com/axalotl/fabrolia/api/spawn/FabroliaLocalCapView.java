@@ -11,6 +11,15 @@ public interface FabroliaLocalCapView {
     /** Publish an arena, or detach it after its owner has closed acquisition. */
     void fabrolia$setCapArena(NativeArena arena);
 
+    /** Confine this freshly constructed calculator to ONE sequential chunk
+     *  pass (an island lane's coordinator): vanilla's plain maps replace the
+     *  concurrent ones and approval is vanilla's plain check, exact there.
+     *  Must be called before any use; never combined with an arena. */
+    void fabrolia$useSerialLane();
+
+    /** Whether {@link #fabrolia$useSerialLane} confined this calculator. */
+    boolean fabrolia$serialLane();
+
     /** Native operations require a successful acquisition, paired with release in finally. */
     interface NativeArena {
         boolean tryAcquire();

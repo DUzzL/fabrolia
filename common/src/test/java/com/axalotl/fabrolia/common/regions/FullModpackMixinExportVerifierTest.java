@@ -1017,6 +1017,28 @@ class FullModpackMixinExportVerifierTest {
                 "logical ownership must return the executing thread, not a stored worker");
         assertEquals(1, callCount(handler, CALLBACK_RETURNABLE,
                 "setReturnValue", "(Ljava/lang/Object;)V"));
+
+        // Portal read/generation scopes must route a chunk read before any other
+        // HEAD callback answers it (Fabrolia's off-Main bridge, c2me's shortcut).
+        MethodNode getChunk = method(cache, "getChunk",
+                "(IILnet/minecraft/world/level/chunk/status/ChunkStatus;Z)"
+                        + "Lnet/minecraft/world/level/chunk/ChunkAccess;");
+        assertEquals(1, generatedCallCount(getChunk, cache.name, "$fabrolia$ownedPortalRead"));
+        int portal = generatedCallIndex(getChunk, cache.name, "$fabrolia$ownedPortalRead");
+        int firstCallback = -1;
+        int index = 0;
+        for (AbstractInsnNode instruction : getChunk.instructions) {
+            if (instruction instanceof MethodInsnNode call && call.owner.equals(cache.name)
+                    && call.name.startsWith("handler$")) {
+                firstCallback = index;
+                break;
+            }
+            index++;
+        }
+        assertEquals(portal, firstCallback,
+                "the portal scope callback must be the first getChunk HEAD callback");
+        assertTrue(generatedCallIndex(getChunk, cache.name, "$fabrolia$getChunk") > portal,
+                "Fabrolia's off-Main getChunk bridge must run after the portal scope");
     }
 
 

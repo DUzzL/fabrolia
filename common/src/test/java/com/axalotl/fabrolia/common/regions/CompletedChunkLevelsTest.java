@@ -82,6 +82,19 @@ final class CompletedChunkLevelsTest {
             for (long key : touched) {
                 assertEquals(flat.get(key), snapshot.get(key), "snapshot " + s + " key " + key);
             }
+            if (s % 20 == 0) {
+                // The pass cursor: runs of same-page reads, page transitions in
+                // both directions and a page that does not exist in between
+                // must never answer from a stale page.
+                CompletedChunkLevels.Reader reader = snapshot.reader();
+                for (int z = -70; z < 70; z++) {
+                    for (int x = -70; x < 70; x++) {
+                        long key = CompletedChunkLevels.pack(x, z);
+                        assertEquals(flat.get(key), reader.get(key), "reader " + s + " key " + key);
+                    }
+                    assertEquals(absent, reader.get(CompletedChunkLevels.pack(10_000, -10_000)));
+                }
+            }
             Long2ByteOpenHashMap iterated = new Long2ByteOpenHashMap();
             snapshot.forEach(level -> level <= 31, key -> iterated.put(key, (byte) snapshot.get(key)));
             Long2ByteOpenHashMap filtered = new Long2ByteOpenHashMap();

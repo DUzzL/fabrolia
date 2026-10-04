@@ -68,7 +68,10 @@ public final class SpawnCensus {
 
     private static final MobCategory[] CATEGORIES = MobCategory.values();
     private static final int C = CATEGORIES.length;
-    private static final VectorUpdate[] VECTOR_UPDATES = fabrolia$vectorUpdates();
+    /** Grid of the per-cell key index: the region grid every island lane is cut on. */
+    static final com.axalotl.fabrolia.common.regions.RegionGrid CELL_GRID =
+            new com.axalotl.fabrolia.common.regions.RegionGrid(
+                    com.axalotl.fabrolia.common.regions.RegionGrid.DEFAULT_SHIFT);
     static final int REDUCE_GRAIN = 512;
 
 
@@ -95,6 +98,13 @@ public final class SpawnCensus {
         // the map's per-key compute lock. Readers remain weakly consistent.
         final ConcurrentHashMap<Long, AtomicIntegerArray> live = new ConcurrentHashMap<>();
         final ConcurrentHashMap<Long, AtomicIntegerArray> corpse = new ConcurrentHashMap<>();
+        /** Key sets of {@link #live} / {@link #corpse}, partitioned by
+         *  {@link #CELL_GRID} cell, so an island lane snapshots only its own
+         *  cells instead of filtering the whole level ledger per pass. */
+        final CellIndex liveCells = new CellIndex();
+        final CellIndex corpseCells = new CellIndex();
+        final VectorUpdate[] liveUpdates = fabrolia$vectorUpdates(liveCells);
+        final VectorUpdate[] corpseUpdates = fabrolia$vectorUpdates(corpseCells);
         /** Entities whose TYPE has a MobSpawnCost in at least one source of the
          *  level's natural_mob_spawns attribute — the only entities that can
          *  contribute potential charges. Usually empty outside the nether. */
@@ -102,6 +112,48 @@ public final class SpawnCensus {
         /** Null while unbuilt; {@link #ANY_COST_TYPE} when a timeline supplies spawn settings. */
         volatile java.util.function.Predicate<net.minecraft.world.entity.EntityType<?>> costTypes;
         volatile long costTypesBuiltAt = Long.MIN_VALUE;
+    }
+
+    /**
+     * Cell → occupied chunk keys of ONE ledger map. A key enters inside the
+     * map compute that creates its vector and leaves inside the sweep
+     * computeIfPresent that drops it, i.e. under that key's bin lock: the
+     * index mirrors the map's key set exactly. Each cell's set is mutated and
+     * copied only under the cell's bin lock here (never the reverse lock
+     * order: this map never calls back into a ledger map).
+     */
+    static final class CellIndex {
+        private final ConcurrentHashMap<Long, LongOpenHashSet> byCell = new ConcurrentHashMap<>();
+        /** Sweep remapping for the owning ledger map: drop a zero vector and its index key. */
+        final BiFunction<Long, AtomicIntegerArray, AtomicIntegerArray> retainNonZero = (key, vector) -> {
+            for (int i = 0; i < 2 * C; i++) {
+                if (vector.get(i) != 0) return vector;
+            }
+            remove(key);
+            return null;
+        };
+
+        void add(long chunkKey) {
+            byCell.compute(CELL_GRID.keyFor(chunkKey), (cell, keys) -> {
+                if (keys == null) keys = new LongOpenHashSet(4);
+                keys.add(chunkKey);
+                return keys;
+            });
+        }
+
+        void remove(long chunkKey) {
+            byCell.computeIfPresent(CELL_GRID.keyFor(chunkKey), (cell, keys) -> {
+                keys.remove(chunkKey);
+                return keys.isEmpty() ? null : keys;
+            });
+        }
+
+        void copyInto(long cell, LongOpenHashSet into) {
+            byCell.computeIfPresent(cell, (c, keys) -> {
+                into.addAll(keys);
+                return keys;
+            });
+        }
     }
 
     private static final ConcurrentHashMap<ServerLevel, LevelCensus> LEVELS = new ConcurrentHashMap<>();
@@ -161,18 +213,20 @@ public final class SpawnCensus {
 
     private static void fabrolia$apply(LevelCensus c, long chunkKey, int state, int sign) {
         (sign > 0 ? SpawnCensusDiag.EV_ADD : SpawnCensusDiag.EV_REMOVE).incrementAndGet();
-        var map = (state & 3) == 2 ? c.corpse : c.live;
-        map.compute(chunkKey, VECTOR_UPDATES[((state >>> 2) << 1) | (sign > 0 ? 1 : 0)]);
+        boolean corpse = (state & 3) == 2;
+        var map = corpse ? c.corpse : c.live;
+        var updates = corpse ? c.corpseUpdates : c.liveUpdates;
+        map.compute(chunkKey, updates[((state >>> 2) << 1) | (sign > 0 ? 1 : 0)]);
     }
 
     /** Cache the finite update operations instead of capturing state on every event. */
-    private static VectorUpdate[] fabrolia$vectorUpdates() {
+    private static VectorUpdate[] fabrolia$vectorUpdates(CellIndex index) {
         VectorUpdate[] updates = new VectorUpdate[4 * C];
         for (int category = 0; category < C; category++) {
             for (int mob = 0; mob < 2; mob++) {
-                int index = (category << 2) | (mob << 1);
-                updates[index] = new VectorUpdate(category, mob != 0, -1);
-                updates[index + 1] = new VectorUpdate(category, mob != 0, 1);
+                int slot = (category << 2) | (mob << 1);
+                updates[slot] = new VectorUpdate(index, category, mob != 0, -1);
+                updates[slot + 1] = new VectorUpdate(index, category, mob != 0, 1);
             }
         }
         return updates;
@@ -180,11 +234,13 @@ public final class SpawnCensus {
 
     private static final class VectorUpdate
             implements BiFunction<Long, AtomicIntegerArray, AtomicIntegerArray> {
+        private final CellIndex index;
         private final int category;
         private final boolean mob;
         private final int sign;
 
-        private VectorUpdate(int category, boolean mob, int sign) {
+        private VectorUpdate(CellIndex index, int category, boolean mob, int sign) {
+            this.index = index;
             this.category = category;
             this.mob = mob;
             this.sign = sign;
@@ -192,7 +248,10 @@ public final class SpawnCensus {
 
         @Override
         public AtomicIntegerArray apply(Long key, AtomicIntegerArray vector) {
-            if (vector == null) vector = new AtomicIntegerArray(2 * C);
+            if (vector == null) {
+                vector = new AtomicIntegerArray(2 * C);
+                index.add(key);
+            }
             vector.addAndGet(category, sign);
             if (mob) vector.addAndGet(C + category, sign);
             return vector;
@@ -323,27 +382,32 @@ public final class SpawnCensus {
      * Large key sets fan out over the shared pool (Main's level census).
      */
     public static Reduced reduce(ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter) {
-        return reduce(level, chunkGetter, false, null);
+        LevelCensus c = census(level);
+        return reduce(level, c, chunkGetter, false, fabrolia$snapshotKeys(c));
     }
 
     /** Same census, strictly on the calling thread — an island coordinator's
      *  lane census: island concurrency never authorizes foreign-executor
-     *  fan-out. {@code laneKeys} pre-selects the lane's chunk keys before any
-     *  admitted body (the level ledger holds every lane's chunks);
-     *  {@code chunkGetter} remains the authoritative per-key membership and
-     *  spawnability rule inside the body. */
-    public static Reduced reduceSerial(ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter,
-                                       java.util.function.LongPredicate laneKeys) {
-        return reduce(level, chunkGetter, true, laneKeys);
+     *  fan-out. Only the ledger keys inside {@code cells} (the lane's own
+     *  grid cells, cut on {@code cellShift}) are snapshotted, through the
+     *  per-cell index: O(own cells + own occupied chunks), independent of the
+     *  rest of the level ledger. {@code chunkGetter} remains the
+     *  authoritative per-key membership and spawnability rule inside the body. */
+    public static Reduced reduceSerialCells(ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter,
+                                            long[] cells, int cellShift) {
+        if (cellShift != CELL_GRID.shift) {
+            throw new IllegalStateException("island lane grid shift " + cellShift
+                    + " does not match the census cell index shift " + CELL_GRID.shift);
+        }
+        LevelCensus c = census(level);
+        return reduce(level, c, chunkGetter, true, fabrolia$snapshotCellKeys(c, cells));
     }
 
-    private static Reduced reduce(ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter,
-                                  boolean serial, java.util.function.LongPredicate laneKeys) {
-        LevelCensus c = census(level);
+    private static Reduced reduce(ServerLevel level, LevelCensus c, NaturalSpawner.ChunkGetter chunkGetter,
+                                  boolean serial, long[] keys) {
         Long2IntConcurrentHashMap ticking = ((TickingChunksAccess)
                 ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor) level)
                         .fabrolia$entityManager()).fabrolia$tickingChunks();
-        long[] keys = fabrolia$snapshotKeys(c, laneKeys);
         if (keys.length == 0) {
             Reduced[] empty = new Reduced[1];
             RegionScheduler.runSuccessBodyIfHealthy(() -> empty[0] = new Reduced(
@@ -388,33 +452,38 @@ public final class SpawnCensus {
         return fabrolia$mergeParts(keys, new CensusPart[] {part});
     }
 
-    private static long[] fabrolia$snapshotKeys(LevelCensus census,
-                                                java.util.function.LongPredicate keyFilter) {
+    private static long[] fabrolia$snapshotKeys(LevelCensus census) {
         long[][] snapshot = new long[1][];
         RegionScheduler.runSuccessBodyIfHealthy(
                 () -> {
                     LongOpenHashSet union = new LongOpenHashSet();
-                    fabrolia$addKeys(union, census.live.keySet(), keyFilter);
-                    fabrolia$addKeys(union, census.corpse.keySet(), keyFilter);
-                    long[] keys = union.toLongArray();
-                    // CHM iteration order is deliberately unspecified. Sorting
-                    // gives stable ranges and a stable serial merge order.
-                    Arrays.sort(keys);
-                    snapshot[0] = keys;
+                    union.addAll(census.live.keySet());
+                    union.addAll(census.corpse.keySet());
+                    snapshot[0] = fabrolia$sortedKeys(union);
                 });
         return snapshot[0];
     }
 
-    private static void fabrolia$addKeys(LongOpenHashSet into, Set<Long> keys,
-                                         java.util.function.LongPredicate keyFilter) {
-        if (keyFilter == null) {
-            into.addAll(keys);
-            return;
-        }
-        for (Long key : keys) {
-            long k = key;
-            if (keyFilter.test(k)) into.add(k);
-        }
+    static long[] fabrolia$snapshotCellKeys(LevelCensus census, long[] cells) {
+        long[][] snapshot = new long[1][];
+        RegionScheduler.runSuccessBodyIfHealthy(
+                () -> {
+                    LongOpenHashSet union = new LongOpenHashSet();
+                    for (long cell : cells) {
+                        census.liveCells.copyInto(cell, union);
+                        census.corpseCells.copyInto(cell, union);
+                    }
+                    snapshot[0] = fabrolia$sortedKeys(union);
+                });
+        return snapshot[0];
+    }
+
+    /** Set iteration order is deliberately unspecified. Sorting gives stable
+     *  ranges and a stable serial merge order. */
+    private static long[] fabrolia$sortedKeys(LongOpenHashSet union) {
+        long[] keys = union.toLongArray();
+        Arrays.sort(keys);
+        return keys;
     }
 
     static void fabrolia$reduceRange(
@@ -761,22 +830,15 @@ public final class SpawnCensus {
                     () -> SpawnCensusDiag.RECONCILE_HEALED.addAndGet(healed));
         }
         LevelCensus c = census(level);
-        fabrolia$sweepZeroVectors(c.live);
-        fabrolia$sweepZeroVectors(c.corpse);
+        fabrolia$sweepZeroVectors(c.live, c.liveCells);
+        fabrolia$sweepZeroVectors(c.corpse, c.corpseCells);
     }
 
-    private static void fabrolia$sweepZeroVectors(ConcurrentHashMap<Long, AtomicIntegerArray> map) {
+    static void fabrolia$sweepZeroVectors(ConcurrentHashMap<Long, AtomicIntegerArray> map,
+                                          CellIndex index) {
         for (Long key : map.keySet()) {
             RegionScheduler.runSuccessBodyIfHealthy(() ->
-                    map.computeIfPresent(key, SpawnCensus::fabrolia$retainNonZeroVector));
+                    map.computeIfPresent(key, index.retainNonZero));
         }
-    }
-
-    private static AtomicIntegerArray fabrolia$retainNonZeroVector(
-            Long key, AtomicIntegerArray vector) {
-        for (int i = 0; i < 2 * C; i++) {
-            if (vector.get(i) != 0) return vector;
-        }
-        return null;
     }
 }

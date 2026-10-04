@@ -1,8 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.regions.NetherPortalPreparation;
-import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
-import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.server.level.ChunkResult;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
@@ -12,9 +10,12 @@ import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.gen.Invoker;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import java.util.concurrent.CompletableFuture;
 
-@Mixin(value = ServerChunkCache.class, priority = 3000)
+@Mixin(value = ServerChunkCache.class, priority = 500)
 public abstract class PortalPreparationChunkMixin implements NetherPortalPreparation.ChunkAccessBridge {
     @Shadow @Final private net.minecraft.world.level.TicketStorage ticketStorage;
 
@@ -40,13 +41,24 @@ public abstract class PortalPreparationChunkMixin implements NetherPortalPrepara
     public abstract CompletableFuture<ChunkResult<ChunkAccess>> fabrolia$portalChunkFuture(
             int x, int z, ChunkStatus status, boolean load);
 
-    @WrapMethod(method = "getChunk(IILnet/minecraft/world/level/chunk/status/ChunkStatus;Z)Lnet/minecraft/world/level/chunk/ChunkAccess;")
-    private ChunkAccess fabrolia$ownedPortalRead(int x, int z, ChunkStatus status,
-                                               boolean load, Operation<ChunkAccess> original) {
+    /**
+     * Portal read/generation scopes route this thread's chunk reads, so this
+     * callback must run before every other HEAD callback of {@code getChunk}
+     * (Fabrolia's off-Main bridge, c2me's off-Main shortcut): injector order
+     * 900 &lt; the default 1000, and the low mixin priority applies it first
+     * even where {@code order} were ignored. Outside any scope (the steady
+     * state) the cost is one shared read — no per-call Operation, argument
+     * boxing or ThreadLocal probe.
+     */
+    @Inject(method = "getChunk(IILnet/minecraft/world/level/chunk/status/ChunkStatus;Z)Lnet/minecraft/world/level/chunk/ChunkAccess;",
+            at = @At("HEAD"), cancellable = true, order = 900)
+    private void fabrolia$ownedPortalRead(int x, int z, ChunkStatus status, boolean load,
+                                         CallbackInfoReturnable<ChunkAccess> cir) {
+        if (!NetherPortalPreparation.chunkScopesOpen()) return;
         if (NetherPortalPreparation.readScopeActive()) {
-            return NetherPortalPreparation.readChunk(this.level, x, z, status, load);
+            cir.setReturnValue(NetherPortalPreparation.readChunk(this.level, x, z, status, load));
+            return;
         }
         NetherPortalPreparation.retainGenerationChunk(this.level, x, z, status, load);
-        return original.call(x, z, status, load);
     }
 }

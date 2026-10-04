@@ -30,6 +30,31 @@ public abstract class LocalMobCapCalculatorMixin implements com.axalotl.fabrolia
         this.fabrolia$capArena = arena;
     }
 
+    /** Set once, before first use, by the island lane that owns this calculator. */
+    @org.spongepowered.asm.mixin.Unique
+    private boolean fabrolia$serial;
+
+    /** An island lane's calculator lives and dies inside one coordinator's
+     *  sequential chunk pass, the exact setting vanilla's plain maps are
+     *  correct in: the concurrent swap below exists only for Main's parallel
+     *  lane and would make every near-player lookup box and probe a CHM. */
+    @Override
+    public void fabrolia$useSerialLane() {
+        if (this.fabrolia$capArena != null || !this.playerMobCounts.isEmpty()
+                || !this.playersNearChunk.isEmpty()) {
+            throw new IllegalStateException(
+                    "serial local-cap lane requires a fresh calculator without an arena");
+        }
+        this.playerMobCounts = new java.util.HashMap<>();
+        this.playersNearChunk = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
+        this.fabrolia$serial = true;
+    }
+
+    @Override
+    public boolean fabrolia$serialLane() {
+        return this.fabrolia$serial;
+    }
+
     @Inject(method = "canSpawn", at = @At("HEAD"), cancellable = true)
     private void fabrolia$rustCanSpawn(net.minecraft.world.entity.MobCategory category, ChunkPos pos,
                                     CallbackInfoReturnable<Boolean> cir) {

@@ -75,7 +75,9 @@ public final class IslandTickUnit {
      * completing a future invokes arbitrary synchronous callbacks, so a peer W
      * could win after the completion permit but before those callbacks entered.
      * The outcome below is committed under the scheduler lifecycle cut and
-     * terminal publication invokes no callback and enqueues no continuation.
+     * terminal publication invokes no callback and enqueues no continuation;
+     * it only wakes the one registered pacer (a flag write and a bare unpark;
+     * the pacer then polls under its own envelope).
      */
     public static final class AttemptReceipt {
         private final java.util.concurrent.atomic.AtomicBoolean terminal =
@@ -84,11 +86,19 @@ public final class IslandTickUnit {
         private volatile long fromLogicalTick = Long.MIN_VALUE;
         private volatile long toLogicalTick = Long.MIN_VALUE;
         private volatile Throwable failure;
+        private volatile TemporalControl.Pacer watcher;
 
         private AttemptReceipt() {}
 
         public boolean isDone() {
             return terminal.get();
+        }
+
+        /** Wake {@code pacer} at the terminal edge. Register BEFORE the next
+         *  {@link #isDone} read: the edge then either precedes that read or
+         *  observes the registration. */
+        void wakeOnTerminal(TemporalControl.Pacer pacer) {
+            watcher = pacer;
         }
 
         AttemptOutcome outcome() {
@@ -126,6 +136,7 @@ public final class IslandTickUnit {
             if (!terminal.compareAndSet(false, true)) {
                 throw new IllegalStateException("island unit receipt finished twice");
             }
+            wakeWatcher();
         }
 
         /** Failure cleanup after the exact non-null W was selected: fixed
@@ -133,7 +144,12 @@ public final class IslandTickUnit {
         void finishAfterFailure(Throwable selected) {
             if (selected == null) throw new NullPointerException("selected");
             failure = selected;
-            terminal.compareAndSet(false, true);
+            if (terminal.compareAndSet(false, true)) wakeWatcher();
+        }
+
+        private void wakeWatcher() {
+            TemporalControl.Pacer waiting = watcher;
+            if (waiting != null) waiting.wake();
         }
 
         public void throwIfFailed() {

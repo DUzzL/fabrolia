@@ -85,6 +85,14 @@ public final class TemporalControl {
      * completed unit publishes the next ticket and every refused attempt
      * re-arms itself. No region worker is occupied by a pacing park and no
      * standing unit queue can out-race a main-side claim fence.
+     *
+     * <p>Event-driven: the daemon parks until the earliest queued fire time
+     * (capped at {@link #CONTROL_RETRY_NANOS}) and is unparked by exactly the
+     * events that can create work earlier — a new queue node, an OFFERING
+     * node's acceptance/cancellation, and the terminal publication of a
+     * receipt it watches. Fire times, retry delays and the per-island cadence
+     * are unchanged; only the 100 µs receipt polling (≈10k wake-ups/s while any
+     * unit was in flight) and the OFFERING spin are gone.
      */
     public static final Pacer PACER = new Pacer();
 
@@ -92,13 +100,30 @@ public final class TemporalControl {
         private static final long CLAIM_RETRY_NANOS = 2_000_000L;
         private static final long READINESS_RETRY_NANOS = 50_000_000L;
         private static final long CONTROL_RETRY_NANOS = 25_000_000L;
-        private static final long ATTEMPT_POLL_NANOS = 100_000L;
         private final java.util.concurrent.DelayQueue<Entry> queue = new java.util.concurrent.DelayQueue<>();
         private final java.util.concurrent.ConcurrentHashMap<IslandRegistry.PIsland, TicketState> states =
                 new java.util.concurrent.ConcurrentHashMap<>();
         private volatile Thread thread;
         /** Exact thread identity authorized to consume one normal-stop interrupt. */
         private Thread normalStopOwner;
+        /** Raised by {@link #wake} before its unpark and consumed right before the
+         *  daemon parks. The daemon also parks inside the DelayQueue lock and
+         *  scheduler monitors, and such a park can absorb the bare unpark; the
+         *  flag carries the wake-up across it. */
+        private final java.util.concurrent.atomic.AtomicBoolean signalled =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        /** Re-evaluate the daemon's park deadline. A flag write plus a bare unpark:
+         *  it runs no callback and publishes nothing, so it is safe inside any
+         *  success cut; the woken daemon re-reads every fact under its own
+         *  fail-stop envelope. */
+        void wake() {
+            signalled.set(true);
+            Thread owner = thread;
+            if (owner != null && owner != Thread.currentThread()) {
+                java.util.concurrent.locks.LockSupport.unpark(owner);
+            }
+        }
 
         static long retryDelayNanos(IslandTickUnit.AttemptOutcome outcome) {
             return outcome == IslandTickUnit.AttemptOutcome.HOLD
@@ -189,7 +214,10 @@ public final class TemporalControl {
             private static final int OFFERING = 0;
             private static final int ACCEPTED = 1;
             private static final int CANCELLED = 2;
+            /** Bound of one OFFERING park; the decision itself unparks the daemon. */
+            private static final long OFFERING_PARK_NANOS = 1_000_000L;
 
+            final Pacer pacer;
             final RegionizedServer rs;
             final IslandRegistry.PIsland island;
             final TicketState state;
@@ -200,8 +228,9 @@ public final class TemporalControl {
             private final java.util.concurrent.atomic.AtomicInteger publication =
                     new java.util.concurrent.atomic.AtomicInteger(OFFERING);
 
-            Entry(RegionizedServer rs, IslandRegistry.PIsland island,
+            Entry(Pacer pacer, RegionizedServer rs, IslandRegistry.PIsland island,
                   TicketState state, TicketState.Ticket ticket) {
+                this.pacer = pacer;
                 this.rs = rs;
                 this.island = island;
                 this.state = state;
@@ -213,16 +242,23 @@ public final class TemporalControl {
                 if (!publication.compareAndSet(OFFERING, ACCEPTED)) {
                     throw new IllegalStateException("pacer ticket publication was already decided");
                 }
+                pacer.wake();
             }
 
             void cancelPublication() {
-                publication.compareAndSet(OFFERING, CANCELLED);
+                if (publication.compareAndSet(OFFERING, CANCELLED)) pacer.wake();
             }
 
-            boolean awaitAcceptedPublication() {
+            /** The node became visible before its publisher's success cut decided
+             *  it; park (not spin) until that decision unparks the daemon. A stop
+             *  interrupt or a selected W ends the wait: an interrupted park returns
+             *  at once and would otherwise spin until the publisher decides. */
+            boolean awaitAcceptedPublication() throws InterruptedException {
                 int state;
                 while ((state = publication.get()) == OFFERING) {
-                    Thread.onSpinWait();
+                    if (Thread.interrupted()) throw new InterruptedException();
+                    RegionScheduler.throwWorkerFailureIfAny();
+                    java.util.concurrent.locks.LockSupport.parkNanos(this, OFFERING_PARK_NANOS);
                 }
                 return state == ACCEPTED;
             }
@@ -240,8 +276,8 @@ public final class TemporalControl {
         }
 
         /** Pacer-thread-local ownership of an admitted publication attempt.
-         *  Workers only flip the poll-only receipt; they never enqueue or invoke
-         *  a continuation at the terminal edge. */
+         *  Workers only flip the poll-only receipt and unpark its watcher; they
+         *  never enqueue or invoke a continuation at the terminal edge. */
         private record ActiveAttempt(Entry entry,
                                      IslandTickUnit.AttemptReceipt receipt) {}
 
@@ -331,10 +367,11 @@ public final class TemporalControl {
                         deadlineNanos, fireAtNanos, replaceInFlight);
                 if (ticket == null) return PreparedArm.NONE;
             }
-            Entry entry = new Entry(rs, island, state, ticket);
+            Entry entry = new Entry(this, rs, island, state, ticket);
             try {
                 // The consumer may observe the node immediately, but its
-                // OFFERING receipt blocks begin() until the caller commits.
+                // OFFERING receipt blocks begin() until the caller commits;
+                // that decision (not this add) wakes the daemon.
                 queue.add(entry);
                 return new PreparedArm(state, ticket, entry, expectedInFlight);
             } catch (Throwable publicationFailure) {
@@ -618,14 +655,17 @@ public final class TemporalControl {
                         }
                     }
 
-                    // Polling is deliberately bounded and inside the fail-stop
-                    // envelope. Receipt completion publishes no callback/queue
-                    // node; at most 100us later this sole owner observes it.
-                    long pollNanos = activeAttempts.isEmpty()
-                            ? CONTROL_RETRY_NANOS : ATTEMPT_POLL_NANOS;
-                    Entry e = queue.poll(pollNanos,
-                            java.util.concurrent.TimeUnit.NANOSECONDS);
-                    if (e == null) continue;
+                    // Interrupt semantics of the former interruptible poll.
+                    if (Thread.interrupted()) throw new InterruptedException();
+                    Entry e = queue.poll();
+                    if (e == null) {
+                        // Every event that can make work due earlier unparks
+                        // this sole owner: an entry decision, a watched receipt
+                        // reaching terminal. The cap keeps the fail-stop check
+                        // above at the former idle cadence.
+                        parkUntilDue();
+                        continue;
+                    }
                     try {
                         RegionScheduler.throwWorkerFailureIfAny();
                         if (!e.awaitAcceptedPublication()) continue;
@@ -637,6 +677,9 @@ public final class TemporalControl {
                         }
                         if (e.firedAttempt != null) {
                             activeAttempts.add(new ActiveAttempt(e, e.firedAttempt));
+                            // Registered before the next isDone sweep: a terminal
+                            // edge either precedes that read or wakes us.
+                            e.firedAttempt.wakeOnTerminal(this);
                         }
                     } catch (InterruptedException interrupted) {
                         throw interrupted;
@@ -684,6 +727,21 @@ public final class TemporalControl {
                 }
             }
             if (failure != null) TemporalControl.<RuntimeException>rethrow(failure);
+        }
+
+        /** Park until the head is due (capped). A wake signalled since the last
+         *  park is consumed here instead: its unpark may already have been
+         *  absorbed by a park inside the queue lock or a scheduler monitor, and
+         *  any signal raised after this read leaves the permit for parkNanos. */
+        void parkUntilDue() {
+            Entry head = queue.peek();
+            long waitNanos = CONTROL_RETRY_NANOS;
+            if (head != null) {
+                waitNanos = Math.min(waitNanos,
+                        head.getDelay(java.util.concurrent.TimeUnit.NANOSECONDS));
+            }
+            if (waitNanos <= 0L || signalled.getAndSet(false)) return;
+            java.util.concurrent.locks.LockSupport.parkNanos(this, waitNanos);
         }
 
         private Throwable terminalizeEntryFailure(Entry entry, Throwable thrown) {
