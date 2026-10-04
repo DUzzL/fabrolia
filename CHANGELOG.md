@@ -64,11 +64,17 @@
   the blocking line; `/fabrolia functions fences` the per-tick fence causes).
   Only non-partitionable roots and lines that actually match an escalation
   take the global pause. On the production datapacks BACAP `tick_timer`,
-  `track_stats:tick` and `armor_statues:tick` are partitioned. Region workers
-  execute only functions the active plan proves owner-local, inside ownership
-  guards; anything else fails loudly. Deviations (documented in
-  docs/ASYNC-ISLANDS.md §16): island cadence for those roots, per-island order
-  of escalated lines, ≤1 tick skew for reads of Main-only state.
+  `track_stats:tick` and `armor_statues:tick` are partitioned. A pass runs
+  only on the thread that owns each entity's tick: players ticked by Main
+  (fallbacks, riding a Main-ticked vehicle, player ticks off) get their
+  per-tick roots in their Main-sync body under the island claim, with no
+  global fence unless a line escalates. Advancement rewards, loot and
+  announcements raised inside a pass are routed to Main unless the exact
+  owner-local proof holds. Region workers execute only functions the active
+  plan proves owner-local, inside ownership guards; anything else fails
+  loudly. Deviations (documented in docs/ASYNC-ISLANDS.md §16): island
+  cadence for those roots, per-island order of escalated lines, ≤1 tick skew
+  for reads of Main-only state.
 - Entity tracking: the per-tick tracker pass no longer re-stages pairings
   whose vanilla outcome is unchanged (static item frames, idle mobs), takes
   one position snapshot per tracker, and lets Main work through the viewer
