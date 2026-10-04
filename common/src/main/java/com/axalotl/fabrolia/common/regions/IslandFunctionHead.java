@@ -119,14 +119,36 @@ public final class IslandFunctionHead {
         timerTickDone = server.getTickCount();
     }
 
+    /** Main-confined: the loop a {@code remove} just disarmed (a replace-schedule re-adds it). */
+    private static FunctionPlan.RootPlan lastDisarmed;
+
     /** {@code /schedule clear} (or any Main removal) of an armed loop disarms it now. */
     public static void timerEventRemoved(String id) {
         Armed armed = ARMED;
+        lastDisarmed = null;
         if (rearming || armed.loops().isEmpty()) return;
         ArrayList<FunctionPlan.RootPlan> loops = new ArrayList<>(armed.loops());
+        for (FunctionPlan.RootPlan r : armed.loops()) {
+            if (r.id().toString().equals(id)) lastDisarmed = r;
+        }
         if (loops.removeIf(r -> r.id().toString().equals(id))) {
             ARMED = new Armed(armed.plan(), armed.tickRoots(), List.copyOf(loops));
         }
+    }
+
+    /**
+     * Main {@code schedule} of a loop right after its removal (vanilla
+     * {@code schedule … replace} = remove + schedule): the loop stays armed.
+     */
+    public static void timerEventScheduled(String id) {
+        FunctionPlan.RootPlan root = lastDisarmed;
+        lastDisarmed = null;
+        if (root == null || rearming || !root.id().toString().equals(id)) return;
+        Armed armed = ARMED;
+        if (armed.plan() != FunctionAnalyzer.plan() || armed.loops().contains(root)) return;
+        ArrayList<FunctionPlan.RootPlan> loops = new ArrayList<>(armed.loops());
+        loops.add(root);
+        ARMED = new Armed(armed.plan(), armed.tickRoots(), List.copyOf(loops));
     }
 
     /** Entity tick boundary ({@link FunctionPassMark}). */
@@ -225,7 +247,8 @@ public final class IslandFunctionHead {
                 FunctionFenceDiag.escalated(label);
             });
             IslandCommands.routeFencedIslandBody(rs, island, "function head from " + label, () -> {
-                runRemainderFenced(armed.plan(), steps, from, matches, abortedNow, pass, server);
+                IslandFunctionScope.runUnscoped(() -> runRemainderFenced(
+                        armed.plan(), steps, from, matches, abortedNow, pass, server));
                 return true;
             });
             RegionScheduler.throwWorkerFailureIfAny();
@@ -314,13 +337,17 @@ public final class IslandFunctionHead {
 
     private static void runMainPass(List<FunctionPlan.RootPlan> roots, FunctionPartition.MainPartition partition,
                                     long passId, boolean acceptSame, MinecraftServer server) {
-        // Main may share an async level's global regions with entities an
-        // island is ticking right now (lazy index moves): such a pass runs
+        // Claim first: an entity claimed here cannot be passed by an island
+        // head until its next tick. Members that live in an async level (lazy
+        // index moves can put an island-ticked entity into a global region;
+        // the OFF catch-up runs while retiring units may still finish) run
         // under the global fence, so no body overlaps an island tick.
+        FunctionPartition.Pass pass = partition.open(passId, acceptSame);
+        if (pass.isEmpty()) return;
         boolean fence = IslandCommands.requiresMainFence() && !IslandCommands.fenceWindowHeld()
-                && partition.hasAsyncLevelCandidates();
+                && partition.hasAsyncLevelMember(pass);
         if (!fence) {
-            runMainPassUnfenced(roots, partition, passId, acceptSame, server);
+            runMainPassMembers(roots, pass, server);
             return;
         }
         if (!IslandCommands.quiesceAllExcept(null)) {
@@ -329,25 +356,21 @@ public final class IslandFunctionHead {
                         "could not fence the Main function remainder pass"));
                 return;
             }
-            runMainPassUnfenced(roots, partition, passId, acceptSame, server);
+            runMainPassMembers(roots, pass, server);
             return;
         }
         Throwable failure = null;
         try {
             RegionScheduler.commitSuccessIfHealthy(FunctionFenceDiag.MAIN_REMAINDER_FENCES::increment);
-            RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> runMainPassUnfenced(roots, partition, passId, acceptSame, server));
+            RegionScheduler.runSuccessBodyIfHealthy(() -> runMainPassMembers(roots, pass, server));
         } catch (Throwable thrown) {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         }
         IslandCommands.releaseAllExceptAndPropagate(failure);
     }
 
-    private static void runMainPassUnfenced(List<FunctionPlan.RootPlan> roots,
-                                            FunctionPartition.MainPartition partition,
-                                            long passId, boolean acceptSame, MinecraftServer server) {
-        FunctionPartition.Pass pass = partition.open(passId, acceptSame);
-        if (pass.isEmpty()) return;
+    private static void runMainPassMembers(List<FunctionPlan.RootPlan> roots,
+                                           FunctionPartition.Pass pass, MinecraftServer server) {
         RegionScheduler.commitSuccessIfHealthy(FunctionFenceDiag.MAIN_ROOT_PASSES::increment);
         CommandSourceStack source = server.getFunctions().getGameLoopSender();
         for (FunctionPlan.RootPlan root : roots) {

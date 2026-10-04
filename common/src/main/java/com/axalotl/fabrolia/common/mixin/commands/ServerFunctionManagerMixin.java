@@ -260,6 +260,13 @@ public abstract class ServerFunctionManagerMixin {
             }
             return;
         }
+        if (IslandFunctionScope.current() != null) {
+            // A whole function reached from inside a Main owner-local pass (an
+            // advancement reward of a trigger the pass fired) is not covered by
+            // that pass's proof: it takes the normal Main path, unscoped.
+            IslandFunctionScope.runUnscoped(() -> fabrolia$fenceFunction(function, source, original));
+            return;
+        }
         if (!IslandCommands.requiresMainFence()) {
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> original.call(function, source));

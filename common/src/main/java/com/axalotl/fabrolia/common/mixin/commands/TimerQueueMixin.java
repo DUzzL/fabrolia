@@ -121,6 +121,10 @@ public abstract class TimerQueueMixin<T> {
     private void fabrolia$guardSchedule(String id, long time, TimerCallback<T> callback,
                                         org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
         IslandFunctionScope.forbid("TimerQueue.schedule(" + id + ")");
+        Object self = this;
+        if (self instanceof TimerQueue<?> q && fabrolia$serverQueue(q)) {
+            IslandFunctionHead.timerEventScheduled(id);
+        }
     }
 
     @org.spongepowered.asm.mixin.injection.Inject(method = "remove", at = @At("HEAD"))

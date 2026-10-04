@@ -4019,9 +4019,6 @@ public final class RegionizedServer {
         if (((ParallelProcessor.TickGuard) e).fabrolia$tickLease().isArrivalPending()) return;
         // A queued portal transfer is already causally gone from this source.
         if (keyed instanceof ParallelProcessor.TickGuard tg && tg.fabrolia$isPortalPending()) return;
-        // The admitted tick (any lane below, island player turns included) opens
-        // the entity's next per-tick function pass (FunctionPassMark).
-        IslandFunctionHead.entityTicked((FunctionPassMark) e);
         boolean directPlayer = e instanceof ServerPlayer;
         boolean containsPlayerTick = ParallelProcessor.containsServerPlayerTick(e);
         // Ticking-readiness gate, ONE coherent answer per chunk per region task (see
@@ -4041,6 +4038,10 @@ public final class RegionizedServer {
             // independent (player distance + own removal), safe under this
             // region's claim like the gate-passing path's call below.
             e.checkDespawn();
+            // A range-gated visit still closes the inter-tick interval of its
+            // per-tick function pass (vanilla passes such entities every tick);
+            // real ticks re-open it in tickNonPassenger/tickPassenger.
+            IslandFunctionHead.entityTicked((FunctionPassMark) e);
             return;
         }
         // Own-chunk FULL invariant (see fabrolia$ownChunkFull): an entity whose

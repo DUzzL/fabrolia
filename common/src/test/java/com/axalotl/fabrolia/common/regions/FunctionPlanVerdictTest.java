@@ -95,7 +95,7 @@ class FunctionPlanVerdictTest {
                 5, PARTITION,  // advancement revoke @s (C1), is_on_ground predicate
                 8, PARTITION,  // AEC nbt read is not a player read
                 11, PARTITION, // dimension predicates on the arrow itself
-                14, PARTITION, // whack_a_mole reward is owner-local, so not Main-resident
+                14, ESCALATE,  // the whack_a_mole reward grants (Main-resident) and writes the count
                 15, ESCALATE), // one_second_timer also writes bac_divers_dozen_count
                 FunctionPlanFixture.kinds(root));
         assertTrue(root.lines().get(0).reason().contains("bac_eventhorizon"));
@@ -107,8 +107,10 @@ class FunctionPlanVerdictTest {
         FunctionPlanFixture f = bacap(new FunctionPlanFixture());
         FunctionPlan plan = f.plan();
 
-        assertTrue(plan.ownerLocal(f.fn("blazeandcave:advancement/count/whack_a_mole")),
-                "score of @s + grant @s is owner-local");
+        assertFalse(plan.ownerLocal(f.fn("blazeandcave:advancement/count/whack_a_mole")),
+                "advancement grant announces and runs rewards: not owner-local");
+        assertTrue(plan.ownerLocal(f.fn("blazeandcave:advancement/event_horizon_fail")),
+                "@s scores + advancement revoke @s are owner-local");
         assertFalse(plan.ownerLocal(f.fn("bacap_rewards:challenges/immortal")),
                 "macro-argument call is never owner-local");
         assertFalse(plan.ownerLocal(f.fn("bacap_rewards:advancement_made_macro")));

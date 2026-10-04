@@ -7,7 +7,11 @@ import org.spongepowered.asm.mixin.Unique;
 
 import java.util.concurrent.atomic.AtomicLong;
 
-/** {@link FunctionPassMark} state; new entities owe a pass (vanilla passes them next tick). */
+/**
+ * {@link FunctionPassMark} state; new entities owe a pass (vanilla passes them
+ * before their first tick). An AtomicLong rather than a VarHandle on a mixin
+ * field: {@code @Unique} field names may be remapped when merged.
+ */
 @Mixin(Entity.class)
 public abstract class EntityFunctionPassMixin implements FunctionPassMark {
 
@@ -19,9 +23,9 @@ public abstract class EntityFunctionPassMixin implements FunctionPassMark {
         long observed = fabrolia$functionPass.get();
         if (observed == passId) return Claim.SAME;
         if (observed != FunctionPassMark.OWED) return Claim.TAKEN;
-        return fabrolia$functionPass.compareAndSet(FunctionPassMark.OWED, passId)
-                ? Claim.NEW
-                : (fabrolia$functionPass.get() == passId ? Claim.SAME : Claim.TAKEN);
+        long witness = fabrolia$functionPass.compareAndExchange(FunctionPassMark.OWED, passId);
+        if (witness == FunctionPassMark.OWED) return Claim.NEW;
+        return witness == passId ? Claim.SAME : Claim.TAKEN;
     }
 
     @Override

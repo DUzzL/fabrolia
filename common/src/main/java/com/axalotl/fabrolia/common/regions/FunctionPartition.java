@@ -206,13 +206,15 @@ public abstract class FunctionPartition {
             return rs != null && IslandCommands.requiresMainFence(rs);
         }
 
-        /** Some candidate lives in an async level's global regions (islands may tick near it). */
-        boolean hasAsyncLevelCandidates() {
-            for (ServerLevel level : levels()) {
-                RegionizedServer rs = RegionScheduler.forLevel(level);
-                if (!partitioned(rs)) continue;
-                for (Region r : rs.regionizer().snapshot()) {
-                    if (r.domain == rs.globalDomain && !r.entities.isEmpty()) return true;
+        /**
+         * Some claimed member lives in a level whose islands may be ticking
+         * (async, arrival owners or a still-entered unit): its body must not
+         * overlap an island tick.
+         */
+        boolean hasAsyncLevelMember(Pass pass) {
+            for (Entity e : pass.entities) {
+                if (e.level() instanceof ServerLevel level && partitioned(RegionScheduler.forLevel(level))) {
+                    return true;
                 }
             }
             return false;
@@ -228,9 +230,12 @@ public abstract class FunctionPartition {
             for (ServerLevel level : levels()) {
                 RegionizedServer rs = RegionScheduler.forLevel(level);
                 if (only != null || !partitioned(rs)) {
-                    for (Entity e : level.getAllEntities()) {
-                        if (e != null && live(e)) out.add(e);
-                    }
+                    // Tick-list members only: the pass mark alternates with
+                    // ticks, so an entity that never ticks would be passed
+                    // once and then never again.
+                    level.entityTickList.forEach(e -> {
+                        if (live(e)) out.add(e);
+                    });
                 } else {
                     for (Region r : rs.regionizer().snapshot()) {
                         if (r.domain != rs.globalDomain) continue;
