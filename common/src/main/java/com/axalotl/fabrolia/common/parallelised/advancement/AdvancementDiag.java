@@ -35,11 +35,15 @@ public final class AdvancementDiag {
     public enum Route {
         /** Trigger fired off the player's owner (matcher at fire time, player condition at drain). */
         OFF_OWNER_TRIGGER,
-        /** A fire-time compare needed the player's ender pearls (whole call at drain). */
+        /** Owner trigger behind earlier routed work of the same player (condition at drain). */
+        BACKLOG_TRIGGER,
+        /** A fire-time player condition needed the player's ender pearls (condition at drain). */
         FOREIGN_READ_TRIGGER,
+        /** A fire-time matcher needed a player's ender pearls (whole call at drain). */
+        FOREIGN_READ_MATCHER,
         /** Award whose completion runs a reward the owner may not run (non-owner-local function or loot). */
         AWARD_GLOBAL_REWARD,
-        /** Award queued behind earlier routed work of the same player. */
+        /** Award of a fire-time match list queued behind an earlier routed award of it. */
         AWARD_BACKLOG,
         /** Reward function not proven owner-local ({@code FunctionPlans.ownerLocal}). */
         REWARD_FUNCTION,

@@ -13,14 +13,15 @@ import net.minecraft.server.level.ServerPlayer;
  * ticks through MAIN_SYNC. Exactly one venue answers {@code true} at a time:
  * <ul>
  *   <li>the player's own A5 turn (early body incl. packet replay, late body);</li>
- *   <li>an island worker whose live island session owns the player while no
- *       turn of that player runs elsewhere and the worker's cell neighbours the
- *       player ({@link AsyncIslandPlayerTicks#ownsLifecycleMutation}, the same
- *       authority death/ride lifecycle mutations use);</li>
- *   <li>physical Main for a player not attached to an island session (MAIN
- *       phase, unsupported player type, constructor-time load), or while Main
- *       holds the global fence, every claim of the player's level, or the claim
- *       of the island attached to the player's session;</li>
+ *   <li>an island worker of the island attached to the player's session while
+ *       that session rests between turns (ISLAND_READY, EARLY_DONE) and the
+ *       worker's cell neighbours the player
+ *       ({@link AsyncIslandPlayerTicks#ownsLifecycleMutation}, the same authority
+ *       death/ride lifecycle mutations use);</li>
+ *   <li>physical Main while no island holds the session (MAIN, Main fallback,
+ *       Main handoff/drain, disconnected, unsupported player type,
+ *       constructor-time load), or while Main holds the global fence, every
+ *       claim of the player's level, or the claim of the attached island;</li>
  *   <li>the exact V2 player actor (Main parked, region pool fenced);</li>
  *   <li>physical Main whenever no async island is live: lockstep region
  *       workers and pool threads never own a player, which ticks on Main.</li>
@@ -52,8 +53,15 @@ public final class PlayerOwnership {
             return mainOwnsAttached(player);
         }
         if (!islandsLive) return false;
-        return Thread.currentThread() instanceof RegionWorkerThread
-                && player instanceof AsyncIslandPlayerAccess
+        if (!(Thread.currentThread() instanceof RegionWorkerThread)
+                || !(player instanceof AsyncIslandPlayerAccess)) {
+            return false;
+        }
+        AsyncIslandPlayerTicks.PlayerState state = AsyncIslandPlayerTicks.state(player);
+        if (state == null) return false;
+        IslandPlayerTurnSession.Phase phase = state.session.phase();
+        return (phase == IslandPlayerTurnSession.Phase.ISLAND_READY
+                || phase == IslandPlayerTurnSession.Phase.EARLY_DONE)
                 && AsyncIslandPlayerTicks.ownsLifecycleMutation(player);
     }
 
@@ -79,12 +87,22 @@ public final class PlayerOwnership {
             RegionizedServer runtime = RegionScheduler.publishedForLevel(level);
             if (runtime != null && runtime.currentThreadHoldsAllClaims()) return true;
         }
-        IslandPlayerTurnSession.View view = sessionView(player);
-        if (view == null) return true;
-        IslandPlayerTurnSession.OwnerStamp owner = view.owner();
-        if (owner == null) return true;
-        return owner.islandIdentity() instanceof IslandRegistry.PIsland island
+        if (!(player instanceof AsyncIslandPlayerAccess)) return true;
+        AsyncIslandPlayerTicks.PlayerState state = AsyncIslandPlayerTicks.state(player);
+        if (state == null || !islandHeld(state.session.phase())) return true;
+        IslandPlayerTurnSession.OwnerStamp owner = state.session.view().owner();
+        return owner != null && owner.islandIdentity() instanceof IslandRegistry.PIsland island
                 && IslandCommands.mainHolds(island);
+    }
+
+    /** Phases in which the attached island may run or touch the player without Main. */
+    private static boolean islandHeld(IslandPlayerTurnSession.Phase phase) {
+        return switch (phase) {
+            case ISLAND_READY, EARLY_RESERVED, EARLY_RUNNING, EARLY_DONE, LATE_RUNNING,
+                    TRANSFERRING -> true;
+            case MAIN, MAIN_FALLBACK_RESERVED, MAIN_FALLBACK_RUNNING, MAIN_HANDOFF,
+                    MAIN_DRAINING, DISCONNECTED -> false;
+        };
     }
 
     private static IslandPlayerTurnSession.View sessionView(ServerPlayer player) {

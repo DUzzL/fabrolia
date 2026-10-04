@@ -32,8 +32,7 @@ public class ConfigCommand {
                 .then(buildFabroliaEntitySpawnCommand())
                 .then(buildFabroliaRandomTicksCommand())
                 .then(buildFabroliaChunkSendCommand())
-                .then(buildFabroliaDespawnCommand())
-                .then(buildFabroliaAdvancementsCommand());
+                .then(buildFabroliaDespawnCommand());
         if (PlatformUtils.isModLoaded("vmp")) {
             config = config.then(buildFabroliaVmpTrackingCommand());
         }
@@ -215,28 +214,6 @@ public class ConfigCommand {
                             PlatformUtils.saveConfig();
 
                             sendMessage(ctx, "Fabrolia Despawn set to ",
-                                    String.valueOf(value),
-                                    true);
-                            return 1;
-                        })
-                );
-    }
-
-    private static LiteralArgumentBuilder<CommandSourceStack> buildFabroliaAdvancementsCommand() {
-        return literal("setFabroliaAdvancements")
-                .executes(ctx -> {
-                    sendMessage(ctx, "Current value of fabrolia advancements: ",
-                            String.valueOf(FabroliaConfig.enableFabroliaAdvancements),
-                            false);
-                    return 1;
-                })
-                .then(Commands.argument("value", BoolArgumentType.bool())
-                        .executes(ctx -> {
-                            boolean value = BoolArgumentType.getBool(ctx, "value");
-                            FabroliaConfig.enableFabroliaAdvancements = value;
-                            PlatformUtils.saveConfig();
-
-                            sendMessage(ctx, "Fabrolia Advancements set to ",
                                     String.valueOf(value),
                                     true);
                             return 1;

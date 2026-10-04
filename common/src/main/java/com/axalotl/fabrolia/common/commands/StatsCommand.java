@@ -101,7 +101,6 @@ public class StatsCommand {
         boolean fabroliaRandomTicks = FabroliaConfig.enableFabroliaRandomTicks;
         boolean fabroliaChunkSend = FabroliaConfig.enableFabroliaChunkSend;
         boolean fabroliaDespawn = FabroliaConfig.enableFabroliaDespawn;
-        boolean fabroliaAdvancements = FabroliaConfig.enableFabroliaAdvancements;
         boolean vmpLoaded = PlatformUtils.isModLoaded("vmp");
         boolean fabroliaVmpTracking = FabroliaConfig.enableFabroliaVmpTracking;
 
@@ -126,11 +125,7 @@ public class StatsCommand {
 
                 .append(Component.literal("\nFabrolia Despawn: ").withStyle(ChatFormatting.WHITE))
                 .append(Component.literal(fabroliaDespawn ? "Enabled" : "Disabled")
-                        .withStyle(fabroliaDespawn ? ChatFormatting.GREEN : ChatFormatting.RED))
-
-                .append(Component.literal("\nFabrolia Advancements: ").withStyle(ChatFormatting.WHITE))
-                .append(Component.literal(fabroliaAdvancements ? "Enabled" : "Disabled")
-                        .withStyle(fabroliaAdvancements ? ChatFormatting.GREEN : ChatFormatting.RED));
+                        .withStyle(fabroliaDespawn ? ChatFormatting.GREEN : ChatFormatting.RED));
 
         if (vmpLoaded) {
             message.append(Component.literal("\nFabrolia VMP Tracking: ").withStyle(ChatFormatting.WHITE))

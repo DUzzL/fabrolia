@@ -39,15 +39,19 @@ import java.util.function.Predicate;
  *       thread): its matcher is resolved at fire time, the {@code player:}
  *       condition and the award at the drain;</li>
  *   <li>a trigger whose fire-time evaluation needs foreign state
- *       ({@link AdvancementCacheContext}): evaluated whole at the drain;</li>
+ *       ({@link AdvancementCacheContext}): its condition (or, when the matcher
+ *       needs it, the whole call) is evaluated at the drain;</li>
  *   <li>an award whose completion runs a reward the owner may not run
- *       ({@link AdvancementRewardRouting#completionNeedsFence}), and any later award
- *       of that player while it has routed work outstanding;</li>
+ *       ({@link AdvancementRewardRouting#completionNeedsFence}); its listener
+ *       stays registered until the drain, so revoke-and-rerun counters see every
+ *       fire;</li>
  *   <li>non-owner-local reward functions, loot grants and chat announcements
  *       ({@link AdvancementRewardRouting}).</li>
  * </ul>
- * The FIFO keeps each player's routed work in vanilla order; a per-player backlog
- * count makes the owner route that player's later awards behind it.
+ * The FIFO keeps each player's routed work in vanilla order: while a player has
+ * routed work outstanding (a per-player backlog count), its later trigger calls
+ * resolve their matcher at fire time and leave condition and award to the drain,
+ * after that work.
  *
  * <p>Drain points (physical Main): the tick-head window before the
  * {@code #minecraft:tick} functions — the only point that acquires the global fence,
@@ -68,17 +72,32 @@ public final class AdvancementBuffer {
 
     // ------------------------------------------------------------------ trigger
 
-    /** {@code SimpleCriterionTrigger.trigger} body under async islands. */
+    /** {@code SimpleCriterionTrigger.trigger} body. */
     public static void trigger(ServerPlayer player, Predicate<?> matcher, CriterionTrigger<?> trigger) {
         PlayerAdvancements advancements = player.getAdvancements();
         if (AdvancementOwnership.quiescentContext()) {
             AdvancementDiag.TRIGGERS_QUIESCENT.increment();
-            triggerQuiescent(player, advancements, matcher, trigger);
+            // A routed item's own cascade nests synchronously, as vanilla; any other
+            // quiescent caller (a fenced command) keeps behind the player's routed work.
+            if (hasBacklog(advancements) && !AdvancementBatchScope.rewardFunctionActive()) {
+                routeTrigger(player, advancements, matcher, trigger,
+                        AdvancementDiag.Route.BACKLOG_TRIGGER);
+            } else {
+                triggerQuiescent(player, advancements, matcher, trigger);
+            }
         } else if (AdvancementOwnership.ownsPlayer(player)) {
             AdvancementDiag.TRIGGERS_OWNER.increment();
-            triggerOnOwner(player, advancements, matcher, trigger);
+            if (hasBacklog(advancements)) {
+                // Behind routed work of this player: its player conditions and awards
+                // must observe that work first, exactly as the drain applies it.
+                routeTrigger(player, advancements, matcher, trigger,
+                        AdvancementDiag.Route.BACKLOG_TRIGGER);
+            } else {
+                triggerOnOwner(player, advancements, matcher, trigger);
+            }
         } else {
-            routeOffOwner(player, advancements, matcher, trigger);
+            routeTrigger(player, advancements, matcher, trigger,
+                    AdvancementDiag.Route.OFF_OWNER_TRIGGER);
         }
     }
 
@@ -88,8 +107,10 @@ public final class AdvancementBuffer {
         Map<PlayerAdvancements.TriggerInstanceKey, ?> listeners = advancements.getTriggerMapForType(trigger);
         if (listeners == null || listeners.isEmpty()) return;
         LootContext context = EntityPredicate.createContext(player, player);
-        List<PlayerAdvancements.TriggerInstanceKey> matched = AdvancementCacheContext.evaluateQuiescent(
-                () -> collect(listeners, matcher, context));
+        @SuppressWarnings("unchecked")
+        List<PlayerAdvancements.TriggerInstanceKey> matched =
+                (List<PlayerAdvancements.TriggerInstanceKey>) AdvancementCacheContext.evaluateQuiescent(
+                        AdvancementBuffer::collect, listeners, matcher, context);
         if (matched == null) return;
         for (int i = 0, n = matched.size(); i < n; i++) {
             PlayerAdvancements.TriggerInstanceKey key = matched.get(i);
@@ -103,17 +124,21 @@ public final class AdvancementBuffer {
         Map<PlayerAdvancements.TriggerInstanceKey, ?> listeners = advancements.getTriggerMapForType(trigger);
         if (listeners == null || listeners.isEmpty()) return;
         LootContext context = EntityPredicate.createContext(player, player);
-        boolean[] routed = new boolean[1];
-        List<PlayerAdvancements.TriggerInstanceKey> matched = AdvancementCacheContext.evaluateAtFireTime(
-                () -> collect(listeners, matcher, context), routed);
-        if (routed[0]) {
-            publish(new DeferredTrigger(advancements, player, matcher, trigger),
+        Object evaluated = AdvancementCacheContext.evaluateAtFireTime(
+                AdvancementBuffer::collect, listeners, matcher, context);
+        if (evaluated == AdvancementCacheContext.ROUTE) {
+            routeTrigger(player, advancements, matcher, trigger,
                     AdvancementDiag.Route.FOREIGN_READ_TRIGGER);
             return;
         }
+        @SuppressWarnings("unchecked")
+        List<PlayerAdvancements.TriggerInstanceKey> matched =
+                (List<PlayerAdvancements.TriggerInstanceKey>) evaluated;
         if (matched == null) return;
         for (int i = 0, n = matched.size(); i < n; i++) {
             PlayerAdvancements.TriggerInstanceKey key = matched.get(i);
+            // Vanilla awards the fire-time match list in order; once one award of it is
+            // routed, its successors follow it through the FIFO.
             if (hasBacklog(advancements)) {
                 publish(new RoutedAward(advancements, key), AdvancementDiag.Route.AWARD_BACKLOG);
             } else if (AdvancementRewardRouting.completionNeedsFence(
@@ -127,28 +152,28 @@ public final class AdvancementBuffer {
     }
 
     /**
-     * Off the owner: snapshot the listeners under the advancements monitor and keep
-     * those passing the per-trigger matcher (its arguments are only valid now). The
-     * {@code player:} condition is evaluated at the drain against the fire-time
-     * loot context.
+     * Route one trigger call: snapshot the listeners under the advancements monitor
+     * and keep those passing the per-trigger matcher (its arguments are only valid
+     * now); the {@code player:} condition and the award run at the drain against the
+     * fire-time loot context. A matcher that itself needs foreign state routes the
+     * whole call.
      */
-    private static void routeOffOwner(ServerPlayer player, PlayerAdvancements advancements,
-                                      Predicate<?> matcher, CriterionTrigger<?> trigger) {
-        boolean[] routed = new boolean[1];
-        PendingTrigger pending = AdvancementCacheContext.evaluateAtFireTime(
-                () -> buildPending(player, advancements, matcher, trigger), routed);
-        if (routed[0]) {
+    private static void routeTrigger(ServerPlayer player, PlayerAdvancements advancements,
+                                     Predicate<?> matcher, CriterionTrigger<?> trigger,
+                                     AdvancementDiag.Route route) {
+        Object evaluated = AdvancementCacheContext.evaluateAtFireTime(
+                AdvancementBuffer::buildPending, player, matcher, trigger);
+        if (evaluated == AdvancementCacheContext.ROUTE) {
             publish(new DeferredTrigger(advancements, player, matcher, trigger),
-                    AdvancementDiag.Route.FOREIGN_READ_TRIGGER);
-        } else if (pending != null) {
-            publish(pending, AdvancementDiag.Route.OFF_OWNER_TRIGGER);
+                    AdvancementDiag.Route.FOREIGN_READ_MATCHER);
+        } else if (evaluated != null) {
+            publish((PendingTrigger) evaluated, route);
         }
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static List<PlayerAdvancements.TriggerInstanceKey> collect(
-            Map<PlayerAdvancements.TriggerInstanceKey, ?> listeners, Predicate<?> matcher,
-            LootContext context) {
+    private static Object collect(Map<PlayerAdvancements.TriggerInstanceKey, ?> listeners,
+                                  Predicate<?> matcher, LootContext context) {
         Predicate<Object> test = (Predicate) matcher;
         List<PlayerAdvancements.TriggerInstanceKey> matched = null;
         int inspected = 0;
@@ -166,9 +191,10 @@ public final class AdvancementBuffer {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static PendingTrigger buildPending(ServerPlayer player, PlayerAdvancements advancements,
-                                               Predicate<?> matcher, CriterionTrigger<?> trigger) {
+    private static Object buildPending(ServerPlayer player, Predicate<?> matcher,
+                                       CriterionTrigger<?> trigger) {
         Predicate<Object> test = (Predicate) matcher;
+        PlayerAdvancements advancements = player.getAdvancements();
         synchronized (advancements) {
             Map<PlayerAdvancements.TriggerInstanceKey, ?> listeners =
                     advancements.getTriggerMapForType(trigger);
@@ -229,22 +255,28 @@ public final class AdvancementBuffer {
         public void apply() {
             ServerPlayer target = currentPlayer(advancements, player);
             LootContext evaluation = target == player ? context : EntityPredicate.createContext(target, target);
-            List<PlayerAdvancements.TriggerInstanceKey> matched = AdvancementCacheContext.evaluateQuiescent(() -> {
-                List<PlayerAdvancements.TriggerInstanceKey> hits = null;
-                for (int i = 0; i < keys.length; i++) {
-                    if (matchesPlayerPredicate(instances[i], evaluation)) {
-                        if (hits == null) hits = new ArrayList<>(4);
-                        hits.add(keys[i]);
-                    }
-                }
-                return hits;
-            });
+            @SuppressWarnings("unchecked")
+            List<PlayerAdvancements.TriggerInstanceKey> matched =
+                    (List<PlayerAdvancements.TriggerInstanceKey>) AdvancementCacheContext.evaluateQuiescent(
+                            PendingTrigger::matchConditions, keys, instances, evaluation);
             if (matched == null) return;
             AdvancementDiag.MATCHES.add(matched.size());
             for (int i = 0, n = matched.size(); i < n; i++) {
                 PlayerAdvancements.TriggerInstanceKey key = matched.get(i);
                 advancements.award(key.advancement(), key.criterion());
             }
+        }
+
+        private static Object matchConditions(PlayerAdvancements.TriggerInstanceKey[] keys, Object[] instances,
+                                              LootContext evaluation) {
+            List<PlayerAdvancements.TriggerInstanceKey> hits = null;
+            for (int i = 0; i < keys.length; i++) {
+                if (matchesPlayerPredicate(instances[i], evaluation)) {
+                    if (hits == null) hits = new ArrayList<>(4);
+                    hits.add(keys[i]);
+                }
+            }
+            return hits;
         }
     }
 

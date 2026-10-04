@@ -144,8 +144,8 @@ import org.spongepowered.asm.mixin.Mixin;
         // stateless (listener maps live on PlayerAdvancements, guarded by the
         // per-player monitor pairing in PlayerAdvancementsMixin +
         // AdvancementBuffer.buildPending), and ALL trigger paths now route
-        // through AdvancementBuffer when async is active — matching at fire
-        // time under the pa monitor, awards deferred to main drain points.
+        // through AdvancementBuffer.trigger — evaluated and awarded on the
+        // player's owner thread, global reward work routed to Main drains.
         AngerManagement.class,
         // WorldBorder removed 2026-06-10: synchronise-all turned every border READ
         // (isWithinBounds per spawn position, clamp per entity move) into contention on
