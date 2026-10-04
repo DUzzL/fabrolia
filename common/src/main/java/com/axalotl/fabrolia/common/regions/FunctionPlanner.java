@@ -589,16 +589,13 @@ public final class FunctionPlanner {
                 selfSelector(s.arg("targets"), ctx, fx, where, "tag");
             }
             case "advancement" -> {
-                // revoke @s: C1 runs it synchronously on the owner and it has
-                // no global tail. grant also announces to chat and runs reward
-                // functions/loot — global tails C2 routes only at its own award
-                // point, so a granting body escalates.
+                // grant/revoke @s: C1 runs both synchronously on the owner. A
+                // grant's global tails (chat announcement, non-owner-local reward
+                // functions, loot) go through the C2 routing point
+                // (AdvancementRewardRouting), which routes them to fenced Main.
                 FunctionIR.Node adv = s.hasLiteral("only") ? s.arg("advancement") : null;
                 fx.write("adv:" + (adv != null ? adv.text() : "*"));
-                if (selfSelector(s.arg("targets"), ctx, fx, where, "advancement")
-                        && s.hasLiteral("grant")) {
-                    fx.global(where, "advancement grant announces and runs rewards outside the owner");
-                }
+                selfSelector(s.arg("targets"), ctx, fx, where, "advancement");
             }
             case "clear", "give", "enchant" -> {
                 // Inventory triggers may award advancements (C1 on the owner).

@@ -90,11 +90,16 @@ public final class AdvancementRewardRouting {
         return true;
     }
 
-    /** @return {@code true} when the announcement was routed to physical Main. */
+    /**
+     * @return {@code true} when the announcement was routed to physical Main. A grant
+     * made inside an owner-local function pass (island head or Main partition) is
+     * always routed: the pass's ownership guards reject the global chat broadcast.
+     */
     public static boolean routeAnnouncement(PlayerList playerList, Component message, boolean overlay,
                                             ServerPlayer player) {
-        if (AdvancementOwnership.quiescentContext()) return false;
-        if (AdvancementOwnership.onPhysicalMain()
+        boolean functionPass = com.axalotl.fabrolia.common.regions.IslandFunctionScope.current() != null;
+        if (!functionPass && AdvancementOwnership.quiescentContext()) return false;
+        if (!functionPass && AdvancementOwnership.onPhysicalMain()
                 && !AdvancementBuffer.hasBacklog(player.getAdvancements())) {
             return false;
         }
