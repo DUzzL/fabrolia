@@ -49,6 +49,18 @@ public abstract class IslandFunctionScoreboardGuardMixin {
         }
     }
 
+    /** Name-only holders are read-only inside owner-local bodies. */
+    @Inject(method = "getOrCreatePlayerScore(Lnet/minecraft/world/scores/ScoreHolder;"
+            + "Lnet/minecraft/world/scores/Objective;Z)Lnet/minecraft/world/scores/ScoreAccess;",
+            at = @At("RETURN"), cancellable = true)
+    private void fabrolia$readOnlyFakeScore(ScoreHolder holder, Objective objective, boolean forceWritable,
+                                            CallbackInfoReturnable<ScoreAccess> cir) {
+        FunctionPartition scope = IslandFunctionScope.current();
+        if (scope == null || holder instanceof Entity) return;
+        cir.setReturnValue(new com.axalotl.fabrolia.common.regions.FunctionReadOnlyScoreAccess(
+                cir.getReturnValue(), scope, holder.getScoreboardName() + " / " + objective.getName()));
+    }
+
     @Inject(method = "resetAllPlayerScores", at = @At("HEAD"))
     private void fabrolia$guardResetAll(ScoreHolder holder, CallbackInfo ci) {
         fabrolia$guardHolderWrite(holder, "score reset");

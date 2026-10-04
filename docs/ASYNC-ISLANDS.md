@@ -136,7 +136,7 @@ inventory from the 26.2 sources:
 | villager schedules / brain activity windows | read W (day time) | W | none — W is global; schedule boundaries hit all islands at the same wall-clock moment |
 | crop growth / random ticks | per-tick chance in owner's tick | L | none (a 10 TPS island grows crops at half wall-clock rate — the defined, documented semantic of a slow island; identical to what a globally-lagging vanilla server does today) |
 | daylight/weather checks (`isBrightOutside`, thunder) | read W | W | none |
-| `/schedule` datapack timers, TimerQueue | absolute W ticks | W | global timer queue runs on the W authority; function EXECUTION that targets island-owned state is dispatched to owners (A5) |
+| `/schedule` datapack timers, TimerQueue | absolute W ticks | W | global timer queue runs on the W authority; function EXECUTION that targets island-owned state is dispatched to owners (A5). **Exception (§14):** an unconditional 1t self-rearming loop that the function plan partitions is an island-tick root — re-armed on W, executed per island at L (coalesced) |
 | scoreboards/advancements/bossbars | event-driven | n/a | global updates and deferred advancement awards/rewards use owned Main drains; trigger matchers are resolved on the producer at trigger time and the retained instances are evaluated at the Main drain (§0) |
 | portal cooldown (`portalCooldown`) | relative | L | none |
 | active Nether portal charge | relative | L | advances with the entity owner; the accepted source-unit cohort transfers on a worker holding every source/destination owner claim |
@@ -525,19 +525,14 @@ conditional mode, auto, delay, comparator output, trackOutput) is written
 either inline on the owner or on the fenced main batch with happens-before
 via the result future.
 
-**Datapacks (Phase 1).** Tick/schedule functions keep vanilla W-cadence and
-main execution, fenced per function body; the `#minecraft:tick` functions run
-inside the tick-head advancement window (§0) and reuse its sticky fence when that
-window took one, so a tick with island awards pending quiesces once for both.
-Scheduled functions (overworld `tickTime`) are separated from that window by the
-clock/border/weather stages and keep their own fence; a `TimerQueue` tick with two
-or more due function callbacks takes one fence around the whole dispatch instead
-of one per callback (`TimerQueueMixin`). /schedule stays on the
-vanilla game-time queue. Exactly-once holds trivially (vanilla's single invocation,
-only fenced). Phase 3 decomposes proven-island-local bodies to island lanes
-at island cadence via FabroliaFunctionScopes metadata (MCFC emits it;
-runtime validation is mandatory for dynamic selectors/macros/storage/
-modded commands — unknown = fenced global path).
+**Datapacks (Main-resident roots).** Functions the plan does not partition keep
+vanilla W-cadence and main execution, fenced per function body; the
+Main-resident `#minecraft:tick` functions run inside the tick-head advancement
+window (§0) and reuse its sticky fence when that window took one. Scheduled
+functions (overworld `tickTime`) keep their own fence; a `TimerQueue` tick with
+two or more due Main-resident function callbacks takes one fence around the
+whole dispatch (`TimerQueueMixin`). /schedule stays on the vanilla game-time
+queue. Per-tick roots the plan partitions run on island heads instead (§14).
 
 **Phase 2 (next): invocation shards.** Routed commands with multi-owner
 selector targets partition into per-island shards after resolving selectors
@@ -629,3 +624,56 @@ Not bit-exact vs. vanilla (all bounded, none accumulating):
   pure optimisation of the same predicate) do not see island passes;
   ServerCore's `chunkTickDistanceAffectsRandomTicks` is honoured on both
   lanes (the island filters the real `forEachBlockTickingChunk`).
+
+## 14. Datapacks on island heads (per-tick roots, 2026-10-04)
+
+**Plan.** `FunctionAnalyzer` keeps vanilla's exact parse of every function
+(`FunctionIR`: the `ContextChain` stages, node text from the parsed ranges,
+typed arguments). At library activation `FunctionPlanner` resolves the call
+graph against that generation's tags, predicates (codec-encoded, allowlist) and
+advancement rewards, and classifies every line of each per-tick root —
+`#minecraft:tick` members and unconditional `schedule function <self> 1t`
+loops:
+- PARTITION — `execute … as <@a|@e[…]> …` (no limit/sort/@p/@r/@n, no player
+  NBT) whose body touches only `@s` (its scores, tags, inventory, effects,
+  advancements via C1/C2), reads Main-written state (constants, storage, teams)
+  and sends particles near `@s`;
+- ESCALATE — same fan-out, global body (fake-player writes, storage/team
+  writes, unbounded selectors, entity NBT writes, macros, unknown commands), or
+  a write that Main-resident code also reads/writes (conflict rule);
+- REARM — the loop's own re-arm; GLOBAL — anything else (the root stays
+  Main-resident: fenced, vanilla, as before).
+`/fabrolia functions plan` prints every root's verdict with each line's class
+and the exact blocking `function:line` reason; `/fabrolia functions fences`
+prints per-tick fence causes.
+
+**Execution.** Main arms the partitioned `#tick` roots after the tick tag ran
+(so a reload's `#load` precedes them) and arms a loop when its TimerQueue
+callback fires — re-armed through its exact vanilla `schedule` line, no
+`execute`, no fence; `/schedule clear` disarms at once. Each island unit runs
+the armed roots at its function head (after cross-dimension arrivals, before
+scheduled ticks; own stamp `functionHeadAppliedL`, inherited on split) at island
+cadence L — a 10-TPS island runs its tick functions 10×/s, several W firings of
+a loop coalesce into one pass. Main runs the same roots for the global
+remainder (non-async levels, global-domain regions) at vanilla's function
+point; when an async level's global regions hold members it does so under the
+global fence. A line runs vanilla's `BuildContexts` continuation after the
+fan-out stage, evaluated with the selector's own predicate over the pass
+members; owner-local bodies run inside `IslandFunctionScope` guards
+(TimerQueue, storage writes, teams/objectives, fake-player score writes,
+foreign entities/chunks, global selectors, chat broadcast → fail-stop;
+`getPlayers()` → Main-published snapshot). An ESCALATE match hands the rest of
+that head (matches already evaluated, not re-rolled) to fenced Main in ONE
+routed body. Failing bodies log vanilla's "Failed to execute function".
+
+**Exactly-once per tick.** `FunctionPassMark`: a pass moves an entity's mark
+`OWED → passId` before running it; the entity's next tick resets `OWED`. Two
+passes (island heads, Main remainder, the async-OFF catch-up) never both run an
+entity between two of its ticks, whatever topology change moved it; Main's
+`#tick` roots and loops share one pass id per W tick. Async OFF runs the armed
+roots for the retiring islands' still-owed entities at the flip.
+
+**Accepted semantics.** Island cadence L (product decision Q2); escalated lines
+run in per-island order (Q1); reads of Main-only state may be one tick early or
+late; entities in loaded but not entity-ticking chunks are not visited; command
+and fork quotas count per line and pass.

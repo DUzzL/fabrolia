@@ -56,7 +56,7 @@ public abstract class TimerQueueMixin<T> {
         try {
             fabrolia$tickServerQueue(server, context, currentTick, original);
         } finally {
-            IslandFunctionHead.endTimerTick();
+            IslandFunctionHead.endTimerTick(server);
         }
     }
 
@@ -127,6 +127,17 @@ public abstract class TimerQueueMixin<T> {
     private void fabrolia$guardRemove(String id,
                                       org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Integer> cir) {
         IslandFunctionScope.forbid("TimerQueue.remove(" + id + ")");
+        Object self = this;
+        if (self instanceof TimerQueue<?> q && fabrolia$serverQueue(q)) {
+            IslandFunctionHead.timerEventRemoved(id);
+        }
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private static boolean fabrolia$serverQueue(TimerQueue<?> q) {
+        var server = RegionScheduler.getServer();
+        return server != null && server.getScheduledEvents() == q
+                && RegionalPlayerEntityTicksV2.isPhysicalServerThread(server);
     }
 
     @WrapOperation(

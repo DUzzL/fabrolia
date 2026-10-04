@@ -312,7 +312,13 @@ public final class FunctionPlanner {
         FunctionEffects prefix = new FunctionEffects();
         Ctx ctx = new Ctx(Self.NONE, false);
         for (int i = 0; i < fan; i++) {
-            ctx = modifier(stages.get(i), ctx, prefix, where, true);
+            FunctionIR.Stage st = stages.get(i);
+            if (("if".equals(st.head()) || "unless".equals(st.head())) && st.hasLiteral("function")) {
+                // CustomModifierExecutor: not a plain redirect the partition can replay.
+                prefix.global(where, "execute " + st.head() + " function before the fan-out");
+                break;
+            }
+            ctx = modifier(st, ctx, prefix, where, true);
         }
         if (prefix.isGlobal()) {
             dl.kind = FunctionPlan.LineKind.GLOBAL;
@@ -547,9 +553,8 @@ public final class FunctionPlanner {
         switch (type) {
             case "score" -> holderWrite(s.arg("targets"), s.arg("objective"), ctx, fx, where);
             case "entity" -> {
-                if (selfSelector(s.arg("target"), ctx, fx, where, "store entity")) {
-                    selfData(ctx, fx, where, true);
-                }
+                fx.write("entitydata");
+                fx.global(where, "execute store entity reloads the whole entity");
             }
             default -> fx.global(where, "execute store " + type);
         }
@@ -591,9 +596,12 @@ public final class FunctionPlanner {
                 selfSelector(s.arg("targets"), ctx, fx, where, "advancement");
             }
             case "clear", "give", "enchant" -> {
+                // Inventory triggers may award advancements (C1 on the owner).
+                fx.write("adv:*");
                 if (selfSelector(s.arg("targets"), ctx, fx, where, head)) fx.write("inventory");
             }
             case "effect" -> {
+                fx.write("adv:*");
                 if (selfSelector(s.arg("targets"), ctx, fx, where, head)) fx.write("effects");
             }
             case "xp", "experience" -> {
@@ -704,8 +712,15 @@ public final class FunctionPlanner {
                 fx.read("storage:" + textOf(s.arg("target")));
             }
             case "entity" -> {
+                if (write) {
+                    // Entity.load of the merged tag: Pos teleports, Team joins
+                    // teams, UUID/type data rewrites — never owner-local.
+                    fx.write("entitydata");
+                    fx.global(where, "data " + op + " entity reloads the whole entity");
+                    return;
+                }
                 if (!selfSelector(s.arg("target"), ctx, fx, where, "data entity")) return;
-                if (!selfData(ctx, fx, where, write)) return;
+                if (!selfData(ctx, fx, where, false)) return;
             }
             default -> {
                 fx.global(where, "data " + op + " " + targetType);

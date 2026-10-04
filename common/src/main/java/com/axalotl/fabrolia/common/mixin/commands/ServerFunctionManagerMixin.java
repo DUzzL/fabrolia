@@ -135,12 +135,12 @@ public abstract class ServerFunctionManagerMixin {
             // mutation against a peer W, so admit the complete drain here.
             // Mirrors vanilla tick(): functions run only while the tick rate
             // runs normally; the load tag runs once after a reload. Partitioned
-            // #tick roots are island-head work (armed here), so only
+            // #tick roots are island-head work (armed after the tag, so a
+            // reload's #load precedes their first island pass), so only
             // Main-resident roots ask the window for the global fence.
             boolean runs = this.server.tickRateManager().runsNormally();
             boolean islands = IslandCommands.requiresMainFence();
             com.axalotl.fabrolia.common.regions.FunctionPlan plan = FunctionAnalyzer.plan();
-            com.axalotl.fabrolia.common.regions.IslandFunctionHead.publishTickRoots(plan, runs && islands);
             boolean functionsQueued = runs
                     && (this.postReload || fabrolia$mainResidentTicking(plan, islands));
             RegionScheduler.runSuccessBodyIfHealthy(() -> window[0] =
@@ -157,6 +157,7 @@ public abstract class ServerFunctionManagerMixin {
             // call finishes its cleanup chain, or W wins and original is never
             // entered.
             RegionScheduler.runSuccessBodyIfHealthy(() -> original.call());
+            IslandFunctionHead.publishTickRoots(plan, runs && islands);
         } catch (Throwable thrown) {
             // tick() is an entered vanilla function body. Publish before
             // restoring the main-confined tick-tag marker.

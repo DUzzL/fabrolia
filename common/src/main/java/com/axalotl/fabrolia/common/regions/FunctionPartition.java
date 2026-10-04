@@ -20,24 +20,22 @@ import java.util.function.Predicate;
 /**
  * The entities one per-tick function pass may fan out over.
  *
- * <p>Membership is the exact tick ownership: an island partition is the
- * {@link Region#entities} tick sets of the regions carrying the island's domain
- * (the same sets its entity phase ticks, so a head body never runs on an
- * entity another thread ticks); the Main partition is the global-domain
- * regions of async levels plus every entity of non-async levels. Entities in
- * transfer (arrival-pending, portal-pending) belong to nobody this pass.
- * Order: entities by id (vanilla's EntityLookup insertion order), players by
- * their PlayerList position.
+ * <p>Membership candidates are the exact tick-ownership sets: an island
+ * partition is the {@link Region#entities} tick sets of the regions carrying
+ * the island's domain; the Main remainder is the global-domain regions of
+ * async levels plus every entity of non-async levels. Entities in transfer
+ * (arrival-pending, portal-pending) belong to nobody. A {@link Pass} is opened
+ * once per head: it keeps exactly the candidates whose {@link FunctionPassMark}
+ * it wins, so no entity is passed twice between two of its ticks whatever
+ * partition it belongs to. Order: entities by id (vanilla's EntityLookup
+ * insertion order), players by their PlayerList position.
  */
 public abstract class FunctionPartition {
 
     private static final Comparator<Entity> BY_ID = Comparator.comparingInt(Entity::getId);
 
-    /** Candidate entities (players included), vanilla relative order. */
-    protected abstract List<Entity> entities();
-
-    /** Candidate players, PlayerList relative order. */
-    protected abstract List<ServerPlayer> players();
+    /** Candidate entities (players included), any order. */
+    protected abstract List<Entity> candidates();
 
     /** Whether {@code entity} belongs to this partition (guards). */
     public abstract boolean owns(Entity entity);
@@ -47,36 +45,80 @@ public abstract class FunctionPartition {
 
     public abstract String describe();
 
-    /**
-     * Vanilla {@code EntitySelector.findEntities} restricted to this partition:
-     * the selector's own predicate (options, type, aabb, distance, feature
-     * flags), world limit and permission check, over this partition's
-     * candidates in vanilla relative order. Only limit/sort-free selectors
-     * reach here (the planner proves it), so no global sort is needed.
-     */
-    public final List<Entity> select(EntitySelector selector, CommandSourceStack source)
-            throws CommandSyntaxException {
-        selector.checkPermissions(source);
-        Vec3 pos = selector.position.apply(source.getPosition());
-        AABB box = selector.getAbsoluteAabb(pos);
-        ServerLevel level = source.getLevel();
-        boolean worldLimited = selector.isWorldLimited();
-        ArrayList<Entity> out = new ArrayList<>();
-        if (!selector.includesEntities()) {
-            Predicate<Entity> predicate = selector.getPredicate(pos, box, null);
-            for (ServerPlayer player : players()) {
-                if (worldLimited && player.level() != level) continue;
-                if (predicate.test(player)) out.add(player);
+    /** Claim this entity's pass (overridden by model tests without mixins). */
+    protected FunctionPassMark.Claim claim(Entity entity, long passId) {
+        return ((FunctionPassMark) entity).fabrolia$claimFunctionPass(passId);
+    }
+
+    /** The claimed members of one head pass, in vanilla relative order. */
+    public static final class Pass {
+        final FunctionPartition partition;
+        final List<Entity> entities;
+        final List<ServerPlayer> players;
+
+        Pass(FunctionPartition partition, List<Entity> entities, List<ServerPlayer> players) {
+            this.partition = partition;
+            this.entities = entities;
+            this.players = players;
+        }
+
+        public boolean isEmpty() {
+            return entities.isEmpty();
+        }
+
+        /**
+         * Vanilla {@code EntitySelector.findEntities} restricted to this pass:
+         * the selector's own predicate (options, type, aabb, distance, feature
+         * flags), world limit and permission check, over the claimed members in
+         * vanilla relative order. Only limit/sort-free selectors reach here.
+         */
+        public List<Entity> select(EntitySelector selector, CommandSourceStack source)
+                throws CommandSyntaxException {
+            selector.checkPermissions(source);
+            Vec3 pos = selector.position.apply(source.getPosition());
+            AABB box = selector.getAbsoluteAabb(pos);
+            ServerLevel level = source.getLevel();
+            boolean worldLimited = selector.isWorldLimited();
+            ArrayList<Entity> out = new ArrayList<>();
+            if (!selector.includesEntities()) {
+                Predicate<Entity> predicate = selector.getPredicate(pos, box, null);
+                for (ServerPlayer player : players) {
+                    if (player.isRemoved() || (worldLimited && player.level() != level)) continue;
+                    if (predicate.test(player)) out.add(player);
+                }
+                return out;
+            }
+            Predicate<Entity> predicate = selector.getPredicate(pos, box, source.enabledFeatures());
+            for (Entity e : entities) {
+                if (e.isRemoved() || (worldLimited && e.level() != level)) continue;
+                if (selector.type.tryCast(e) == null) continue;
+                if (predicate.test(e)) out.add(e);
             }
             return out;
         }
-        Predicate<Entity> predicate = selector.getPredicate(pos, box, source.enabledFeatures());
-        for (Entity e : entities()) {
-            if (worldLimited && e.level() != level) continue;
-            if (selector.type.tryCast(e) == null) continue;
-            if (predicate.test(e)) out.add(e);
+    }
+
+    /**
+     * Members of pass {@code passId}: candidates still owed a pass (claimed
+     * now) and, when {@code acceptSame}, those this exact pass already holds
+     * (later roots of the same Main pass).
+     */
+    public final Pass open(long passId, boolean acceptSame) {
+        List<Entity> candidates = candidates();
+        ArrayList<Entity> members = new ArrayList<>(candidates.size());
+        for (Entity e : candidates) {
+            FunctionPassMark.Claim c = claim(e, passId);
+            if (c == FunctionPassMark.Claim.NEW || (acceptSame && c == FunctionPassMark.Claim.SAME)) {
+                members.add(e);
+            }
         }
-        return out;
+        members.sort(BY_ID);
+        ArrayList<ServerPlayer> players = new ArrayList<>();
+        for (Entity e : members) {
+            if (e instanceof ServerPlayer p) players.add(p);
+        }
+        FunctionPlayerSnapshot.sortByPlayerList(players);
+        return new Pass(this, members, players);
     }
 
     // ------------------------------------------------------------------
@@ -96,43 +138,25 @@ public abstract class FunctionPartition {
             this.island = island;
         }
 
-        private ArrayList<Region> regions() {
+        @Override
+        protected List<Entity> candidates() {
             ThreadedRegionizer regionizer = rs.regionizer();
-            ArrayList<Region> out = new ArrayList<>(island.cells.size() + island.haloCells.size());
+            ArrayList<Entity> out = new ArrayList<>();
             EpochDomain d = island.domain;
             for (LongIterator it = island.cells.iterator(); it.hasNext(); ) {
-                Region r = regionizer.peekByGridKey(it.nextLong());
-                if (r != null && r.domain == d && r.state() == RegionState.ACTIVE) out.add(r);
+                addRegion(out, regionizer.peekByGridKey(it.nextLong()), d);
             }
             for (LongIterator it = island.haloCells.iterator(); it.hasNext(); ) {
-                Region r = regionizer.peekByGridKey(it.nextLong());
-                if (r != null && r.domain == d && r.state() == RegionState.ACTIVE) out.add(r);
+                addRegion(out, regionizer.peekByGridKey(it.nextLong()), d);
             }
             return out;
         }
 
-        @Override
-        protected List<Entity> entities() {
-            ArrayList<Entity> out = new ArrayList<>();
-            for (Region r : regions()) {
-                for (Entity e : r.entities) {
-                    if (live(e)) out.add(e);
-                }
+        private static void addRegion(List<Entity> out, Region r, EpochDomain d) {
+            if (r == null || r.domain != d || r.state() != RegionState.ACTIVE) return;
+            for (Entity e : r.entities) {
+                if (live(e)) out.add(e);
             }
-            out.sort(BY_ID);
-            return out;
-        }
-
-        @Override
-        protected List<ServerPlayer> players() {
-            ArrayList<ServerPlayer> out = new ArrayList<>();
-            for (Region r : regions()) {
-                for (Entity e : r.entities) {
-                    if (e instanceof ServerPlayer p && live(p)) out.add(p);
-                }
-            }
-            FunctionPlayerSnapshot.sortByPlayerList(out);
-            return out;
         }
 
         @Override
@@ -157,31 +181,53 @@ public abstract class FunctionPartition {
     }
 
     // ------------------------------------------------------------------
-    // Main remainder partition (physical Main, at the vanilla function point)
+    // Main remainder partition (physical Main)
     // ------------------------------------------------------------------
 
-    static FunctionPartition main(MinecraftServer server) {
-        return new MainPartition(server);
+    static MainPartition main(MinecraftServer server) {
+        return new MainPartition(server, null);
+    }
+
+    /** Main remainder restricted to one level (async OFF catch-up). */
+    static MainPartition mainLevel(MinecraftServer server, ServerLevel level) {
+        return new MainPartition(server, level);
     }
 
     static final class MainPartition extends FunctionPartition {
         final MinecraftServer server;
+        final ServerLevel only;
 
-        MainPartition(MinecraftServer server) {
+        MainPartition(MinecraftServer server, ServerLevel only) {
             this.server = server;
+            this.only = only;
         }
 
-        private static boolean partitioned(RegionizedServer rs) {
+        static boolean partitioned(RegionizedServer rs) {
             return rs != null && IslandCommands.requiresMainFence(rs);
         }
 
-        @Override
-        protected List<Entity> entities() {
-            ArrayList<Entity> out = new ArrayList<>();
-            for (ServerLevel level : server.getAllLevels()) {
-                int from = out.size();
+        /** Some candidate lives in an async level's global regions (islands may tick near it). */
+        boolean hasAsyncLevelCandidates() {
+            for (ServerLevel level : levels()) {
                 RegionizedServer rs = RegionScheduler.forLevel(level);
-                if (!partitioned(rs)) {
+                if (!partitioned(rs)) continue;
+                for (Region r : rs.regionizer().snapshot()) {
+                    if (r.domain == rs.globalDomain && !r.entities.isEmpty()) return true;
+                }
+            }
+            return false;
+        }
+
+        private Iterable<ServerLevel> levels() {
+            return only != null ? List.of(only) : server.getAllLevels();
+        }
+
+        @Override
+        protected List<Entity> candidates() {
+            ArrayList<Entity> out = new ArrayList<>();
+            for (ServerLevel level : levels()) {
+                RegionizedServer rs = RegionScheduler.forLevel(level);
+                if (only != null || !partitioned(rs)) {
                     for (Entity e : level.getAllEntities()) {
                         if (e != null && live(e)) out.add(e);
                     }
@@ -193,16 +239,6 @@ public abstract class FunctionPartition {
                         }
                     }
                 }
-                out.subList(from, out.size()).sort(BY_ID);
-            }
-            return out;
-        }
-
-        @Override
-        protected List<ServerPlayer> players() {
-            ArrayList<ServerPlayer> out = new ArrayList<>();
-            for (ServerPlayer p : server.getPlayerList().getPlayers()) {
-                if (live(p) && owns(p)) out.add(p);
             }
             return out;
         }
@@ -210,6 +246,7 @@ public abstract class FunctionPartition {
         @Override
         public boolean owns(Entity entity) {
             if (!(entity.level() instanceof ServerLevel level)) return false;
+            if (only != null) return level == only;
             RegionizedServer rs = RegionScheduler.forLevel(level);
             if (!partitioned(rs)) return true;
             long key = ((RegionKeyed) entity).fabrolia$getRegionKey();
@@ -220,6 +257,7 @@ public abstract class FunctionPartition {
 
         @Override
         public boolean ownsChunk(ServerLevel level, int cx, int cz) {
+            if (only != null) return level == only;
             RegionizedServer rs = RegionScheduler.forLevel(level);
             return !partitioned(rs)
                     || rs.islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(cx, cz)) == null;
@@ -227,7 +265,7 @@ public abstract class FunctionPartition {
 
         @Override
         public String describe() {
-            return "main";
+            return only != null ? "main/" + only.dimension().identifier() : "main";
         }
     }
 

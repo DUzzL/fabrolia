@@ -34,6 +34,8 @@ public final class FunctionFenceDiag {
     public static final LongAdder MAIN_ROOT_PASSES = new LongAdder();
     public static final LongAdder MAIN_ESCALATIONS = new LongAdder();
     public static final LongAdder MAIN_ESCALATION_FENCES = new LongAdder();
+    /** Main remainder passes fenced because an async level's global regions held members. */
+    public static final LongAdder MAIN_REMAINDER_FENCES = new LongAdder();
     /** Island loop callbacks re-armed on Main without executing the function. */
     public static final LongAdder LOOP_REARMS = new LongAdder();
     /** Escalated bodies dropped because a reload replaced the plan meanwhile. */
@@ -65,7 +67,7 @@ public final class FunctionFenceDiag {
     public static void reset(long tick) {
         for (LongAdder a : new LongAdder[]{TICK_FUNCTIONS_QUEUED, TICK_HEAD_FENCED, TIMER_DUE_FENCES,
                 FUNCTION_FENCES, ISLAND_ROOT_PASSES, ISLAND_ESCALATIONS, MAIN_ROOT_PASSES,
-                MAIN_ESCALATIONS, MAIN_ESCALATION_FENCES, LOOP_REARMS, STALE_ESCALATIONS,
+                MAIN_ESCALATIONS, MAIN_ESCALATION_FENCES, MAIN_REMAINDER_FENCES, LOOP_REARMS, STALE_ESCALATIONS,
                 WORKER_OWNER_LOCAL}) {
             a.reset();
         }
@@ -87,7 +89,9 @@ public final class FunctionFenceDiag {
                 + ", island escalations (fenced): " + rate(ISLAND_ESCALATIONS, ticks));
         out.add(" Main remainder passes: " + rate(MAIN_ROOT_PASSES, ticks)
                 + ", Main escalations: " + rate(MAIN_ESCALATIONS, ticks)
-                + " (fences " + rate(MAIN_ESCALATION_FENCES, ticks) + ")");
+                + " (fences " + rate(MAIN_ESCALATION_FENCES, ticks) + ")"
+                + ", Main remainder passes fenced for async-level members: "
+                + rate(MAIN_REMAINDER_FENCES, ticks));
         out.add(" loop re-arms without fence: " + rate(LOOP_REARMS, ticks)
                 + ", stale escalations: " + STALE_ESCALATIONS.sum()
                 + ", worker owner-local functions: " + WORKER_OWNER_LOCAL.sum());

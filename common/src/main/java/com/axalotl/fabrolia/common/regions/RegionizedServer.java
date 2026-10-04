@@ -338,6 +338,10 @@ public final class RegionizedServer {
                 // schedule-time deltas rot against the frozen island clock
                 // (the 6gt QC trencher stall zone starting at a static seam).
                 TickDomains.collapseAllToWall(java.util.List.of(this));
+                // Entities that ticked on the retiring islands after their last
+                // function head owe this tick's datapack pass, which Main's tick
+                // tag skipped as island work (FunctionPassMark keeps it single).
+                IslandFunctionHead.catchUpRetiredIslands(level);
             }
             LOGGER.info("[async-islands] {} for {} (applies this tick)",
                     wantAsync ? "ENABLED" : "DISABLED", level.dimension().identifier());
@@ -4015,6 +4019,9 @@ public final class RegionizedServer {
         if (((ParallelProcessor.TickGuard) e).fabrolia$tickLease().isArrivalPending()) return;
         // A queued portal transfer is already causally gone from this source.
         if (keyed instanceof ParallelProcessor.TickGuard tg && tg.fabrolia$isPortalPending()) return;
+        // The admitted tick (any lane below, island player turns included) opens
+        // the entity's next per-tick function pass (FunctionPassMark).
+        IslandFunctionHead.entityTicked((FunctionPassMark) e);
         boolean directPlayer = e instanceof ServerPlayer;
         boolean containsPlayerTick = ParallelProcessor.containsServerPlayerTick(e);
         // Ticking-readiness gate, ONE coherent answer per chunk per region task (see
