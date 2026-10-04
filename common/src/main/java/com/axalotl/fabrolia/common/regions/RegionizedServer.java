@@ -764,6 +764,15 @@ public final class RegionizedServer {
     }
 
     /**
+     * Lock-free hint: a tracking topology transition is open. No routing
+     * admission is taken, so a false result only licenses work whose owner tail
+     * revalidates every authority (the tracker tick's already-attached fast path).
+     */
+    boolean trackingTopologyTransitionOpenHint() {
+        return trackingTopologyTransition != null;
+    }
+
+    /**
      * Publish the snapshot/retirement transaction after exact claim acquisition.
      * Closing the writer phase first is the old-route drain: after this returns,
      * every new foreign router observes this exact receipt and may only retain an

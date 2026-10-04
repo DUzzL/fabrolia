@@ -471,7 +471,7 @@ public final class IslandEntityTracking {
                         || portalDeparturePending(entity);
                 boolean islandOwned = entity instanceof ServerPlayer player
                         ? AsyncIslandPlayerTicks.shouldDeferTrackingPublication(player, island)
-                        : eligibleNonPlayer(entity, island);
+                        : membershipIslandOwned(entity, island);
                 boolean portalOwned = !(entity instanceof ServerPlayer)
                         && portal && islandCompatibleNonPlayer(entity, island);
                 if (island != null && !island.retired && (portalOwned || islandOwned)) {
@@ -852,9 +852,13 @@ public final class IslandEntityTracking {
             }
             boolean portal = portalDeparturePending(entity.getRootVehicle())
                     || portalDeparturePending(entity);
-            if ((hasViewers || hasPending)
+            // A persistent publication clock needs ticking range (or a portal
+            // hold); staged membership alone may also commit at the island tail
+            // outside ticking range (membershipIslandOwned).
+            boolean clocked = (hasViewers || hasPending)
                     && (eligibleNonPlayer(entity, current)
-                    || portal && islandCompatibleNonPlayer(entity, current))) {
+                    || portal && islandCompatibleNonPlayer(entity, current));
+            if (clocked || hasPending && membershipIslandOwned(entity, current)) {
                 attach(tracker, current);
             } else {
                 detach(tracker);
@@ -950,18 +954,26 @@ public final class IslandEntityTracking {
                 return published;
             }
             if (!eligibleNonPlayer(entity, island)) {
-                // A portal/departure or temporary ticking-range cut must not
-                // expose a stale pending viewer from Main. Portal transfer is
-                // the only cut whose mutation has not reached either venue;
-                // every other false result means Main can refresh once now.
+                // A portal/departure cut must not expose a stale pending viewer:
+                // its mutation has not reached either venue yet.
                 if (portalDeparturePending(entity.getRootVehicle())
                         || portalDeparturePending(entity)) return false;
-                if (tracker.fabrolia$hasPendingIslandPairings()) {
+                if (!tracker.fabrolia$hasPendingIslandPairings()) {
                     detach(tracker);
-                    scheduleMainPublication(tracker);
                     return false;
                 }
+                if (membershipIslandOwned(entity, island)) {
+                    // Outside entity-ticking range: vanilla keeps no publication
+                    // clock here, so only the staged membership commits - under
+                    // this unit's claim of the entity's chunk, the same authority a
+                    // claimed Main publication takes - and the cadence then ends.
+                    // A REMOVE that must retry stays attached for the next tail.
+                    boolean published = publishAndPairUnderTrackerLock(tracker);
+                    if (!tracker.fabrolia$hasPendingIslandPairings()) detach(tracker);
+                    return published;
+                }
                 detach(tracker);
+                scheduleMainPublication(tracker);
                 return false;
             }
             boolean published = publishAndPairUnderTrackerLock(tracker);
@@ -1434,6 +1446,26 @@ public final class IslandEntityTracking {
                         .inEntityTickingRange(entity.chunkPosition().pack());
     }
 
+    /**
+     * The island tail may commit this entity's staged membership:
+     * {@link #eligibleNonPlayer}, or the same envelope outside entity-ticking
+     * range while the server runs normally. The tail's claim of the entity's
+     * chunk is the authority a claimed Main publication would take; ticking
+     * range only decides whether the tracker also keeps a persistent publication
+     * clock there. Under /tick freeze island units run no body, so membership
+     * outside ticking range stays with the claimed Main publication.
+     */
+    private static boolean membershipIslandOwned(Entity entity,
+                                                 IslandRegistry.PIsland island) {
+        if (!islandCompatibleNonPlayer(entity, island)
+                || portalDeparturePending(entity.getRootVehicle())
+                || portalDeparturePending(entity)
+                || !(entity.level() instanceof ServerLevel level)) return false;
+        return level.getChunkSource().chunkMap.getDistanceManager()
+                .inEntityTickingRange(entity.chunkPosition().pack())
+                || level.getServer().tickRateManager().runsNormally();
+    }
+
     /** Stable class/root envelope, excluding only temporary portal/DM cuts. */
     private static boolean islandCompatibleNonPlayer(
             Entity entity, IslandRegistry.PIsland island) {
@@ -1525,6 +1557,32 @@ public final class IslandEntityTracking {
                 && entity.level() instanceof ServerLevel level
                 && level.getChunkSource().chunkMap.getDistanceManager()
                 .inEntityTickingRange(entity.chunkPosition().pack());
+    }
+
+    /**
+     * Lock-free hint for the tracker tick: this tracker's state publication would
+     * only re-attach it to the island which already publishes it at every unit
+     * tail. True only for a live, non-player, island-publishable tracker whose
+     * attached owner still owns {@code sectionChunk}; every other case takes the
+     * full {@link #route} (players, persistent-Main publishers, detached, moved
+     * to another owner, quarantined, retired, topology transition, async off).
+     * The owner tail ({@link #publishCurrent}) revalidates every authority under
+     * the tracker monitor, exactly as for a routed re-attachment.
+     */
+    public static boolean islandCadenceCovers(TrackedEntityPassAccess tracker,
+                                              RegionizedServer runtime,
+                                              long sectionChunk) {
+        if (runtime == null || !runtime.asyncActive
+                || runtime.trackingTopologyTransitionOpenHint()
+                || tracker.fabrolia$islandTrackingStateRelaxed()
+                != IslandTrackedEntityAccess.TRACKING_ACTIVE) return false;
+        IslandRegistry.PIsland owner = tracker.fabrolia$islandTrackingOwnerRelaxed();
+        if (owner == null || owner.retired
+                || !(tracker instanceof IslandTrackedEntityAccess access)) return false;
+        Entity entity = access.fabrolia$trackedEntity();
+        if (entity == null || entity instanceof ServerPlayer || entity.isRemoved()
+                || requiresPersistentMainPublisher(entity)) return false;
+        return runtime.islandOwnerOfChunk(sectionChunk) == owner;
     }
 
     /** Called under the exact tracker monitor immediately before original sendChanges. */
@@ -2068,7 +2126,11 @@ public final class IslandEntityTracking {
                 if (prior != null) prior.pendingEntityUpdates.remove(tracker);
                 tracker.fabrolia$setIslandTrackingOwner(island);
             }
-            island.pendingEntityUpdates.add(tracker);
+            // Re-attachment to the same owner is the common case (every routed
+            // publication); a lock-free lookup avoids the set's bin-locking insert.
+            if (!island.pendingEntityUpdates.contains(tracker)) {
+                island.pendingEntityUpdates.add(tracker);
+            }
         } catch (Throwable failure) {
             IslandEntityTracking.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
