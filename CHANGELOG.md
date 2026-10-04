@@ -45,7 +45,9 @@
   in the tab footer, `Main │ TPS: … MSPT: …` and `Local │ TPS: … MSPT: …` (their
   island), in Carpet's style. Both TPS values are measured ticks per second;
   Carpet's own figure is derived from MSPT and reads 20.0 whenever MSPT stays
-  under 50 ms. Players on Main's lane keep Carpet's line unchanged.
+  under 50 ms. Players on Main's lane keep Carpet's line unchanged. The two lines'
+  columns are padded to the same pixel widths in vanilla's default font, so they
+  line up in the centred tab footer; values are right-aligned.
 - Idle global regions are reclaimed inside the topology-rebuild pause (island
   core and halo regions are kept). The region map no longer grows with every
   cell ever visited, which made Main's per-tick global-lane sweep, the
