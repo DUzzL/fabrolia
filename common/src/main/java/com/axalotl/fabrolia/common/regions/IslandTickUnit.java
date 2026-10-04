@@ -848,12 +848,16 @@ public final class IslandTickUnit {
                         }
                         LockSupport.parkNanos(20_000L);
                     }
-                } else if (island.claimWanted || island.statusClaimWanted) {
-                    // Main announced interest (mainClaim spin or entity-status
-                    // escalation). A back-to-back chaining island would otherwise
+                } else if (island.mainInterest() || rs.mainClaimsFenceActive()) {
+                    // Main announced interest (a claim waiter, entity-status
+                    // escalation, a MAIN_SYNC service request or a global fence
+                    // intent). A back-to-back chaining island would otherwise
                     // win this claim on every pass; yield with NO_BODY so the
-                    // pacer (CLAIM_RETRY_NANOS) or the sprint/coherent Main drive
-                    // (submits on !unitClaim each wall tick) retries afterwards.
+                    // pacer (CLAIM_RETRY_NANOS) or the sprint/coherent Main
+                    // drive (submits on !unitClaim each wall tick) retries
+                    // afterwards. A service request is answered at Main's next
+                    // safe point: wake an idle Main.
+                    if (island.mainSyncWanted) RegionScheduler.requestMainSyncService();
                     return;
                 } else if (!(claimAcquired = island.tryClaimAutonomousWork())) {
                     // Brief claim contention need not cost the island a tick.
@@ -861,6 +865,9 @@ public final class IslandTickUnit {
                     long spinUntil = System.nanoTime() + 200_000L;
                     boolean claimed = false;
                     while (System.nanoTime() < spinUntil) {
+                        // Interest announced while we spin wins: Main may be
+                        // between its bucket release and the bucket's tails.
+                        if (island.mainInterest() || rs.mainClaimsFenceActive()) break;
                         if ((claimAcquired = island.tryClaimAutonomousWork())) {
                             claimed = true;
                             break;
@@ -868,7 +875,8 @@ public final class IslandTickUnit {
                         Thread.onSpinWait();
                     }
                     if (!claimed) {
-                        return; // quiesced by topology/save — the next drive retries
+                        if (island.mainSyncWanted) RegionScheduler.requestMainSyncService();
+                        return; // quiesced by topology/save/Main — the next drive retries
                     }
                 }
             } finally {
@@ -1402,6 +1410,16 @@ public final class IslandTickUnit {
                     failure = publishMergedFailure(failure, releaseFailure);
                 }
                 claimAcquired = false;
+                // A pending MAIN_SYNC service request stopped this island at
+                // this boundary (no successor, see prepareCompletion): the
+                // claim is free now, so wake an idle Main to take it.
+                if (failure == null && island.mainSyncWanted) {
+                    try {
+                        RegionScheduler.requestMainSyncService();
+                    } catch (Throwable wakeFailure) {
+                        failure = publishMergedFailure(failure, wakeFailure);
+                    }
+                }
             }
             if (failure == null) failure = RegionScheduler.workerFailureOrNull();
             if (failure == null) {
@@ -1656,11 +1674,11 @@ public final class IslandTickUnit {
         }
         long previous = STALE_FOLLOWERS_REPORTED.getAndSet(total);
         LOGGER.warn("[async-islands] discarded stale queued unit: total={} sinceLast={} "
-                        + "island#{}/gen{} submittedL={} currentL={} claimWanted={} "
-                        + "statusClaimWanted={} deadline={}",
+                        + "island#{}/gen{} submittedL={} currentL={} claimInterest={} "
+                        + "statusClaimWanted={} mainSyncWanted={} deadline={}",
                 total, total - previous, island.id, island.gen, submittedAtL,
-                island.logicalTick, island.claimWanted, island.statusClaimWanted,
-                island.nextDeadlineNanos);
+                island.logicalTick, island.claimInterestAnnounced(), island.statusClaimWanted,
+                island.mainSyncWanted, island.nextDeadlineNanos);
     }
 
     /**
@@ -1740,14 +1758,15 @@ public final class IslandTickUnit {
         // chained units re-claimed the island the instant the claim released,
         // starving every main-side claim spin (tick-datapack fences, rebuilds,
         // saves) for MINUTES. Chaining and pacing now YIELD whenever main has
-        // announced interest in this island's claim (claimWanted); the fence
+        // announced interest in this island's claim (mainInterest: a claim
+        // spin, a status escalation or a MAIN_SYNC service request); the fence
         // completes and the deadline drive re-kicks the island afterwards
         // (deadline stays due — nothing is lost, only deferred).
         // Publish pacing observation FIRST: any session change made before
         // this point is visible to this read (volatile), so a command's
         // commit-ack fires only after a complete unit ran under (or after)
         // its generation.
-        boolean fenceWaiting = island.claimWanted || island.statusClaimWanted
+        boolean fenceWaiting = island.mainInterest()
                 || (rsT != null && rsT.mainClaimsFenceActive())
                 || RegionWorkerPool.currentUnitChainMustYield()
                 || island.retired

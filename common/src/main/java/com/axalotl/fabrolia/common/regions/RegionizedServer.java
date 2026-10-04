@@ -1084,12 +1084,10 @@ public final class RegionizedServer {
 
     private static final class AllIslandClaimIntents {
         final ArrayList<IslandRegistry.PIsland> islands;
-        final boolean[] priorClaimWanted;
         int publishedCount;
 
         AllIslandClaimIntents(java.util.Collection<IslandRegistry.PIsland> islands) {
             this.islands = new ArrayList<>(islands);
-            this.priorClaimWanted = new boolean[this.islands.size()];
         }
     }
 
@@ -1099,9 +1097,8 @@ public final class RegionizedServer {
         try {
             for (int i = 0, n = snapshot.islands.size(); i < n; i++) {
                 IslandRegistry.PIsland island = snapshot.islands.get(i);
-                snapshot.priorClaimWanted[i] = island.claimWanted;
+                island.announceClaimInterest();
                 snapshot.publishedCount = i + 1;
-                island.claimWanted = true;
             }
             return snapshot;
         } catch (Throwable primary) {
@@ -1124,7 +1121,7 @@ public final class RegionizedServer {
         snapshot.publishedCount = 0;
         for (int i = count - 1; i >= 0; i--) {
             try {
-                snapshot.islands.get(i).claimWanted = snapshot.priorClaimWanted[i];
+                snapshot.islands.get(i).withdrawClaimInterest();
             } catch (Throwable cleanup) {
                 failure = publishCleanupFailure(failure, cleanup);
             }
@@ -3417,6 +3414,9 @@ public final class RegionizedServer {
                 for (int i = 0, n = active.size(); i < n; i++) {
                     active.get(i).region.groupedEpoch = epoch;
                 }
+                // Heal dirty set first: a reader that sees this dispatched
+                // epoch also sees (at least) this member list.
+                d.healScope = regions;
                 d.dispatchedEpoch = epoch;
                 if (com.axalotl.fabrolia.common.config.FabroliaConfig.useRegionColorGate()) {
                     for (int i = 0, n = regions.size(); i < n; i++) {

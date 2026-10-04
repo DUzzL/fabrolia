@@ -12,7 +12,7 @@ import java.lang.reflect.Method;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** An ordinary (non-global-sprint) unit must not take the island claim while
- *  Main has announced interest through either interest flag: a back-to-back
+ *  Main has announced interest through any interest channel: a back-to-back
  *  chaining island would otherwise win the tick-head CAS on every pass. */
 class IslandUnitClaimInterestYieldTest {
     @BeforeAll
@@ -29,10 +29,32 @@ class IslandUnitClaimInterestYieldTest {
     }
 
     @Test
-    void ordinaryUnitYieldsWithoutClaimingWhileMainClaimInterestIsRaised() throws Exception {
+    void ordinaryUnitYieldsWithoutClaimingWhileAClaimWaiterIsAnnounced() throws Exception {
         IslandRegistry.PIsland island = new IslandRegistry.PIsland(42L, 0L);
-        island.claimWanted = true;
+        island.announceClaimInterest();
         assertYieldsWithNoBody(island);
+        island.withdrawClaimInterest();
+    }
+
+    @Test
+    void ordinaryUnitYieldsWithoutClaimingWhileAMainSyncServiceRequestStands() throws Exception {
+        IslandRegistry.PIsland island = new IslandRegistry.PIsland(43L, 0L);
+        island.mainSyncWanted = true;
+        assertYieldsWithNoBody(island);
+    }
+
+    @Test
+    void claimInterestIsACountSoNestedWaitersNeverDropOrStrandEachOther() {
+        IslandRegistry.PIsland island = new IslandRegistry.PIsland(44L, 0L);
+        island.announceClaimInterest();          // outer waiter
+        island.announceClaimInterest();          // interleaved scope
+        island.withdrawClaimInterest();          // interleaved scope ends first
+        assertTrue(island.mainInterest(), "the outer waiter is still waiting");
+        island.withdrawClaimInterest();
+        assertFalse(island.mainInterest(), "no stale interest survives its last waiter");
+        assertThrows(IllegalStateException.class, island::withdrawClaimInterest,
+                "an unmatched withdrawal is a bug, not a silent negative count");
+        assertFalse(island.mainInterest());
     }
 
     private static void assertYieldsWithNoBody(IslandRegistry.PIsland island) throws Exception {

@@ -142,6 +142,9 @@ public final class RegionScheduler {
         if (mcServer == null) throw new NullPointerException("mcServer");
         requireDeferredLifecycleBoundary(mcServer);
         NetherPortalTransfers.serviceMain(mcServer);
+        // Islands stopped by a MAIN_SYNC service request since the last entity
+        // phase are served here, ahead of the tracker publications (pump/tail order).
+        drainMainSyncOutOfPhase();
         drainReadyMainTracking();
         while (true) {
             DeferredLifecycleTransition task;
@@ -761,6 +764,8 @@ public final class RegionScheduler {
             stopFailure = mergeFailure(stopFailure, new IllegalStateException(
                     "MAIN_SYNC was non-empty after the worker-pool fixed point"));
         }
+        MainSyncService.INSTANCE.clearAll();
+        MAIN_SYNC_WAKE_POSTED.set(false);
         for (RegionizedServer rs : stopLevels) {
             try {
                 for (Region region : rs.snapshot()) {
@@ -907,6 +912,13 @@ public final class RegionScheduler {
             while ((mainTask = MAIN_SYNC.poll()) != null) {
                 failure = expectedPool.cancelQueuedPermit(mainTask.permit(), failure);
             }
+        } catch (Throwable cleanup) {
+            failure = expectedPool.mergeCancellationFailure(failure, cleanup);
+        }
+        try {
+            // No standing service request may outlive the cancelled work.
+            MainSyncService.INSTANCE.clearAll();
+            MAIN_SYNC_WAKE_POSTED.set(false);
         } catch (Throwable cleanup) {
             failure = expectedPool.mergeCancellationFailure(failure, cleanup);
         }
@@ -1813,7 +1825,7 @@ public final class RegionScheduler {
      * Main thread only. Ticks every queued MAIN_SYNC entity this call, grouped by
      * island so Main takes each island's claim once per drain instead of once
      * per entity (a per-entity claim parked Main behind every island's running
-     * unit and stalled the island through {@code claimWanted}; 33-38% of Main on
+     * unit and stalled the island through its claim interest; 33-38% of Main on
      * the 2026-09-27 production profiles). Same-island order is the queue order;
      * islands are independent within a tick by the separation invariant, so
      * cross-island reordering is unobservable. Fenced tasks keep queue order:
@@ -1829,54 +1841,118 @@ public final class RegionScheduler {
      * Non-blocking variant for Main's barrier pump: islands still running a
      * unit keep their tasks queued (head, same order) for a later iteration,
      * so Main services what is idle now instead of parking behind a unit that
-     * will end anyway before the barrier completes. Raises no claim interest:
-     * interest left standing while Main is busy elsewhere parks the island.
+     * will end anyway before the barrier completes. Raises no interest itself;
+     * an island stopped by a standing service request (see
+     * {@link #drainOverdueMainSyncTicks}) is idle and is served here.
      */
     public static boolean drainReadyMainSyncTicks() {
         return drainMainSyncTicks(DrainMode.READY);
     }
 
     /**
-     * Level-tick tail catch-up: like {@link #drainReadyMainSyncTicks}, but
-     * waits for busy islands whose work is overdue (oldest task older than
-     * {@link IslandBuckets#STALE_NANOS}, or a queued player tick - every later
-     * island tick of that player falls back to Main until it runs). The wait is
-     * the island's running unit: it yields to Main's announced interest. Legal
-     * only where Main holds no claim and no global-lane body runs, since the
-     * wait services routed command batches.
+     * Level-tick tail catch-up — NON-BLOCKING. It used to wait here for every
+     * busy island with overdue work, i.e. for the rest of that island's
+     * running unit: 18 ms/tick of Main in production (2026-10-03, Wl7) and
+     * 42 ms/tick on the perf stand, where Main's tick phase-locked to the
+     * longest island unit. Now: the ready pass, then a standing service
+     * request ({@code PIsland.mainSyncWanted}, {@link MainSyncService}) for each
+     * still-busy island whose work is overdue (oldest task older than
+     * {@link IslandBuckets#STALE_NANOS}, or a queued player tick — every later
+     * island tick of that player falls back to Main until it runs). A requested
+     * island stops at its next unit boundary and wakes Main; Main serves it at
+     * its next safe point (barrier pump, level tail, level head, post-tick
+     * boundary, idle wait) instead of spinning on the running unit. The work
+     * still runs between the island's units, under its claim, in queue order.
      */
     public static boolean drainOverdueMainSyncTicks() {
         return drainMainSyncTicks(DrainMode.OVERDUE);
     }
 
-    private enum DrainMode { COMPLETE, READY, OVERDUE }
+    /**
+     * Safe point outside an entity phase (async level tick head, post-tickServer
+     * boundary, idle-wait wake): serves the island buckets whose island is idle
+     * now — typically an island stopped by a service request. Unclaimed and
+     * fenced tasks wait for the next entity-phase drain (a fenced body takes the
+     * global fence). Each bucket runs with {@link #mainCurrentLevel} set to its
+     * island's level, so a Main cross-dimension stage of those bodies lands in a
+     * level whose next entity-batch end seals it; rerouted main-safe work is
+     * drained as a batch end would. Main-ticked players' parked advancement
+     * batch applies at the next entity-batch end. Skipped (the next safe point
+     * serves) inside an accepted body, a fence window or a held island claim.
+     */
+    public static boolean drainMainSyncOutOfPhase() {
+        if (MAIN_SYNC.isEmpty() && MainSyncService.INSTANCE.size() == 0) return false;
+        if (RegionWorkerPool.currentThreadCausalOwnerOrNull() != null
+                || IslandCommands.fenceWindowHeld()
+                || IslandCommands.mainHoldsAnyClaim()) {
+            return false;
+        }
+        boolean ran = drainMainSyncTicks(DrainMode.OUT_OF_PHASE);
+        if (ran) runSuccessBodyIfHealthy(RegionScheduler::drainMainSafeNow);
+        return ran;
+    }
+
+    private enum DrainMode { COMPLETE, READY, OVERDUE, OUT_OF_PHASE }
+
+    /** Main-confined nesting depth of MAIN_SYNC drains (a body may drain again). */
+    private static int mainSyncDrainDepth;
 
     private static boolean drainMainSyncTicks(DrainMode mode) {
-        if (MAIN_SYNC.isEmpty()) return false;
+        if (MAIN_SYNC.isEmpty()) {
+            // Nothing queued and no outer drain holding detached tasks: no
+            // standing service request may outlive the work it was raised for
+            // (a complete drain or a re-keyed task may have served it).
+            if (mainSyncDrainDepth == 0) MainSyncService.INSTANCE.clearAll();
+            return false;
+        }
         if (!MAIN_CLAIM_BATCHING) {
             MainSyncTask queued;
             while ((queued = MAIN_SYNC.poll()) != null) runOneMainSync(queued);
             return true;
         }
+        mainSyncDrainDepth++;
+        try {
+            return drainMainSyncBatched(mode);
+        } finally {
+            mainSyncDrainDepth--;
+        }
+    }
+
+    private static boolean drainMainSyncBatched(DrainMode mode) {
         IslandBuckets<MainSyncTask> buckets = new IslandBuckets<>(
                 RegionScheduler::runOneMainSync,
                 RegionScheduler::cancelQueuedMainSync,
                 MainSyncTask::publishedNanos,
-                task -> ParallelProcessor.containsServerPlayerTick(task.entity()));
+                task -> ParallelProcessor.containsServerPlayerTick(task.entity()),
+                MainSyncService.INSTANCE);
         boolean ran = false;
         MainSyncTask queued;
         while ((queued = MAIN_SYNC.poll()) != null) {
             if (queued.allIslandsFenced()) {
+                if (mode == DrainMode.OUT_OF_PHASE) {
+                    // Serve only the islands queued before it; the fenced body
+                    // and everything after it wait for an entity-phase drain.
+                    // It is republished only after those buckets ran, so a
+                    // nested drain from a body or tail cannot overtake them.
+                    try {
+                        ran |= buckets.flushIdleIslands(true);
+                    } finally {
+                        MAIN_SYNC.addFirst(queued);
+                        requeueMainSync(buckets.drainRemaining());
+                    }
+                    return ran;
+                }
                 boolean blocked = false;
                 try {
-                    if (mode != DrainMode.READY) {
+                    if (mode == DrainMode.COMPLETE) {
                         buckets.flush();
                     } else {
-                        // The ready drain never waits: it runs inside the
-                        // entity-barrier pump, where Main may not service routed
-                        // batches. A busy earlier island keeps the fenced task
-                        // behind it until a later drain.
-                        ran |= buckets.flushReady();
+                        // The ready and tail drains never wait. A busy earlier
+                        // island keeps the fenced task behind it until a later
+                        // drain; at the tail that island gets a service request.
+                        ran |= mode == DrainMode.OVERDUE
+                                ? buckets.flushReadyRequestingService(true)
+                                : buckets.flushReady();
                         blocked = !buckets.isEmpty();
                     }
                 } catch (Throwable thrown) {
@@ -1899,10 +1975,16 @@ public final class RegionScheduler {
         switch (mode) {
             case COMPLETE -> {
                 buckets.flush();
-                return true;
+                ran = true;
             }
             case READY -> ran |= buckets.flushReady();
-            case OVERDUE -> ran |= buckets.flushOverdue();
+            case OVERDUE -> ran |= buckets.flushReadyRequestingService(false);
+            case OUT_OF_PHASE -> ran |= buckets.flushIdleIslands(true);
+        }
+        // This drain saw the whole queue: a standing request whose island has
+        // no task left (served, re-keyed, retired) ends here.
+        if (mainSyncDrainDepth == 1) {
+            MainSyncService.INSTANCE.reconcile(buckets.registeredOwners(), System.nanoTime());
         }
         // Busy islands: back to the head, bucket order = queue order.
         requeueMainSync(buckets.drainRemaining());
@@ -1920,16 +2002,143 @@ public final class RegionScheduler {
     }
 
     /**
+     * Standing MAIN_SYNC service requests ({@code PIsland.mainSyncWanted}):
+     * the level-tail drain raises one for a busy island with overdue Main
+     * work instead of waiting for its running unit. Unit admission, chaining
+     * and the pacer read it through {@code PIsland.mainInterest()}, so the
+     * island stops at its next unit boundary; after releasing its claim it
+     * wakes Main ({@link #requestMainSyncService}). A request ends when Main
+     * has run the island's bucket and that bucket's completion tails (the A5
+     * listener ingress may claim the same island: the stopped island lets it
+     * through at once), or when the island holds no queued work anymore.
+     *
+     * <p>Like {@code statusClaimWanted}, the flag is a hint, never ownership —
+     * exclusion stays the unit claim — and it is reconciled on every complete
+     * view of the queue, so it cannot outlive its work. A request standing
+     * for {@link #STUCK_NANOS} is reported with claim forensics (the island
+     * never reached a boundary Main could claim). Main-confined except for the
+     * fail-stop sweep, hence the monitor.
+     */
+    static final class MainSyncService implements IslandServiceRequests {
+        static final MainSyncService INSTANCE = new MainSyncService();
+        static final long STUCK_NANOS = 5_000_000_000L;
+        private final java.util.ArrayList<IslandRegistry.PIsland> requested = new java.util.ArrayList<>();
+        private long lastStuckLogNanos;
+
+        @Override
+        public synchronized void request(IslandRegistry.PIsland island) {
+            if (island.mainSyncWanted || island.retired) return;
+            island.mainSyncWantedSinceNanos = System.nanoTime();
+            requested.add(island);
+            island.mainSyncWanted = true;
+        }
+
+        @Override
+        public synchronized void serviced(IslandRegistry.PIsland island) {
+            if (!island.mainSyncWanted) return;
+            island.mainSyncWanted = false;
+            for (int i = requested.size() - 1; i >= 0; i--) {
+                if (requested.get(i) == island) requested.remove(i);
+            }
+        }
+
+        @Override
+        public synchronized void clearAll() {
+            if (requested.isEmpty()) return;
+            for (IslandRegistry.PIsland island : requested) island.mainSyncWanted = false;
+            requested.clear();
+        }
+
+        /** Ends every request whose island has no queued work (or retired); reports stuck ones. */
+        synchronized void reconcile(java.util.Set<IslandRegistry.PIsland> withWork, long now) {
+            for (int i = requested.size() - 1; i >= 0; i--) {
+                IslandRegistry.PIsland island = requested.get(i);
+                if (island.retired || !withWork.contains(island)) {
+                    island.mainSyncWanted = false;
+                    requested.remove(i);
+                } else if (now - island.mainSyncWantedSinceNanos > STUCK_NANOS
+                        && now - lastStuckLogNanos > STUCK_NANOS) {
+                    lastStuckLogNanos = now;
+                    LOGGER.error("[async-islands] MAIN_SYNC service request stuck {}s — the island "
+                                    + "never reached a boundary Main could claim; forensics: {}",
+                            (now - island.mainSyncWantedSinceNanos) / 1_000_000_000L,
+                            IslandCommands.claimForensics(island));
+                }
+            }
+        }
+
+        synchronized int size() {
+            return requested.size();
+        }
+    }
+
+    /** Raises/ends standing per-island service requests for one bucket owner. */
+    interface IslandServiceRequests {
+        void request(IslandRegistry.PIsland island);
+        void serviced(IslandRegistry.PIsland island);
+        void clearAll();
+    }
+
+    private static final java.util.concurrent.atomic.AtomicBoolean MAIN_SYNC_WAKE_POSTED =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * Any thread: an island stopped by a service request has released its
+     * claim (or yielded before taking it). Post one idle-wait wake so an idle
+     * Main serves it at once; a busy Main serves it at its next safe point and
+     * vanilla delays the task anyway ({@code shouldRun}: +3 ticks without spare
+     * time), so one outstanding wake is enough.
+     */
+    public static void requestMainSyncService() {
+        MinecraftServer current = server;
+        if (current == null || !active) return;
+        if (!MAIN_SYNC_WAKE_POSTED.compareAndSet(false, true)) return;
+        try {
+            current.schedule(new TickTask(current.getTickCount(), RegionScheduler::serviceMainSyncWake));
+        } catch (Throwable publicationFailure) {
+            MAIN_SYNC_WAKE_POSTED.set(false);
+            RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(publicationFailure));
+        }
+    }
+
+    /**
+     * The wake task. Server tasks also run from nested {@code managedBlock}
+     * loops (chunk loads, Nether preparation, mods): serve only from the exact
+     * monitor-free top-level wait drain, between complete tick phases, with no
+     * accepted body, fence or island claim held. Otherwise the next safe point
+     * serves the island.
+     */
+    private static void serviceMainSyncWake() {
+        MAIN_SYNC_WAKE_POSTED.set(false);
+        MinecraftServer current = server;
+        if (!active || current == null
+                || !RconCommandFenceScope.exactMonitorFreeMainTask(current)
+                || !RegionalPlayerEntityTicksV2.schedulerLifecycleTransitionAllowed(current)
+                || RegionWorkerPool.currentThreadCausalOwnerOrNull() != null
+                || IslandCommands.fenceWindowHeld()
+                || IslandCommands.mainHoldsAnyClaim()) {
+            return;
+        }
+        try {
+            drainMainSyncOutOfPhase();
+        } catch (Throwable thrown) {
+            // MinecraftServer.doRunTask would swallow it: fail-stop instead.
+            RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(thrown));
+        }
+    }
+
+    /**
      * Main-confined island-keyed work list. {@link #flush} runs every body under
      * one Main claim per island: a non-blocking pass first (try-claim; bodies
      * whose island is idle run immediately), then, for islands still busy, one
-     * {@code claimWanted} announcement to all of them at once and a blocking
-     * claim per island (Main waits for the longest running unit, not the sum).
+     * claim-waiter announcement to all of them at once and a blocking claim per
+     * island (Main waits for the longest running unit, not the sum).
      * {@link #flushReady} is the non-blocking pass alone; {@link #flushOverdue}
-     * waits only for islands with overdue work. Interest is raised only while
-     * Main is waiting: an island with a raised flag runs no unit, so a flag
-     * left standing while Main is elsewhere (a long Main tick, a stall) would
-     * stop that island for as long. Bodies whose island is already Main-owned
+     * waits only for islands with overdue work; {@link #flushReadyRequestingService}
+     * never waits and leaves a standing service request with each busy island
+     * whose work is overdue. A waiter's interest is announced only while Main is
+     * actually waiting; a standing request is owned and reconciled by its
+     * {@link IslandServiceRequests}. Bodies whose island is already Main-owned
      * (all-claims window, nested drain under a held claim, no fence required)
      * run inline. A failure cancels every not-yet-started body through
      * {@code cancel} and rethrows.
@@ -1943,28 +2152,40 @@ public final class RegionScheduler {
         private final java.util.function.BiFunction<T, Throwable, Throwable> cancel;
         private final java.util.function.ToLongFunction<T> publishedNanos;
         private final java.util.function.Predicate<T> urgent;
+        private final IslandServiceRequests requests;
         private final java.util.LinkedHashMap<IslandRegistry.PIsland, java.util.ArrayDeque<T>> buckets =
                 new java.util.LinkedHashMap<>();
         private final java.util.ArrayDeque<T> unclaimed = new java.util.ArrayDeque<>();
 
         IslandBuckets(java.util.function.Consumer<T> body,
                       java.util.function.BiFunction<T, Throwable, Throwable> cancel) {
-            this(body, cancel, null, null);
+            this(body, cancel, null, null, null);
+        }
+
+        IslandBuckets(java.util.function.Consumer<T> body,
+                      java.util.function.BiFunction<T, Throwable, Throwable> cancel,
+                      java.util.function.ToLongFunction<T> publishedNanos,
+                      java.util.function.Predicate<T> urgent) {
+            this(body, cancel, publishedNanos, urgent, null);
         }
 
         /**
          * {@code publishedNanos} (nullable) makes a task overdue once older than
          * {@link #STALE_NANOS}; {@code urgent} (nullable) makes a task overdue at
-         * once. Both only matter to {@link #flushOverdue}.
+         * once. Both only matter to the overdue passes. {@code requests}
+         * (nullable) owns standing service requests: required by
+         * {@link #flushReadyRequestingService}, told after each served bucket.
          */
         IslandBuckets(java.util.function.Consumer<T> body,
                       java.util.function.BiFunction<T, Throwable, Throwable> cancel,
                       java.util.function.ToLongFunction<T> publishedNanos,
-                      java.util.function.Predicate<T> urgent) {
+                      java.util.function.Predicate<T> urgent,
+                      IslandServiceRequests requests) {
             this.body = body;
             this.cancel = cancel;
             this.publishedNanos = publishedNanos;
             this.urgent = urgent;
+            this.requests = requests;
         }
 
         void add(IslandRegistry.PIsland owner, T item) {
@@ -1976,6 +2197,11 @@ public final class RegionScheduler {
             return unclaimed.isEmpty() && buckets.isEmpty();
         }
 
+        /** Islands that still hold registered work (identity keys). */
+        java.util.Set<IslandRegistry.PIsland> registeredOwners() {
+            return buckets.keySet();
+        }
+
         /** Pass 1 only: run what is idle now; busy islands stay registered. @return ran anything */
         boolean flushReady() {
             if (isEmpty()) return false;
@@ -1984,7 +2210,62 @@ public final class RegionScheduler {
             try {
                 ran = !unclaimed.isEmpty();
                 runQueue(unclaimed);
-                ran |= runIdle();
+                ran |= runIdle(false);
+            } catch (Throwable thrown) {
+                failure = publishFatalAndSelectWinner(thrown);
+            }
+            if (failure != null) abort(failure);
+            return ran;
+        }
+
+        /**
+         * Island buckets whose island is idle now; unclaimed work stays
+         * registered. {@code ownLevel}: each bucket runs with
+         * {@link #mainCurrentLevel} set to its island's level (a drain outside
+         * an entity phase). @return ran anything
+         */
+        boolean flushIdleIslands(boolean ownLevel) {
+            if (buckets.isEmpty()) return false;
+            Throwable failure = null;
+            boolean ran = false;
+            try {
+                ran = runIdle(ownLevel);
+            } catch (Throwable thrown) {
+                failure = publishFatalAndSelectWinner(thrown);
+            }
+            if (failure != null) abort(failure);
+            return ran;
+        }
+
+        /**
+         * Non-blocking tail pass: pass 1, then a standing service request for
+         * every still-busy island whose work is overdue (every busy island when
+         * {@code requestAll}); one more pass 1 then serves an island whose unit
+         * ended between the first pass and the request (it chose its successor
+         * without seeing it). The rest stays registered. @return ran anything
+         */
+        boolean flushReadyRequestingService(boolean requestAll) {
+            if (requests == null) {
+                throw new IllegalStateException("island bucket drain has no service-request owner");
+            }
+            if (isEmpty()) return false;
+            Throwable failure = null;
+            boolean ran = false;
+            try {
+                ran = !unclaimed.isEmpty();
+                runQueue(unclaimed);
+                ran |= runIdle(false);
+                if (!buckets.isEmpty()) {
+                    long now = System.nanoTime();
+                    boolean raised = false;
+                    for (var entry : buckets.entrySet()) {
+                        if (requestAll || overdue(entry.getValue(), now)) {
+                            requests.request(entry.getKey());
+                            raised = true;
+                        }
+                    }
+                    if (raised) ran |= runIdle(false);
+                }
             } catch (Throwable thrown) {
                 failure = publishFatalAndSelectWinner(thrown);
             }
@@ -2017,7 +2298,7 @@ public final class RegionScheduler {
             try {
                 ran = !unclaimed.isEmpty();
                 runQueue(unclaimed);
-                ran |= runIdle();
+                ran |= runIdle(false);
                 long now = System.nanoTime();
                 var it = buckets.entrySet().iterator();
                 while (it.hasNext()) {
@@ -2042,23 +2323,38 @@ public final class RegionScheduler {
             return ran;
         }
 
-        private boolean runIdle() {
+        private boolean runIdle(boolean ownLevel) {
             boolean ran = false;
             var it = buckets.entrySet().iterator();
             while (it.hasNext()) {
                 var entry = it.next();
                 IslandRegistry.PIsland owner = entry.getKey();
-                if (inherits(owner)) {
-                    runQueue(entry.getValue());
-                } else if (IslandCommands.tryMainClaim(owner)) {
-                    runClaimed(owner, entry.getValue());
-                } else {
-                    continue;
-                }
+                boolean inherited = inherits(owner);
+                if (!inherited && !IslandCommands.tryMainClaim(owner)) continue;
+                runBucket(owner, entry.getValue(), inherited, ownLevel);
+                // Registered until it completed: an abort cancels the rest.
                 it.remove();
                 ran = true;
             }
             return ran;
+        }
+
+        /**
+         * One island's bucket, under the claim just taken (or inherited). The
+         * island's standing service request ends only after the bucket's
+         * completion tails ran, so they find the island still stopped.
+         */
+        private void runBucket(IslandRegistry.PIsland owner, java.util.ArrayDeque<T> queue,
+                               boolean inherited, boolean ownLevel) {
+            ServerLevel phaseLevel = mainCurrentLevel;
+            if (ownLevel && owner.level != null) mainCurrentLevel = owner.level;
+            try {
+                if (inherited) runQueue(queue);
+                else runClaimed(owner, queue);
+            } finally {
+                if (ownLevel) mainCurrentLevel = phaseLevel;
+            }
+            if (requests != null) requests.serviced(owner);
         }
 
         private boolean overdue(java.util.ArrayDeque<T> queue, long now) {
@@ -2081,6 +2377,13 @@ public final class RegionScheduler {
             buckets.clear();
             for (T item : unclaimed) failure = cancel.apply(item, failure);
             unclaimed.clear();
+            if (requests != null) {
+                try {
+                    requests.clearAll();
+                } catch (Throwable cleanup) {
+                    failure = mergeFailure(failure, cleanup);
+                }
+            }
             RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(failure));
         }
 
@@ -2090,7 +2393,7 @@ public final class RegionScheduler {
             try {
                 runQueue(unclaimed);
                 // Pass 1: whatever is idle right now, no waiting.
-                runIdle();
+                runIdle(false);
                 if (!buckets.isEmpty()) waitForRemaining(false);
             } catch (Throwable thrown) {
                 failure = publishFatalAndSelectWinner(thrown);
@@ -2099,14 +2402,16 @@ public final class RegionScheduler {
         }
 
         /**
-         * Pass 2: announce to every registered island at once so their units
-         * yield concurrently, then keep polling all of them: each is claimed the
-         * moment its unit ends, whichever ends first. Between rounds Main
-         * performs the same services as the blocking mainClaim spin (routed
-         * batches an island coordinator may be waiting on, chunk executors,
-         * forensics) and, when {@code heal}, the region liveness sweep: at full
-         * cadence once the wait has outlasted {@link #HEAL_AFTER_WAIT_NANOS},
-         * before that at most one sweep per {@link #HEAL_AFTER_WAIT_NANOS}.
+         * Pass 2: announce a claim waiter on every registered island at once so
+         * their units yield concurrently, then keep polling all of them: each is
+         * claimed the moment its unit ends, whichever ends first, and its waiter
+         * is withdrawn before its bodies run so its next unit is not held back
+         * by the islands Main still waits for. Between rounds Main performs the
+         * same services as the blocking mainClaim spin (routed batches an island
+         * coordinator may be waiting on, chunk executors, forensics) and, when
+         * {@code heal}, the region liveness sweep: at full cadence once the wait
+         * has outlasted {@link #HEAL_AFTER_WAIT_NANOS}, before that at most one
+         * sweep per {@link #HEAL_AFTER_WAIT_NANOS}.
          *
          * <p>Why: an island coordinator waiting on its own entity barrier heals
          * its domain ({@code healIslandBarrier}), so an ordinary wait here ends
@@ -2115,23 +2420,23 @@ public final class RegionScheduler {
          * 2026-10-03 production profiles (40 players, ~24k chunks). The sweep
          * stays the backstop for a strand that the coordinator's own heal
          * missed (it heals once per pending value; EntityBarrierWatchdog fails
-         * the unit after 3 s): it still reaches every island at least once per
-         * 50 ms while Main waits here.
+         * the unit after 3 s).
+         *
+         * <p>Used by the complete drains (exact-ordinal turn, sprint, shutdown)
+         * and the tracking tail; the MAIN_SYNC tail never blocks here.
          */
         private void waitForRemaining(boolean heal) {
-            java.util.ArrayList<IslandRegistry.PIsland> remaining =
-                    new java.util.ArrayList<>(buckets.keySet());
-            java.util.IdentityHashMap<IslandRegistry.PIsland, Boolean> prior =
-                    new java.util.IdentityHashMap<>(remaining.size() * 2);
-            for (IslandRegistry.PIsland owner : remaining) {
-                prior.put(owner, owner.claimWanted);
-                owner.claimWanted = true;
-            }
+            java.util.Set<IslandRegistry.PIsland> announced =
+                    java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             try {
+                for (IslandRegistry.PIsland owner : buckets.keySet()) {
+                    owner.announceClaimInterest();
+                    announced.add(owner);
+                }
                 long spinStart = System.nanoTime();
                 long waitedSince = spinStart;
                 final long healFrom = spinStart + HEAL_AFTER_WAIT_NANOS;
-                IslandCommands.MAIN_CLAIMS_CONTENDED.add(remaining.size());
+                IslandCommands.MAIN_CLAIMS_CONTENDED.add(announced.size());
                 while (!buckets.isEmpty()) {
                     boolean progressed = false;
                     var round = buckets.entrySet().iterator();
@@ -2140,15 +2445,12 @@ public final class RegionScheduler {
                         IslandRegistry.PIsland owner = entry.getKey();
                         boolean inherited = inherits(owner);
                         if (!inherited && !IslandCommands.tryMainClaim(owner)) continue;
-                        // Waiting ends here for this island: restore its
-                        // flag before the body so its next unit is not held
-                        // back by the islands Main is still waiting for.
+                        // Waiting ends here for this island.
                         long now = System.nanoTime();
                         IslandCommands.MAIN_CLAIM_WAIT_NANOS.add(now - waitedSince);
                         waitedSince = now;
-                        owner.claimWanted = prior.remove(owner);
-                        if (inherited) runQueue(entry.getValue());
-                        else runClaimed(owner, entry.getValue());
+                        if (announced.remove(owner)) owner.withdrawClaimInterest();
+                        runBucket(owner, entry.getValue(), inherited, false);
                         // Registered until it completed: an abort cancels the rest.
                         round.remove();
                         progressed = true;
@@ -2189,8 +2491,8 @@ public final class RegionScheduler {
                     }
                 }
             } finally {
-                // Islands never claimed (abort) get their flag back here.
-                for (var entry : prior.entrySet()) entry.getKey().claimWanted = entry.getValue();
+                // Islands never claimed (abort) withdraw their waiter here.
+                for (IslandRegistry.PIsland owner : announced) owner.withdrawClaimInterest();
             }
         }
 
@@ -3280,24 +3582,46 @@ public final class RegionScheduler {
      * lower-color orphan wedges every dependent transitively (live wedge
      * 2026-06-12: Server thread 203s at the entity barrier, one worker
      * spinning continuations, 29 parked). tryMarkDone carries every refusal
-     * guard, so a blind pass over the snapshot is safe from any state; the
-     * orphan's entities tick in their OLD region this tick (the grouped-where-
-     * it-was rule), so completing it publishes no concurrent claim.
+     * guard, so a blind pass is safe from any state; the orphan's entities
+     * tick in their OLD region this tick (the grouped-where-it-was rule), so
+     * completing it publishes no concurrent claim.
+     *
+     * <p>DIRTY SET (2026-10-03 profiles: a full O(regions) scan every 2 ms
+     * cost Main 10-15 ms/tick at 40 players): only a domain with a pending
+     * entity barrier can be wedged, and only its dispatch members
+     * ({@link EpochDomain#healScope}) and their same-domain neighbours
+     * (post-cut orphans) can hold it. The frequent pass visits exactly those;
+     * an island domain only once its barrier is older than
+     * {@link #ISLAND_HEAL_BACKSTOP_NANOS} (its coordinator heals its own
+     * barrier first, {@code RegionizedServer.healIslandBarrier}). The full
+     * scan over every region (stranded queues outside any scope, retained
+     * claims, stall forensics) runs every {@link #FULL_HEAL_INTERVAL_NANOS},
+     * or every {@link #LATE_BARRIER_NANOS} while some pending barrier is
+     * older than that.
      */
     private static long lastHealNanos;
-    /** Adaptive heal cadence: 2 ms while passes have effect (fresh dispatch, real
-     *  orphans), doubling to a 16 ms ceiling while passes change nothing. The
-     *  fixed 2 ms cadence cost ~1.8 ms/tick of snapshot copies + full region
-     *  scans on the 2026-07-11 profiles — a liveness backstop for RARE orphans
-     *  doing routine O(regions) work ~30×/tick. Worst-case orphan heal latency
-     *  becomes 16 ms + snapshot staleness (≤50 ms) — bounded, and three orders
-     *  of magnitude inside the 5 s stall watchdog. Reset on every dispatch. */
+    /** Adaptive heal cadence: 2 ms after a pass with a real rescue (or a new
+     *  global dispatch), doubling to a 16 ms ceiling while passes rescue
+     *  nothing. Routine completions never reset it. */
     private static long healIntervalNanos = 2_000_000L;
+    private static long lastFullHealNanos;
+    /** Full-scan cadence of the backstop. */
+    static final long FULL_HEAL_INTERVAL_NANOS = 1_000_000_000L;
+    /** Full scan sooner while a pending barrier is older than this. */
+    static final long LATE_BARRIER_NANOS = 250_000_000L;
+    /** Main backstops an island barrier only once it is this old. */
+    static final long ISLAND_HEAL_BACKSTOP_NANOS = 50_000_000L;
+    /** Two stranded-queue sightings count as consecutive only this close together. */
+    static final long STRANDED_SIGHTING_WINDOW_NANOS = 100_000_000L;
+    /** The full sweep's own pair window: consecutive full sweeps are up to 1 s apart. */
+    static final long FULL_SWEEP_SIGHTING_WINDOW_NANOS = 2 * FULL_HEAL_INTERVAL_NANOS;
 
-    /** Called at entity dispatch: a new epoch is exactly when new orphans can
-     *  appear, so heal at full cadence again. */
+    /** Called at a global-domain entity dispatch on Main: a new Main-awaited
+     *  epoch is exactly when new orphans can appear, so heal at full cadence
+     *  again. Island dispatches (workers) leave Main's cadence alone. */
     static void resetHealBackoff() {
-        healIntervalNanos = 2_000_000L;
+        MinecraftServer current = server;
+        if (current != null && current.isSameThread()) healIntervalNanos = 2_000_000L;
     }
 
     /** Main thread: how long since the last admitted heal sweep began. */
@@ -3318,207 +3642,334 @@ public final class RegionScheduler {
         long now = System.nanoTime();
         if (now - lastHealNanos < healIntervalNanos) return;
         lastHealNanos = now;
-        boolean effect = false;
-        for (RegionizedServer rs : PER_LEVEL.values()) {
-            throwWorkerFailureIfAny();
-            var regions = rs.healSnapshot(now);
-            for (int i = 0, n = regions.size(); i < n; i++) {
-                throwWorkerFailureIfAny();
-                Region r = regions.get(i);
-                if (r.state() != RegionState.ACTIVE) continue;
-                // A2: every check runs in the REGION's own timeline — with async
-                // islands live, one heal pass covers the global lane and every
-                // in-flight island barrier alike (a wedged island region gets
-                // re-armed even after the global barrier finished, and never
-                // against the wrong epoch).
-                EpochDomain d = r.domain;
-                long epoch = d.epoch;
-                if (d.dispatchedEpoch != epoch) continue; // pre-dispatch: undecidable
-                boolean pending = d.isEventEntityEpoch(epoch) && d.entityPending.get() > 0;
-                boolean wasSealedDone = r.hasSealedDone(epoch);
-                ColorGate.tryMarkDone(r, rs);
-                if (!wasSealedDone && r.hasSealedDone(epoch)) effect = true;
-                if (pending && rs.owesEntityPhase(r)) {
-                    if (ColorGate.eligible(r, rs) && r.currentWorker() == null) {
-                        enqueueReady(r);
-                        wakeWorkers(1);
-                        effect = true;
-                    }
-                } else if (pending) {
-                    int before = d.entityPending.get();
-                    rs.contributeEntityBarrier(r);
-                    if (d.entityPending.get() != before) effect = true;
-                }
-                // PRODUCTION WEDGE FIX (xaprosmp thread dump 2026-07-13): a
-                // region with QUEUE-ONLY pending work (spawn/block-tick tasks
-                // whose future main is pumping) has no re-arm path when it is
-                // not owed an entity phase — a ready entry consumed-and-
-                // dropped in the claim race stranded the pump with all 30
-                // workers idle-parked. Re-arm only eligible, unwitnessed work:
-                // blocked colors and next-epoch queues cannot be consumed yet.
-                if (r.currentWorker() == null
-                        && (!r.queue().isEmpty() || !r.helpQueue.isEmpty())
-                        && ColorGate.inUnitWindow(r, rs)) {
-                    // Two consecutive sightings with no retained notification.
-                    if (r.strandedQueueSightings++ >= 1) {
-                        r.strandedQueueSightings = 0;
-                        enqueueReady(r);
-                        wakeWorkers(1);
-                        effect = true;
-                    }
-                } else {
-                    r.strandedQueueSightings = 0;
-                }
-                // Leaked-claim forensic: a claim whose holder has moved on
-                // (currentRegion no longer this region) blocks tryMarkDone and
-                // neighbor eligibility forever — the other wedge shape this
-                // dump could not distinguish. Two consecutive sightings avoid
-                // the benign clear-then-release window in the claim epilogue.
-                // COHERENT SNAPSHOT (2026-07-13, user 07:21 report): with the
-                // publication protocol (publish-before-claim, release-before-
-                // unpublish), a reader that observes the claim CAS is
-                // guaranteed to observe the matching publication — so a
-                // mismatch here can no longer be a transition artifact. The
-                // snapshot is validated by re-reading the holder AFTER the
-                // publication read (holder changed = transition in flight =
-                // skip), and a report additionally requires the SAME claim
-                // GENERATION across two sightings: one acquisition that
-                // persisted, with its acquire path and age from the ledger —
-                // never two different claims blurred together.
-                Thread holder = r.currentWorker();
-                long gen = r.claimGen;
-                Region published = holder instanceof RegionWorkerThread w0 ? w0.currentRegion : r;
-                if (holder != r.currentWorker()) {
-                    r.staleClaimSightings = 0;
-                    r.staleClaimGenSeen = -1L;
-                } else if (holder instanceof RegionWorkerThread hw && published != r) {
-                    // DEAD-HOLDER RECOVERY (2026-07-13): a claim held by a thread
-                    // that no longer exists can NEVER be released by its owner and
-                    // provably cannot be used by it either — force-release is the
-                    // one case where recovery cannot double-run the region. Live
-                    // holders are only ever REPORTED: releasing under a live
-                    // holder could put two threads in the same region.
-                    if (!holder.isAlive()) {
-                        LOGGER.error("[event-sched] DEAD WORKER CLAIM on region {} ({}): holder {} terminated "
-                                + "without releasing (queue={} help={} owed={}) — force-releasing and re-arming",
-                                Long.toHexString(r.gridKey), r.level.dimension().identifier(),
-                                holder.getName(), r.queue().size(), r.helpQueue.size(),
-                                rs.owesEntityPhase(r));
-                        r.staleClaimSightings = 0;
-                        r.staleClaimGenSeen = -1L;
-                        ((RegionWorkerThread) holder).currentRegion = null;
-                        r.stampRelease("heal-dead");
-                        r.release(holder);
-                        try {
-                            if (!r.queue().isEmpty() || !r.helpQueue.isEmpty()
-                                    || (pending && rs.owesEntityPhase(r))) {
-                                enqueueReady(r);
-                                wakeWorkers(1);
-                            }
-                            ColorGate.tryMarkDone(r, rs);
-                            // The dead worker may have committed entityEpoch and
-                            // then died before release/done/contribution.  The
-                            // earlier heal attempt could not contribute while
-                            // its claim still blocked the done seal, so recovery
-                            // owns that exact remaining success tail as well.
-                            // Keep the claim transaction open through it: domain
-                            // rebase must not overtake an old-domain barrier
-                            // decrement merely because currentWorker is null.
-                            if (pending && !rs.owesEntityPhase(r)) {
-                                rs.contributeEntityBarrier(r);
-                            }
-                        } finally {
-                            // The dead holder opened this receipt at tryClaim.
-                            // Recovery owns its exact synthetic completion tail.
-                            r.finishClaimTransaction();
-                        }
-                        effect = true;
-                    } else if (r.staleClaimGenSeen != gen) {
-                        // First mismatch sighting for THIS acquisition.
-                        r.staleClaimGenSeen = gen;
-                        r.staleClaimSightings = 1;
-                    } else if (++r.staleClaimSightings >= 2 && now - lastStaleClaimLogNanos > 10_000_000_000L) {
-                        lastStaleClaimLogNanos = now;
-                        StackTraceElement[] hs = holder.getStackTrace();
-                        StringBuilder sb = new StringBuilder();
-                        for (int si = 0; si < Math.min(hs.length, 14); si++) {
-                            sb.append("\n      at ").append(hs[si]);
-                        }
-                        LOGGER.error("[event-sched] RETAINED CLAIM on region {} ({}): holder {} gen={} acquired via '{}' {}ms ago "
-                                + "(lastRelease: gen={} via '{}') and is not working it "
-                                + "(queue={} help={} owed={} holderRegion={} holderDomain={}) — same-generation across "
-                                + "sightings under the coherent publication protocol: this is a REAL retention, "
-                                + "not observer skew. Holder stack:{}",
-                                Long.toHexString(r.gridKey), r.level.dimension().identifier(),
-                                holder.getName(), gen, r.claimPath,
-                                (now - r.claimAcquiredNanos) / 1_000_000L,
-                                r.lastReleaseGen, r.lastReleasePath,
-                                r.queue().size(), r.helpQueue.size(),
-                                rs.owesEntityPhase(r),
-                                published == null ? "-" : Long.toHexString(published.gridKey),
-                                hw.currentDomain == null || hw.currentDomain.owner == null
-                                        ? "-" : ("island#" + hw.currentDomain.owner.id),
-                                sb);
-                    }
-                } else {
-                    r.staleClaimSightings = 0;
-                    r.staleClaimGenSeen = -1L;
-                }
-            }
-            int owingTotal = rs.entityPendingCount();
-            boolean barrierPending = owingTotal > 0;
-            long oldestArmedNanos = barrierPending ? now - rs.entityBarrierAgeNanos(now) : Long.MAX_VALUE;
-            // A2: a pending ISLAND barrier wedging would hang the combined pump
-            // just as silently — fold the oldest pending island domain into the
-            // same age check (owesEntityPhase/diagnose below are region-relative
-            // already, so the report is correct whichever domain is stuck).
-            if (rs.asyncActive) {
-                for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
-                    EpochDomain d = p.domain;
-                    int ip = d.isEventEntityEpoch(d.epoch) ? d.entityPending.get() : 0;
-                    if (ip > 0) {
-                        barrierPending = true;
-                        owingTotal += ip;
-                        oldestArmedNanos = Math.min(oldestArmedNanos, d.entityBarrierArmedNanos);
-                    }
-                }
-            }
-            // Stall forensics: the legacy group path logged after 50k zero-progress
-            // passes; the event path has no polling loop to count, so log by age.
-            // A CLAIMED region anywhere in the level means a phase is genuinely
-            // executing (e.g. 18k TNT in one region legitimately runs for seconds —
-            // 2026-07-02 mega-polygon) — that is WARN "long phase", not a wedge;
-            // ERROR is reserved for nothing-running-and-nothing-progressing.
-            if (barrierPending && now - oldestArmedNanos > 5_000_000_000L
-                    && now - lastStallLogNanos > 5_000_000_000L) {
-                lastStallLogNanos = now;
-                boolean working = false;
-                for (int i = 0, n = regions.size(); i < n; i++) {
-                    Region r = regions.get(i);
-                    if (r.state() == RegionState.ACTIVE && r.currentWorker() != null) {
-                        working = true;
-                        break;
-                    }
-                }
-                for (int i = 0, n = regions.size(); i < n; i++) {
-                    Region r = regions.get(i);
-                    if (r.state() == RegionState.ACTIVE && rs.owesEntityPhase(r)) {
-                        if (working) {
-                            LOGGER.warn("[event-sched] entity barrier waiting {}s on a LONG RUNNING phase ({} owing — not a wedge); {}",
-                                    (now - oldestArmedNanos) / 1_000_000_000L,
-                                    owingTotal, ColorGate.diagnose(r, rs));
-                        } else {
-                            LOGGER.error("[event-sched] entity barrier STALLED {}s, {} owing, nothing running; {}",
-                                    (now - oldestArmedNanos) / 1_000_000_000L,
-                                    owingTotal, ColorGate.diagnose(r, rs));
-                        }
-                        break;
-                    }
+        boolean full = now - lastFullHealNanos >= FULL_HEAL_INTERVAL_NANOS;
+        if (!full && now - lastFullHealNanos >= LATE_BARRIER_NANOS) {
+            for (RegionizedServer rs : PER_LEVEL.values()) {
+                if (now - oldestPendingBarrierArmedNanos(rs) > LATE_BARRIER_NANOS) {
+                    full = true;
+                    break;
                 }
             }
         }
+        if (full) lastFullHealNanos = now;
+        boolean effect = false;
+        for (RegionizedServer rs : PER_LEVEL.values()) {
+            throwWorkerFailureIfAny();
+            if (full) {
+                var regions = rs.healSnapshot(now);
+                for (int i = 0, n = regions.size(); i < n; i++) {
+                    throwWorkerFailureIfAny();
+                    if (healRegion(rs, regions.get(i), now, FULL_SWEEP_SIGHTING_WINDOW_NANOS)) effect = true;
+                }
+            } else {
+                if (healDomainScope(rs, rs.globalDomain, now, 0L)) effect = true;
+                if (rs.asyncActive) {
+                    for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
+                        if (healDomainScope(rs, p.domain, now, ISLAND_HEAL_BACKSTOP_NANOS)) {
+                            effect = true;
+                        }
+                    }
+                }
+            }
+            logStalledBarrier(rs, now);
+        }
         throwWorkerFailureIfAny();
         healIntervalNanos = effect ? 2_000_000L : Math.min(healIntervalNanos << 1, 16_000_000L);
+    }
+
+    /** Armed time of the oldest pending entity barrier of {@code rs}'s domains, or {@code Long.MAX_VALUE}. */
+    private static long oldestPendingBarrierArmedNanos(RegionizedServer rs) {
+        long oldest = Long.MAX_VALUE;
+        if (pendingEventBarrier(rs.globalDomain)) oldest = rs.globalDomain.entityBarrierArmedNanos;
+        if (rs.asyncActive) {
+            for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
+                EpochDomain d = p.domain;
+                if (pendingEventBarrier(d)) oldest = Math.min(oldest, d.entityBarrierArmedNanos);
+            }
+        }
+        return oldest;
+    }
+
+    private static boolean pendingEventBarrier(EpochDomain d) {
+        return d != null && d.isEventEntityEpoch(d.epoch) && d.entityPending.get() > 0;
+    }
+
+    /**
+     * Frequent heal pass over one domain: its current dispatch members, then
+     * the not-yet-done same-domain regions around them (a region born after
+     * the cut holds a member's color gate exactly like the phantom blockers
+     * {@code healIslandBarrier} sweeps, and a global one may hold queue work
+     * that must drain before it can complete). The walk follows not-done
+     * regions outward, so an orphan chain blocking a member transitively is
+     * covered; it stops at completed regions. Only a domain whose barrier is
+     * pending: an event barrier at least {@code minBarrierAgeNanos} old, or a
+     * global-domain legacy/queue-only dispatch (no event counter to read —
+     * its pump calls this while it waits).
+     */
+    private static boolean healDomainScope(RegionizedServer rs, EpochDomain d, long now,
+                                           long minBarrierAgeNanos) {
+        if (d == null) return false;
+        long epoch = d.epoch;
+        if (d.dispatchedEpoch != epoch) return false;
+        if (d.isEventEntityEpoch(epoch)) {
+            if (d.entityPending.get() <= 0) return false;
+            if (minBarrierAgeNanos > 0L && now - d.entityBarrierArmedNanos < minBarrierAgeNanos) {
+                return false;
+            }
+        } else if (d.owner != null) {
+            return false;
+        }
+        java.util.List<Region> scope = d.healScope;
+        boolean effect = false;
+        java.util.Set<Region> visited =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        java.util.ArrayDeque<Region> frontier = new java.util.ArrayDeque<>();
+        for (int i = 0, n = scope.size(); i < n; i++) {
+            throwWorkerFailureIfAny();
+            Region member = scope.get(i);
+            visited.add(member);
+            if (healRegion(rs, member, now, STRANDED_SIGHTING_WINDOW_NANOS)) effect = true;
+            frontier.add(member);
+        }
+        ThreadedRegionizer reg = rs.regionizer();
+        Region m;
+        while ((m = frontier.poll()) != null) {
+            int rx = (int) m.gridKey;
+            int rz = (int) (m.gridKey >>> 32);
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    throwWorkerFailureIfAny();
+                    if (dx == 0 && dz == 0) continue;
+                    Region nb = reg.peekByGridKey(
+                            ((rx + dx) & 0xFFFFFFFFL) | (((long) (rz + dz) & 0xFFFFFFFFL) << 32));
+                    if (nb == null || nb.domain != d || nb.state() != RegionState.ACTIVE
+                            || nb.doneEpoch >= epoch || nb.groupedEpoch == epoch
+                            || !visited.add(nb)) {
+                        continue;
+                    }
+                    if (healRegion(rs, nb, now, STRANDED_SIGHTING_WINDOW_NANOS)) effect = true;
+                    // Still not done (queue work, a claim): whatever blocks it
+                    // may lie one cell further out.
+                    if (!nb.hasSealedDone(epoch) && nb.doneEpoch < epoch) frontier.add(nb);
+                }
+            }
+        }
+        return effect;
+    }
+
+    /**
+     * Stall forensics: the legacy group path logged after 50k zero-progress
+     * passes; the event path has no polling loop to count, so log by age.
+     * A CLAIMED region anywhere in the level means a phase is genuinely
+     * executing (e.g. 18k TNT in one region legitimately runs for seconds —
+     * 2026-07-02 mega-polygon) — that is WARN "long phase", not a wedge;
+     * ERROR is reserved for nothing-running-and-nothing-progressing. A
+     * pending ISLAND barrier wedging would hang the combined pump just as
+     * silently, so the oldest pending island domain folds into the same age
+     * check (owesEntityPhase/diagnose are region-relative already).
+     */
+    private static void logStalledBarrier(RegionizedServer rs, long now) {
+        long oldestArmedNanos = oldestPendingBarrierArmedNanos(rs);
+        if (oldestArmedNanos == Long.MAX_VALUE || now - oldestArmedNanos <= 5_000_000_000L
+                || now - lastStallLogNanos <= 5_000_000_000L) {
+            return;
+        }
+        lastStallLogNanos = now;
+        int owingTotal = rs.entityPendingCount();
+        if (rs.asyncActive) {
+            for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
+                EpochDomain d = p.domain;
+                if (d.isEventEntityEpoch(d.epoch)) owingTotal += d.entityPending.get();
+            }
+        }
+        var regions = rs.healSnapshot(now);
+        boolean working = false;
+        for (int i = 0, n = regions.size(); i < n; i++) {
+            Region r = regions.get(i);
+            if (r.state() == RegionState.ACTIVE && r.currentWorker() != null) {
+                working = true;
+                break;
+            }
+        }
+        for (int i = 0, n = regions.size(); i < n; i++) {
+            Region r = regions.get(i);
+            if (r.state() == RegionState.ACTIVE && rs.owesEntityPhase(r)) {
+                if (working) {
+                    LOGGER.warn("[event-sched] entity barrier waiting {}s on a LONG RUNNING phase ({} owing — not a wedge); {}",
+                            (now - oldestArmedNanos) / 1_000_000_000L,
+                            owingTotal, ColorGate.diagnose(r, rs));
+                } else {
+                    LOGGER.error("[event-sched] entity barrier STALLED {}s, {} owing, nothing running; {}",
+                            (now - oldestArmedNanos) / 1_000_000_000L,
+                            owingTotal, ColorGate.diagnose(r, rs));
+                }
+                break;
+            }
+        }
+    }
+
+    /**
+     * One region of a heal pass, in the region's own timeline. Returns true
+     * only for a real rescue (orphan sealed, stranded owed/queue work re-armed
+     * with no live ready receipt, barrier contribution, dead-holder recovery):
+     * routine seals racing the participant's own completion keep the backoff.
+     * {@code sightingWindowNanos}: how far apart two stranded-queue sightings
+     * may be and still count as consecutive — the cadence of the calling pass.
+     */
+    private static boolean healRegion(RegionizedServer rs, Region r, long now,
+                                      long sightingWindowNanos) {
+        boolean effect = false;
+        if (r.state() != RegionState.ACTIVE) return false;
+        // A2: every check runs in the REGION's own timeline — with async
+        // islands live, one heal pass covers the global lane and every
+        // in-flight island barrier alike (a wedged island region gets
+        // re-armed even after the global barrier finished, and never
+        // against the wrong epoch).
+        EpochDomain d = r.domain;
+        long epoch = d.epoch;
+        if (d.dispatchedEpoch != epoch) return false; // pre-dispatch: undecidable
+        boolean pending = d.isEventEntityEpoch(epoch) && d.entityPending.get() > 0;
+        boolean wasSealedDone = r.hasSealedDone(epoch);
+        ColorGate.tryMarkDone(r, rs);
+        // Only an UNGROUPED seal is a rescue (an orphan nobody else completes);
+        // a grouped participant sealed here merely raced its own completion.
+        if (!wasSealedDone && r.hasSealedDone(epoch) && r.groupedEpoch != epoch) effect = true;
+        if (pending && rs.owesEntityPhase(r)) {
+            if (ColorGate.eligible(r, rs) && r.currentWorker() == null) {
+                // A live ready receipt of this dispatch will reach the region
+                // anyway; the duplicate is benign but no rescue.
+                boolean witnessed = d.entityDispatchPublication.hasReadyReceipts();
+                enqueueReady(r);
+                wakeWorkers(1);
+                if (!witnessed) effect = true;
+            }
+        } else if (pending) {
+            int before = d.entityPending.get();
+            rs.contributeEntityBarrier(r);
+            if (d.entityPending.get() != before) effect = true;
+        }
+        // PRODUCTION WEDGE FIX (xaprosmp thread dump 2026-07-13): a
+        // region with QUEUE-ONLY pending work (spawn/block-tick tasks
+        // whose future main is pumping) has no re-arm path when it is
+        // not owed an entity phase — a ready entry consumed-and-
+        // dropped in the claim race stranded the pump with all 30
+        // workers idle-parked. Re-arm only eligible, unwitnessed work:
+        // blocked colors and next-epoch queues cannot be consumed yet.
+        if (r.currentWorker() == null
+                && (!r.queue().isEmpty() || !r.helpQueue.isEmpty())
+                && ColorGate.inUnitWindow(r, rs)) {
+            // Two consecutive sightings with no retained notification. A
+            // scoped pass may skip a region for a while: an old sighting
+            // does not count as the first of a consecutive pair.
+            if (now - r.strandedQueueSeenNanos > sightingWindowNanos) {
+                r.strandedQueueSightings = 0;
+            }
+            r.strandedQueueSeenNanos = now;
+            if (r.strandedQueueSightings++ >= 1) {
+                r.strandedQueueSightings = 0;
+                enqueueReady(r);
+                wakeWorkers(1);
+                effect = true;
+            }
+        } else {
+            r.strandedQueueSightings = 0;
+        }
+        // Leaked-claim forensic: a claim whose holder has moved on
+        // (currentRegion no longer this region) blocks tryMarkDone and
+        // neighbor eligibility forever — the other wedge shape this
+        // dump could not distinguish. Two consecutive sightings avoid
+        // the benign clear-then-release window in the claim epilogue.
+        // COHERENT SNAPSHOT (2026-07-13, user 07:21 report): with the
+        // publication protocol (publish-before-claim, release-before-
+        // unpublish), a reader that observes the claim CAS is
+        // guaranteed to observe the matching publication — so a
+        // mismatch here can no longer be a transition artifact. The
+        // snapshot is validated by re-reading the holder AFTER the
+        // publication read (holder changed = transition in flight =
+        // skip), and a report additionally requires the SAME claim
+        // GENERATION across two sightings: one acquisition that
+        // persisted, with its acquire path and age from the ledger —
+        // never two different claims blurred together.
+        Thread holder = r.currentWorker();
+        long gen = r.claimGen;
+        Region published = holder instanceof RegionWorkerThread w0 ? w0.currentRegion : r;
+        if (holder != r.currentWorker()) {
+            r.staleClaimSightings = 0;
+            r.staleClaimGenSeen = -1L;
+        } else if (holder instanceof RegionWorkerThread hw && published != r) {
+            // DEAD-HOLDER RECOVERY (2026-07-13): a claim held by a thread
+            // that no longer exists can NEVER be released by its owner and
+            // provably cannot be used by it either — force-release is the
+            // one case where recovery cannot double-run the region. Live
+            // holders are only ever REPORTED: releasing under a live
+            // holder could put two threads in the same region.
+            if (!holder.isAlive()) {
+                LOGGER.error("[event-sched] DEAD WORKER CLAIM on region {} ({}): holder {} terminated "
+                        + "without releasing (queue={} help={} owed={}) — force-releasing and re-arming",
+                        Long.toHexString(r.gridKey), r.level.dimension().identifier(),
+                        holder.getName(), r.queue().size(), r.helpQueue.size(),
+                        rs.owesEntityPhase(r));
+                r.staleClaimSightings = 0;
+                r.staleClaimGenSeen = -1L;
+                ((RegionWorkerThread) holder).currentRegion = null;
+                r.stampRelease("heal-dead");
+                r.release(holder);
+                try {
+                    if (!r.queue().isEmpty() || !r.helpQueue.isEmpty()
+                            || (pending && rs.owesEntityPhase(r))) {
+                        enqueueReady(r);
+                        wakeWorkers(1);
+                    }
+                    ColorGate.tryMarkDone(r, rs);
+                    // The dead worker may have committed entityEpoch and
+                    // then died before release/done/contribution.  The
+                    // earlier heal attempt could not contribute while
+                    // its claim still blocked the done seal, so recovery
+                    // owns that exact remaining success tail as well.
+                    // Keep the claim transaction open through it: domain
+                    // rebase must not overtake an old-domain barrier
+                    // decrement merely because currentWorker is null.
+                    if (pending && !rs.owesEntityPhase(r)) {
+                        rs.contributeEntityBarrier(r);
+                    }
+                } finally {
+                    // The dead holder opened this receipt at tryClaim.
+                    // Recovery owns its exact synthetic completion tail.
+                    r.finishClaimTransaction();
+                }
+                effect = true;
+            } else if (r.staleClaimGenSeen != gen) {
+                // First mismatch sighting for THIS acquisition.
+                r.staleClaimGenSeen = gen;
+                r.staleClaimSightings = 1;
+            } else if (++r.staleClaimSightings >= 2 && now - lastStaleClaimLogNanos > 10_000_000_000L) {
+                lastStaleClaimLogNanos = now;
+                StackTraceElement[] hs = holder.getStackTrace();
+                StringBuilder sb = new StringBuilder();
+                for (int si = 0; si < Math.min(hs.length, 14); si++) {
+                    sb.append("\n      at ").append(hs[si]);
+                }
+                LOGGER.error("[event-sched] RETAINED CLAIM on region {} ({}): holder {} gen={} acquired via '{}' {}ms ago "
+                        + "(lastRelease: gen={} via '{}') and is not working it "
+                        + "(queue={} help={} owed={} holderRegion={} holderDomain={}) — same-generation across "
+                        + "sightings under the coherent publication protocol: this is a REAL retention, "
+                        + "not observer skew. Holder stack:{}",
+                        Long.toHexString(r.gridKey), r.level.dimension().identifier(),
+                        holder.getName(), gen, r.claimPath,
+                        (now - r.claimAcquiredNanos) / 1_000_000L,
+                        r.lastReleaseGen, r.lastReleasePath,
+                        r.queue().size(), r.helpQueue.size(),
+                        rs.owesEntityPhase(r),
+                        published == null ? "-" : Long.toHexString(published.gridKey),
+                        hw.currentDomain == null || hw.currentDomain.owner == null
+                                ? "-" : ("island#" + hw.currentDomain.owner.id),
+                        sb);
+            }
+        } else {
+            r.staleClaimSightings = 0;
+            r.staleClaimGenSeen = -1L;
+        }
+        return effect;
     }
 
     private static long lastStallLogNanos;

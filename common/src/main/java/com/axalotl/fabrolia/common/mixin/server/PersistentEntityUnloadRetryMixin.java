@@ -269,12 +269,11 @@ public abstract class PersistentEntityUnloadRetryMixin
      * {@link #ESCALATE_AFTER_PASSES} consecutive tick-head deferrals of a chunk
      * this queue announces Main's interest ({@code PIsland.statusClaimWanted}),
      * which makes claim admission, chaining and the pacer yield exactly as they
-     * do for a blocking mainClaim spin ({@code claimWanted}); the flag is
-     * dropped once the chunk's deferred status has been applied. The flag is
-     * separate from {@code claimWanted} because every mainClaim writer saves
-     * and restores that one around its spin: an off-main scope overlapping a
-     * tick-head raise/drop could otherwise strand it. Nobody but this queue
-     * writes {@code statusClaimWanted}, and the readers OR both flags. */
+     * do for a blocking mainClaim spin ({@code PIsland.mainInterest()}); the
+     * flag is dropped once the chunk's deferred status has been applied. It is
+     * a standing flag of its own rather than a claim waiter: it outlives any
+     * single spin and is reconciled by this queue's tick-head pass. Nobody but
+     * this queue writes {@code statusClaimWanted}. */
     @Unique
     static final class FabroliaStatusTransitions {
         private record Entry(long chunkPos, Runnable body) {}

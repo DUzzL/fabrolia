@@ -398,16 +398,15 @@ final class EntityStatusOwnerTransactionTest {
                 PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.runWithOwner(busy, false, body);
         int threshold = PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.ESCALATE_AFTER_PASSES;
         busy.unitClaim.set(true);
-        // A mainClaim spin's saved claimWanted=false must not be able to undo
-        // the escalation: the two flags never share a writer.
-        boolean savedClaimWanted = busy.claimWanted;
-        busy.claimWanted = true;
+        // A mainClaim spin's claim waiter ending must not be able to undo the
+        // escalation: the two interests never share a writer.
+        busy.announceClaimInterest();
         statuses.offer(1L, () -> {});
         for (int pass = 0; pass < threshold; pass++) statuses.drainAtTickHead(runner, key -> busy);
         assertTrue(busy.statusClaimWanted);
-        busy.claimWanted = savedClaimWanted;
-        assertFalse(busy.claimWanted);
-        assertTrue(busy.statusClaimWanted, "restoring claimWanted leaves the status interest raised");
+        busy.withdrawClaimInterest();
+        assertFalse(busy.claimInterestAnnounced());
+        assertTrue(busy.statusClaimWanted, "an ended claim waiter leaves the status interest raised");
         busy.unitClaim.set(false);
         statuses.drainAtTickHead(runner, key -> busy);
         assertFalse(busy.statusClaimWanted);

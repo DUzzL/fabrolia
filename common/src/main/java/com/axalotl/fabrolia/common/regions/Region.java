@@ -56,6 +56,10 @@ public final class Region {
     /** Heal-loop forensic counter (main-only): consecutive sightings of an
      *  UNCLAIMED region with pending queue work (lost ready entry). */
     int strandedQueueSightings;
+    /** Main-only: when {@link #strandedQueueSightings} last counted. Sightings
+     *  further apart are not consecutive (a scoped heal pass may skip the
+     *  region for a while) and restart the count. */
+    long strandedQueueSeenNanos;
 
     /** Last epoch whose queue/entity phase cutoff was published. Queue/help
      *  admissions retained beyond that cutoff belong to the following epoch. */
