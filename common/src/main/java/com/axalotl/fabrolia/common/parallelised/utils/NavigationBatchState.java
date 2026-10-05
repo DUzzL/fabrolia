@@ -12,27 +12,42 @@ import java.util.Set;
 public final class NavigationBatchState<N> {
     private final Object membershipLock = new Object();
     private final Set<N> active = Collections.newSetFromMap(new IdentityHashMap<>());
+    /** Null after a membership change until the next read rebuilds it under the leaf lock. */
     private volatile List<N> snapshot = List.of();
 
     private final Object pendingLock = new Object();
     private volatile int batchDepth;
     private Set<N> pending;
 
-    /** Immutable, array-backed read cut; acquiring it never allocates or locks. */
+    /**
+     * Immutable, array-backed read cut of every completed membership change.
+     * Writers only invalidate; the first read after a change copies the set once
+     * under the leaf lock, so a burst of path starts/stops between two block
+     * updates costs one copy instead of one per change.
+     */
     public List<N> activeSnapshot() {
-        return snapshot;
+        List<N> current = snapshot;
+        if (current != null) return current;
+        synchronized (membershipLock) {
+            current = snapshot;
+            if (current == null) {
+                current = List.copyOf(active);
+                snapshot = current;
+            }
+            return current;
+        }
     }
 
     public void activate(N navigation) {
         Objects.requireNonNull(navigation);
         synchronized (membershipLock) {
-            if (active.add(navigation)) snapshot = List.copyOf(active);
+            if (active.add(navigation)) snapshot = null;
         }
     }
 
     public void deactivate(N navigation) {
         synchronized (membershipLock) {
-            if (active.remove(navigation)) snapshot = List.copyOf(active);
+            if (active.remove(navigation)) snapshot = null;
         }
     }
 
@@ -41,7 +56,7 @@ public final class NavigationBatchState<N> {
         synchronized (membershipLock) {
             boolean changed = false;
             for (int i = 0; i < navigations.size(); i++) changed |= active.remove(navigations.get(i));
-            if (changed) snapshot = List.copyOf(active);
+            if (changed) snapshot = null;
         }
     }
 

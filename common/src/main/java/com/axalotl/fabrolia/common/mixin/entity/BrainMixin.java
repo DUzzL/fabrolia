@@ -23,10 +23,12 @@ public class BrainMixin<E extends LivingEntity> {
     // startEachNonRunningBehavior walked TreeMap -> HashMap -> LinkedHashSet
     // every tick per brain-mob (1.7 core-ms self just iterating on the
     // 2026-07-11 profiles). The structure only changes in addActivity /
-    // removeAllBehaviors, so a flattened (activity, behavior) pair array in the
+    // removeAllBehaviors, so a flattened (activity, behaviors[]) array in the
     // exact original iteration order (TreeMap ascending priority, inner maps'
-    // own order, LinkedHashSet insertion order) is observably identical; the
-    // activeActivities + STOPPED filters stay live per iteration.
+    // own order, LinkedHashSet insertion order) is observably identical. As in
+    // vanilla, activeActivities is read live once per (priority, activity)
+    // entry, before that entry's behaviors; the STOPPED filter stays live per
+    // behavior.
     @org.spongepowered.asm.mixin.Unique
     private volatile Object[] fabrolia$flatBehaviors;
 
@@ -56,10 +58,8 @@ public class BrainMixin<E extends LivingEntity> {
             java.util.ArrayList<Object> tmp = new java.util.ArrayList<>();
             for (var byActivity : this.availableBehaviorsByPriority.values()) {
                 for (var entry : byActivity.entrySet()) {
-                    for (var behavior : entry.getValue()) {
-                        tmp.add(entry.getKey());
-                        tmp.add(behavior);
-                    }
+                    tmp.add(entry.getKey());
+                    tmp.add(entry.getValue().toArray(new net.minecraft.world.entity.ai.behavior.BehaviorControl<?>[0]));
                 }
             }
             flat = tmp.toArray();
@@ -68,10 +68,12 @@ public class BrainMixin<E extends LivingEntity> {
         long time = level.getGameTime();
         for (int i = 0, n = flat.length; i < n; i += 2) {
             if (this.activeActivities.contains((net.minecraft.world.entity.schedule.Activity) flat[i])) {
-                @SuppressWarnings("unchecked")
-                var behavior = (net.minecraft.world.entity.ai.behavior.BehaviorControl<? super E>) flat[i + 1];
-                if (behavior.getStatus() == net.minecraft.world.entity.ai.behavior.Behavior.Status.STOPPED) {
-                    behavior.tryStart(level, body, time);
+                for (var control : (net.minecraft.world.entity.ai.behavior.BehaviorControl<?>[]) flat[i + 1]) {
+                    @SuppressWarnings("unchecked")
+                    var behavior = (net.minecraft.world.entity.ai.behavior.BehaviorControl<? super E>) control;
+                    if (behavior.getStatus() == net.minecraft.world.entity.ai.behavior.Behavior.Status.STOPPED) {
+                        behavior.tryStart(level, body, time);
+                    }
                 }
             }
         }

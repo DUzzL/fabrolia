@@ -19,8 +19,19 @@ public abstract class FoxBreedGoalMixin extends BreedGoal {
         super(fox, speedModifier);
     }
 
+    /**
+     * Pair key → wall game time of its breed. The guard only has to outlive the
+     * tick in which both foxes of a pair can reach breed() (the winner resets
+     * both loves, so the pair's goals stop at their next goal tick); older
+     * entries are dropped on the next breed anywhere instead of living forever.
+     * The wall clock is shared by every island, so pruning never compares one
+     * island's local time against another's.
+     */
     @Unique
-    private static final Map<String, Boolean> breedingPairs = new ConcurrentHashMap<>();
+    private static final Map<String, Long> breedingPairs = new ConcurrentHashMap<>();
+
+    @Unique
+    private static final long GUARD_TICKS = 20L;
 
     @Inject(method = "start", at = @At("HEAD"))
     private void resetBreedingFlag(CallbackInfo ci) {
@@ -29,8 +40,9 @@ public abstract class FoxBreedGoalMixin extends BreedGoal {
 
     @Inject(method = "breed", at = @At("HEAD"), cancellable = true)
     private void preventDoubleBreed(CallbackInfo ci) {
-        String pairKey = getPairKey();
-        if (breedingPairs.putIfAbsent(pairKey, Boolean.TRUE) != null) {
+        long now = com.axalotl.fabrolia.common.regions.IslandClock.wallTime(this.level);
+        breedingPairs.values().removeIf(at -> now - at > GUARD_TICKS);
+        if (breedingPairs.putIfAbsent(getPairKey(), now) != null) {
             ci.cancel();
         }
     }

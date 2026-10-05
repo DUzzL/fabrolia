@@ -34,6 +34,9 @@ public final class RegionWorkerThread extends Thread {
      *  the unpark-ALL storm (1.1s of Unsafe.unpark self-time, 2026-07-01 profile). */
     volatile boolean parked;
 
+    /** Thread-confined level-RNG stripes ({@code FabroliaRandomStriping.Stripes}). */
+    public Object randomStripes;
+
     RegionWorkerThread(Runnable target, String name) {
         super(target, name);
     }

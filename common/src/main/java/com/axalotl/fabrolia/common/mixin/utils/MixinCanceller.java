@@ -35,7 +35,7 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
         // (cached possibleTasks list) and Brain.getRunningBehaviors (a MaskedList),
         // and maintains that MaskedList from four more injectors. Fabrolia's own
         // entity/BrainMixin (priority 1500) already @WrapMethod's
-        // startEachNonRunningBehavior with a volatile flat (activity, behavior)
+        // startEachNonRunningBehavior with a volatile flat (activity, behaviors[])
         // snapshot and never calls original — so lithium's @Overwrite of that method
         // is dead code, while its runningTasks bookkeeping keeps running against a
         // list nothing rebuilds. Two implementations of the same method, ours wins,

@@ -608,8 +608,11 @@ public final class ParallelSpawnHelper {
         } finally {
             // encloses the FILL too — a fill-time throw must not strand up to
             // ~13k strong Entity refs in the static buffer (crash-day leak).
+            // A throwing fill never returns its count, so clear the written
+            // prefix itself: fills write from 0 contiguously and every census
+            // leaves the buffer all-null behind it.
             Entity[] b = entityBuf;
-            for (int i = 0, lim = Math.min(n, b.length); i < lim; i++) b[i] = null;
+            for (int i = 0; i < b.length && b[i] != null; i++) b[i] = null;
         }
     }
 

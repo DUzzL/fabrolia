@@ -79,13 +79,17 @@ public final class SpawnIndex {
     }
 
     /** Entity left an accessible section in {@code level} (chunk hidden, entity died,
-     *  or section transition). Mirrors {@code PersistentEntitySectionManager.stopTracking}. */
+     *  or section transition). Mirrors {@code PersistentEntitySectionManager.stopTracking}.
+     *  A pending purge strike ends with the membership it was taken against: the
+     *  strike sites only walk the visible set, so a struck entity that leaves it
+     *  would otherwise stay referenced by the strike ledger until level unload. */
     public static void onTrackingEnd(ServerLevel level, Entity entity) {
         Set<Entity> set = VISIBLE_PER_LEVEL.get(level);
         if (set != null) {
             VERSION.incrementAndGet();
             set.remove(entity);
         }
+        clearStrike(level, entity);
         SpawnCensus.update(level, entity, false);
     }
 
@@ -110,6 +114,14 @@ public final class SpawnIndex {
     public static boolean strikeForPurge(ServerLevel level, Entity entity) {
         Set<Entity> s = PENDING_PURGE.computeIfAbsent(level, k -> ConcurrentHashMap.newKeySet());
         if (s.add(entity)) {
+            // The census walk may hold an entity a worker's onTrackingEnd removed
+            // (and cleared strikes for) just before this add. Strike first, then
+            // re-read membership; onTrackingEnd removes membership first, then
+            // clears: one of the two sees the other, so no strike outlives it.
+            Set<Entity> visible = VISIBLE_PER_LEVEL.get(level);
+            if (visible == null || !visible.contains(entity)) {
+                s.remove(entity);
+            }
             return false;
         }
         s.remove(entity);
