@@ -2305,6 +2305,13 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             }
             return;
         }
+        // Vanilla's forEachEntityTickingChunk walks one completed-wave snapshot
+        // (DistanceManagerMixin); read the same snapshot through a page cursor
+        // instead of a cancellable inEntityTickingRange call per chunk.
+        com.axalotl.fabrolia.common.regions.CompletedChunkLevels.Reader entityTicking =
+                ((com.axalotl.fabrolia.common.regions.CompletedSimulationView)
+                        ((DistanceManagerAccessor) dm).fabrolia$simulationChunkTracker())
+                        .fabrolia$completedLevels().reader();
         int shift = grid.shift;
         int side = 1 << shift;
         for (int c = 0, cellCount = ownCellList.size(); c < cellCount; c++) {
@@ -2314,7 +2321,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             for (int dz = 0; dz < side; dz++) {
                 for (int dx = 0; dx < side; dx++) {
                     long key = ChunkPos.pack(baseX + dx, baseZ + dz);
-                    if (!dm.inEntityTickingRange(key)) continue;
+                    if (!net.minecraft.server.level.ChunkLevel.isEntityTicking(entityTicking.get(key))) continue;
                     ChunkHolder holder = this.getVisibleChunkIfPresent(key);
                     if (holder == null) continue;
                     LevelChunk chunk = holder.getTickingChunk();
