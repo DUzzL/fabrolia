@@ -1,5 +1,84 @@
 ## Unreleased
 
+### Whole-mod review (memory, CPU, vanilla parity)
+
+Memory (stand live heap after full GC: 2.19 GB → 1.62 GB; ≈ 1 GB less expected
+at production's ~20k loaded chunks):
+- Each loaded chunk's game-event listener table was a 32-stripe concurrent map
+  (~38 KB per chunk); it is now a small copy-on-write map. Chunk-section
+  palettes keep their read/write lock state in two fields instead of a
+  `ReentrantReadWriteLock` (~120 B) per palette.
+- `Int2ObjectConcurrentHashMap` creates its stripes on first write (an empty
+  map is ~0.7 KB instead of 20–38 KB); `ConcurrentList` allocates no array
+  until the first add.
+- Datapack function parse IR is released once the function plan is built
+  (~15 MB with BACAP).
+
+CPU:
+- Held maps: an island player's map is ticked on its own island when the
+  island owns every chunk the redraw reads. Before, every map in an island
+  player's inventory paused all islands each tick for a Main-side update
+  (production ≈ 6 ms/tick of Main; stand with 40 map holders: Main 13.5 → 3.0
+  ms/tick). The pixels now reach the client in the same tick, as in vanilla.
+- Region workers keep a small exact FULL-chunk cache in front of C2ME's
+  off-thread `getChunk` shortcut (per worker, cleared every step, invalidated
+  by a per-position seqlock around C2ME's holder status transitions). Item-
+  heavy stand: `ServerChunkCache.getChunk` on workers 89.5 → 21.5 ms/s, inside
+  `ItemEntity.tick` 25.2 → 3.8 ms/s. Only active with C2ME.
+- Packets sent from island workers reach Netty as one event-loop task per
+  connection and worker step instead of one wakeup per packet (stand: worker
+  eventFdWrite 1.05 → 0.18 ms/tick, Netty task time 4.7 → 1.9 ms/tick).
+  Per-connection order, flush flags and send listeners are unchanged; Main
+  sends, flushes, chunk/Forget tasks, close and protocol switches share the
+  same per-connection FIFO.
+- Island entity-tracking flush: island ownership is memoized per flush,
+  per-entity type checks are cached on the entity, and the arrival-pending
+  and deferred-player checks have zero-cost fast paths (stand: ~66 → ~4 ms/s
+  of Fabrolia overhead in the flush).
+- Entity AABB queries no longer copy the section-id range into a new skip
+  list per section column (production 2.7 ms/tick); `ConcurrentList`
+  iterators share one snapshot until the next mutation.
+- Brain behaviour start checks the active activity once per (priority,
+  activity) entry; mob path start/stop no longer copies the level's
+  navigation list under a shared lock; level random draws on workers skip a
+  ThreadLocal and a hash lookup; game-event dispatch lookups take no lock;
+  island random ticks read eligibility from one snapshot per pass;
+  spawn-candidate chunks beyond 128 blocks of every player are dropped before
+  the holder lookup; island function heads build their step list once per
+  arming.
+- Chunk sending: a chunk waiting for its island's snapshot no longer adopts
+  the older snapshot the sender had just rejected (three such false failures
+  forced a Main-side rebuild that paused the island; production 0.56 ms/tick
+  of Main).
+- `/fabrolia regions debug spawnrate` starts recording on its first call
+  (the recorder ran on every spawn pass and allocated 4 MiB at startup).
+
+Vanilla parity restored:
+- Brain mobs start the remaining behaviours of an entry when a behaviour
+  changes the active activity mid-start, as vanilla does.
+- Trial spawners detect players by vanilla line of sight again (the 20-tick
+  per-block line-of-sight cache is removed).
+- Attribute modifiers keep vanilla's maps, so values are summed in vanilla's
+  order (ConcurrentHashMap order could differ in the last bit).
+- Entities take fall damage when landing slowly into a climbable block, as in
+  vanilla (an upstream mixin cancelled it).
+
+Fixes and leaks:
+- Vanilla scheduled-tick re-indexing through `Long2LongMap` entry `setValue`
+  no longer throws `UnsupportedOperationException`.
+- Mobs and players that got a spawn-census purge strike and then died,
+  despawned, unloaded or left the dimension are no longer kept referenced
+  until the level unloads.
+- Nether transfer sources of retired islands are dropped once idle; chunk
+  delivery drops snapshots that can never be reused (chunk unloaded or
+  changed) once a second; a respawned player's delivery state follows the new
+  player; the chunk bridge's soft-null memo prunes expired entries; the fox
+  double-breed guard expires its entries; finished island sprints leave the
+  session list.
+- Removed dead weight: the unread per-region entity-ticking holder lists
+  (they could keep unloaded chunk holders alive), a write-only thread
+  registry, a duplicate mixin, and a per-entity-tick commit lambda.
+
 ### Minecraft 26.3
 
 - Ported to Minecraft 26.3 (Java 25): Fabric Loader 0.19.5, Fabric API
