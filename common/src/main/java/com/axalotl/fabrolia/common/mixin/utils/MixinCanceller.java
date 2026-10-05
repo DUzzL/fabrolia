@@ -176,7 +176,13 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
                 // C2ME 0.88's runAllUpdates consolidation thread check.
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meConsolidateActorThreadMixin") ||
                 // Targets two handlers from C2ME's general async-save catcher.
-                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meSaveActorThreadMixin")) {
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meSaveActorThreadMixin") ||
+                // Worker FULL-chunk cache: the lookup, its C2ME-shortcut
+                // capture and the two holder-transition brackets it is exact
+                // against form one unit and must all disappear without C2ME.
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meWorkerChunkCacheMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meHolderStatusTransitionMixin") ||
+                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meDeferredStatusTransitionMixin")) {
             return !C2ME;
         }
         // Exact VMP 0.2.0+beta.7.236 player-watching hardening.  Although the

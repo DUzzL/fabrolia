@@ -1039,6 +1039,37 @@ class FullModpackMixinExportVerifierTest {
                 "the portal scope callback must be the first getChunk HEAD callback");
         assertTrue(generatedCallIndex(getChunk, cache.name, "$fabrolia$getChunk") > portal,
                 "Fabrolia's off-Main getChunk bridge must run after the portal scope");
+
+        // The worker FULL-chunk cache answers in place of C2ME's off-thread
+        // shortcut, so it must sit after the portal scope and immediately before
+        // that shortcut: no other HEAD callback may be skipped by a cache hit.
+        assertEquals(1, generatedCallCount(getChunk, cache.name,
+                "$fabrolia$workerChunkCacheLookup"));
+        int lookup = generatedCallIndex(getChunk, cache.name, "$fabrolia$workerChunkCacheLookup");
+        assertTrue(lookup > portal, "the worker chunk cache must run after the portal scope");
+        // Any generated (mixin-merged) callee counts, not only handler$ ones.
+        String afterLookup = null;
+        index = 0;
+        for (AbstractInsnNode instruction : getChunk.instructions) {
+            if (index++ > lookup && instruction instanceof MethodInsnNode call
+                    && call.owner.equals(cache.name) && call.name.contains("$")) {
+                afterLookup = call.name;
+                break;
+            }
+        }
+        assertTrue(afterLookup != null && afterLookup.endsWith("$shortcutGetChunk"),
+                "C2ME's shortcut must be the callback right after the worker chunk cache, found "
+                        + afterLookup);
+        // Every shortcut exit (answer or decline) must capture-or-disarm.
+        MethodNode shortcut = generatedMethod(cache, "$shortcutGetChunk");
+        int returns = 0;
+        for (AbstractInsnNode instruction : shortcut.instructions) {
+            if (instruction.getOpcode() == Opcodes.RETURN) returns++;
+        }
+        assertTrue(returns > 0);
+        assertEquals(returns, generatedCallCount(shortcut, cache.name,
+                "$fabrolia$workerChunkCacheCapture"),
+                "the worker chunk cache must capture or disarm at every C2ME shortcut return");
     }
 
 

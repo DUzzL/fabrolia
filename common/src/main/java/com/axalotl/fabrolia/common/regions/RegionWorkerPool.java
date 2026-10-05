@@ -3322,6 +3322,7 @@ public final class RegionWorkerPool {
                     signalLifecycleWaiters();
                 }
                 CAUSAL_STEP.remove();
+                me.chunkCache.clear();
             }
             if (stepFailure != null) return;
             if (worked) continue;
