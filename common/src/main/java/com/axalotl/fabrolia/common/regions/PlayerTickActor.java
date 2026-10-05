@@ -170,7 +170,6 @@ final class PlayerTickActor {
                     lock.notifyAll();
                 }
             });
-            ParallelProcessor.registerThread("Fabrolia-Player-Actor", created);
             created.start();
             thread = created;
         } catch (Throwable startFailure) {

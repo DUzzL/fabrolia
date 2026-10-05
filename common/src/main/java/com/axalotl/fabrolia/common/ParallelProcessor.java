@@ -23,7 +23,6 @@ import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.ref.WeakReference;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -36,7 +35,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
-import java.util.Map;
 
 import static com.axalotl.fabrolia.common.utils.TickStats.*;
 import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer;
@@ -138,8 +136,6 @@ public final class ParallelProcessor {
                 && !FABROLIA_API_COMPATIBLE.get(entity.getClass());
     }
 
-    private static final Map<String, Set<WeakReference<Thread>>> MC_THREAD_TRACKER = new ConcurrentHashMap<>();
-
     public static void setServer(MinecraftServer server) {
         ParallelProcessor.server = server;
         NetherPortalTransfers.init(server);
@@ -172,7 +168,6 @@ public final class ParallelProcessor {
             t.setDaemon(true);
             t.setPriority(priority);
             t.setUncaughtExceptionHandler(ParallelProcessor::fabrolia$failStopUncaught);
-            registerThread("Fabrolia-Tick", t);
             return t;
         };
     }
@@ -197,10 +192,6 @@ public final class ParallelProcessor {
             super.onStart();
             setName("Fabrolia-Tick-Pool-Thread-" + WORKER_COUNTER.getAndIncrement());
         }
-    }
-
-    public static void registerThread(String poolName, Thread thread) {
-        MC_THREAD_TRACKER.computeIfAbsent(poolName, _ -> ConcurrentHashMap.newKeySet()).add(new WeakReference<>(thread));
     }
 
     public static boolean isServerExecutionThread() {
@@ -633,43 +624,14 @@ public final class ParallelProcessor {
             }
             if (failure == null) {
                 try {
-                    AtomicLong elapsedMetric = null;
-                    AtomicLong countMetric = null;
-                    AtomicLong totalElapsedMetric = null;
-                    AtomicLong totalCountMetric = null;
-                    long elapsed = 0L;
                     if (RECORDING_TICKS_LEFT.get() > 0) {
-                        EntityType<?> type = entity.getType();
-                        elapsed = System.nanoTime() - start;
-                        if (fabrolia) {
-                            elapsedMetric = FABROLIA_TICK_TIME_NS.computeIfAbsent(
-                                    type, _ -> new AtomicLong());
-                            countMetric = FABROLIA_TICK_COUNT.computeIfAbsent(
-                                    type, _ -> new AtomicLong());
-                            totalElapsedMetric = TOTAL_FABROLIA_TIME_NS;
-                            totalCountMetric = TOTAL_FABROLIA_COUNT;
-                        } else {
-                            elapsedMetric = TICK_TIME_NS.computeIfAbsent(
-                                    type, _ -> new AtomicLong());
-                            countMetric = TICK_COUNT.computeIfAbsent(
-                                    type, _ -> new AtomicLong());
-                            totalElapsedMetric = TOTAL_SYNC_TIME_NS;
-                            totalCountMetric = TOTAL_SYNC_COUNT;
-                        }
+                        commitTickMetrics(entity.getType(), fabrolia,
+                                System.nanoTime() - start);
+                    } else {
+                        // The success cut itself (no metric write): a W selected
+                        // after the guarded body still refuses this tick's tails.
+                        RegionScheduler.commitSuccessIfHealthy(NO_METRIC_COMMIT);
                     }
-                    final AtomicLong elapsedCommit = elapsedMetric;
-                    final AtomicLong countCommit = countMetric;
-                    final AtomicLong totalElapsedCommit = totalElapsedMetric;
-                    final AtomicLong totalCountCommit = totalCountMetric;
-                    final long elapsedNanos = elapsed;
-                    RegionScheduler.commitSuccessIfHealthy(() -> {
-                        if (elapsedCommit != null) {
-                            elapsedCommit.addAndGet(elapsedNanos);
-                            countCommit.incrementAndGet();
-                            totalElapsedCommit.addAndGet(elapsedNanos);
-                            totalCountCommit.incrementAndGet();
-                        }
-                    });
                     if (!prevInTick) {
                         // Players finish their own tick visibility here; non-player
                         // departures remain visible through the enclosing claim.
@@ -690,6 +652,34 @@ public final class ParallelProcessor {
             }
         }
         if (failure != null) ParallelProcessor.<RuntimeException>fabrolia$throwUnchecked(failure);
+    }
+
+    /** Shared empty success cut for the per-entity tick when no metrics are recorded. */
+    private static final Runnable NO_METRIC_COMMIT = () -> {};
+
+    /** Metric lookups stay outside the success cut; only the atomic adds commit. */
+    private static void commitTickMetrics(EntityType<?> type, boolean fabrolia, long elapsedNanos) {
+        AtomicLong elapsedMetric;
+        AtomicLong countMetric;
+        AtomicLong totalElapsedMetric;
+        AtomicLong totalCountMetric;
+        if (fabrolia) {
+            elapsedMetric = FABROLIA_TICK_TIME_NS.computeIfAbsent(type, _ -> new AtomicLong());
+            countMetric = FABROLIA_TICK_COUNT.computeIfAbsent(type, _ -> new AtomicLong());
+            totalElapsedMetric = TOTAL_FABROLIA_TIME_NS;
+            totalCountMetric = TOTAL_FABROLIA_COUNT;
+        } else {
+            elapsedMetric = TICK_TIME_NS.computeIfAbsent(type, _ -> new AtomicLong());
+            countMetric = TICK_COUNT.computeIfAbsent(type, _ -> new AtomicLong());
+            totalElapsedMetric = TOTAL_SYNC_TIME_NS;
+            totalCountMetric = TOTAL_SYNC_COUNT;
+        }
+        RegionScheduler.commitSuccessIfHealthy(() -> {
+            elapsedMetric.addAndGet(elapsedNanos);
+            countMetric.incrementAndGet();
+            totalElapsedMetric.addAndGet(elapsedNanos);
+            totalCountMetric.incrementAndGet();
+        });
     }
 
     /** Publish the first failure immediately; later cleanup is suppressed context only. */

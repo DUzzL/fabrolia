@@ -982,7 +982,6 @@ public final class RegionWorkerPool {
                         mergeFailure(ex, diagnosticFailure);
                     }
                 });
-                ParallelProcessor.registerThread("Fabrolia-Region", t);
                 workers[i] = t;
                 t.start();
             }
