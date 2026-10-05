@@ -2262,16 +2262,21 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             // Candidates around island players reach past its own cells (halo
             // edge, another lane's chunks): spawn only into chunks this lane owns.
             if (!laneKeys.test(key)) continue;
-            ChunkHolder holder = this.getVisibleChunkIfPresent(key);
-            if (holder == null) continue;
-            LevelChunk chunk = holder.getTickingChunk();
-            if (chunk == null) continue;
-            ChunkPos pos = holder.getPos();
+            // Vanilla's three filters (holder present, ticking chunk, a player
+            // within 128 blocks) are side-effect-free reads, so the pure
+            // distance test runs first: the ~30% of the 17x17 candidate square
+            // outside every player's 128-block circle never reaches C2ME's
+            // holder map. Same chunks, same order.
+            ChunkPos pos = ChunkPos.unpack(key);
             boolean close = false;
             for (int i = 0, n = islandPlayers.size(); i < n && !close; i++) {
                 close = chunkMapAccess.fabrolia$playerCloseEnoughForSpawning(islandPlayers.get(i), pos);
             }
-            if (close) spawningChunks.add(chunk);
+            if (!close) continue;
+            ChunkHolder holder = this.getVisibleChunkIfPresent(key);
+            if (holder == null) continue;
+            LevelChunk chunk = holder.getTickingChunk();
+            if (chunk != null) spawningChunks.add(chunk);
         }
         Util.shuffle(spawningChunks, lvl.getRandom());
 
