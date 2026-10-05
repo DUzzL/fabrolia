@@ -9,9 +9,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
 
-import java.util.Collections;
 import java.util.IdentityHashMap;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
@@ -755,13 +753,61 @@ public final class IslandEntityTracking {
         // do NOT publish them in this general generation. listener.tick/doTick
         // must first consume the replayed impulse and apply vanilla physics;
         // runLate publishes each exact tracker while its LATE_RUNNING permit is
-        // still live. The identity set also excludes a weak-set duplicate.
-        Set<IslandTrackedEntityAccess> deferredPlayers =
+        // still live. The identity snapshot also excludes a weak-set duplicate.
+        IslandTrackedEntityAccess[] deferredPlayers =
                 snapshotPendingRealPlayerTrackers(island);
+        OwnedCells owned = new OwnedCells(runtime, island);
         for (IslandTrackedEntityAccess tracker : island.pendingEntityUpdates) {
-            if (!deferredPlayers.contains(tracker)) {
-                publishCurrent(runtime, island, tracker);
+            // Only real-player self trackers are ever deferred.
+            if (deferredPlayers == null
+                    || !(tracker.fabrolia$trackedEntity() instanceof ServerPlayer)
+                    || !containsIdentity(deferredPlayers, tracker)) {
+                publishCurrent(runtime, island, tracker, owned);
             }
+        }
+    }
+
+    /**
+     * One flush's memo of the Regions found for grid cells; only a Region whose
+     * domain is the flushing island's is kept, and every hit re-reads that
+     * domain. The cell -> Region mapping of such a Region is fixed while it is
+     * ACTIVE: a mapping is removed only by idle reclamation (async: global-domain
+     * regions only, inside the all-island quiesce; wall mode: only once no domain
+     * is islandized), {@code drop} or scheduler stop, and {@code install}
+     * replaces only a non-ACTIVE Region. Cells without a Region (the
+     * creation-snapshot answer) are never memoized.
+     */
+    private static final class OwnedCells {
+        private static final int SLOTS = 32;
+        private final RegionizedServer runtime;
+        private final EpochDomain domain;
+        private final long[] cells = new long[SLOTS];
+        private final Region[] regions = new Region[SLOTS];
+
+        OwnedCells(RegionizedServer runtime, IslandRegistry.PIsland island) {
+            this.runtime = runtime;
+            this.domain = island.domain;
+        }
+
+        /** Exactly {@link RegionizedServer#islandOwnerOfChunk}. */
+        IslandRegistry.PIsland ownerOfChunk(long packedChunkPos) {
+            ThreadedRegionizer regionizer = runtime.regionizer();
+            long cell = regionizer.grid.keyFor(packedChunkPos);
+            int slot = (int) it.unimi.dsi.fastutil.HashCommon.mix(cell) & (SLOTS - 1);
+            Region r = regions[slot];
+            if (r == null || cells[slot] != cell) {
+                r = regionizer.peekByGridKey(cell);
+                if (r == null) return runtime.islandOwnerOfCell(cell);
+            }
+            // islandOwnerOfCell's Region branch.
+            EpochDomain d = r.domain;
+            if (d == domain) {
+                cells[slot] = cell;
+                regions[slot] = r;
+            } else if (regions[slot] == r) {
+                regions[slot] = null;
+            }
+            return d != null ? d.owner : null;
         }
     }
 
@@ -870,7 +916,8 @@ public final class IslandEntityTracking {
     /** Revalidates every authority while holding the exact tracker monitor. */
     private static boolean publishCurrent(RegionizedServer runtime,
                                           IslandRegistry.PIsland island,
-                                          IslandTrackedEntityAccess tracker) {
+                                          IslandTrackedEntityAccess tracker,
+                                          OwnedCells owned) {
         synchronized (tracker) {
             if (tracker.fabrolia$islandTrackingState()
                     != IslandTrackedEntityAccess.TRACKING_ACTIVE) {
@@ -890,7 +937,7 @@ public final class IslandEntityTracking {
             }
             if (deferPendingArrival(tracker, entity)) return false;
             IslandRegistry.PIsland current =
-                    runtime.islandOwnerOfChunk(entity.chunkPosition().pack());
+                    owned.ownerOfChunk(entity.chunkPosition().pack());
             if (current != island) {
                 runtime.enterTrackingTopologyRouting();
                 try {
@@ -986,11 +1033,14 @@ public final class IslandEntityTracking {
         }
     }
 
-    /** Bounded deferral snapshot; one entry per exact current tracker identity. */
-    private static Set<IslandTrackedEntityAccess> snapshotPendingRealPlayerTrackers(
+    /**
+     * Bounded deferral snapshot; one entry per exact current tracker identity,
+     * {@code null}-terminated. {@code null} when no tracker is deferred.
+     */
+    private static IslandTrackedEntityAccess[] snapshotPendingRealPlayerTrackers(
             IslandRegistry.PIsland island) {
-        Set<IslandTrackedEntityAccess> snapshot = Collections.newSetFromMap(
-                new IdentityHashMap<>());
+        IslandTrackedEntityAccess[] snapshot = null;
+        int size = 0;
         for (AsyncIslandPlayerTicks.PendingLate pending : island.pendingPlayerLate) {
             boolean current;
             synchronized (pending.state) {
@@ -1012,11 +1062,27 @@ public final class IslandEntityTracking {
                                 RegionScheduler.publishFatalAndSelectWinner(new IllegalStateException(
                                         "real-player late publication lost its admitted cadence")));
                     }
-                    snapshot.add(tracker);
+                    if (snapshot == null) {
+                        snapshot = new IslandTrackedEntityAccess[4];
+                    } else if (containsIdentity(snapshot, tracker)) {
+                        continue;
+                    } else if (size == snapshot.length) {
+                        snapshot = java.util.Arrays.copyOf(snapshot, size * 2);
+                    }
+                    snapshot[size++] = tracker;
                 }
             }
         }
         return snapshot;
+    }
+
+    private static boolean containsIdentity(IslandTrackedEntityAccess[] snapshot,
+                                            IslandTrackedEntityAccess tracker) {
+        for (IslandTrackedEntityAccess entry : snapshot) {
+            if (entry == tracker) return true;
+            if (entry == null) return false;
+        }
+        return false;
     }
 
     /** True only for the exact queued EARLY_DONE token; caller owns its tracker. */
@@ -1472,9 +1538,10 @@ public final class IslandEntityTracking {
         if (island == null || island.retired || entity == null || entity.isRemoved()
                 || mainOwnedEntityType(entity)) return false;
         Entity root = entity.getRootVehicle();
-        return !ParallelProcessor.containsServerPlayerTick(root)
-                && !ParallelProcessor.requiresMainThread(root)
-                && !ParallelProcessor.requiresMainThread(entity);
+        // requiresMainThread(root) already covers a ServerPlayer anywhere in the
+        // root's tree; an unmounted entity is its own root.
+        return !ParallelProcessor.requiresMainThread(root)
+                && (root == entity || !ParallelProcessor.requiresMainThread(entity));
     }
 
     private static boolean portalDeparturePending(Entity entity) {
@@ -1483,7 +1550,10 @@ public final class IslandEntityTracking {
     }
 
     private static boolean arrivalPending(Entity entity) {
-        return entity instanceof ParallelProcessor.TickGuard guard
+        // The global zero proof skips the per-entity lease load on every
+        // publication while no tail-mode arrival exists anywhere.
+        return EntityTickLease.anyArrivalPending()
+                && entity instanceof ParallelProcessor.TickGuard guard
                 && guard.fabrolia$tickLease().isArrivalPending();
     }
 
@@ -1546,7 +1616,7 @@ public final class IslandEntityTracking {
         }
         Entity root = entity.getRootVehicle();
         return ParallelProcessor.requiresMainThread(root)
-                || ParallelProcessor.requiresMainThread(entity);
+                || root != entity && ParallelProcessor.requiresMainThread(entity);
     }
 
     private static boolean persistentMainClockEligible(

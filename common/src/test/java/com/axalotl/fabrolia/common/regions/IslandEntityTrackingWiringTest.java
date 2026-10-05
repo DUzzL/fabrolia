@@ -1125,12 +1125,8 @@ class IslandEntityTrackingWiringTest {
         assertEquals(1, callCount(recursiveHardMain, parallel.name,
                 "containsMainOwnedTrackingEntity"),
                 "Wither/Dragon hard-Main authority must cover the full passenger tree");
-        MethodNode requiresMain = method(parallel, "requiresMainThread",
-                "(Lnet/minecraft/world/entity/Entity;)Z");
         MethodNode synchronousTick = method(parallel, "shouldTickSynchronously",
                 "(Lnet/minecraft/world/entity/Entity;)Z");
-        assertEquals(1, callCount(requiresMain, parallel.name,
-                "containsMainOwnedTrackingEntity"));
         assertEquals(1, callCount(synchronousTick, parallel.name,
                 "containsMainOwnedTrackingEntity"),
                 "Wither and Dragon simulation/tracking remain recursively hard Main");

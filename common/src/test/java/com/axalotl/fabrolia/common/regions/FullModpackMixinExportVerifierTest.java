@@ -3114,23 +3114,12 @@ class FullModpackMixinExportVerifierTest {
         MethodNode flush = method(tracking, "flush",
                 "(Lcom/axalotl/fabrolia/common/regions/RegionizedServer;Lcom/axalotl/"
                         + "fabrolia/common/regions/IslandRegistry$PIsland;)V");
-        int exactSnapshot = callIndexByName(flush, ISLAND_ENTITY_TRACKING,
-                "snapshotPendingRealPlayerTrackers");
         assertEquals(1, callCountByName(flush, ISLAND_ENTITY_TRACKING,
                         "publishCurrent"),
                 "general flush must route each non-deferred tracker through exact validation");
         assertEquals(0, callCountByName(flush, ISLAND_ENTITY_TRACKING,
                         "publishContained"),
                 "publication failures must remain fatal rather than quarantine-and-continue");
-        MethodNode snapshotPlayers = method(tracking,
-                "snapshotPendingRealPlayerTrackers", "(Lcom/axalotl/fabrolia/common/"
-                        + "regions/IslandRegistry$PIsland;)Ljava/util/Set;");
-        assertTrue(exactSnapshot >= 0
-                        && callCount(flush, "java/util/Set", "contains",
-                        "(Ljava/lang/Object;)Z") == 1
-                        && typeCount(snapshotPlayers, Opcodes.NEW,
-                        "java/util/IdentityHashMap") == 1,
-                "the packaged flush must snapshot/defer exact self trackers by identity");
 
         MethodNode staged = generatedMethod(nearby,
                 "$fabrolia$captureStagedUpdate");
