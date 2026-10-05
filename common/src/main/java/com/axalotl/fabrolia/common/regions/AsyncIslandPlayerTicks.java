@@ -1803,13 +1803,12 @@ public final class AsyncIslandPlayerTicks {
      * respawn/transfer successor from inheriting stale corrections.
      */
     private static void sendPredictedBlockCorrections(PendingLate pending) {
-        Set<Long> sent = new HashSet<>();
+        Set<Long> sent = null; // allocated only when a correction is owed
         PredictedBlockChange correction;
         while ((correction = pending.state.predictedBlockChanges.poll()) != null) {
-            if (!correction.owner.matchesExactly(pending.owner)
-                    || !sent.add(correction.position)) {
-                continue;
-            }
+            if (!correction.owner.matchesExactly(pending.owner)) continue;
+            if (sent == null) sent = new HashSet<>();
+            if (!sent.add(correction.position)) continue;
             BlockPos pos = BlockPos.of(correction.position);
             pending.listener.send(new ClientboundBlockUpdatePacket(
                     pending.player.level(), pos));
@@ -1868,6 +1867,39 @@ public final class AsyncIslandPlayerTicks {
         if (turn == null || runtime == null || !runtime.asyncActive
                 || turn.island.retired) return false;
         return runtime.islandOwnerOfChunk(chunkPos) == turn.island;
+    }
+
+    /**
+     * Row-major chunks of the inclusive rectangle when {@code player}'s own
+     * island turn is executing on this thread and its island owns every chunk,
+     * each loaded as a full chunk; null otherwise. Reads of those chunks are
+     * then exclusive to this turn, exactly like the chunks under the player
+     * itself; an empty rectangle needs only the turn. Null never denies work:
+     * the caller keeps its fenced Main route.
+     */
+    public static net.minecraft.world.level.chunk.LevelChunk[] turnOwnedLoadedChunks(
+            ServerPlayer player, ServerLevel level,
+            int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ) {
+        TurnContext turn = TURN.get();
+        if (turn == null || turn.player != player || player.level() != level) return null;
+        RegionizedServer runtime = RegionScheduler.forLevel(level);
+        if (runtime == null || runtime.level != level || !runtime.asyncActive
+                || turn.island.retired) return null;
+        int width = maxChunkX - minChunkX + 1;
+        int height = maxChunkZ - minChunkZ + 1;
+        if (width <= 0 || height <= 0) return new net.minecraft.world.level.chunk.LevelChunk[0];
+        var source = level.getChunkSource();
+        var chunks = new net.minecraft.world.level.chunk.LevelChunk[width * height];
+        for (int chunkZ = minChunkZ, i = 0; chunkZ <= maxChunkZ; chunkZ++) {
+            for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++, i++) {
+                if (runtime.islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(chunkX, chunkZ))
+                        != turn.island
+                        || (chunks[i] = source.getChunkNow(chunkX, chunkZ)) == null) {
+                    return null;
+                }
+            }
+        }
+        return chunks;
     }
 
     /**

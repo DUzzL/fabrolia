@@ -122,6 +122,111 @@ class MapItemUpdatesTest {
         assertEquals(0, mutations.get());
     }
 
+    /**
+     * The island-local venue is sound only if the ownership rectangle covers
+     * every chunk vanilla's MapItem.update pixel loop reads (26.3 bytecode:
+     * columns [px-range+1, px+range) ∩ [0,128), rows [pz-range-1, pz+range) ∩
+     * [-1,128), each pixel a scale×scale block square). Tight, so a holder at
+     * an island edge is not needlessly sent to the fence.
+     */
+    @Test
+    void pixelChunkBoundsAreTheBoundingBoxOfVanillaReads() {
+        java.util.Random random = new java.util.Random(26_3L);
+        for (int scaleShift = 0; scaleShift <= 4; scaleShift++) {
+            for (boolean ceiling : new boolean[] {false, true}) {
+                for (int trial = 0; trial < 400; trial++) {
+                    int scale = 1 << scaleShift;
+                    int centerX = random.nextInt(64_001) - 32_000;
+                    int centerZ = random.nextInt(64_001) - 32_000;
+                    // Holders inside, at the edge of and far outside the map.
+                    double x = centerX + (random.nextDouble() * 2 - 1) * 200 * scale;
+                    double z = centerZ + (random.nextDouble() * 2 - 1) * 200 * scale;
+                    int[] expected = vanillaReadBounds(scaleShift, centerX, centerZ, x, z, ceiling);
+                    int[] actual = MapItemUpdates.pixelChunkBounds(
+                            scaleShift, centerX, centerZ, x, z, ceiling);
+                    if (expected == null) {
+                        assertEquals(null, actual, "no pixel read at " + x + "," + z);
+                    } else {
+                        assertTrue(java.util.Arrays.equals(expected, actual),
+                                "scale " + scaleShift + " ceiling " + ceiling + " at " + x + "," + z
+                                        + ": vanilla " + java.util.Arrays.toString(expected)
+                                        + " vs " + java.util.Arrays.toString(actual));
+                    }
+                }
+            }
+        }
+    }
+
+    private static int[] vanillaReadBounds(int scaleShift, int centerX, int centerZ,
+                                            double x, double z, boolean ceiling) {
+        int scale = 1 << scaleShift;
+        int px = net.minecraft.util.Mth.floor(x - centerX) / scale + 64;
+        int pz = net.minecraft.util.Mth.floor(z - centerZ) / scale + 64;
+        int range = 128 / scale;
+        if (ceiling) range /= 2;
+        int minX = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+        for (int pixelX = px - range + 1; pixelX < px + range; pixelX++) {
+            for (int pixelZ = pz - range - 1; pixelZ < pz + range; pixelZ++) {
+                if (pixelX < 0 || pixelZ < -1 || pixelX >= 128 || pixelZ >= 128) continue;
+                int worldX = (centerX / scale + pixelX - 64) * scale;
+                int worldZ = (centerZ / scale + pixelZ - 64) * scale;
+                for (int dx = 0; dx < scale; dx++) {
+                    for (int dz = 0; dz < scale; dz++) {
+                        minX = Math.min(minX, (worldX + dx) >> 4);
+                        maxX = Math.max(maxX, (worldX + dx) >> 4);
+                        minZ = Math.min(minZ, (worldZ + dz) >> 4);
+                        maxZ = Math.max(maxZ, (worldZ + dz) >> 4);
+                    }
+                }
+            }
+        }
+        return minX == Integer.MAX_VALUE ? null : new int[] {minX, minZ, maxX, maxZ};
+    }
+
+    /**
+     * While an owned pixel pass runs (map monitor held), a chunk-cache miss in
+     * its rectangle is answered from the capture instead of waiting on Main;
+     * outside the rectangle, another level, or after the pass, nothing is
+     * answered.
+     */
+    @Test
+    void ownedPassAnswersOnlyItsOwnCapturedChunksWhileItRuns() throws Exception {
+        net.minecraft.SharedConstants.tryDetectVersion();
+        net.minecraft.server.Bootstrap.bootStrap();
+        var unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+        unsafeField.setAccessible(true);
+        var unsafe = (sun.misc.Unsafe) unsafeField.get(null);
+        var level = (net.minecraft.server.level.ServerLevel)
+                unsafe.allocateInstance(net.minecraft.server.level.ServerLevel.class);
+        var other = (net.minecraft.server.level.ServerLevel)
+                unsafe.allocateInstance(net.minecraft.server.level.ServerLevel.class);
+        var data = (net.minecraft.world.level.saveddata.maps.MapItemSavedData)
+                unsafe.allocateInstance(net.minecraft.world.level.saveddata.maps.MapItemSavedData.class);
+        // Rectangle x in [-2, 0], z in [5, 6], row-major.
+        var chunks = new net.minecraft.world.level.chunk.LevelChunk[6];
+        for (int i = 0; i < chunks.length; i++) {
+            chunks[i] = (net.minecraft.world.level.chunk.LevelChunk)
+                    unsafe.allocateInstance(net.minecraft.world.level.chunk.LevelChunk.class);
+        }
+        var pass = new MapItemUpdates.OwnedPass(level, data, new int[] {-2, 5, 0, 6}, chunks);
+        assertEquals(null, MapItemUpdates.ownedPassChunk(level, -2, 5));
+        AtomicInteger ran = new AtomicInteger();
+        MapItemUpdates.runOwned(pass, () -> {
+            assertTrue(Thread.holdsLock(data));
+            assertSame(chunks[0], MapItemUpdates.ownedPassChunk(level, -2, 5));
+            assertSame(chunks[2], MapItemUpdates.ownedPassChunk(level, 0, 5));
+            assertSame(chunks[3], MapItemUpdates.ownedPassChunk(level, -2, 6));
+            assertSame(chunks[5], MapItemUpdates.ownedPassChunk(level, 0, 6));
+            assertEquals(null, MapItemUpdates.ownedPassChunk(level, 1, 5));
+            assertEquals(null, MapItemUpdates.ownedPassChunk(level, -2, 7));
+            assertEquals(null, MapItemUpdates.ownedPassChunk(other, -2, 5));
+            ran.incrementAndGet();
+        });
+        assertEquals(1, ran.get());
+        assertEquals(null, MapItemUpdates.ownedPassChunk(level, -2, 5));
+    }
+
     private static void await(CountDownLatch latch) {
         try {
             if (!latch.await(5, TimeUnit.SECONDS)) throw new AssertionError("barrier timed out");

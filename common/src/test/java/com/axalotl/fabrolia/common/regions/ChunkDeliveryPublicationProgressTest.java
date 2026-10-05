@@ -223,6 +223,98 @@ class ChunkDeliveryPublicationProgressTest {
         }
     }
 
+    /**
+     * A cached seal older than the record's mailbox lease is the payload lease()
+     * already rejected. Adopting it counted a false fence failure per sender
+     * pass, and three of those forced a fenced Main build (a Main claim on the
+     * island) for a chunk that was merely waiting one owner unit for its seal.
+     */
+    @Test
+    void requestedRecordWaitsForItsOwnSealInsteadOfFailingOnAnOlderOne() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            long key = fixture.chunk.position.pack();
+            ChunkDelivery.Entry older = fixture.entry(fixture.chunk.fabrolia$writeGen());
+            fixture.publish(key, older);
+            fixture.chunk.fabrolia$bumpWriteGen();
+            ChunkDelivery.Rec record = fixture.requested();
+
+            ArrayList<ChunkDelivery.Reservation> selected = new ArrayList<>();
+            for (int pass = 0; pass < ChunkDelivery.ESCALATE_AFTER + 1; pass++) {
+                fixture.select(record, selected);
+            }
+            assertEquals(ChunkDelivery.St.REQUESTED, record.st);
+            assertEquals(0, record.fenceFails);
+            assertEquals(0, fixture.state.retriesFence);
+            assertEquals(0, older.refs.get(), "the older seal is never adopted");
+            assertTrue(selected.isEmpty());
+
+            ChunkDelivery.Entry answer = fixture.entry(fixture.chunk.fabrolia$writeGen());
+            fixture.publish(key, answer);
+            fixture.select(record, selected);
+            assertEquals(1, selected.size(), "the seal built for this request is adopted");
+            assertSame(answer, selected.get(0).entry);
+            selected.get(0).rollback();
+        }
+    }
+
+    /**
+     * The REQUESTED bound exists for owners that never seal. A sender paused
+     * past it (unacked-batch cap) must adopt the seal that already answered,
+     * not escalate to a fenced Main rebuild of the same chunk.
+     */
+    @Test
+    void answeredRequestIsAdoptedEvenPastTheEscalationBound() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            ChunkDelivery.Rec record = fixture.requested();
+            ChunkDelivery.Entry answer = fixture.entry(fixture.chunk.fabrolia$writeGen());
+            fixture.publish(fixture.chunk.position.pack(), answer);
+            record.stateNanos = System.nanoTime() - 2 * ChunkDelivery.REQUESTED_TIMEOUT_NANOS;
+
+            ArrayList<ChunkDelivery.Reservation> selected = new ArrayList<>();
+            fixture.select(record, selected);
+            assertEquals(1, selected.size());
+            assertSame(answer, selected.get(0).entry);
+            assertEquals(0, fixture.state.requestedTimeouts);
+            selected.get(0).rollback();
+        }
+    }
+
+    /** Dead shared snapshots (chunk gone or written since the seal) are dropped;
+     *  referenced, young and still-reusable ones stay. */
+    @Test
+    void pruneDropsOnlyUnreferencedSnapshotsNoRequestCanUse() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            // Only the fixture chunk's own position resolves to a loaded chunk.
+            long live = fixture.chunk.position.pack();
+            long unloaded = new ChunkPos(-3, 5).pack();
+            long referenced = new ChunkPos(-5, 5).pack();
+            long young = new ChunkPos(-6, 5).pack();
+            long generation = fixture.chunk.fabrolia$writeGen();
+            ChunkDelivery.Entry reusable = fixture.aged(fixture.entry(generation));
+            ChunkDelivery.Entry gone = fixture.aged(fixture.entry(generation));
+            ChunkDelivery.Entry held = fixture.aged(fixture.entry(generation));
+            held.refs.incrementAndGet();
+            ChunkDelivery.Entry fresh = fixture.entry(generation);
+            fixture.publish(live, reusable);
+            fixture.publish(unloaded, gone);
+            fixture.publish(referenced, held);
+            fixture.publish(young, fresh);
+
+            ChunkDelivery.pruneDeadSnapshots();
+            var cache = fixture.cache();
+            assertSame(reusable, cache.get(live), "loaded and unwritten: still reusable");
+            assertFalse(cache.containsKey(unloaded));
+            assertSame(held, cache.get(referenced), "a record still owns this payload");
+            assertSame(fresh, cache.get(young), "may still answer a REQUESTED record");
+
+            // Written since seal at a loaded position: the live chunk matches,
+            // only the write generation tells the payload is unusable.
+            fixture.chunk.fabrolia$bumpWriteGen();
+            ChunkDelivery.pruneDeadSnapshots();
+            assertFalse(cache.containsKey(live));
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final sun.misc.Unsafe unsafe;
         final DefaultEventLoop eventLoop = new DefaultEventLoop();
@@ -295,6 +387,48 @@ class ChunkDeliveryPublicationProgressTest {
             return record;
         }
 
+        ChunkDelivery.Rec requested() throws Exception {
+            ChunkDelivery.track(player, chunk);
+            ChunkDelivery.Rec record = state.records.get(chunk.position.pack());
+            record.leaseNanos = System.nanoTime();
+            assertTrue(record.cas(ChunkDelivery.St.TRACKED, ChunkDelivery.St.REQUESTED));
+            return record;
+        }
+
+        ChunkDelivery.Entry entry(long writeGenAtSeal) throws Exception {
+            return new ChunkDelivery.Entry(chunk, writeGenAtSeal,
+                    allocate(ClientboundLevelChunkWithLightPacket.class), 1L, null);
+        }
+
+        ChunkDelivery.Entry aged(ChunkDelivery.Entry entry) throws Exception {
+            field(ChunkDelivery.Entry.class, "builtNanos").setLong(entry,
+                    System.nanoTime() - 10_000_000_000L);
+            return entry;
+        }
+
+        void publish(long key, ChunkDelivery.Entry entry) throws Exception {
+            Method publish = ChunkDelivery.class.getDeclaredMethod("publish",
+                    ServerLevel.class, long.class, ChunkDelivery.Entry.class);
+            publish.setAccessible(true);
+            invoke(publish, null, level, key, entry);
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<Long, ChunkDelivery.Entry> cache() throws Exception {
+            var all = (Map<ServerLevel, Map<Long, ChunkDelivery.Entry>>)
+                    field(ChunkDelivery.class, "CACHE").get(null);
+            return all.get(level);
+        }
+
+        void select(ChunkDelivery.Rec record,
+                    ArrayList<ChunkDelivery.Reservation> selected) throws Exception {
+            Method select = ChunkDelivery.class.getDeclaredMethod("selectCandidate",
+                    ServerLevel.class, RegionizedServer.class, ChunkDelivery.PlayerState.class,
+                    ChunkDelivery.Rec.class, ArrayList.class);
+            select.setAccessible(true);
+            invoke(select, null, level, null, state, record, selected);
+        }
+
         void awaitReceipts() throws Exception {
             for (Future<?> receipt : listener.receipts) {
                 receipt.get(5, TimeUnit.SECONDS);
@@ -309,6 +443,7 @@ class ChunkDeliveryPublicationProgressTest {
             } finally {
                 try {
                     ChunkDelivery.quit(player);
+                    ChunkDelivery.dropLevelCache(level);
                 } finally {
                     ChunkDelivery.faults = previousFaults;
                     field(ChunkDelivery.class, "traceKey").setLong(null, previousTraceKey);
