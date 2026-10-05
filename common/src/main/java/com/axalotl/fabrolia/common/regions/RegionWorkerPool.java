@@ -3308,10 +3308,14 @@ public final class RegionWorkerPool {
                 activeSteps.incrementAndGet();
             }
             CAUSAL_STEP.set(step);
+            // Held packets leave when the step ends, before its step receipt retires.
+            me.outbound.open();
             boolean worked;
             try {
                 worked = workOnce(me, true);
+                me.outbound.close();
             } catch (Throwable thrown) {
+                me.outbound.closeAfter(thrown);
                 stepFailure = thrown;
                 worked = false;
                 publishFatalFailure(thrown);
