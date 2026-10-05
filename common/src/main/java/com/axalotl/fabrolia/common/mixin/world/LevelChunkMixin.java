@@ -4,6 +4,7 @@ import com.axalotl.fabrolia.common.utils.CopyOnWriteInt2ObjectMap;
 import com.axalotl.fabrolia.common.regions.ChunkRegionKeyed;
 import com.axalotl.fabrolia.common.regions.LevelTicksIslandAccess;
 import com.axalotl.fabrolia.common.regions.TickDomains;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
@@ -48,14 +49,40 @@ public abstract class LevelChunkMixin implements ChunkRegionKeyed {
     @Unique private int fabrolia$regionShift = -1;
 
     /** Vanilla's plain map is read and filled by {@code getListenerRegistry}
-     *  (computeIfAbsent) from every thread dispatching game events into this
-     *  chunk, and emptied by {@code removeGameEventListenerRegistry} from
-     *  whichever thread unregisters the last listener. The copy-on-write map
-     *  makes the computeIfAbsent and the removal atomic and the reads
-     *  lock-free; it holds at most one entry per section. */
+     *  (computeIfAbsent) and emptied by {@code removeGameEventListenerRegistry}
+     *  from whichever thread registers or unregisters a listener. The
+     *  copy-on-write map makes each operation atomic and the reads lock-free;
+     *  it holds at most one entry per section. */
     @Inject(method = "<init>*", at = @At("RETURN"))
     private void init(CallbackInfo ci) {
         gameEventListenerRegistrySections = new CopyOnWriteInt2ObjectMap<>();
+    }
+
+    /**
+     * Lithium's game-event dispatch replaces the section map with {@code null} once
+     * a removal leaves it empty (and drops the chunk from its dispatcher storage),
+     * and re-creates it on the next {@code getListenerRegistry}. That empty check
+     * and the null store run after the removal, so a concurrent
+     * {@code getListenerRegistry} could put a new section registry into the map
+     * being discarded: its listeners would never be dispatched until the chunk
+     * reloads. Both operations take this chunk's monitor, so the remove, Lithium's
+     * empty check and swap, and the get-or-create are one step each. Lock order:
+     * section registry (unregister → onEmpty → remove) → chunk → Lithium storage;
+     * nothing takes a registry monitor under this one. Dispatch reads Lithium's
+     * storage and never enters these methods.
+     */
+    @WrapMethod(method = "getListenerRegistry")
+    private GameEventListenerRegistry fabrolia$serializeRegistryGet(int section, Operation<GameEventListenerRegistry> original) {
+        synchronized (this) {
+            return original.call(section);
+        }
+    }
+
+    @WrapMethod(method = "removeGameEventListenerRegistry")
+    private void fabrolia$serializeRegistryRemove(int section, Operation<Void> original) {
+        synchronized (this) {
+            original.call(section);
+        }
     }
 
     /**
