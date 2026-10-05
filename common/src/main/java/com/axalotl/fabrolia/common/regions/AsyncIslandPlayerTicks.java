@@ -1803,13 +1803,12 @@ public final class AsyncIslandPlayerTicks {
      * respawn/transfer successor from inheriting stale corrections.
      */
     private static void sendPredictedBlockCorrections(PendingLate pending) {
-        Set<Long> sent = new HashSet<>();
+        Set<Long> sent = null; // allocated only when a correction is owed
         PredictedBlockChange correction;
         while ((correction = pending.state.predictedBlockChanges.poll()) != null) {
-            if (!correction.owner.matchesExactly(pending.owner)
-                    || !sent.add(correction.position)) {
-                continue;
-            }
+            if (!correction.owner.matchesExactly(pending.owner)) continue;
+            if (sent == null) sent = new HashSet<>();
+            if (!sent.add(correction.position)) continue;
             BlockPos pos = BlockPos.of(correction.position);
             pending.listener.send(new ClientboundBlockUpdatePacket(
                     pending.player.level(), pos));
