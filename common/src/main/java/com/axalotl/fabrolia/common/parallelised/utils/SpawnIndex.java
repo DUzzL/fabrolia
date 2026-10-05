@@ -79,13 +79,17 @@ public final class SpawnIndex {
     }
 
     /** Entity left an accessible section in {@code level} (chunk hidden, entity died,
-     *  or section transition). Mirrors {@code PersistentEntitySectionManager.stopTracking}. */
+     *  or section transition). Mirrors {@code PersistentEntitySectionManager.stopTracking}.
+     *  A pending purge strike ends with the membership it was taken against: the
+     *  strike sites only walk the visible set, so a struck entity that leaves it
+     *  would otherwise stay referenced by the strike ledger until level unload. */
     public static void onTrackingEnd(ServerLevel level, Entity entity) {
         Set<Entity> set = VISIBLE_PER_LEVEL.get(level);
         if (set != null) {
             VERSION.incrementAndGet();
             set.remove(entity);
         }
+        clearStrike(level, entity);
         SpawnCensus.update(level, entity, false);
     }
 
