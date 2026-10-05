@@ -1279,7 +1279,13 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         if (outcome instanceof com.axalotl.fabrolia.common.regions.ChunkBridgeWait.Result.GiveUpNull<ChunkResult<ChunkAccess>, ChunkAccess>) {
             // load=false only — the vanilla @Nullable contract; memoized so
             // the next lookups at this strand answer instantly for the TTL.
-            fabrolia$softNullUntil.put(pos, System.nanoTime() + SOFT_NULL_TTL_NS);
+            long now = System.nanoTime();
+            // Entries otherwise expire only when their chunk is looked up
+            // again; a strand nobody revisits would stay forever.
+            if (fabrolia$softNullUntil.size() >= 64) {
+                fabrolia$softNullUntil.values().removeIf(until -> now - until >= 0L);
+            }
+            fabrolia$softNullUntil.put(pos, now + SOFT_NULL_TTL_NS);
             // A recognized BROKEN holder is a real entered-pipeline failure,
             // never a reason to clear state or start another upgrade.
             com.axalotl.fabrolia.common.regions.C2meStrandHeal.inspectAndMaybeHeal(
