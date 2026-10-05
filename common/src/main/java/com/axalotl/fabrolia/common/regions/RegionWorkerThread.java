@@ -27,6 +27,10 @@ public final class RegionWorkerThread extends Thread {
      *  executing ({@link IslandFunctionScope}); thread-confined, null outside. */
     FunctionPartition functionScope;
 
+    /** Thread-confined FULL-chunk lookup cache ({@link WorkerChunkCache});
+     *  cleared after every worker step. */
+    final WorkerChunkCache chunkCache = new WorkerChunkCache();
+
     /** R5 targeted wake: set (volatile) BEFORE the final lane re-check preceding park,
      *  cleared after park returns. Submitters publish work first, then scan these flags
      *  and unpark only as many workers as there are new units — Dekker-style: either the
