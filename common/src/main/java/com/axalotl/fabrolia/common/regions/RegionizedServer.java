@@ -3266,6 +3266,7 @@ public final class RegionizedServer {
                 RegionScheduler.runSuccessBodyIfHealthy(ChunkDelivery::stressTick);
                 if (level.getGameTime() % 20 == 0) {
                     RegionScheduler.runSuccessBodyIfHealthy(ChunkDelivery::liveness);
+                    RegionScheduler.runSuccessBodyIfHealthy(ChunkDelivery::pruneDeadSnapshots);
                 }
             }
             // BE index visibility for this tick's units (vanilla flush + fold)

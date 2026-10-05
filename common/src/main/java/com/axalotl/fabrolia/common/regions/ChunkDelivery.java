@@ -109,6 +109,12 @@ public final class ChunkDelivery {
         volatile long stateNanos = System.nanoTime();
         volatile long enqueuedNanos;
         /**
+         * Sampled before this record's owner-mailbox lease. Only an entry built
+         * after it can answer that request; an older cached entry is the one
+         * lease() already rejected (stale write witness or unloaded chunk).
+         */
+        volatile long leaseNanos;
+        /**
          * Leaf lifecycle/publication gate. A successful full-packet EventLoop
          * offer and every terminal retirement of this exact record are one
          * transaction. The gate may nest only the chunk fence's zero-time
@@ -392,7 +398,9 @@ public final class ChunkDelivery {
     // per-player state
     // ------------------------------------------------------------------
     public static final class PlayerState {
-        final ServerPlayer player;
+        /** The listener's current player: a respawn replaces the ServerPlayer
+         *  but keeps its connection and therefore this delivery state. */
+        volatile ServerPlayer player;
         final long connGen;
         /** Bumped by trackers (any thread under the concurrent model). */
         final AtomicLong trackingGen = new AtomicLong();
@@ -913,7 +921,10 @@ public final class ChunkDelivery {
 
     private static PlayerState ps(ServerPlayer p) {
         PlayerState ps = PLAYERS.get(p.getUUID());
-        return ps != null ? ps : join(p);
+        if (ps == null) return join(p);
+        // Respawn: release the dead predecessor (diagnostics resolve by identity).
+        if (ps.player != p) ps.player = p;
+        return ps;
     }
 
     /** markChunkPendingToSend: the chunk is desired and server-ready.
@@ -1143,7 +1154,11 @@ public final class ChunkDelivery {
             }
             return;
         }
-        // normal path: lease to the owner's mailbox (coalesced by key)
+        // normal path: lease to the owner's mailbox (coalesced by key). The
+        // stamp precedes the mailbox add: a coalesced pending key is removed
+        // from the set before its owner builds the entry, so that seal is
+        // always younger than the stamp.
+        r.leaseNanos = System.nanoTime();
         if (island.pendingSnapshotKeys.add(key)) {
             island.pendingChunkSnapshots.add(key);
         }
@@ -1228,16 +1243,48 @@ public final class ChunkDelivery {
     private static void evict(ServerLevel level) {
         var map = cache(level);
         long now = System.nanoTime();
-        for (var it = map.entrySet().iterator(); it.hasNext(); ) {
-            var en = it.next();
+        for (var en : map.entrySet()) {
             Entry e = en.getValue();
             // evict only unreferenced entries — eviction can NEVER cancel a
-            // delivery; a record holding a ref keeps its entry alive.
-            if (e.refs.get() == 0 && now - e.builtNanos > 2_000_000_000L) {
-                it.remove();
+            // delivery; a record holding a ref keeps its entry alive. The
+            // conditional remove never drops a newer seal published meanwhile
+            // (publish already uncounted the entry it replaced).
+            if (e.refs.get() == 0 && now - e.builtNanos > SNAPSHOT_MIN_AGE_NANOS
+                    && map.remove(en.getKey(), e)) {
                 CACHE_BYTES.addAndGet(-e.bytes);
             }
             if (CACHE_BYTES.get() <= (fault("tinybudget") ? 1L * 1024 * 1024 : CACHE_BYTE_BUDGET / 2)) break;
+        }
+    }
+
+    /** Unreferenced entries younger than this may still answer a REQUESTED
+     *  record (requests re-lease after {@link #REQUESTED_TIMEOUT_NANOS}). */
+    private static final long SNAPSHOT_MIN_AGE_NANOS = 2_000_000_000L;
+
+    /**
+     * Main, ~1/s: drop unreferenced shared snapshots that no request can ever
+     * use again — their chunk was unloaded or replaced (lease/adopt require the
+     * identical LevelChunk) or written since the seal (the write generation
+     * only grows). Without this, budget-bound eviction kept up to ~2,400 dead
+     * packets resident, each pinning its unloaded LevelChunk.
+     */
+    public static void pruneDeadSnapshots() {
+        long now = System.nanoTime();
+        for (var levelCache : CACHE.entrySet()) {
+            var chunks = levelCache.getKey().getChunkSource();
+            var map = levelCache.getValue();
+            for (var en : map.entrySet()) {
+                Entry e = en.getValue();
+                if (e.refs.get() != 0 || now - e.builtNanos <= SNAPSHOT_MIN_AGE_NANOS) continue;
+                long key = en.getKey();
+                LevelChunk live = chunks.getChunkNow(
+                        ChunkPos.getX(key), ChunkPos.getZ(key));
+                if ((live != e.chunk
+                        || ((FabroliaWriteGen) live).fabrolia$writeGen() != e.writeGenAtSeal)
+                        && map.remove(key, e)) {
+                    CACHE_BYTES.addAndGet(-e.bytes);
+                }
+            }
         }
     }
 
@@ -1351,24 +1398,25 @@ public final class ChunkDelivery {
                                         PlayerState ps,
                                         Rec r,
                                         ArrayList<Reservation> reservations) {
-        switch (r.st) {
-            case TRACKED -> lease(level, rs, r);
-            case REQUESTED -> {
-                // Owner mailbox owns it — but ONLY a ticking island drains
-                // its mailbox. A lease into an idle island (no entities → the
-                // drive never submits units → sealPending never runs) stalled
-                // forever. Escalation remains in the same admitted candidate.
-                if (System.nanoTime() - r.stateNanos > REQUESTED_TIMEOUT_NANOS
-                        && r.cas(St.REQUESTED, St.TRACKED)) {
-                    r.fenceFails = ESCALATE_AFTER;
-                    r.owner.requestedTimeouts++;
-                    REQUESTED_TIMEOUTS.incrementAndGet();
-                    lease(level, rs, r);
-                }
-            }
-            default -> { }
+        if (r.st == St.TRACKED) {
+            lease(level, rs, r);
         }
-        if (r.st != St.READY && !(r.st == St.REQUESTED && adoptSeal(level, r))) {
+        // Owner mailbox owns a REQUESTED record — but ONLY a ticking island
+        // drains its mailbox. A lease into an idle island (no entities → the
+        // drive never submits units → sealPending never runs) stalled forever,
+        // hence the bounded escalation. A seal that already answered the
+        // request is adopted first: a sender paused past the bound by the
+        // unacked-batch cap has nothing to escalate. Escalation remains in the
+        // same admitted candidate.
+        if (r.st == St.REQUESTED && !adoptSeal(level, r)
+                && System.nanoTime() - r.stateNanos > REQUESTED_TIMEOUT_NANOS
+                && r.cas(St.REQUESTED, St.TRACKED)) {
+            r.fenceFails = ESCALATE_AFTER;
+            r.owner.requestedTimeouts++;
+            REQUESTED_TIMEOUTS.incrementAndGet();
+            lease(level, rs, r);
+        }
+        if (r.st != St.READY) {
             return;
         }
         Entry e = r.entry;
@@ -1425,10 +1473,13 @@ public final class ChunkDelivery {
         return publication == null ? 0 : publication.applySuccessOnMain();
     }
 
-    /** REQUESTED record: adopt a seal the owner published meanwhile. */
+    /** REQUESTED record: adopt a seal the owner published for this request.
+     *  An entry built before the lease cannot be fresher than the one lease()
+     *  rejected; adopting it would only count a false fence failure and, after
+     *  {@link #ESCALATE_AFTER}, force a fenced Main build. */
     private static boolean adoptSeal(ServerLevel level, Rec r) {
         Entry e = cache(level).get(r.chunkKey);
-        if (e == null) return false;
+        if (e == null || e.builtNanos - r.leaseNanos < 0) return false;
         e.refs.incrementAndGet();
         r.entry = e;
         if (!r.cas(St.REQUESTED, St.READY)) {
