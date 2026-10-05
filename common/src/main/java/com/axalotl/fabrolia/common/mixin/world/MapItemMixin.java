@@ -20,7 +20,7 @@ public abstract class MapItemMixin {
     private void fabrolia$lockInventoryMapUpdate(
             ItemStack stack, ServerLevel level, Entity entity, EquipmentSlot slot,
             Operation<Void> original) {
-        MapItemUpdates.inventoryTick(stack, level, entity,
+        MapItemUpdates.inventoryTick(stack, level, entity, slot,
                 () -> original.call(stack, level, entity, slot));
     }
 

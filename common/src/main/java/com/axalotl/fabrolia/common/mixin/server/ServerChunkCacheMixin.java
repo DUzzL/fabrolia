@@ -907,6 +907,18 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             }
         }
 
+        // A held map's island pixel pass proved these chunks owned and loaded
+        // and holds the map monitor, which Main also takes: a concurrent FULL
+        // demotion must not make it wait on Main here. Cold path only.
+        if (targetStatus == ChunkStatus.FULL) {
+            LevelChunk owned = com.axalotl.fabrolia.common.parallelised.utils.MapItemUpdates
+                    .ownedPassChunk(this.level, x, z);
+            if (owned != null) {
+                cir.setReturnValue(owned);
+                return;
+            }
+        }
+
         // Task #34 negative cache: a chunk that already burned a full soft-null
         // budget answers null immediately for the TTL — ten mobs clustered at
         // one stranded chunk must not each park 200ms per collision pass per
