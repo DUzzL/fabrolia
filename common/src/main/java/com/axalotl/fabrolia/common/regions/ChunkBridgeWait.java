@@ -126,10 +126,9 @@ public final class ChunkBridgeWait {
         long lastReport = start;
         int reports = 0;
         while (!initial.isDone()) {
-            // A peer W closes the already-entered caller body. In particular,
-            // a trial-LOS ray parked on its causal chunk request must unwind so
-            // Main can quiesce RUNNING rays without executing the level-wide
-            // mainThreadProcessor after failure.
+            // A peer W closes the already-entered caller body: a caller parked
+            // on its causal chunk request must unwind instead of waiting for a
+            // Main that no longer runs the level-wide mainThreadProcessor.
             RegionScheduler.throwWorkerFailureIfAny();
             C ready = probe.get();
             if (ready != null) {
