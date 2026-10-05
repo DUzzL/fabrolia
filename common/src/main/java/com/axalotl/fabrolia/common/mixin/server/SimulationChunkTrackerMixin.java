@@ -3,8 +3,6 @@ package com.axalotl.fabrolia.common.mixin.server;
 import com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap;
 import com.axalotl.fabrolia.common.regions.CompletedChunkLevels;
 import com.axalotl.fabrolia.common.regions.CompletedSimulationView;
-import com.axalotl.fabrolia.common.regions.RegionTickingAccess;
-import com.axalotl.fabrolia.common.regions.RegionTickingChunks;
 import com.axalotl.fabrolia.common.regions.RegionTickingTrackerBind;
 import it.unimi.dsi.fastutil.longs.Long2ByteMap;
 import org.spongepowered.asm.mixin.Final;
@@ -16,7 +14,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ChunkLevel;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.SimulationChunkTracker;
@@ -24,19 +21,12 @@ import net.minecraft.server.level.SimulationChunkTracker;
 /**
  * Two roles:
  *
- * <p>1) Makes {@code chunks} a concurrent map (entity-movement readers race the propagator).
+ * <p>1) Makes {@code chunks} a concurrent map (entity-movement readers race the propagator)
+ * and mirrors it into the completed-wave view ({@link CompletedSimulationView}).
  *
- * <p>2) AUTHORITATIVE entity-ticking seam for the incremental ticking list. {@code chunks}
- * is exactly the {@code Long2ByteMap} {@code DistanceManager.forEachEntityTickingChunk}
- * iterates (filtered by {@code ChunkLevel.isEntityTicking}), and c2me's rewritten ticket
- * propagator updates it through {@code setLevel} — unlike the vanilla
- * {@code ChunkMap.updateChunkScheduling} seam the old {@link RegionTickingChunks} hook used,
- * which c2me fires asymmetrically (the ENTITY_TICKING-loss transition was lost, so the list
- * accumulated stale chunks, diverged, and permanently latched off → optimization dead).
- * Hooking {@code setLevel} (the single place {@code chunks} is mutated) keeps the incremental
- * list bit-identical to vanilla's source, so it no longer drifts. Runs inside
- * {@code runDistanceManagerUpdates} (main thread / chunkMap-monitor) like the consumer, so
- * the non-thread-safe {@link RegionTickingChunks} stays single-writer as designed.
+ * <p>2) Pearl-freeze trace on the ENTITY_TICKING-loss transition of {@code setLevel}, the
+ * single place {@code chunks} is mutated. Runs inside {@code runDistanceManagerUpdates}
+ * (main thread / chunkMap-monitor).
  */
 @Mixin(SimulationChunkTracker.class)
 public abstract class SimulationChunkTrackerMixin implements RegionTickingTrackerBind, CompletedSimulationView {
@@ -131,32 +121,19 @@ public abstract class SimulationChunkTrackerMixin implements RegionTickingTracke
         this.fabrolia$liveLevels.set(pos, this.chunks.get(pos));
     }
 
+    /** Pearl-freeze trace (2026-08-18 ender-pearl incident): a chunk leaving
+     *  entity-ticking with a live pearl inside freezes the pearl (no ticks, no
+     *  renewals). Anomaly-filtered and rate-limited inside PearlTrace — silent
+     *  for plain unloads. */
     @Inject(method = "setLevel(JI)V", at = @At("HEAD"))
-    private void fabrolia$trackEntityTicking(long pos, int newLevel, CallbackInfo ci) {
-        ChunkMap cm = this.fabrolia$chunkMap;
-        if (cm == null) {
+    private void fabrolia$tracePearlFreeze(long pos, int newLevel, CallbackInfo ci) {
+        if (!com.axalotl.fabrolia.common.utils.FabroliaDebug.PEARL_TRACE) return;
+        if (ChunkLevel.isEntityTicking(newLevel)
+                || !(this.fabrolia$chunkMap instanceof com.axalotl.fabrolia.common.regions.LevelAccess la)) {
             return;
         }
-        int oldLevel = this.getLevel(pos);
-        boolean was = ChunkLevel.isEntityTicking(oldLevel);
-        boolean now = ChunkLevel.isEntityTicking(newLevel);
-        if (was == now) {
-            return;
-        }
-        RegionTickingChunks ticking = ((RegionTickingAccess) cm).fabrolia$regionTicking();
-        if (now) {
-            ChunkHolder h = ((RegionTickingAccess) cm).fabrolia$holderForTicking(pos);
-            ticking.onBecameTicking(pos, h);
-        } else {
-            ticking.onStoppedTicking(pos);
-            if (com.axalotl.fabrolia.common.utils.FabroliaDebug.PEARL_TRACE
-                    && cm instanceof com.axalotl.fabrolia.common.regions.LevelAccess la) {
-                // Pearl-freeze trace (2026-08-18 ender-pearl incident): a chunk
-                // leaving entity-ticking with a live pearl inside freezes the
-                // pearl (no ticks, no renewals). Anomaly-filtered and
-                // rate-limited inside PearlTrace — silent for plain unloads.
-                com.axalotl.fabrolia.common.utils.PearlTrace.frozen(la.fabrolia$level(), pos);
-            }
+        if (ChunkLevel.isEntityTicking(this.getLevel(pos))) {
+            com.axalotl.fabrolia.common.utils.PearlTrace.frozen(la.fabrolia$level(), pos);
         }
     }
 }
