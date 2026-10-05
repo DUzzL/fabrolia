@@ -1,7 +1,8 @@
 package com.axalotl.fabrolia.common.regions;
 
-/** Implemented by ChunkMapMixin — read access to ChunkMap internals for
- *  diagnostics, natural-spawn player counting and save-time unload flushing. */
+/** Implemented by ChunkMapMixin — ChunkMap views and hooks the region runtime
+ *  needs: holder-map diagnostics, deferred owner-safe unloads and the natural
+ *  spawning player set. */
 public interface RegionTickingAccess {
 
     /** Direct view over the visible holder map. Kept for diagnostics. */

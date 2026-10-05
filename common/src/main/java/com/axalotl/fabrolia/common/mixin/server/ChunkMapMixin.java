@@ -522,8 +522,8 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
         // Island workers add (LevelChunk#markUnsaved) while Main iterates in
         // saveChunksEagerly: the iterator itself must be race-free.
         chunksToEagerlySave = new com.axalotl.fabrolia.common.utils.EagerSaveChunkSet();
-        // Hand the simulation tracker its ChunkMap back-ref so its setLevel seam can feed
-        // the entity-ticking incremental list (see SimulationChunkTrackerMixin). The tracker
+        // Hand the simulation tracker its ChunkMap back-ref for the pearl-freeze
+        // trace on its setLevel seam (see SimulationChunkTrackerMixin). The tracker
         // exists by <init> TAIL (built inside the DistanceManager during the ChunkMap ctor).
         net.minecraft.server.level.SimulationChunkTracker tracker =
                 ((com.axalotl.fabrolia.common.mixin.server.DistanceManagerAccessor)

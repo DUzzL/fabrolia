@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.world;
 
+import com.axalotl.fabrolia.common.utils.EmbeddedReadWriteLock;
 import com.axalotl.fabrolia.common.utils.FabroliaPalettedContainerLock;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -10,51 +11,64 @@ import net.minecraft.world.level.chunk.Strategy;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-
 /**
  * Lithium removes PalettedContainer's vanilla ThreadingDetector path. Fabrolia block
  * writes need a real per-section guard so palette entries and bit storage cannot
  * be observed in different publication phases by chunk packet serialization.
+ *
+ * <p>The lock state lives in two fields of the container and waits on its
+ * monitor ({@link EmbeddedReadWriteLock}): a per-container
+ * {@code ReentrantReadWriteLock} cost ~120 bytes for each of the ~2 containers
+ * per loaded chunk section (≈110 MB on the 40-player stand).
  */
 @Mixin(PalettedContainer.class)
-public abstract class PalettedContainerLockMixin<T> implements FabroliaPalettedContainerLock {
+public abstract class PalettedContainerLockMixin<T>
+        implements FabroliaPalettedContainerLock, EmbeddedReadWriteLock.State {
 
     @Unique
-    private volatile ReentrantReadWriteLock fabrolia$containerLock;
+    private int fabrolia$lockState;
 
     @Unique
-    private ReentrantReadWriteLock fabrolia$lock() {
-        ReentrantReadWriteLock lock = fabrolia$containerLock;
-        if (lock != null) return lock;
-        synchronized (this) {
-            lock = fabrolia$containerLock;
-            if (lock == null) {
-                lock = new ReentrantReadWriteLock();
-                fabrolia$containerLock = lock;
-            }
-            return lock;
-        }
+    private Thread fabrolia$lockWriter;
+
+    @Override
+    public int fabrolia$lockState() {
+        return fabrolia$lockState;
+    }
+
+    @Override
+    public void fabrolia$lockState(int state) {
+        fabrolia$lockState = state;
+    }
+
+    @Override
+    public Thread fabrolia$lockWriter() {
+        return fabrolia$lockWriter;
+    }
+
+    @Override
+    public void fabrolia$lockWriter(Thread writer) {
+        fabrolia$lockWriter = writer;
     }
 
     @Override
     public void fabrolia$readLock() {
-        fabrolia$lock().readLock().lock();
+        EmbeddedReadWriteLock.readLock(this);
     }
 
     @Override
     public void fabrolia$readUnlock() {
-        fabrolia$lock().readLock().unlock();
+        EmbeddedReadWriteLock.readUnlock(this);
     }
 
     @Override
     public void fabrolia$writeLock() {
-        fabrolia$lock().writeLock().lock();
+        EmbeddedReadWriteLock.writeLock(this);
     }
 
     @Override
     public void fabrolia$writeUnlock() {
-        fabrolia$lock().writeLock().unlock();
+        EmbeddedReadWriteLock.writeUnlock(this);
     }
 
     @WrapMethod(method = "getAndSet(IIILjava/lang/Object;)Ljava/lang/Object;")

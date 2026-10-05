@@ -1,10 +1,9 @@
 package com.axalotl.fabrolia.common.mixin.world;
 
-import com.axalotl.fabrolia.api.fastutil.Int2ObjectConcurrentHashMap;
+import com.axalotl.fabrolia.common.utils.CopyOnWriteInt2ObjectMap;
 import com.axalotl.fabrolia.common.regions.ChunkRegionKeyed;
 import com.axalotl.fabrolia.common.regions.LevelTicksIslandAccess;
 import com.axalotl.fabrolia.common.regions.TickDomains;
-import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
@@ -48,14 +47,15 @@ public abstract class LevelChunkMixin implements ChunkRegionKeyed {
     @Unique private long fabrolia$regionKey;
     @Unique private int fabrolia$regionShift = -1;
 
+    /** Vanilla's plain map is read and filled by {@code getListenerRegistry}
+     *  (computeIfAbsent) from every thread dispatching game events into this
+     *  chunk, and emptied by {@code removeGameEventListenerRegistry} from
+     *  whichever thread unregisters the last listener. The copy-on-write map
+     *  makes the computeIfAbsent and the removal atomic and the reads
+     *  lock-free; it holds at most one entry per section. */
     @Inject(method = "<init>*", at = @At("RETURN"))
     private void init(CallbackInfo ci) {
-        gameEventListenerRegistrySections = new Int2ObjectConcurrentHashMap<>();
-    }
-
-    @WrapMethod(method = "getListenerRegistry")
-    private synchronized GameEventListenerRegistry getListenerRegistry(int section, Operation<GameEventListenerRegistry> original) {
-        return original.call(section);
+        gameEventListenerRegistrySections = new CopyOnWriteInt2ObjectMap<>();
     }
 
     /**

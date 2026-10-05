@@ -22,11 +22,11 @@ import net.minecraft.server.level.SimulationChunkTracker;
  * Two roles:
  *
  * <p>1) Makes {@code chunks} a concurrent map (entity-movement readers race the propagator)
- * and publishes its completed-wave view ({@link CompletedSimulationView}).
+ * and mirrors it into the completed-wave view ({@link CompletedSimulationView}).
  *
- * <p>2) Pearl-freeze trace at {@code setLevel}, the single mutation point of {@code chunks}
- * (the map {@code DistanceManager.forEachEntityTickingChunk} iterates): a chunk leaving
- * entity-ticking range is reported to {@code PearlTrace}.
+ * <p>2) Pearl-freeze trace on the ENTITY_TICKING-loss transition of {@code setLevel}, the
+ * single place {@code chunks} is mutated. Runs inside {@code runDistanceManagerUpdates}
+ * (main thread / chunkMap-monitor).
  */
 @Mixin(SimulationChunkTracker.class)
 public abstract class SimulationChunkTrackerMixin implements RegionTickingTrackerBind, CompletedSimulationView {
@@ -121,17 +121,18 @@ public abstract class SimulationChunkTrackerMixin implements RegionTickingTracke
         this.fabrolia$liveLevels.set(pos, this.chunks.get(pos));
     }
 
+    /** Pearl-freeze trace (2026-08-18 ender-pearl incident): a chunk leaving
+     *  entity-ticking with a live pearl inside freezes the pearl (no ticks, no
+     *  renewals). Anomaly-filtered and rate-limited inside PearlTrace — silent
+     *  for plain unloads. */
     @Inject(method = "setLevel(JI)V", at = @At("HEAD"))
-    private void fabrolia$traceEntityTickingLoss(long pos, int newLevel, CallbackInfo ci) {
-        if (!com.axalotl.fabrolia.common.utils.FabroliaDebug.PEARL_TRACE
+    private void fabrolia$tracePearlFreeze(long pos, int newLevel, CallbackInfo ci) {
+        if (!com.axalotl.fabrolia.common.utils.FabroliaDebug.PEARL_TRACE) return;
+        if (ChunkLevel.isEntityTicking(newLevel)
                 || !(this.fabrolia$chunkMap instanceof com.axalotl.fabrolia.common.regions.LevelAccess la)) {
             return;
         }
-        if (ChunkLevel.isEntityTicking(this.getLevel(pos)) && !ChunkLevel.isEntityTicking(newLevel)) {
-            // Pearl-freeze trace (2026-08-18 ender-pearl incident): a chunk
-            // leaving entity-ticking with a live pearl inside freezes the
-            // pearl (no ticks, no renewals). Anomaly-filtered and
-            // rate-limited inside PearlTrace — silent for plain unloads.
+        if (ChunkLevel.isEntityTicking(this.getLevel(pos))) {
             com.axalotl.fabrolia.common.utils.PearlTrace.frozen(la.fabrolia$level(), pos);
         }
     }

@@ -1279,7 +1279,13 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         if (outcome instanceof com.axalotl.fabrolia.common.regions.ChunkBridgeWait.Result.GiveUpNull<ChunkResult<ChunkAccess>, ChunkAccess>) {
             // load=false only — the vanilla @Nullable contract; memoized so
             // the next lookups at this strand answer instantly for the TTL.
-            fabrolia$softNullUntil.put(pos, System.nanoTime() + SOFT_NULL_TTL_NS);
+            long now = System.nanoTime();
+            // Entries otherwise expire only when their chunk is looked up
+            // again; a strand nobody revisits would stay forever.
+            if (fabrolia$softNullUntil.size() >= 64) {
+                fabrolia$softNullUntil.values().removeIf(until -> now - until >= 0L);
+            }
+            fabrolia$softNullUntil.put(pos, now + SOFT_NULL_TTL_NS);
             // A recognized BROKEN holder is a real entered-pipeline failure,
             // never a reason to clear state or start another upgrade.
             com.axalotl.fabrolia.common.regions.C2meStrandHeal.inspectAndMaybeHeal(
@@ -2256,16 +2262,21 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             // Candidates around island players reach past its own cells (halo
             // edge, another lane's chunks): spawn only into chunks this lane owns.
             if (!laneKeys.test(key)) continue;
-            ChunkHolder holder = this.getVisibleChunkIfPresent(key);
-            if (holder == null) continue;
-            LevelChunk chunk = holder.getTickingChunk();
-            if (chunk == null) continue;
-            ChunkPos pos = holder.getPos();
+            // Vanilla's three filters (holder present, ticking chunk, a player
+            // within 128 blocks) are side-effect-free reads, so the pure
+            // distance test runs first: the ~30% of the 17x17 candidate square
+            // outside every player's 128-block circle never reaches C2ME's
+            // holder map. Same chunks, same order.
+            ChunkPos pos = ChunkPos.unpack(key);
             boolean close = false;
             for (int i = 0, n = islandPlayers.size(); i < n && !close; i++) {
                 close = chunkMapAccess.fabrolia$playerCloseEnoughForSpawning(islandPlayers.get(i), pos);
             }
-            if (close) spawningChunks.add(chunk);
+            if (!close) continue;
+            ChunkHolder holder = this.getVisibleChunkIfPresent(key);
+            if (holder == null) continue;
+            LevelChunk chunk = holder.getTickingChunk();
+            if (chunk != null) spawningChunks.add(chunk);
         }
         Util.shuffle(spawningChunks, lvl.getRandom());
 
@@ -2305,6 +2316,13 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             }
             return;
         }
+        // Vanilla's forEachEntityTickingChunk walks one completed-wave snapshot
+        // (DistanceManagerMixin); read the same snapshot through a page cursor
+        // instead of a cancellable inEntityTickingRange call per chunk.
+        com.axalotl.fabrolia.common.regions.CompletedChunkLevels.Reader entityTicking =
+                ((com.axalotl.fabrolia.common.regions.CompletedSimulationView)
+                        ((DistanceManagerAccessor) dm).fabrolia$simulationChunkTracker())
+                        .fabrolia$completedLevels().reader();
         int shift = grid.shift;
         int side = 1 << shift;
         for (int c = 0, cellCount = ownCellList.size(); c < cellCount; c++) {
@@ -2314,7 +2332,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             for (int dz = 0; dz < side; dz++) {
                 for (int dx = 0; dx < side; dx++) {
                     long key = ChunkPos.pack(baseX + dx, baseZ + dz);
-                    if (!dm.inEntityTickingRange(key)) continue;
+                    if (!net.minecraft.server.level.ChunkLevel.isEntityTicking(entityTicking.get(key))) continue;
                     ChunkHolder holder = this.getVisibleChunkIfPresent(key);
                     if (holder == null) continue;
                     LevelChunk chunk = holder.getTickingChunk();
