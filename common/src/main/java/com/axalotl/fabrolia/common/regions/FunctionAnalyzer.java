@@ -42,7 +42,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * parse). At activation the {@link FunctionPlanner} resolves the call-graph
  * closure against that generation's tags, predicates and advancement rewards;
  * the resulting {@link FunctionPlan} is published with the library under the
- * same write lock.
+ * same write lock. The IR is planner input only: building the plan consumes
+ * it, so the live generation retains analyses and the plan, not the parse.
  */
 public final class FunctionAnalyzer {
 
@@ -72,8 +73,7 @@ public final class FunctionAnalyzer {
                           FunctionIR.Function ir) {}
 
     private record ActiveEntry(CommandFunction<CommandSourceStack> function,
-                               Analysis analysis,
-                               FunctionIR.Function ir) {}
+                               Analysis analysis) {}
 
     /** One exact candidate-library transaction; parse tasks write concurrently. */
     public static final class ReloadStage {
@@ -84,16 +84,32 @@ public final class FunctionAnalyzer {
         private ReloadStage() {}
     }
 
-    /** Immutable, allocation-complete snapshot attached to one candidate library. */
+    /**
+     * Immutable, allocation-complete snapshot attached to one candidate library,
+     * plus the planner input ({@link FunctionIR}) that exactly one
+     * {@link #plan(Prepared, ServerFunctionLibrary, MinecraftServer)} consumes.
+     */
     public static final class Prepared {
         private final Map<Identifier, ActiveEntry> entries;
+        private Map<Identifier, FunctionIR.Function> irs;
 
-        private Prepared(Map<Identifier, ActiveEntry> entries) {
+        private Prepared(Map<Identifier, ActiveEntry> entries, Map<Identifier, FunctionIR.Function> irs) {
             this.entries = entries;
+            this.irs = irs;
+        }
+
+        /** Hand the IR to the one plan of this generation; a second plan is a wiring bug. */
+        private synchronized Map<Identifier, FunctionIR.Function> takeIrs() {
+            Map<Identifier, FunctionIR.Function> taken = irs;
+            if (taken == null) {
+                throw new IllegalStateException("function analysis already planned; its IR was released");
+            }
+            if (!taken.isEmpty()) irs = null;
+            return taken;
         }
     }
 
-    private static final Prepared EMPTY = new Prepared(Map.of());
+    private static final Prepared EMPTY = new Prepared(Map.of(), Map.of());
 
     /** Queued reload writers must not be starved by later local-function readers. */
     private static final ReentrantReadWriteLock LIVE_GENERATION =
@@ -180,12 +196,14 @@ public final class FunctionAnalyzer {
         }
 
         HashMap<Identifier, ActiveEntry> sealed = new HashMap<>(functions.size());
+        HashMap<Identifier, FunctionIR.Function> irs = new HashMap<>(functions.size());
         functions.forEach((id, function) -> {
             Staged staged = stage.analyzed.get(id);
             if (staged == null || staged.function() != function) return;
-            sealed.put(id, new ActiveEntry(function, staged.analysis(), staged.ir()));
+            sealed.put(id, new ActiveEntry(function, staged.analysis()));
+            irs.put(id, staged.ir());
         });
-        return sealed.isEmpty() ? EMPTY : new Prepared(Map.copyOf(sealed));
+        return sealed.isEmpty() ? EMPTY : new Prepared(Map.copyOf(sealed), Map.copyOf(irs));
     }
 
     /**
@@ -196,7 +214,7 @@ public final class FunctionAnalyzer {
      */
     public static FunctionPlan plan(Prepared prepared, ServerFunctionLibrary library,
                                     MinecraftServer server) {
-        return FunctionPlanner.build(new LibrarySources(prepared, library, server));
+        return FunctionPlanner.build(new LibrarySources(prepared, prepared.takeIrs(), library, server));
     }
 
     /** Initial-boot activation; no function body may observe a partial map. */
@@ -329,14 +347,17 @@ public final class FunctionAnalyzer {
     /** Planner input of one exact generation (library + server registries). */
     private static final class LibrarySources implements FunctionPlanner.Sources {
         private final Prepared prepared;
+        private final Map<Identifier, FunctionIR.Function> irs;
         private final ServerFunctionLibrary library;
         private final MinecraftServer server;
         private final Set<Identifier> tags = new HashSet<>();
         private final HashMap<String, JsonElement> predicates = new HashMap<>();
         private RegistryOps<JsonElement> ops;
 
-        LibrarySources(Prepared prepared, ServerFunctionLibrary library, MinecraftServer server) {
+        LibrarySources(Prepared prepared, Map<Identifier, FunctionIR.Function> irs,
+                       ServerFunctionLibrary library, MinecraftServer server) {
             this.prepared = prepared;
+            this.irs = irs;
             this.library = library;
             this.server = server;
             library.getAvailableTags().forEach(tags::add);
@@ -346,7 +367,7 @@ public final class FunctionAnalyzer {
         public FunctionIR.Function ir(Identifier id) {
             ActiveEntry entry = prepared.entries.get(id);
             if (entry == null) return null;
-            return library.getFunction(id).orElse(null) == entry.function() ? entry.ir() : null;
+            return library.getFunction(id).orElse(null) == entry.function() ? irs.get(id) : null;
         }
 
         @Override

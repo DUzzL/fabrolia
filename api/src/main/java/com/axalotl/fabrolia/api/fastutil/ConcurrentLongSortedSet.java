@@ -31,21 +31,28 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class ConcurrentLongSortedSet implements LongSortedSet {
 
-    private final ConcurrentSkipListSet<Long> backing;
+    /** The whole skip list, or a live range view of one ({@link #subSet} and friends). */
+    private final NavigableSet<Long> backing;
 
-    private final AtomicLong modCount = new AtomicLong();
+    /** Shared by a set and all its views: a mutation through either invalidates both caches. */
+    private final AtomicLong modCount;
 
     private volatile Snapshot cached;
 
     private record Snapshot(long version, long[] data) {}
 
     public ConcurrentLongSortedSet() {
-        this.backing = new ConcurrentSkipListSet<>();
+        this(new ConcurrentSkipListSet<>(), new AtomicLong());
     }
 
     public ConcurrentLongSortedSet(Collection<Long> collection) {
         this();
         addAll(Objects.requireNonNull(collection));
+    }
+
+    private ConcurrentLongSortedSet(NavigableSet<Long> backing, AtomicLong modCount) {
+        this.backing = backing;
+        this.modCount = modCount;
     }
 
     @Override public LongBidirectionalIterator iterator(long fromElement) {
@@ -144,14 +151,20 @@ public final class ConcurrentLongSortedSet implements LongSortedSet {
         finally { modCount.incrementAndGet(); }
     }
 
+    /**
+     * Live, weakly consistent range views, as fastutil's sorted sets return.
+     * Vanilla entity-section queries take one per section column per AABB
+     * query; copying the range into a new skip list each time was pure waste.
+     */
     @Override public LongSortedSet subSet(long from, long to) {
-        return new ConcurrentLongSortedSet(backing.subSet(Math.min(from, to), Math.max(from, to)));
+        return new ConcurrentLongSortedSet(
+                backing.subSet(Math.min(from, to), true, Math.max(from, to), false), modCount);
     }
     @Override public LongSortedSet headSet(long to) {
-        return new ConcurrentLongSortedSet(backing.headSet(to));
+        return new ConcurrentLongSortedSet(backing.headSet(to, false), modCount);
     }
     @Override public LongSortedSet tailSet(long from) {
-        return new ConcurrentLongSortedSet(backing.tailSet(from));
+        return new ConcurrentLongSortedSet(backing.tailSet(from, true), modCount);
     }
     @Override public LongComparator comparator() { return null; }
     @Override public long firstLong() { return backing.first(); }

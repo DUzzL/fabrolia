@@ -13,6 +13,8 @@ import it.unimi.dsi.fastutil.objects.ObjectCollection;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import org.jspecify.annotations.NonNull;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.NoSuchElementException;
 import java.util.Map;
 import java.util.Objects;
@@ -38,18 +40,31 @@ import java.util.function.IntFunction;
  * invalidated optimistic traversal can throw. Writes take the stripe's write
  * lock. {@code size()} is an amortized {@link LongAdder} sum, so updates don't
  * contend across stripes.
+ * <p>
+ * Stripes (backing map + lock) are created on their first write: an empty map
+ * costs two reference arrays, not {@code segmentCount} hash tables and locks.
+ * A stripe's map is installed before its lock is published (release), and
+ * every access to a stripe's map follows an acquire read of its lock, so a
+ * reader that sees no lock sees an absent key — the write that would create
+ * the stripe has not inserted anything yet.
  */
 public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<V> {
 
     private static final int DEFAULT_SEGMENTS = defaultSegmentCount();
+    /** fastutil's own default expected size, per stripe. */
+    private static final int DEFAULT_STRIPE_SIZE = 16;
+    private static final VarHandle LOCKS = MethodHandles.arrayElementVarHandle(StampedLock[].class);
 
     private final int segmentCount;
     private final int segmentMask;
+    private final int perSegment;
+    /** Written only under the {@code segments} monitor, before the stripe's lock is published. */
     private final Int2ObjectOpenHashMap<V>[] segments;
+    /** Published with release under the {@code segments} monitor; read with acquire. */
     private final StampedLock[] locks;
     private final LongAdder totalSize = new LongAdder();
 
-    public Int2ObjectConcurrentHashMap() { this(64 * DEFAULT_SEGMENTS, DEFAULT_SEGMENTS); }
+    public Int2ObjectConcurrentHashMap() { this(DEFAULT_STRIPE_SIZE * DEFAULT_SEGMENTS, DEFAULT_SEGMENTS); }
     public Int2ObjectConcurrentHashMap(int expectedSize) { this(expectedSize, DEFAULT_SEGMENTS); }
     public Int2ObjectConcurrentHashMap(int expected, float f) { this(expected, DEFAULT_SEGMENTS); }
     public Int2ObjectConcurrentHashMap(Map<? extends Integer, ? extends V> m) {
@@ -63,15 +78,39 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
 
     @SuppressWarnings("unchecked")
     public Int2ObjectConcurrentHashMap(int expectedSize, int concurrencyLevel) {
-        super();
+        // The parent's own tables are never used: keep them minimal.
+        super(0, DEFAULT_LOAD_FACTOR);
         this.segmentCount = nextPowerOf2(Math.max(16, concurrencyLevel));
         this.segmentMask = segmentCount - 1;
-        int perSegment = Math.max(16, expectedSize / segmentCount);
+        this.perSegment = Math.max(DEFAULT_STRIPE_SIZE, expectedSize / segmentCount);
         segments = new Int2ObjectOpenHashMap[segmentCount];
         locks = new StampedLock[segmentCount];
-        for (int i = 0; i < segmentCount; i++) {
-            segments[i] = new Int2ObjectOpenHashMap<>(perSegment, 0.75f);
-            locks[i] = new StampedLock();
+    }
+
+    /** The stripe's lock, or null while the stripe was never created (no mapping there). */
+    private StampedLock existingLock(int seg) {
+        return (StampedLock) LOCKS.getAcquire(locks, seg);
+    }
+
+    /** The stripe's lock, creating the stripe on first use (writes). */
+    private StampedLock lock(int seg) {
+        StampedLock lock = existingLock(seg);
+        return lock != null ? lock : createStripe(seg);
+    }
+
+    private StampedLock createStripe(int seg) {
+        synchronized (segments) {
+            if (segments[seg] == null) {
+                Int2ObjectOpenHashMap<V> segment = new Int2ObjectOpenHashMap<>(perSegment, DEFAULT_LOAD_FACTOR);
+                segment.defaultReturnValue(defRetValue);
+                segments[seg] = segment;
+            }
+            StampedLock lock = locks[seg];
+            if (lock == null) {
+                lock = new StampedLock();
+                LOCKS.setRelease(locks, seg, lock);
+            }
+            return lock;
         }
     }
 
@@ -94,7 +133,8 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override
     public V get(int key) {
         int seg = segmentFor(key);
-        StampedLock lock = locks[seg];
+        StampedLock lock = existingLock(seg);
+        if (lock == null) return defRetValue;
         long stamp = lock.readLock();
         try {
             return segments[seg].get(key);
@@ -104,15 +144,18 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override public V get(Object k) {
         if (!(k instanceof Integer key)) return null;
         int seg = segmentFor(key);
-        long stamp = locks[seg].readLock();
+        StampedLock lock = existingLock(seg);
+        if (lock == null) return null;
+        long stamp = lock.readLock();
         try { return segments[seg].get(k); }
-        finally { locks[seg].unlockRead(stamp); }
+        finally { lock.unlockRead(stamp); }
     }
 
     @Override
     public V getOrDefault(int key, V defaultValue) {
         int seg = segmentFor(key);
-        StampedLock lock = locks[seg];
+        StampedLock lock = existingLock(seg);
+        if (lock == null) return defaultValue;
         long stamp = lock.readLock();
         try { return segments[seg].getOrDefault(key, defaultValue); }
         finally { lock.unlockRead(stamp); }
@@ -123,7 +166,8 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override
     public boolean containsKey(int key) {
         int seg = segmentFor(key);
-        StampedLock lock = locks[seg];
+        StampedLock lock = existingLock(seg);
+        if (lock == null) return false;
         long stamp = lock.readLock();
         try { return segments[seg].containsKey(key); }
         finally { lock.unlockRead(stamp); }
@@ -134,9 +178,11 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override
     public boolean containsValue(Object value) {
         for (int i = 0; i < segmentCount; i++) {
-            long stamp = locks[i].readLock();
+            StampedLock lock = existingLock(i);
+            if (lock == null) continue;
+            long stamp = lock.readLock();
             try { if (segments[i].containsValue(value)) return true; }
-            finally { locks[i].unlockRead(stamp); }
+            finally { lock.unlockRead(stamp); }
         }
         return false;
     }
@@ -149,97 +195,105 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override
     public V put(int key, V value) {
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             int sb = segments[seg].size();
             V prev = segments[seg].put(key, value);
             if (segments[seg].size() > sb) totalSize.increment();
             return prev;
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override public V put(Integer k, V v) {
         int seg = segmentFor(k);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             boolean present = segments[seg].containsKey(k.intValue());
             V previous = segments[seg].put(k.intValue(), v);
             if (!present) totalSize.increment();
             return present ? previous : null;
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override
     public V putIfAbsent(int key, V value) {
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             int before = segments[seg].size();
             V previous = segments[seg].putIfAbsent(key, value);
             totalSize.add(segments[seg].size() - before);
             return previous;
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override
     public V remove(int key) {
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             int sb = segments[seg].size();
             V prev = segments[seg].remove(key);
             if (segments[seg].size() < sb) totalSize.decrement();
             return prev;
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override public V remove(Object k) {
         if (!(k instanceof Integer key)) return null;
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             int before = segments[seg].size();
             V previous = segments[seg].remove(k);
             totalSize.add(segments[seg].size() - before);
             return previous;
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override
     public boolean remove(int key, Object value) {
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             boolean removed = segments[seg].remove(key, value);
             if (removed) totalSize.decrement();
             return removed;
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override
     public V replace(int key, V value) {
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             if (segments[seg].containsKey(key)) return segments[seg].put(key, value);
             return defaultReturnValue();
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override
     public boolean replace(int key, V oldValue, V newValue) {
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             return segments[seg].replace(key, oldValue, newValue);
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override
     public V computeIfAbsent(int key, IntFunction<? extends V> mappingFunction) {
         Objects.requireNonNull(mappingFunction);
         int seg = segmentFor(key);
-        StampedLock lock = locks[seg];
+        StampedLock lock = lock(seg);
         long stamp = lock.readLock();
         try {
             if (segments[seg].containsKey(key)) return segments[seg].get(key);
@@ -259,7 +313,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     public V computeIfAbsent(int key, Int2ObjectFunction<? extends V> mappingFunction) {
         Objects.requireNonNull(mappingFunction);
         int seg = segmentFor(key);
-        StampedLock lock = locks[seg];
+        StampedLock lock = lock(seg);
         long stamp = lock.readLock();
         try {
             if (segments[seg].containsKey(key)) return segments[seg].get(key);
@@ -276,37 +330,40 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override
     public V computeIfPresent(int key, BiFunction<? super Integer, ? super V, ? extends V> remappingFunction) {
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             int before = segments[seg].size();
             V result = segments[seg].computeIfPresent(key, remappingFunction);
             totalSize.add(segments[seg].size() - before);
             return result;
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override
     public V compute(int key, BiFunction<? super Integer, ? super V, ? extends V> remappingFunction) {
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             int before = segments[seg].size();
             V result = segments[seg].compute(key, remappingFunction);
             totalSize.add(segments[seg].size() - before);
             return result;
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override
     public V merge(int key, V value, BiFunction<? super V, ? super V, ? extends V> remappingFunction) {
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             int before = segments[seg].size();
             V result = segments[seg].merge(key, value, remappingFunction);
             totalSize.add(segments[seg].size() - before);
             return result;
-        } finally { locks[seg].unlockWrite(stamp); }
+        } finally { lock.unlockWrite(stamp); }
     }
 
     @Override
@@ -317,23 +374,32 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override
     public void clear() {
         for (int i = 0; i < segmentCount; i++) {
-            long stamp = locks[i].writeLock();
+            StampedLock lock = existingLock(i);
+            if (lock == null) continue;
+            long stamp = lock.writeLock();
             try {
                 int removed = segments[i].size();
                 segments[i].clear();
                 totalSize.add(-removed);
             }
-            finally { locks[i].unlockWrite(stamp); }
+            finally { lock.unlockWrite(stamp); }
         }
     }
 
     @Override
     public void defaultReturnValue(V rv) {
-        super.defaultReturnValue(rv);
+        // Stripes created from now on copy the new value under the monitor;
+        // existing ones are updated under their own write locks, never while
+        // holding the monitor (a compute callback may create a stripe).
+        synchronized (segments) {
+            super.defaultReturnValue(rv);
+        }
         for (int i = 0; i < segmentCount; i++) {
-            long stamp = locks[i].writeLock();
+            StampedLock lock = existingLock(i);
+            if (lock == null) continue;
+            long stamp = lock.writeLock();
             try { segments[i].defaultReturnValue(rv); }
-            finally { locks[i].unlockWrite(stamp); }
+            finally { lock.unlockWrite(stamp); }
         }
     }
 
@@ -342,11 +408,13 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override public Int2ObjectMap.FastEntrySet<V> int2ObjectEntrySet() {
         Int2ObjectOpenHashMap<V> snap = new Int2ObjectOpenHashMap<>(size());
         for (int i = 0; i < segmentCount; i++) {
-            long stamp = locks[i].readLock();
+            StampedLock lock = existingLock(i);
+            if (lock == null) continue;
+            long stamp = lock.readLock();
             try {
                 for (Int2ObjectMap.Entry<V> e : segments[i].int2ObjectEntrySet())
                     snap.put(e.getIntKey(), e.getValue());
-            } finally { locks[i].unlockRead(stamp); }
+            } finally { lock.unlockRead(stamp); }
         }
         return snap.int2ObjectEntrySet();
     }
@@ -355,11 +423,13 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     public @NonNull IntSet keySet() {
         IntOpenHashSet keys = new IntOpenHashSet(size());
         for (int i = 0; i < segmentCount; i++) {
-            long stamp = locks[i].readLock();
+            StampedLock lock = existingLock(i);
+            if (lock == null) continue;
+            long stamp = lock.readLock();
             try {
                 IntIterator it = segments[i].keySet().iterator();
                 while (it.hasNext()) keys.add(it.nextInt());
-            } finally { locks[i].unlockRead(stamp); }
+            } finally { lock.unlockRead(stamp); }
         }
         return keys;
     }
@@ -416,7 +486,9 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
             snapshotKeys = new int[initialSize];
             snapshotValues = (V[]) new Object[initialSize];
             for (int i = 0; i < segmentCount; i++) {
-                long stamp = locks[i].readLock();
+                StampedLock lock = existingLock(i);
+                if (lock == null) continue;
+                long stamp = lock.readLock();
                 try {
                     for (Int2ObjectMap.Entry<V> entry : segments[i].int2ObjectEntrySet()) {
                         int requiredSize = snapshotSize + 1;
@@ -429,7 +501,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
                         snapshotSize = requiredSize;
                     }
                 } finally {
-                    locks[i].unlockRead(stamp);
+                    lock.unlockRead(stamp);
                 }
             }
         }
@@ -457,7 +529,8 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
 
     private boolean removeSnapshotMapping(int key, V expectedValue) {
         int seg = segmentFor(key);
-        long stamp = locks[seg].writeLock();
+        StampedLock lock = lock(seg);
+        long stamp = lock.writeLock();
         try {
             Int2ObjectOpenHashMap<V> segment = segments[seg];
             if (!segment.containsKey(key) || segment.get(key) != expectedValue) {
@@ -467,7 +540,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
             totalSize.decrement();
             return true;
         } finally {
-            locks[seg].unlockWrite(stamp);
+            lock.unlockWrite(stamp);
         }
     }
 
@@ -478,22 +551,26 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
 
     public void forEach(IntObjectConsumer<V> action) {
         for (int i = 0; i < segmentCount; i++) {
-            long stamp = locks[i].readLock();
+            StampedLock lock = existingLock(i);
+            if (lock == null) continue;
+            long stamp = lock.readLock();
             try {
                 for (Int2ObjectMap.Entry<V> e : segments[i].int2ObjectEntrySet())
                     action.accept(e.getIntKey(), e.getValue());
-            } finally { locks[i].unlockRead(stamp); }
+            } finally { lock.unlockRead(stamp); }
         }
     }
 
     @Override
     public void forEach(BiConsumer<? super Integer, ? super V> action) {
         for (int i = 0; i < segmentCount; i++) {
-            long stamp = locks[i].readLock();
+            StampedLock lock = existingLock(i);
+            if (lock == null) continue;
+            long stamp = lock.readLock();
             try {
                 for (Int2ObjectMap.Entry<V> e : segments[i].int2ObjectEntrySet())
                     action.accept(e.getIntKey(), e.getValue());
-            } finally { locks[i].unlockRead(stamp); }
+            } finally { lock.unlockRead(stamp); }
         }
     }
 
@@ -510,11 +587,13 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     public int hashCode() {
         int h = 0;
         for (int i = 0; i < segmentCount; i++) {
-            long stamp = locks[i].readLock();
+            StampedLock lock = existingLock(i);
+            if (lock == null) continue;
+            long stamp = lock.readLock();
             try {
                 for (Int2ObjectMap.Entry<V> e : segments[i].int2ObjectEntrySet())
                     h += Integer.hashCode(e.getIntKey()) ^ Objects.hashCode(e.getValue());
-            } finally { locks[i].unlockRead(stamp); }
+            } finally { lock.unlockRead(stamp); }
         }
         return h;
     }
@@ -526,11 +605,13 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
         Int2ObjectConcurrentHashMap<V> c = new Int2ObjectConcurrentHashMap<>(size(), segmentCount);
         c.defaultReturnValue(defaultReturnValue());
         for (int i = 0; i < segmentCount; i++) {
-            long stamp = locks[i].readLock();
+            StampedLock lock = existingLock(i);
+            if (lock == null) continue;
+            long stamp = lock.readLock();
             try {
                 for (Int2ObjectMap.Entry<V> e : segments[i].int2ObjectEntrySet())
                     c.put(e.getIntKey(), e.getValue());
-            } finally { locks[i].unlockRead(stamp); }
+            } finally { lock.unlockRead(stamp); }
         }
         return c;
     }
@@ -541,11 +622,13 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     public boolean trim(int n) {
         boolean all = true;
         for (int i = 0; i < segmentCount; i++) {
-            long stamp = locks[i].writeLock();
+            StampedLock lock = existingLock(i);
+            if (lock == null) continue;
+            long stamp = lock.writeLock();
             try {
                 int localN = n <= 0 ? segments[i].size() : Math.max(n / segmentCount, segments[i].size());
                 all &= segments[i].trim(localN);
-            } finally { locks[i].unlockWrite(stamp); }
+            } finally { lock.unlockWrite(stamp); }
         }
         return all;
     }

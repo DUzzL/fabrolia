@@ -141,6 +141,9 @@ final class Int2ObjectConcurrentHashMapReadTest {
         Object published = nullValue ? null : missing;
         map.defaultReturnValue(missing);
         PausedWriteLock lock = new PausedWriteLock();
+        // Stripes are created on first write: materialize stripe 0 (no mapping)
+        // before swapping in the pausing lock, ahead of any thread start.
+        map.remove(0);
         Field locks = Int2ObjectConcurrentHashMap.class.getDeclaredField("locks");
         locks.setAccessible(true);
         ((StampedLock[]) locks.get(map))[0] = lock;

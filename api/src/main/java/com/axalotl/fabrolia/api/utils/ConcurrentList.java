@@ -65,9 +65,25 @@ public final class ConcurrentList<E> extends AbstractList<E> {
      */
     private volatile int size;
     private final StampedLock lock = new StampedLock();
+    /**
+     * Exact-length copy of the elements, shared by iterators until the next
+     * mutation. Published only under the read lock (which excludes writers) and
+     * cleared by every writer right after it takes the write lock, so a cached
+     * array always equals the list between two mutations. Entity-section
+     * queries iterate unchanged lists far more often than they change.
+     */
+    private volatile Object[] iterationSnapshot;
 
+    /** Every mutation takes the write lock here: the cached snapshot dies with it. */
+    private long writeLock() {
+        long stamp = lock.writeLock();
+        iterationSnapshot = null;
+        return stamp;
+    }
+
+    /** The backing array is allocated on the first add: a list that stays empty holds none. */
     public ConcurrentList() {
-        this.array = new Object[DEFAULT_CAPACITY];
+        this.array = EMPTY_ARRAY;
     }
 
     public ConcurrentList(Collection<? extends E> c) {
@@ -79,7 +95,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
         this.size = count;
         this.array = count > 0
                 ? Arrays.copyOf(src, Math.max(count, DEFAULT_CAPACITY))
-                : new Object[DEFAULT_CAPACITY];
+                : EMPTY_ARRAY;
     }
 
     @Override
@@ -167,7 +183,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
     @Override
     public boolean add(E element) {
         Objects.requireNonNull(element);
-        long stamp = lock.writeLock();
+        long stamp = writeLock();
         try {
             if (size == array.length) grow();
             array[size++] = element;
@@ -180,7 +196,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
     @Override
     public void add(int index, E element) {
         Objects.requireNonNull(element);
-        long stamp = lock.writeLock();
+        long stamp = writeLock();
         try {
             if (index < 0 || index > size)
                 throw new IndexOutOfBoundsException("Index: " + index + ", Size: " + size);
@@ -198,7 +214,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
     @Override
     public boolean remove(Object o) {
         if (o == null) return false;
-        long stamp = lock.writeLock();
+        long stamp = writeLock();
         try {
             Object[] a = array;
             int s = size;
@@ -217,7 +233,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
     @Override
     @SuppressWarnings("unchecked")
     public E remove(int index) {
-        long stamp = lock.writeLock();
+        long stamp = writeLock();
         try {
             if (index < 0 || index >= size)
                 throw new IndexOutOfBoundsException("Index: " + index + ", Size: " + size);
@@ -241,7 +257,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
             if (filter.test(e)) removals.merge(value, 1, Integer::sum);
         }
         if (removals.isEmpty()) return false;
-        long stamp = lock.writeLock();
+        long stamp = writeLock();
         try {
             Object[] a = array;
             int s = size;
@@ -270,7 +286,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
     @SuppressWarnings("unchecked")
     public E set(int index, E element) {
         Objects.requireNonNull(element);
-        long stamp = lock.writeLock();
+        long stamp = writeLock();
         try {
             if (index < 0 || index >= size)
                 throw new IndexOutOfBoundsException("Index: " + index + ", Size: " + size);
@@ -284,7 +300,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
 
     @Override
     public void clear() {
-        long stamp = lock.writeLock();
+        long stamp = writeLock();
         try {
             Arrays.fill(array, 0, size, null);
             size = 0;
@@ -297,7 +313,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
     public boolean addAll(Collection<? extends E> c) {
         Object[] elements = c.toArray();
         if (elements.length == 0) return false;
-        long stamp = lock.writeLock();
+        long stamp = writeLock();
         try {
             int oldSize = size;
             for (Object e : elements) {
@@ -315,7 +331,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
     @Override
     public boolean addAll(int index, Collection<? extends E> c) {
         Object[] elements = c.toArray();
-        long stamp = lock.writeLock();
+        long stamp = writeLock();
         try {
             if (index < 0 || index > size)
                 throw new IndexOutOfBoundsException("Index: " + index + ", Size: " + size);
@@ -419,12 +435,16 @@ public final class ConcurrentList<E> extends AbstractList<E> {
         // snapshot path, which also misses inserts that happen after the snapshot.
         // EntitySection.find() / spawn iterator walks 1000s of empty sections per tick.
         if (size == 0) return Collections.emptyIterator();
-        Object[] snapshot;
+        Object[] snapshot = iterationSnapshot;
+        if (snapshot != null) return new SnapshotIterator(snapshot);
         long stamp = lock.readLock();
         try {
             int s = size;
             if (s == 0) return Collections.emptyIterator();
             snapshot = Arrays.copyOf(array, s);
+            // Under the read lock no writer is between its invalidation and its
+            // unlock, so this copy is the current content until the next writer.
+            iterationSnapshot = snapshot;
         } finally {
             lock.unlockRead(stamp);
         }
@@ -480,7 +500,7 @@ public final class ConcurrentList<E> extends AbstractList<E> {
 
     private void grow() {
         int oldCap = array.length;
-        int newCap = oldCap + (oldCap >> 1);
+        int newCap = oldCap == 0 ? DEFAULT_CAPACITY : oldCap + (oldCap >> 1);
         if (newCap < oldCap + 1) newCap = oldCap + 1;
         array = Arrays.copyOf(array, newCap);
     }

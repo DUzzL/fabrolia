@@ -47,12 +47,13 @@ public final class IslandFunctionHead {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("Fabrolia-Functions");
 
-    /** Armed roots of exactly one plan generation. */
+    /** Armed roots of exactly one plan generation; {@code steps} = their lines, tick roots first. */
     record Armed(FunctionPlan plan, List<FunctionPlan.RootPlan> tickRoots,
-                 List<FunctionPlan.RootPlan> loops, boolean mayEscalate) {
+                 List<FunctionPlan.RootPlan> loops, boolean mayEscalate, List<Step> steps) {
         Armed(FunctionPlan plan, List<FunctionPlan.RootPlan> tickRoots,
               List<FunctionPlan.RootPlan> loops) {
-            this(plan, tickRoots, loops, mayEscalate(tickRoots) || mayEscalate(loops));
+            this(plan, tickRoots, loops, mayEscalate(tickRoots) || mayEscalate(loops),
+                    IslandFunctionHead.steps(tickRoots, loops));
         }
 
         boolean isEmpty() {
@@ -212,8 +213,15 @@ public final class IslandFunctionHead {
         return root != null && server.getFunctions().get(id).orElse(null) == root.function();
     }
 
-    private static List<Step> steps(List<FunctionPlan.RootPlan> roots) {
+    /** Partitioned/escalating lines of the tick roots, then of the loops, in order. */
+    private static List<Step> steps(List<FunctionPlan.RootPlan> tickRoots, List<FunctionPlan.RootPlan> loops) {
         ArrayList<Step> out = new ArrayList<>();
+        addSteps(out, tickRoots);
+        addSteps(out, loops);
+        return List.copyOf(out);
+    }
+
+    private static void addSteps(ArrayList<Step> out, List<FunctionPlan.RootPlan> roots) {
         for (FunctionPlan.RootPlan root : roots) {
             for (FunctionPlan.LinePlan line : root.lines()) {
                 if (line.kind() == FunctionPlan.LineKind.PARTITION
@@ -222,7 +230,6 @@ public final class IslandFunctionHead {
                 }
             }
         }
-        return out;
     }
 
     // ------------------------------------------------------------------
@@ -232,9 +239,7 @@ public final class IslandFunctionHead {
     static void runIslandHead(RegionizedServer rs, IslandRegistry.PIsland island) {
         Armed armed = ARMED;
         if (armed.isEmpty() || FunctionAnalyzer.plan() != armed.plan()) return;
-        ArrayList<FunctionPlan.RootPlan> roots = new ArrayList<>(armed.tickRoots());
-        roots.addAll(armed.loops());
-        List<Step> steps = steps(roots);
+        List<Step> steps = armed.steps();
         if (steps.isEmpty()) return;
         MinecraftServer server = rs.level.getServer();
         FunctionPartition partition = FunctionPartition.island(rs, island);
@@ -436,9 +441,7 @@ public final class IslandFunctionHead {
         FunctionPartition partition = FunctionPartition.mainSyncTree(root, heldIsland);
         FunctionPartition.Pass pass = partition.open(NEXT_ISLAND_PASS.getAndIncrement(), false);
         if (pass.isEmpty()) return;
-        ArrayList<FunctionPlan.RootPlan> roots = new ArrayList<>(armed.tickRoots());
-        roots.addAll(armed.loops());
-        List<Step> steps = steps(roots);
+        List<Step> steps = armed.steps();
         if (steps.isEmpty()) return;
         RegionScheduler.commitSuccessIfHealthy(FunctionFenceDiag.MAIN_SYNC_ENTITY_PASSES::increment);
         CommandSourceStack source = server.getFunctions().getGameLoopSender();
