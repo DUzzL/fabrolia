@@ -19,6 +19,10 @@ import java.util.concurrent.atomic.AtomicLongArray;
  * per-row hash of visited chunk keys (open probing over a fixed table — collisions
  * over-report duplicates at worst, never under-report; table sized 4096 ≫ typical
  * ~2.5k spawning chunks).
+ *
+ * <p>Off until the first {@code spawnrate} report: the hooks are then a single
+ * volatile read. Recording every spawn pass made every spawning worker share
+ * one row of atomics and allocated the 4 MiB visit table at class load.
  */
 public final class SpawnRateDiag {
 
@@ -29,63 +33,75 @@ public final class SpawnRateDiag {
     // row layout: [0]=tick stamp, [1]=passes, [2]=visits, [3]=dupVisits,
     // [4..4+CATS)=checks, [4+CATS..4+2*CATS)=accepts
     private static final int ROW = 4 + 2 * CATS;
-    private static final AtomicLongArray DATA = new AtomicLongArray(RING * ROW);
-
     private static final int VISIT_TABLE = 4096;
-    private static final AtomicLongArray VISITS = new AtomicLongArray(RING * VISIT_TABLE);
+
+    private static final class Recorder {
+        final AtomicLongArray data = new AtomicLongArray(RING * ROW);
+        final AtomicLongArray visits = new AtomicLongArray(RING * VISIT_TABLE);
+
+        /** Claim/locate the row for {@code tick}, zeroing it on first touch. */
+        int row(long tick) {
+            int base = rowBase(tick);
+            long cur = data.get(base);
+            if (cur != tick + 1) {
+                if (data.compareAndSet(base, cur, tick + 1)) {
+                    for (int i = 1; i < ROW; i++) data.set(base + i, 0);
+                    int vb = (int) (tick & (RING - 1)) * VISIT_TABLE;
+                    for (int i = 0; i < VISIT_TABLE; i++) visits.set(vb + i, 0);
+                }
+            }
+            return base;
+        }
+    }
+
+    /** Null until the first report arms recording; never disarmed. */
+    private static volatile Recorder recorder;
 
     private static int rowBase(long tick) {
         return (int) (tick & (RING - 1)) * ROW;
     }
 
-    /** Claim/locate the row for {@code tick}, zeroing it on first touch. */
-    private static int row(long tick) {
-        int base = rowBase(tick);
-        long cur = DATA.get(base);
-        if (cur != tick + 1) {
-            if (DATA.compareAndSet(base, cur, tick + 1)) {
-                for (int i = 1; i < ROW; i++) DATA.set(base + i, 0);
-                int vb = (int) (tick & (RING - 1)) * VISIT_TABLE;
-                for (int i = 0; i < VISIT_TABLE; i++) VISITS.set(vb + i, 0);
-            }
-        }
-        return base;
-    }
-
     public static void onPass(ServerLevel level) {
-        long t = wall(level);
-        DATA.incrementAndGet(row(t) + 1);
+        Recorder r = recorder;
+        if (r == null) return;
+        r.data.incrementAndGet(r.row(wall(level)) + 1);
     }
 
     public static void onChunkVisit(ServerLevel level, long chunkKey) {
+        Recorder r = recorder;
+        if (r == null) return;
         long t = wall(level);
-        int base = row(t);
-        DATA.incrementAndGet(base + 2);
+        int base = r.row(t);
+        r.data.incrementAndGet(base + 2);
         // per-tick duplicate detection: open-probe insert of chunkKey+1
         int vb = (int) (t & (RING - 1)) * VISIT_TABLE;
         long key = chunkKey + 1; // avoid 0 sentinel
         int idx = (int) (mix(chunkKey) & (VISIT_TABLE - 1));
         for (int probe = 0; probe < 32; probe++) {
-            long cur = VISITS.get(vb + idx);
+            long cur = r.visits.get(vb + idx);
             if (cur == key) {
-                DATA.incrementAndGet(base + 3);
+                r.data.incrementAndGet(base + 3);
                 return;
             }
-            if (cur == 0 && VISITS.compareAndSet(vb + idx, 0, key)) {
+            if (cur == 0 && r.visits.compareAndSet(vb + idx, 0, key)) {
                 return;
             }
             idx = (idx + 1) & (VISIT_TABLE - 1);
         }
         // table pressure — count as duplicate-unknown rather than lose the signal
-        DATA.incrementAndGet(base + 3);
+        r.data.incrementAndGet(base + 3);
     }
 
     public static void onCheck(ServerLevel level, MobCategory cat) {
-        DATA.incrementAndGet(row(wall(level)) + 4 + cat.ordinal());
+        Recorder r = recorder;
+        if (r == null) return;
+        r.data.incrementAndGet(r.row(wall(level)) + 4 + cat.ordinal());
     }
 
     public static void onAccept(ServerLevel level, MobCategory cat) {
-        DATA.incrementAndGet(row(wall(level)) + 4 + CATS + cat.ordinal());
+        Recorder r = recorder;
+        if (r == null) return;
+        r.data.incrementAndGet(r.row(wall(level)) + 4 + CATS + cat.ordinal());
     }
 
     private static long mix(long z) {
@@ -97,24 +113,32 @@ public final class SpawnRateDiag {
         return com.axalotl.fabrolia.common.regions.IslandClock.wallTime(level);
     }
 
-    /** Last {@code n} recorded ticks (newest first), one row per line. */
+    /** Last {@code n} recorded ticks (newest first), one row per line. The first
+     *  call arms recording and reports that no ticks are recorded yet. */
     public static String report(ServerLevel level, int n) {
         long now = wall(level);
         StringBuilder sb = new StringBuilder(256);
         sb.append("SPAWNRATE wall=").append(now).append(" (last ").append(n).append(" ticks, newest first)");
+        Recorder r = recorder;
+        if (r == null) {
+            synchronized (SpawnRateDiag.class) {
+                if (recorder == null) recorder = new Recorder();
+            }
+            return sb.append("\nrecording started now; run again to read recorded ticks").toString();
+        }
         MobCategory[] cats = MobCategory.values();
         for (long t = now; t > now - n && t >= 0; t--) {
             int base = rowBase(t);
-            if (DATA.get(base) != t + 1) continue;
-            long passes = DATA.get(base + 1);
-            long visits = DATA.get(base + 2);
-            long dups = DATA.get(base + 3);
+            if (r.data.get(base) != t + 1) continue;
+            long passes = r.data.get(base + 1);
+            long visits = r.data.get(base + 2);
+            long dups = r.data.get(base + 3);
             if (passes == 0 && visits == 0) continue;
             sb.append("\nT").append(t).append(" passes=").append(passes)
               .append(" visits=").append(visits).append(" dup=").append(dups);
             for (int c = 0; c < cats.length; c++) {
-                long ck = DATA.get(base + 4 + c);
-                long ac = DATA.get(base + 4 + CATS + c);
+                long ck = r.data.get(base + 4 + c);
+                long ac = r.data.get(base + 4 + CATS + c);
                 if (ck != 0 || ac != 0) {
                     sb.append(' ').append(cats[c].getName()).append('=')
                       .append(ac).append('/').append(ck);
