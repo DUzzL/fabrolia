@@ -37,6 +37,10 @@ public final class RegionWorkerThread extends Thread {
     /** Thread-confined level-RNG stripes ({@code FabroliaRandomStriping.Stripes}). */
     public Object randomStripes;
 
+    /** Listener-free sends/flushes this worker's current step holds back until the step
+     *  ends ({@link ConnectionOutbox}); thread-confined, open only inside a step. */
+    final ConnectionOutbox.WorkerScope outbound = new ConnectionOutbox.WorkerScope();
+
     RegionWorkerThread(Runnable target, String name) {
         super(target, name);
     }
