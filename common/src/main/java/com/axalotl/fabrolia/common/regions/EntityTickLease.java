@@ -1,6 +1,9 @@
 package com.axalotl.fabrolia.common.regions;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -13,6 +16,24 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class EntityTickLease extends AtomicReference<Object> {
 
     private static final long serialVersionUID = 1L;
+    private static final VarHandle ARRIVAL_PENDING;
+    /**
+     * Upper bound of leases whose flag is set: incremented before a flag turns
+     * true and decremented only after it turned false, so a zero read proves
+     * every flag false at that instant. Hot publication paths read this shared,
+     * almost never written counter instead of each entity's lease.
+     */
+    private static final AtomicInteger PENDING_ARRIVALS = new AtomicInteger();
+
+    static {
+        try {
+            ARRIVAL_PENDING = MethodHandles.lookup().findVarHandle(
+                    EntityTickLease.class, "arrivalPending", boolean.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
     // Readiness is not a tick owner: an arrival must not look like a foreign
     // player-actor reservation, nor like a removed source entity.
     private volatile boolean arrivalPending;
@@ -21,9 +42,21 @@ public final class EntityTickLease extends AtomicReference<Object> {
         return arrivalPending;
     }
 
+    /** False proves no lease has a pending arrival; true says nothing about a given lease. */
+    public static boolean anyArrivalPending() {
+        return PENDING_ARRIVALS.get() != 0;
+    }
+
     /** Tail-mode arrivals only: published before destination insertion; cleared after source retirement. */
     void setArrivalPending(boolean pending) {
-        arrivalPending = pending;
+        if (pending) {
+            PENDING_ARRIVALS.incrementAndGet();
+            if (!ARRIVAL_PENDING.compareAndSet(this, false, true)) {
+                PENDING_ARRIVALS.decrementAndGet();
+            }
+        } else if (ARRIVAL_PENDING.compareAndSet(this, true, false)) {
+            PENDING_ARRIVALS.decrementAndGet();
+        }
     }
 
 

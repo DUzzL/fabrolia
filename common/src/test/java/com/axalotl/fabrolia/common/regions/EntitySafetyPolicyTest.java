@@ -15,10 +15,13 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
+import net.minecraft.world.entity.boss.wither.WitherBoss;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.level.storage.LevelData;
 import org.junit.jupiter.api.BeforeAll;
@@ -27,6 +30,7 @@ import org.junit.jupiter.api.parallel.Isolated;
 
 import java.lang.reflect.Field;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -66,6 +70,36 @@ class EntitySafetyPolicyTest {
             passengers(middle);
             assertFalse(ParallelProcessor.requiresMainThread(root));
             assertFalse(ParallelProcessor.shouldTickSynchronously(root));
+        }
+    }
+
+    @Test
+    void everyHardMainReasonAnywhereInTheTreeKeepsTheWholeTreeOnMain() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            TestEntity root = fixture.entity(TestEntity.class, EntityTypes.PIG);
+            TestEntity middle = fixture.entity(TestEntity.class, EntityTypes.PIG);
+            passengers(root, middle);
+            for (Class<? extends Entity> type : List.of(
+                    WitherBoss.class, EnderDragon.class, ServerPlayer.class)) {
+                Entity reason = type.cast(unsafe().allocateInstance(type));
+                passengers(reason);
+                passengers(middle, reason);
+                assertTrue(ParallelProcessor.requiresMainThread(root), type + " two levels down");
+                passengers(middle);
+                assertFalse(ParallelProcessor.requiresMainThread(root));
+            }
+            TestEntity forced = fixture.entity(TestEntity.class, EntityTypes.PIG);
+            passengers(middle, forced);
+            assertFalse(ParallelProcessor.requiresMainThread(root));
+            @SuppressWarnings("unchecked")
+            Set<UUID> forcedMain = (Set<UUID>) field(ParallelProcessor.class, "BLACKLISTED_ENTITIES").get(null);
+            ParallelProcessor.forceMainThread(forced);
+            try {
+                assertTrue(ParallelProcessor.requiresMainThread(root));
+            } finally {
+                forcedMain.remove(forced.getUUID());
+            }
+            assertFalse(ParallelProcessor.requiresMainThread(root));
         }
     }
 

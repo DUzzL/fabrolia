@@ -79,7 +79,8 @@ public final class ParallelProcessor {
         EntityTickLease fabrolia$tickLease();
         default boolean fabrolia$tryBeginTick() { return fabrolia$tickLease().tryBegin(); }
         default void fabrolia$endTick() { fabrolia$tickLease().end(); }
-        /** Immutable class/type safety only; configured synchronization is read per dispatch. */
+        /** Immutable class/type flags ({@code SYNC_*}; negative until computed);
+         *  configured synchronization is read per dispatch. */
         byte fabrolia$getSyncCache();
         void fabrolia$setSyncCache(byte v);
     }
@@ -134,6 +135,32 @@ public final class ParallelProcessor {
     public static boolean entitySupportsFabroliaApi(Entity entity) {
         return !"minecraft".equals(EntityType.getKey(entity.getType()).getNamespace())
                 && !FABROLIA_API_COMPATIBLE.get(entity.getClass());
+    }
+
+    /** Flat-pool class policy ({@link #BLOCKED_BASE_CLASSES}). */
+    private static final byte SYNC_CLASS_BLOCKED = 1;
+    /** {@link #entitySupportsFabroliaApi} (a modded type without the API contract). */
+    private static final byte SYNC_API_UNSUPPORTED = 2;
+
+    /**
+     * Lifetime flags of one entity. Both inputs are fixed for the entity's life:
+     * its class, and its final {@code EntityType} whose key comes from the
+     * built-in registry, frozen before any entity exists. Configuration and the
+     * mutable passenger tree are never folded in.
+     */
+    private static byte immutableTypeFlags(Entity entity) {
+        if (!(entity instanceof TickGuard guard)) return computeImmutableTypeFlags(entity);
+        byte cached = guard.fabrolia$getSyncCache();
+        if (cached < 0) {
+            cached = computeImmutableTypeFlags(entity);
+            guard.fabrolia$setSyncCache(cached);
+        }
+        return cached;
+    }
+
+    private static byte computeImmutableTypeFlags(Entity entity) {
+        return (byte) ((isBlocked(entity.getClass()) ? SYNC_CLASS_BLOCKED : 0)
+                | (entitySupportsFabroliaApi(entity) ? SYNC_API_UNSUPPORTED : 0));
     }
 
     public static void setServer(MinecraftServer server) {
@@ -459,10 +486,10 @@ public final class ParallelProcessor {
         // cannot overlap the wither's AI tick. Item frames tick on their island:
         // the frame's own tick touches only its attachment block, and the shared
         // map data a framed map updates is guarded per map (MapItemSavedDataMixin).
-        if (containsMainOwnedTrackingEntity(entity)) return true;
-        if (containsForcedMainEntity(entity)) return true;
-        if (containsServerPlayerTick(entity)) return true;
-        return containsUnsupportedEntity(entity);
+        // One walk of the root/passenger tree decides the OR of every predicate
+        // (main-owned tracking type, forced UUID, ServerPlayer tick, unsupported
+        // API contract) over every node; all of them are side-effect free.
+        return requiresMainThreadTree(entity, !BLACKLISTED_ENTITIES.isEmpty());
     }
 
     /**
@@ -526,16 +553,10 @@ public final class ParallelProcessor {
     }
 
     private static boolean containsPoolSynchronizedEntity(Entity entity) {
-        TickGuard guard = (TickGuard) entity;
-        byte cached = guard.fabrolia$getSyncCache();
-        if (cached < 0) {
-            boolean sync = isBlocked(entity.getClass()) || entitySupportsFabroliaApi(entity);
-            cached = sync ? (byte) 1 : (byte) 0;
-            guard.fabrolia$setSyncCache(cached);
-        }
         // Policy changes must affect already-live entities; never fold mutable
         // configuration (or passenger membership) into the lifetime cache.
-        if (cached == 1 || FabroliaConfig.isEntitySynchronized(EntityType.getKey(entity.getType()))) {
+        if (immutableTypeFlags(entity) != 0
+                || FabroliaConfig.isEntitySynchronized(EntityType.getKey(entity.getType()))) {
             return true;
         }
         for (Entity passenger : entity.getPassengers()) {
@@ -544,10 +565,13 @@ public final class ParallelProcessor {
         return false;
     }
 
-    private static boolean containsUnsupportedEntity(Entity entity) {
-        if (entitySupportsFabroliaApi(entity)) return true;
+    private static boolean requiresMainThreadTree(Entity entity, boolean anyForced) {
+        if (entity instanceof WitherBoss || entity instanceof EnderDragon
+                || entity instanceof ServerPlayer
+                || anyForced && BLACKLISTED_ENTITIES.contains(entity.getUUID())
+                || (immutableTypeFlags(entity) & SYNC_API_UNSUPPORTED) != 0) return true;
         for (Entity passenger : entity.getPassengers()) {
-            if (containsUnsupportedEntity(passenger)) return true;
+            if (requiresMainThreadTree(passenger, anyForced)) return true;
         }
         return false;
     }
