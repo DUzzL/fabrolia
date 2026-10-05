@@ -28,8 +28,9 @@ public final class FabroliaRandomStriping {
     private static final long INCREMENT = 11L;
     private static final long MASK = (1L << 48) - 1;
 
-    /** Bound on the sources one thread keeps stripes for (one per level is usual). */
-    static final int MAX_SOURCES = 64;
+    /** Bound on the sources one thread keeps stripes for (one per level is usual;
+     *  a region worker ticks every level, so the bound must exceed any level count). */
+    static final int MAX_SOURCES = 256;
 
     /** Contended only when a worker first cuts a stripe for a shared source. */
     private static final AtomicLong SEED_NONCE = new AtomicLong(1);
