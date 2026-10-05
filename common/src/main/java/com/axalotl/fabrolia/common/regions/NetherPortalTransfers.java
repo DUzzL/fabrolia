@@ -51,7 +51,7 @@ public final class NetherPortalTransfers {
      * Domain sources whose cohort queue is non-empty, maintained under each
      * source's monitor by {@link NetherSourceCohorts.Activity}. Workers poll only
      * these, never every domain that ever submitted a transfer ({@link #DOMAINS}
-     * is pruned only at level unload), and leave in O(1) when it is empty.
+     * also holds idle sources of live islands), and leave in O(1) when it is empty.
      */
     private static final Set<Source> QUEUED_SOURCES = ConcurrentHashMap.newKeySet();
     private static final AtomicInteger QUEUED_SOURCE_COUNT = new AtomicInteger();
@@ -143,18 +143,23 @@ public final class NetherPortalTransfers {
                 return false;
             }
             NetherPortalPreparation.Request preparation = NetherPortalPreparation.capture(root, entry, level);
-            Source source = domain == null
-                    ? FLAT_DOMAINS.computeIfAbsent(level, key -> new Source(null, key))
-                    : DOMAINS.computeIfAbsent(domain, key -> new Source(key, level));
+            Source source;
             boolean accepted;
-            synchronized (transfer) {
-                accepted = transfer.state.get() == WAITING;
-                if (accepted) {
-                    transfer.preparation = preparation;
-                    transfer.queuedSource = source;
-                    source.queue.stage(transfer);
+            do {
+                source = domain == null
+                        ? FLAT_DOMAINS.computeIfAbsent(level, key -> new Source(null, key))
+                        : DOMAINS.computeIfAbsent(domain, key -> new Source(key, level));
+                synchronized (transfer) {
+                    accepted = transfer.state.get() == WAITING;
+                    if (accepted) {
+                        transfer.preparation = preparation;
+                        transfer.queuedSource = source;
+                        // A source pruned after the lookup takes no more work; use its successor.
+                        if (!source.tryStage(transfer)) continue;
+                    }
                 }
-            }
+                break;
+            } while (true);
             if (!accepted) {
                 preparation.close();
                 reservation.cancel(transfer.cancellationFailure);
@@ -232,6 +237,21 @@ public final class NetherPortalTransfers {
                     ? new NetherSourceCohorts<>(Transfer::cancel)
                     : new NetherSourceCohorts<>(Transfer::cancel, this::queuedChanged);
         }
+        /** Guarded by this: a pruned source accepts nothing (see {@link #pruneRetiredDomains}). */
+        private boolean pruned;
+        synchronized boolean tryStage(Transfer transfer) {
+            if (pruned) return false;
+            queue.stage(transfer);
+            return true;
+        }
+        /** Main, for a retired island's source: drop it once it holds no work. */
+        synchronized void pruneIfIdle() {
+            if (!queue.isIdle()) return;
+            pruned = true;
+            // Inside the monitor: a submit that still resolves this source
+            // refuses it in tryStage only until this removal, never spinning.
+            DOMAINS.remove(domain, this);
+        }
         /** Under this source's monitor: one source's transitions are totally ordered. */
         private void queuedChanged(boolean nonEmpty) {
             if (nonEmpty) {
@@ -242,6 +262,20 @@ public final class NetherPortalTransfers {
         }
         boolean pacedAt(long now) {
             return paced && now - pacedSince < HEAD_RETRY_NANOS;
+        }
+    }
+
+    /**
+     * Drop the sources of retired islands once they hold no work. Retired
+     * islands run no unit, so their domains stage nothing new, but a source
+     * kept forever pins its domain and retired island: one entry per island
+     * that ever sent a Nether transfer. A submit that resolved a source just
+     * before pruning fails {@link Source#tryStage} and re-resolves.
+     */
+    private static void pruneRetiredDomains() {
+        for (Source source : DOMAINS.values()) {
+            IslandRegistry.PIsland owner = source.domain.owner;
+            if (owner != null && owner.retired) source.pruneIfIdle();
         }
     }
 
@@ -1178,6 +1212,7 @@ public final class NetherPortalTransfers {
         // must not leak into compatibility validation of the still-live source.
         DEPARTURES.get().clear();
         NetherPortalPlayerAccess.drainMetadata();
+        pruneRetiredDomains();
         if (RegionScheduler.isActive()) NetherPortalPreparation.serviceMain(current);
         else NetherPortalPreparation.serviceQuiescent(current);
         boolean compatibility = !FLAT_DOMAINS.isEmpty();

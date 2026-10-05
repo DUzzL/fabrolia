@@ -76,6 +76,13 @@ public final class NetherSourceCohorts<T> {
         return queued != 0;
     }
 
+    /** Nothing staged and nothing queued (no offered, accepted or acquired cohort). */
+    public boolean isIdle() {
+        synchronized (monitor) {
+            return stage.isEmpty() && queue.isEmpty();
+        }
+    }
+
     /** Detaches the stage after the source phase has closed its writers, without accepting it. */
     public Prepared<T> prepare() {
         Prepared<T> prepared;

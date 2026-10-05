@@ -349,6 +349,32 @@ class NetherSourceCohortsTest {
     }
 
     @Test
+    void idleOnlyWithoutStagedQueuedOrAcquiredWork() {
+        NetherSourceCohorts<String> source = new NetherSourceCohorts<>((item, failure) -> { });
+        assertTrue(source.isIdle());
+        source.stage("open");
+        assertFalse(source.isIdle(), "a staged transfer still owes its seal");
+        NetherSourceCohorts.Prepared<String> offered = source.prepare();
+        assertFalse(source.isIdle(), "an offering cohort is queued");
+        offered.commit();
+        try (NetherSourceCohorts.Cohort<String> head = source.tryAcquireHead()) {
+            assertNotNull(head);
+            assertFalse(source.isIdle(), "an acquired head stays queued until complete");
+            head.close();
+        }
+        assertFalse(source.isIdle(), "a released attempt keeps its head");
+        try (NetherSourceCohorts.Cohort<String> head = source.tryAcquireHead()) {
+            head.complete();
+        }
+        assertTrue(source.isIdle());
+        source.stage("doomed");
+        source.prepare().cancel(new IllegalStateException("publisher failed"));
+        assertFalse(source.isIdle(), "a cancelled head is dropped only by the next poll");
+        assertNull(source.tryAcquireHead());
+        assertTrue(source.isIdle());
+    }
+
+    @Test
     void activityReportsDrainOnCompletionAndOnDroppedCancelledHead() {
         List<Boolean> transitions = new ArrayList<>();
         NetherSourceCohorts<String> source = new NetherSourceCohorts<>(
