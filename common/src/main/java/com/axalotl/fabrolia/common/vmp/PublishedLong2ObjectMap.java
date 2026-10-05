@@ -22,9 +22,7 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
 public final class PublishedLong2ObjectMap<V> {
 
     private static final int MIN_CAPACITY = 64;
-    /** Grow past one entry per bucket: every read is a dependent chain walk
-     *  (spawn attempts query it per position), so chains stay short. */
-    private static final int MAX_AVERAGE_BUCKET_SIZE = 1;
+    private static final int MAX_AVERAGE_BUCKET_SIZE = 2;
 
     private volatile Table<V> table = new Table<>(MIN_CAPACITY);
     private int size;
@@ -83,7 +81,7 @@ public final class PublishedLong2ObjectMap<V> {
         current.buckets.set(index, without(head, key));
         size--;
         if (current.buckets.length() > MIN_CAPACITY
-                && size < current.buckets.length() / 4) {
+                && size < current.buckets.length() / 2) {
             rehash(current.buckets.length() >> 1);
         }
     }
