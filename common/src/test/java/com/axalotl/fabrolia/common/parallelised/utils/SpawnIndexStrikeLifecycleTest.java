@@ -42,6 +42,26 @@ class SpawnIndexStrikeLifecycleTest {
         }
     }
 
+    @Test
+    void aStrikeFromAWalkThatOutlivedTheEntitysMembershipIsNotKept() throws Exception {
+        sun.misc.Unsafe unsafe = unsafe();
+        ServerLevel level = (ServerLevel) unsafe.allocateInstance(ServerLevel.class);
+        Cow mob = (Cow) unsafe.allocateInstance(Cow.class);
+        mob.setId(43);
+        try {
+            SpawnIndex.onTrackingStart(level, mob);
+            // A census iterator already holds the mob; a worker ends its
+            // tracking before the census reaches it and strikes it.
+            SpawnIndex.onTrackingEnd(level, mob);
+            assertFalse(SpawnIndex.strikeForPurge(level, mob));
+
+            assertFalse(SpawnIndex.strikeForPurge(level, mob),
+                    "a strike on an entity outside the visible set must not stay in the ledger");
+        } finally {
+            SpawnIndex.clearLevel(level);
+        }
+    }
+
     private static sun.misc.Unsafe unsafe() throws ReflectiveOperationException {
         Field field = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
         field.setAccessible(true);
