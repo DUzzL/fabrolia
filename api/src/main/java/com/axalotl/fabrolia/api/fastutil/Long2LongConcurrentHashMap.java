@@ -527,6 +527,24 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
         }
     }
 
+    /**
+     * Snapshot entry whose {@code setValue} writes through, as a live fastutil
+     * entry does: vanilla {@code LevelTicks.sortContainersToTick} re-indexes a
+     * container with {@code entry.setValue(head)} while iterating this set.
+     */
+    private final class WriteThroughEntry extends AbstractLong2LongMap.BasicEntry {
+        WriteThroughEntry(long key, long value) {
+            super(key, value);
+        }
+
+        @Override public long setValue(long v) {
+            long old = value;
+            value = v;
+            put(key, v);
+            return old;
+        }
+    }
+
     @Override public ObjectSet<Long2LongMap.Entry> long2LongEntrySet() {
         List<Long2LongMap.Entry> snap = new ArrayList<>(size());
         for (Segment seg : segments) {
@@ -534,7 +552,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
             for (int i = 0; i <= s.mask; i++) {
                 long k = s.keys[i];
                 if (k != EMPTY && k != TOMBSTONE) {
-                    snap.add(new AbstractLong2LongMap.BasicEntry(k, s.vals[i]));
+                    snap.add(new WriteThroughEntry(k, s.vals[i]));
                 }
             }
         }

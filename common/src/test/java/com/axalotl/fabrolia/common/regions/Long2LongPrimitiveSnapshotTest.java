@@ -195,6 +195,21 @@ class Long2LongPrimitiveSnapshotTest {
         }
     }
 
+    /** Vanilla LevelTicks.sortContainersToTick re-indexes through Entry.setValue. */
+    @Test
+    void fastIteratorEntrySetValueWritesThrough() {
+        Long2LongConcurrentHashMap map = new Long2LongConcurrentHashMap();
+        map.defaultReturnValue(Long.MAX_VALUE);
+        map.put(7L, 10L);
+        var iterator = it.unimi.dsi.fastutil.longs.Long2LongMaps.fastIterator(map);
+        var entry = iterator.next();
+        assertEquals(10L, entry.setValue(25L));
+        assertEquals(25L, entry.getLongValue());
+        assertEquals(25L, map.get(7L));
+        iterator.remove();
+        assertFalse(map.containsKey(7L), "removal after setValue must match the new mapping");
+    }
+
     private static long valueFor(long key) {
         return Long.rotateLeft(key * 0x9E3779B97F4A7C15L, 17) ^ 0x5A5A5A5A5A5A5A5AL;
     }
