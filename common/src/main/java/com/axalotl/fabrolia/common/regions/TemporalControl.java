@@ -1163,8 +1163,10 @@ public final class TemporalControl {
                                            long ticks, String label) {
         // Later sprint replaces earlier sprint on the same island (same
         // control-source invariant as rates; merge-shared decrements still
-        // satisfy distinct-lineage sessions concurrently).
-        rs.temporalSessions.removeIf(s2 -> s2.sprintRemaining.get() > 0 && s2.rateNanos == 0
+        // satisfy distinct-lineage sessions concurrently). Finished sprints
+        // anywhere in the level go too: they no longer affect any island.
+        rs.temporalSessions.removeIf(s2 -> finishedSprint(s2)
+                || s2.sprintRemaining.get() > 0 && s2.rateNanos == 0
                 && intersects(s2.cells, island.cells));
         Session s = new Session(label);
         s.sprintRemaining.set(Math.max(0, ticks));
@@ -1173,6 +1175,12 @@ public final class TemporalControl {
         island.pacingGen++;
         PACER.reseed(rs, island);
         return s;
+    }
+
+    /** A sprint session whose ticks are used up and that carries no rate or pin:
+     *  every reader skips it, and its counter only ever decreases. */
+    private static boolean finishedSprint(Session s) {
+        return !s.coherent && s.rateNanos == 0 && s.sprintRemaining.get() <= 0;
     }
 
     /** Pending unit-boundary commit acknowledgements for rate/sprint commands:
@@ -1292,7 +1300,7 @@ public final class TemporalControl {
         if (sessions.isEmpty()) {
             return UnitCompletionDecision.NONE;
         }
-        java.util.ArrayList<Session> decrements = new java.util.ArrayList<>();
+        java.util.ArrayList<Session> decrements = null;
         boolean chain = false;
         for (Session s : sessions) {
             if (s.coherent && intersects(s.cells, island.cells)) {
@@ -1306,6 +1314,7 @@ public final class TemporalControl {
             }
             long rem = s.sprintRemaining.get();
             if (rem > 0 && intersects(s.cells, island.cells)) {
+                if (decrements == null) decrements = new java.util.ArrayList<>(2);
                 decrements.add(s);
                 if (rem > 1) chain = true;
             }
@@ -1315,7 +1324,7 @@ public final class TemporalControl {
                 && RegionScheduler.getServer().tickRateManager().isSprinting()) {
             chain = false;
         }
-        Session[] decrementArray = decrements.isEmpty()
+        Session[] decrementArray = decrements == null
                 ? UnitCompletionDecision.NO_SESSIONS
                 : decrements.toArray(Session[]::new);
         return new UnitCompletionDecision(decrementArray, chain);
@@ -1323,9 +1332,9 @@ public final class TemporalControl {
 
     /**
      * Prepared sprint-counter commit.  Completed zero-valued sessions remain
-     * inert until the next main-side control/remap cleanup; CopyOnWrite removal
-     * and logging are intentionally not allowed to turn a completed vanilla
-     * unit into a later failure.
+     * inert until the next main-side sprint command or topology remap prunes
+     * them; CopyOnWrite removal and logging are intentionally not allowed to
+     * turn a completed vanilla unit into a later failure.
      */
     static final class UnitCompletionDecision {
         private static final Session[] NO_SESSIONS = new Session[0];
@@ -1366,12 +1375,14 @@ public final class TemporalControl {
     /** Rebuild hook: re-resolve every session against fresh topology. A session
      *  intersecting an island expands to cover the WHOLE island; sessions that
      *  now share an island merge deterministically (rate: lower wins via the
-     *  effective-rate scan; sprint: max obligation via shared decrements). */
+     *  effective-rate scan; sprint: max obligation via shared decrements).
+     *  Finished sprints are dropped first. */
     public static void remap(RegionizedServer rs) {
         List<Session> sessions = rs.temporalSessions;
         if (sessions.isEmpty()) {
             return;
         }
+        sessions.removeIf(TemporalControl::finishedSprint);
         for (Session s : sessions) {
             LongOpenHashSet expanded = null;
             for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {

@@ -6,8 +6,7 @@
   "mixins": [
     "server.ServerLevelSleepClockMixin",
     "server.ServerWatchdogMixin",
-    "utils.ClassInstanceMultiMapMixin",
-    "utils.UtilMixin"
+    "utils.ClassInstanceMultiMapMixin"
   ],
   "client": [],
   "server": [],

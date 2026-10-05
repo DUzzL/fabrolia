@@ -425,26 +425,11 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
         }
     }
 
-    /** Incremental per-region holder lists for ChunkMap.forEachBlockTickingChunk
-     *  (item 2 of the
-     *  post-recon list): maintained from updateChunkScheduling on the main
-     *  thread, consumed by the block-tick phase instead of the per-tick
-     *  O(all-chunks) rebuild + regroup. */
-    @Unique
-    private final com.axalotl.fabrolia.common.regions.RegionTickingChunks fabrolia$regionTicking =
-            new com.axalotl.fabrolia.common.regions.RegionTickingChunks(
-                    com.axalotl.fabrolia.common.regions.RegionGrid.DEFAULT_SHIFT);
-
     @Unique
     private ConcurrentLinkedQueue<FabroliaOwnerSafeUnloadTask>
             fabrolia$deferredOwnerUnloads;
     @Unique
     private boolean fabrolia$drainingOwnerUnloads;
-
-    @Override
-    public com.axalotl.fabrolia.common.regions.RegionTickingChunks fabrolia$regionTicking() {
-        return fabrolia$regionTicking;
-    }
 
     @Override
     public Iterable<ChunkHolder> fabrolia$visibleHolders() {
@@ -485,21 +470,6 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
     @Override
     public boolean fabrolia$playerCloseEnoughForSpawning(ServerPlayer player, ChunkPos pos) {
         return this.playerIsCloseEnoughForSpawning(player, pos);
-    }
-
-    // ENTITY_TICKING transition tracking MOVED to SimulationChunkTrackerMixin.setLevel.
-    // The old updateChunkScheduling hook here fired asymmetrically under c2me's rewritten
-    // ticket system — the ENTITY_TICKING-loss transition was lost, so the incremental list
-    // accumulated stale chunks, diverged at the self-check, and permanently latched off
-    // (optimization dead). setLevel is the single mutation point of the exact Long2ByteMap
-    // DistanceManager.forEachEntityTickingChunk reads, which c2me DOES update reliably, so
-    // the list now tracks vanilla's source bit-for-bit. fabrolia$holderForTicking (below)
-    // resolves the holder for a just-promoted chunk from that seam.
-
-    @Override
-    public ChunkHolder fabrolia$holderForTicking(long packedChunkPos) {
-        ChunkHolder h = this.updatingChunkMap.get(packedChunkPos);
-        return h != null ? h : this.visibleChunkMap.get(packedChunkPos);
     }
 
     @Shadow

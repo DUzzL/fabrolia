@@ -181,7 +181,6 @@
     "utils.EntityHandlePortalMixin",
     "utils.FallingBlockTransferMixin",
     "utils.FastUtilSynchronizeMixin",
-    "utils.LockHelperMixin",
     "utils.PortalTicketMixin",
     "utils.ProfilerAccessor",
     "utils.ShufflingListMixin",
