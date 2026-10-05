@@ -1,6 +1,5 @@
 package com.axalotl.fabrolia.common.regions;
 
-import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
