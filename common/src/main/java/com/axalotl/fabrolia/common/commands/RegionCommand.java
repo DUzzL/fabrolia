@@ -1017,8 +1017,8 @@ public final class RegionCommand {
             }
         }
         send(ctx, "spawnable chunks: ", sb.toString(), false);
-        send(ctx, "measure with: ", "/fabrolia regions debug spawnrate (checks vs accepts per category)",
-                false);
+        send(ctx, "measure with: ", "/fabrolia regions debug spawnrate (checks vs accepts per category;"
+                + " the first call starts recording)", false);
     }
 
     private static void send(CommandContext<CommandSourceStack> ctx, String head, String highlight, boolean broadcast) {
