@@ -11,11 +11,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * Partitions one {@link ServerLevel}'s chunks into {@link Region}s by fixed grid.
  *
  * <p>Phase 2+ uses {@link RegionGrid} for routing. Region creation is lazy: the
- * first lookup for a grid cell creates that cell's region. Regions are never
- * removed automatically — they accumulate until the level shuts down. On a wild
- * server with 18 players spread across ~3 dimensions this caps out around a few
- * hundred regions, which is fine for linear scans in the worker dispatcher.
- * If we ever ship a real game with thousands of regions, add LRU eviction here.
+ * first lookup for a grid cell creates that cell's region. Idle regions are
+ * reclaimed by {@link #evictIdle} (see there for when each domain qualifies).
  *
  * <p>Thread safety: lock-free CHM wrapper. The original single-monitor variant
  * serialized every {@link ColorGate#eligible} (8 peeks per claim attempt × 30
