@@ -15,12 +15,37 @@ import java.util.Set;
  * Object2ObjectArrayMap by id) are kept, so iteration order — and with it
  * calculateValue's floating-point summation order — is exactly vanilla's.
  * Every method that reads or writes those maps runs under the instance
- * monitor instead; the clean getValue path (cached value) takes no lock.
+ * monitor instead. A dirty getValue recomputes and clears {@code dirty} under
+ * the monitor too, so a concurrent modifier change cannot be overwritten by a
+ * stale recompute; the clean path (cached value) takes no lock.
  * The monitor is a leaf apart from the instance's own onDirty callback,
  * which only records the instance in its AttributeMap's concurrent sets.
  */
 @Mixin(AttributeInstance.class)
 public class AttributeInstanceMixin {
+
+    @org.spongepowered.asm.mixin.Shadow
+    private boolean dirty;
+
+    @org.spongepowered.asm.mixin.Shadow
+    private double cachedValue;
+
+    /** Equal identity hashes of two instances: one global order for replaceFrom. */
+    @org.spongepowered.asm.mixin.Unique
+    private static final Object fabrolia$REPLACE_TIE = new Object();
+
+    @WrapMethod(method = "getValue")
+    private double fabrolia$getValue(Operation<Double> original) {
+        if (!this.dirty) return this.cachedValue;
+        synchronized (this) {
+            return original.call();
+        }
+    }
+
+    @WrapMethod(method = "setBaseValue")
+    private synchronized void fabrolia$setBaseValue(double value, Operation<Void> original) {
+        original.call(value);
+    }
 
     @WrapMethod(method = "getModifiers(Lnet/minecraft/world/entity/ai/attributes/AttributeModifier$Operation;)Ljava/util/Map;")
     private synchronized Map<Identifier, AttributeModifier> fabrolia$modifiersFor(
@@ -97,7 +122,25 @@ public class AttributeInstanceMixin {
     @WrapMethod(method = "replaceFrom")
     private void fabrolia$replaceFrom(AttributeInstance other, Operation<Void> original) {
         Object self = this;
-        Object first = System.identityHashCode(self) <= System.identityHashCode(other) ? self : other;
+        if (other == self) {
+            synchronized (self) {
+                original.call(other);
+            }
+            return;
+        }
+        int selfHash = System.identityHashCode(self);
+        int otherHash = System.identityHashCode(other);
+        if (selfHash == otherHash) {
+            synchronized (fabrolia$REPLACE_TIE) {
+                synchronized (self) {
+                    synchronized (other) {
+                        original.call(other);
+                    }
+                }
+            }
+            return;
+        }
+        Object first = selfHash < otherHash ? self : other;
         Object second = first == self ? other : self;
         synchronized (first) {
             synchronized (second) {
