@@ -66,6 +66,11 @@ Vanilla parity restored:
 Fixes and leaks:
 - Vanilla scheduled-tick re-indexing through `Long2LongMap` entry `setValue`
   no longer throws `UnsupportedOperationException`.
+- With Lithium, a game-event listener (sculk sensor, allay, warden …)
+  registered while another thread removed the chunk's last listener could
+  land in a section map Lithium was discarding and never receive events until
+  the chunk reloaded. Registry get-or-create and removal now run under the
+  chunk's monitor.
 - Mobs and players that got a spawn-census purge strike and then died,
   despawned, unloaded or left the dimension are no longer kept referenced
   until the level unloads.
