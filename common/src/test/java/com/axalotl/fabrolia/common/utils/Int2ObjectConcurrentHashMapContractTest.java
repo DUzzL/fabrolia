@@ -69,6 +69,8 @@ final class Int2ObjectConcurrentHashMapContractTest {
     void clearDoesNotEraseCountOfInsertionIntoAlreadyClearedStripe() throws Exception {
         var map = new Int2ObjectConcurrentHashMap<String>(16, 16);
         PausedClearMap<String> pause = new PausedClearMap<>();
+        // Stripes are created on first write: materialize stripe 15 before swapping its map.
+        map.remove(15);
         Field segments = Int2ObjectConcurrentHashMap.class.getDeclaredField("segments");
         segments.setAccessible(true);
         ((Object[]) segments.get(map))[15] = pause;

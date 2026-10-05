@@ -114,16 +114,6 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
         }
     }
 
-    /** Lock of a stripe for a whole-map pass, or null when the stripe holds no map. */
-    private StampedLock traversalLock(int seg) {
-        StampedLock lock = existingLock(seg);
-        if (lock != null) return lock;
-        synchronized (segments) {
-            if (segments[seg] == null) return null;
-        }
-        return createStripe(seg);
-    }
-
     static int defaultSegmentCount() {
         return nextPowerOf2(Math.max(16, Runtime.getRuntime().availableProcessors()));
     }
@@ -188,7 +178,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override
     public boolean containsValue(Object value) {
         for (int i = 0; i < segmentCount; i++) {
-            StampedLock lock = traversalLock(i);
+            StampedLock lock = existingLock(i);
             if (lock == null) continue;
             long stamp = lock.readLock();
             try { if (segments[i].containsValue(value)) return true; }
@@ -384,7 +374,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override
     public void clear() {
         for (int i = 0; i < segmentCount; i++) {
-            StampedLock lock = traversalLock(i);
+            StampedLock lock = existingLock(i);
             if (lock == null) continue;
             long stamp = lock.writeLock();
             try {
@@ -405,7 +395,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
             super.defaultReturnValue(rv);
         }
         for (int i = 0; i < segmentCount; i++) {
-            StampedLock lock = traversalLock(i);
+            StampedLock lock = existingLock(i);
             if (lock == null) continue;
             long stamp = lock.writeLock();
             try { segments[i].defaultReturnValue(rv); }
@@ -418,7 +408,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override public Int2ObjectMap.FastEntrySet<V> int2ObjectEntrySet() {
         Int2ObjectOpenHashMap<V> snap = new Int2ObjectOpenHashMap<>(size());
         for (int i = 0; i < segmentCount; i++) {
-            StampedLock lock = traversalLock(i);
+            StampedLock lock = existingLock(i);
             if (lock == null) continue;
             long stamp = lock.readLock();
             try {
@@ -433,7 +423,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     public @NonNull IntSet keySet() {
         IntOpenHashSet keys = new IntOpenHashSet(size());
         for (int i = 0; i < segmentCount; i++) {
-            StampedLock lock = traversalLock(i);
+            StampedLock lock = existingLock(i);
             if (lock == null) continue;
             long stamp = lock.readLock();
             try {
@@ -496,7 +486,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
             snapshotKeys = new int[initialSize];
             snapshotValues = (V[]) new Object[initialSize];
             for (int i = 0; i < segmentCount; i++) {
-                StampedLock lock = traversalLock(i);
+                StampedLock lock = existingLock(i);
                 if (lock == null) continue;
                 long stamp = lock.readLock();
                 try {
@@ -561,7 +551,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
 
     public void forEach(IntObjectConsumer<V> action) {
         for (int i = 0; i < segmentCount; i++) {
-            StampedLock lock = traversalLock(i);
+            StampedLock lock = existingLock(i);
             if (lock == null) continue;
             long stamp = lock.readLock();
             try {
@@ -574,7 +564,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     @Override
     public void forEach(BiConsumer<? super Integer, ? super V> action) {
         for (int i = 0; i < segmentCount; i++) {
-            StampedLock lock = traversalLock(i);
+            StampedLock lock = existingLock(i);
             if (lock == null) continue;
             long stamp = lock.readLock();
             try {
@@ -597,7 +587,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     public int hashCode() {
         int h = 0;
         for (int i = 0; i < segmentCount; i++) {
-            StampedLock lock = traversalLock(i);
+            StampedLock lock = existingLock(i);
             if (lock == null) continue;
             long stamp = lock.readLock();
             try {
@@ -615,7 +605,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
         Int2ObjectConcurrentHashMap<V> c = new Int2ObjectConcurrentHashMap<>(size(), segmentCount);
         c.defaultReturnValue(defaultReturnValue());
         for (int i = 0; i < segmentCount; i++) {
-            StampedLock lock = traversalLock(i);
+            StampedLock lock = existingLock(i);
             if (lock == null) continue;
             long stamp = lock.readLock();
             try {
@@ -632,7 +622,7 @@ public final class Int2ObjectConcurrentHashMap<V> extends Int2ObjectOpenHashMap<
     public boolean trim(int n) {
         boolean all = true;
         for (int i = 0; i < segmentCount; i++) {
-            StampedLock lock = traversalLock(i);
+            StampedLock lock = existingLock(i);
             if (lock == null) continue;
             long stamp = lock.writeLock();
             try {

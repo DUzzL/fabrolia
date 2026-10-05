@@ -531,6 +531,8 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
      * Snapshot entry whose {@code setValue} writes through, as a live fastutil
      * entry does: vanilla {@code LevelTicks.sortContainersToTick} re-indexes a
      * container with {@code entry.setValue(head)} while iterating this set.
+     * The write is conditional on the snapshot value: a mapping another thread
+     * changed or removed since the snapshot is left as that thread wrote it.
      */
     private final class WriteThroughEntry extends AbstractLong2LongMap.BasicEntry {
         WriteThroughEntry(long key, long value) {
@@ -539,8 +541,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
 
         @Override public long setValue(long v) {
             long old = value;
-            value = v;
-            put(key, v);
+            if (replace(key, old, v)) value = v;
             return old;
         }
     }
