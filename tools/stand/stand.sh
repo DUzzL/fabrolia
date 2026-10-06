@@ -9,7 +9,7 @@
 #
 # Environment:
 #   FABROLIA_STAND_HOME   stand data dir (template/, datapacks/, fabrolia.toml, extra-mods/, runs/)
-#                         default: <repo>/../Fabrolia-stand
+#                         default: <repo>/stand
 #   FABROLIA_STAND_JAVA   JDK 25 java binary (default: java on PATH)
 #   FABROLIA_STAND_SERVER_CPUS / FABROLIA_STAND_CLIENT_CPUS   taskset lists (see standenv.py)
 #   FABROLIA_STAND_XMX    server heap (default 16G)
@@ -19,7 +19,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-export FABROLIA_STAND_HOME="$(cd "${FABROLIA_STAND_HOME:-$REPO/../Fabrolia-stand}" && pwd)"
+export FABROLIA_STAND_HOME="$(cd "${FABROLIA_STAND_HOME:-$REPO/stand}" && pwd)"
 export FABROLIA_STAND_JAVA="${FABROLIA_STAND_JAVA:-$(command -v java || true)}"
 [ -n "$FABROLIA_STAND_JAVA" ] || { echo "stand: no java; set FABROLIA_STAND_JAVA (JDK 25)" >&2; exit 2; }
 "$FABROLIA_STAND_JAVA" -version 2>&1 | grep -q 'version "25' \

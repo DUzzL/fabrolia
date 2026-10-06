@@ -67,6 +67,9 @@ Every change touching runtime code: tests + `verify`. Threading/performance chan
 
 ## Repository map
 
+- `release/` (not in git): the production jars — Fabrolia (fabric) and MCFC — with `SHA256SUMS`.
+- `stand/` (not in git): stand data (server template, datapacks, config, runs); see `docs/STAND.md`.
+
 - `docs/CODEMAP.md`: threads, tick walkthrough, subsystems → files → tests, "where to look when".
 - `docs/ASYNC-ISLANDS.md`: the island design and its invariants (sections 0, 2, 12–17 are the
   ones edits usually need).
@@ -77,8 +80,8 @@ Every change touching runtime code: tests + `verify`. Threading/performance chan
 ## Release and install
 
 1. Tests + `verify` ALL PASS (+ `perf` comparison for performance work).
-2. `git tag -a prod/<name>` on the released commit; copy both jars and the MCFC jar into
-   `../Fabrolia-releases/<name>/` with `sha256sum *.jar > SHA256SUMS`.
+2. Move the tag `prod/current` to the released commit (`git tag -fa prod/current`) and replace
+   the jars in `release/` (Fabrolia fabric jar + MCFC jar), then `sha256sum *.jar > SHA256SUMS`.
 3. Install with the server stopped: replace `mods/fabrolia-fabric-*.jar`, start. A jar
    overwritten under a running server breaks its next class load (seen as a crash on
    `/stop`); if the server is live, copy to a temp name in `mods/` and `mv` it over the old
@@ -89,8 +92,7 @@ branch `local/optimize-get-all-entities-pVriB`.
 
 ## Git
 
-`main` = production. Tags: `prod/opt-max`, `prod/opt-max2`, `prod/opt-max3`,
-`prod/opt-max3.1` (production builds, oldest first); `archive/*` = unmerged experiments.
+`main` = production; tag `prod/current` = the commit of the jar in `release/`.
 `origin` is the upstream project (AxalotLDev/Async); this fork is not pushed there.
 
 ## Production facts

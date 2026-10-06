@@ -10,7 +10,7 @@ proven at runtime; unit tests alone do not prove a threading change.
 |---|---|
 | `tools/stand/stand.sh` | entry point (perf / verify / export / build / run) |
 | `tools/stand/*.py` | harness copied into every run: transport (`native-transport.py`), clients (`perf-wire-client.py`), drivers, scenarios, host settings (`standenv.py`) |
-| `$FABROLIA_STAND_HOME` (default `../Fabrolia-stand`) | data, not in git: `template/` (server inputs), `datapacks/`, `fabrolia.toml`, `extra-mods/` (MCFC), `runs/` |
+| `stand/` (or `$FABROLIA_STAND_HOME`) | data, not in git: `template/` (server inputs), `datapacks/`, `fabrolia.toml`, `extra-mods/` (MCFC), `runs/` |
 
 Each run is `runs/<NAME>/` with `server/` (a real server dir), `wire-<client>.jsonl`
 (client logs), `<NAME>.out` (driver output) next to it, and the driver report.

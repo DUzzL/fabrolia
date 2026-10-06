@@ -30,3 +30,7 @@ __pycache__/
 # logs and local runtime output
 logs/
 .mixin.out/
+
+# local data next to the code (not versioned)
+/stand/
+/release/
