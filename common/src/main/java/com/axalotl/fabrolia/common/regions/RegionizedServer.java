@@ -129,20 +129,10 @@ public final class RegionizedServer {
      *  back to globalDomain after an ON→OFF flip). */
     private boolean domainsIslandized;
 
-    public long epoch() { return globalDomain.epoch; }
-
-    /** Is this domain THIS level's global timeline? (package identity check
-     *  for the isHandlingTick redirect.) */
-    public boolean ownsGlobalDomain(Object d) {
-        return d == globalDomain;
-    }
-
     /** Seal this level's global-lane cross-dimension stage (main batch end). */
     public void sealGlobalStage() {
         CrossDimArrivals.seal(globalDomain);
     }
-
-    public long dispatchedEpoch() { return globalDomain.dispatchedEpoch; }
 
     /** Domain for a newly materialized target cell. The immutable topology
      *  snapshot, not the publishing worker's claim or coordinator context,
@@ -277,10 +267,6 @@ public final class RegionizedServer {
     int entityPendingCount() {
         return globalDomain.isEventEntityEpoch(globalDomain.epoch)
                 ? globalDomain.entityPending.get() : 0;
-    }
-
-    long entityBarrierAgeNanos(long now) {
-        return now - globalDomain.entityBarrierArmedNanos;
     }
 
     public void onLevelTickStart() {
@@ -2609,17 +2595,6 @@ public final class RegionizedServer {
         d.deferredOps.add(op);
     }
 
-    /** Target-less fallback: route by the CALLING context's timeline (a worker
-     *  mid-phase defers into its own island; anything else goes global). */
-    public void deferCrossRegion(Runnable op) {
-        EpochDomain d = null;
-        if (Thread.currentThread() instanceof RegionWorkerThread w) {
-            Region r = w.currentRegion;
-            d = r != null ? r.domain : w.currentDomain;
-        }
-        (d != null ? d : globalDomain).deferredOps.add(op);
-    }
-
     /** Replay GLOBAL-domain deferred effects on the server thread AFTER the region
      *  phase barrier, when every region is quiescent. Replays run on main, so
      *  CrossRegionGuard sees no claimed worker and lets them propagate fully and
@@ -2713,13 +2688,6 @@ public final class RegionizedServer {
     /** Pure v2 ownership predicate: never creates/notices a region as a side effect. */
     boolean regionMatches(Region region, ChunkPos pos) {
         return region != null && region.gridKey == regionizer.grid.keyFor(pos);
-    }
-
-    /** Item-sync monitor for the region owning this chunk (create-if-absent; skips the
-     *  synchronized noteChunk debug bookkeeping of {@link #regionFor(ChunkPos)} — this is
-     *  called per item interaction). See {@link FabroliaLocks#itemLockOr}. */
-    public Object itemMonitor(long packedChunkPos) {
-        return regionizer.regionForGridKey(regionizer.grid.keyFor(packedChunkPos)).lock;
     }
 
     public Region regionFor(long packedChunkPos) {
@@ -3301,7 +3269,7 @@ public final class RegionizedServer {
             // ticks — every island runs exactly ONE complete unit per main
             // sprint tick, awaited HERE at the tick barrier (after complete
             // units, never between phases). Local sprint chaining pauses
-            // (TemporalControl.onUnitComplete) so counts stay exact. Topology
+            // (TemporalControl.prepareUnitCompletion) so counts stay exact. Topology
             // committed above at the tick head = the sprint-tick boundary.
             if (level.getServer().tickRateManager().isSprinting()) {
                 runGlobalSprintIslandFrame(due);

@@ -39,54 +39,6 @@ public final class PortalStuckProbe {
      *  (a bouncing cart carries ≈0.4 b/t; this is two orders down). */
     private static final double AT_REST = 0.02;
 
-    private static final org.slf4j.Logger LOG =
-            org.slf4j.LoggerFactory.getLogger("Fabrolia-PortalStuck");
-
-    /** Speed below which a portal entity counts as physically stuck (a cycling
-     *  loader cart carries ≈0.4 b/t; a genuine trap sits at ~0). */
-    private static final double STUCK_SPEED = 0.05;
-
-    /** Auto-capture (main thread): an entity has been continuously portal-active
-     *  far past a normal crossing AND is now physically stuck — at rest in/near
-     *  the portal, or fallen out of the level lookup (its chunk lapsed). Dumps
-     *  the full discriminator set automatically so the operator's field failure
-     *  records itself with no command needed. Returns true iff it fired (so the
-     *  caller marks it logged only for a REAL stuck episode — a healthy loader
-     *  cart is continuously portal-active too, but never at rest). */
-    public static boolean autoCaptureIfStuck(ServerLevel level, java.util.UUID uuid, long secondsActive) {
-        try {
-            Entity e = level.getEntity(uuid);
-            // Not in this level's lookup = it legitimately crossed dimensions (a
-            // crossing is indistinguishable from an unload by lookup alone), or
-            // its registry entry is stale — NOT a reliable trap signal. Skip;
-            // its own level's note will re-register it, or the entry prunes.
-            if (e == null) {
-                return false;
-            }
-            double speed = e.getDeltaMovement().length();
-            boolean insidePortal = inPortal(level, e);
-            // The unambiguous trap: present, AT REST, and physically INSIDE a
-            // portal block (where vanilla's cooldown re-arm holds it). A healthy
-            // cart is moving; a rail-coasting or bouncing cart is not in a portal
-            // block. Only this fires — no cross-dim / cooldown false positives.
-            if (speed >= STUCK_SPEED || !insidePortal) {
-                return false;
-            }
-            StringBuilder sb = new StringBuilder(512);
-            sb.append("AUTO-CAPTURE: entity ").append(uuid)
-              .append(" STUCK at rest inside portal (speed=").append(String.format("%.4f", speed))
-              .append(", portal-active ~").append(secondsActive).append("s) in ")
-              .append(level.dimension().identifier());
-            sb.append("\n  ").append(e.getType().toString()).append(" id=").append(e.getId());
-            appendDiscriminators(sb, level, e, speed, insidePortal);
-            LOG.warn("[portalstuck]\n{}", sb);
-            return true;
-        } catch (Throwable t) {
-            LOG.warn("[portalstuck] auto-capture failed for {}: {}", uuid, t.toString());
-            return false;
-        }
-    }
-
     public static String scan(MinecraftServer server) {
         StringBuilder sb = new StringBuilder(256);
         int found = 0, trapped = 0;

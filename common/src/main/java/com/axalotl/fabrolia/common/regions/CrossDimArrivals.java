@@ -349,12 +349,6 @@ public final class CrossDimArrivals {
         return d != null && d.owner != null ? d.owner.gen : 0L;
     }
 
-    /** Clock-domain key of the CURRENT execution context (worker: its
-     *  island; main/global: 0) — for callers that capture stamps early. */
-    public static long currentDomainKey() {
-        return domainKeyOf(currentSourceDomain());
-    }
-
     private static EpochDomain currentSourceDomain() {
         Thread t = Thread.currentThread();
         if (t instanceof RegionWorkerThread w) {

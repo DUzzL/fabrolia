@@ -1,7 +1,6 @@
 package com.axalotl.fabrolia.common.regions;
 
 import java.util.concurrent.CompletableFuture;
-import java.util.function.BooleanSupplier;
 
 public final class VmpTrackingFanoutGate {
    private volatile Throwable failure;
@@ -20,24 +19,6 @@ public final class VmpTrackingFanoutGate {
          RegionScheduler.runSuccessBodyIfHealthy(body);
       } catch (Throwable fatal) {
          rethrow(this.publishFailure(fatal));
-      }
-   }
-
-   public boolean callNext(BooleanSupplier body) {
-      if (body == null) {
-         throw new NullPointerException("body");
-      }
-
-      Throwable observed = this.failureOrNull();
-      if (observed != null) {
-         rethrow(observed);
-      }
-
-      try {
-         return RegionScheduler.callSuccessBooleanIfHealthy(body);
-      } catch (Throwable fatal) {
-         rethrow(this.publishFailure(fatal));
-         return false;
       }
    }
 

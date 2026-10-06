@@ -1339,15 +1339,6 @@ public final class RegionCommand {
 
     // ---- temporal control / profiling (2026-07-14) ----------------------
 
-    private static com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland fabroliaIslandAt(
-            net.minecraft.commands.CommandSourceStack src,
-            net.minecraft.server.level.ServerLevel lvl, int bx, int bz) {
-        var rs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(lvl);
-        if (rs == null || !rs.asyncActive) return null;
-        return rs.islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(
-                new net.minecraft.core.BlockPos(bx, 0, bz)));
-    }
-
     private static int islandList(net.minecraft.commands.CommandSourceStack src) {
         int n = 0;
         for (net.minecraft.server.level.ServerLevel lvl : src.getServer().getAllLevels()) {

@@ -57,10 +57,6 @@ public final class SpawnCapLanes {
         this.globalLane = slot;
     }
 
-    public int[] globalLane() {
-        return globalLane;
-    }
-
     /** Sum of every island slot except {@code exclude}'s (the caller adds its
      *  own fresh census), plus the global lane when requested. */
     public int[] sum(List<IslandRegistry.PIsland> islands, IslandRegistry.PIsland exclude,

@@ -1520,12 +1520,6 @@ public final class IslandCommands {
         throw (T) failure;
     }
 
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> RuntimeException rethrowAs(
-            Throwable failure) throws T {
-        throw (T) failure;
-    }
-
     /** Exhaustively release one exact frame.  Skip-claim authority is revoked
      * before the first physical claim; acquisition intent remains until every
      * claim is free, preventing a new autonomous successor in the release gap. */

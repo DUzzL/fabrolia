@@ -478,24 +478,6 @@ public final class TemporalControl {
             arm(rs, island, deadline, fireAt, false);
         }
 
-        /** Unit-boundary publication. This deliberately replaces the attempt
-         *  ticket before the claim is released; its later receipt observation therefore
-         *  cannot create a second follower. */
-        void afterUnit(RegionizedServer rs, IslandRegistry.PIsland island, long deadlineNanos) {
-            PreparedArm prepared = prepareAfterUnit(rs, island, deadlineNanos);
-            try {
-                if (!RegionScheduler.commitUnitSuccessIfCurrent(rs, prepared::commit)) {
-                    prepared.cancel(null);
-                    cancel(island);
-                }
-            } catch (Throwable armFailure) {
-                Throwable failure = RegionScheduler.publishFatalAndSelectWinner(
-                        rs, armFailure);
-                failure = prepared.cancel(failure);
-                TemporalControl.<RuntimeException>rethrow(failure);
-            }
-        }
-
         PreparedArm prepareAfterUnit(RegionizedServer rs, IslandRegistry.PIsland island,
                                      long deadlineNanos) {
             if (!eligible(rs, island)) {
@@ -1081,12 +1063,6 @@ public final class TemporalControl {
         PACER.ensure(rs, island);
     }
 
-    /** Unit completion is the normal authority for the next ordinary deadline. */
-    static void armAfterUnit(RegionizedServer rs, IslandRegistry.PIsland island,
-                             long deadlineNanos) {
-        PACER.afterUnit(rs, island, deadlineNanos);
-    }
-
     /** Prepare, but do not yet accept, the unit's ordinary-cadence successor. */
     static Pacer.PreparedArm prepareArmAfterUnit(RegionizedServer rs,
                                                  IslandRegistry.PIsland island,
@@ -1362,14 +1338,6 @@ public final class TemporalControl {
                 } while (!session.sprintRemaining.compareAndSet(remaining, remaining - 1));
             }
         }
-    }
-
-    /** Compatibility facade for non-transactional callers outside the unit. */
-    public static boolean onUnitComplete(RegionizedServer rs, IslandRegistry.PIsland island) {
-        UnitCompletionDecision decision = prepareUnitCompletion(
-                rs, island, island.logicalTick);
-        decision.commit();
-        return decision.chain();
     }
 
     /** Rebuild hook: re-resolve every session against fresh topology. A session

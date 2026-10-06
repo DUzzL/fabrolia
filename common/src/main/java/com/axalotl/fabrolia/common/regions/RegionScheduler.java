@@ -1479,26 +1479,6 @@ public final class RegionScheduler {
     }
 
     /**
-     * Publishes a Main-owned entity body with a completion edge which runs on
-     * physical Main after the body but before its pool obligation is released.  A5 uses
-     * this edge to keep island admission closed until an ordered fallback body has
-     * actually finished; merely enqueueing the body is not a completed handoff.
-     */
-    static void queueMainSyncTick(Entity e, Runnable completion) {
-        queueMainSyncTick(e, () -> true, completion, false, false);
-    }
-
-    /**
-     * A cancelable Main body.  A closed admission is a successful no-op and still
-     * runs completion; a failed body is fail-stop and must not publish a success
-     * transition from that completion edge.
-     */
-    static void queueMainSyncTick(Entity e, BooleanSupplier admission,
-                                  Runnable completion) {
-        queueMainSyncTick(e, admission, completion, false, false);
-    }
-
-    /**
      * A5 transition body with the exact vanilla crash boundary.  Compatibility-lane
      * entities and A5 players both propagate their vanilla crash unchanged.  The
      * guarded variant additionally authenticates the exact A5 body; neither lane may
@@ -1519,6 +1499,15 @@ public final class RegionScheduler {
         queueMainSyncTick(e, admission, completion, false, true);
     }
 
+    /**
+     * Publishes a Main-owned entity body with a completion edge which runs on
+     * physical Main after the body but before its pool obligation is released.  A5 uses
+     * this edge to keep island admission closed until an ordered fallback body has
+     * actually finished; merely enqueueing the body is not a completed handoff.
+     * A closed admission is a successful no-op and still runs completion; a failed
+     * body is fail-stop and must not publish a success transition from that
+     * completion edge.
+     */
     private static void queueMainSyncTick(Entity e, BooleanSupplier admission,
                                           Runnable completion, boolean vanillaGuarded,
                                           boolean allIslandsFenced) {
@@ -2805,15 +2794,6 @@ public final class RegionScheduler {
             return;
         }
         executeAt(sl, entity.chunkPosition(), task);
-    }
-
-    public static void executeGlobal(Runnable task) {
-        runRootInlineIfHealthy(task);
-    }
-
-    public static int regionCountFor(ServerLevel level) {
-        RegionizedServer rs = active ? PER_LEVEL.get(level) : null;
-        return rs == null ? 0 : rs.regionCount();
     }
 
     public static void wakeWorkers() {

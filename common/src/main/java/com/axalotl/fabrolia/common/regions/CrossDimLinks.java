@@ -882,8 +882,4 @@ public final class CrossDimLinks {
     static List<Link> linksView() {
         return LINKS;
     }
-
-    static List<Coupling> couplingsView() {
-        return COUPLINGS;
-    }
 }

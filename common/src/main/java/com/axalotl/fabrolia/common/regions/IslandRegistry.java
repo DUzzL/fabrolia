@@ -194,24 +194,6 @@ public final class IslandRegistry {
             }
         }
 
-        ArrayList<net.minecraft.world.level.BlockEventData> drainPendingBlockEvents() {
-            synchronized (pendingBlockEvents) {
-                if (pendingStampedEvents.isEmpty()) return null;
-                ArrayList<net.minecraft.world.level.BlockEventData> out =
-                        new ArrayList<>(pendingStampedEvents.size());
-                for (StampedEvent se : pendingStampedEvents) {
-                    out.add(se.ev());
-                }
-                pendingStampedEvents.clear();
-                return out;
-            }
-        }
-
-        ArrayList<net.minecraft.world.level.BlockEventData> takeAllBlockEvents() {
-            return drainPendingBlockEvents();
-        }
-
-        /** Coordinator, once per unit: swap out mid-unit registrations. */
         /** Coordinator-only: fresh BEs still waiting for MAIN's beCells fold
          *  (pendingBeAdds drains at MAIN cadence). An island running faster
          *  than main (per-island rate, sprint, /tick rate ramps) must keep
@@ -221,6 +203,7 @@ public final class IslandRegistry {
         final ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> carryBes =
                 new ArrayList<>(4);
 
+        /** Coordinator, once per unit: swap out mid-unit registrations. */
         ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> drainPendingUnitBes() {
             synchronized (pendingUnitBes) {
                 if (pendingUnitBes.isEmpty()) return null;

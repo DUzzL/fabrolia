@@ -163,17 +163,6 @@ final class PlayerTickPhase<P, S> {
         return true;
     }
 
-    synchronized void failUnsubmittedWorker(Claim<P, S> claim, Throwable failure) {
-        if (claim == null || claim.state != State.RUNNING || claim.vanillaConsumerEntered) {
-            rejectLocked(claim, "invalid unsubmitted worker failure");
-            return;
-        }
-        claim.state = State.FAILED;
-        running--;
-        failLocked(failure);
-        notifyAll();
-    }
-
     /** Fail any claim whose vanilla body has definitely not entered yet. */
     synchronized void failBeforeBody(Claim<P, S> claim, Throwable failure) {
         if (claim == null) {
