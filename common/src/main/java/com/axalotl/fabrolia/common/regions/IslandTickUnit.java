@@ -380,12 +380,6 @@ public final class IslandTickUnit {
         return failure;
     }
 
-    /** True when enough of the unit exists for {@code asyncIslands} to be
-     *  enabled (gates the /fabrolia regions async toggle). */
-    public static boolean unitImplemented() {
-        return true;
-    }
-
     /**
      * Submit one tick unit for {@code island} to the pool's unit lane.
      * The returned poll-only receipt becomes terminal after the unit's mandatory

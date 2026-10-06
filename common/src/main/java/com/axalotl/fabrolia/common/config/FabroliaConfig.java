@@ -124,11 +124,10 @@ public class FabroliaConfig {
     // same per-region [spawn][random][entities] FIFO and serial entity order. false = legacy
     // group dispatch (rollback lever). Tunable live: /fabrolia regions eventsched.
     public static boolean regionEventScheduler = true;
-    // A2 async islands: independent per-island deadline ticking. DEFAULT OFF and
-    // the /fabrolia regions async toggle REFUSES to enable until the island tick
-    // unit's phase rewire (IslandTickUnit increments 1-4, see
-    // docs/ASYNC-ISLANDS.md + the a2 checkpoint) is complete — enabling a
-    // partial unit would violate the ownership model this exists to enforce.
+    // A2 async islands: independent per-island deadline ticking. DEFAULT OFF;
+    // /fabrolia regions async enables it (requires the event scheduler + color
+    // gate) and persists the choice — see asyncIslandsPersister below and
+    // docs/ASYNC-ISLANDS.md.
     public static volatile boolean asyncIslands = false;
     /** OPERATOR-PREFERENCE PERSISTENCE (2026-07-18 v2, corrected semantics):
      *  /fabrolia regions async [on|off] sets {@link #asyncIslands} AND

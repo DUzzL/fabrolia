@@ -1370,10 +1370,6 @@ public final class RegionCommand {
                     "REFUSED — scheduler modes may only change on the server thread", false);
             return 0;
         }
-        if (turningOn && !com.axalotl.fabrolia.common.regions.IslandTickUnit.unitImplemented()) {
-            send(ctx, "async islands: ", "unavailable (tick unit incomplete in this build)", false);
-            return 0;
-        }
         if (turningOn && (!FabroliaConfig.regionEventScheduler || !FabroliaConfig.useRegionColorGate())) {
             send(ctx, "async islands: ", "requires the event scheduler + color gate (both on by default)", false);
             return 0;
