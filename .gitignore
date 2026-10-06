@@ -22,3 +22,12 @@ build
 eclipse
 run
 runs
+
+# runtime output (dev/smoke servers, Mixin debug export, JVM dumps)
+logs/
+crash-reports/
+.mixin.out/
+runtime-smoke.*/
+*.log
+*.hprof
+hs_err_pid*
