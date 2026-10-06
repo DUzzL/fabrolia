@@ -12,15 +12,11 @@ import org.objectweb.asm.tree.MethodNode;
 
 import java.io.InputStream;
 import java.security.MessageDigest;
-import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Exact Minecraft 26.3 packet-entry census. This is deliberately two-way:

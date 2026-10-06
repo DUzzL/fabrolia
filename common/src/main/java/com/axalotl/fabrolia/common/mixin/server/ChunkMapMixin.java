@@ -16,7 +16,6 @@ import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.PlayerMap;
 import net.minecraft.core.SectionPos;
 import net.minecraft.util.datafix.DataFixTypes;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
 import net.minecraft.world.level.chunk.storage.SimpleRegionStorage;
 import org.spongepowered.asm.mixin.*;
