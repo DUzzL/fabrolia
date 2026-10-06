@@ -555,7 +555,6 @@ public final class NetherPortalTransfers {
         Source queuedSource;
         NetherPortalPreparation.Request preparation;
         NetherPortalPlayerAccess.Reservation players;
-        Entity result;
         boolean denied;
         boolean bodyEntered;
         private boolean attempting;
@@ -837,7 +836,7 @@ public final class NetherPortalTransfers {
                     state.set(ENTERED);
                     bodyEntered = true;
                 }
-                result = root.teleport(transition);
+                root.teleport(transition);
                 executeNanos = System.nanoTime();
                 root.portalProcess = null;
                 captureMetadataLocations();
