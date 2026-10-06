@@ -84,6 +84,11 @@ Every change touching runtime code: tests + `verify`. Threading/performance chan
 - `CHANGELOG.md`: what changed and why, newest first; every user-visible change goes here.
 - `tools/stand/`, `tools/spark/`: stand and profile tooling. `docs/C2ME-FLAG_BROKEN-STRAND.md`:
   a C2ME bug Fabrolia contains (`/fabrolia regions chunkheal`).
+- `../Rustmi` (production mod) compiles against and reflects on Fabrolia: `regions.{Region,
+  RegionGrid,RegionScheduler,RegionTickHooks,RegionWorkerThread}`, `SensorCandidateBridge`,
+  `LocalCapBridge`, `ParallelProcessor.executor`/`pumpUntilDone`; Fabrolia's
+  `DistanceSortBridge` calls Rustmi by name. Renaming these breaks Rustmi's build or silently disables its integration: update
+  `../Rustmi/libs/fabrolia-compile.jar` and run its harness (`../Rustmi/AGENTS.md`).
 
 ## Release and install
 
