@@ -50,8 +50,6 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
 import com.axalotl.fabrolia.common.utils.SpawnFutureTaker;
 import com.axalotl.fabrolia.common.regions.ChunkRegionKeyed;
-import com.axalotl.fabrolia.common.regions.ChunkTicketDebugAccess;
-import com.axalotl.fabrolia.common.regions.CompletedSimulationView;
 import com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks;
 import com.axalotl.fabrolia.common.regions.GlobalBlockUpdateDrain;
 import com.axalotl.fabrolia.common.regions.IslandBlockUpdateAccess;
@@ -71,7 +69,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
 
 @Mixin(value = ServerChunkCache.class, priority = 1500)
 public abstract class ServerChunkCacheMixin extends ChunkSource implements SpawnFutureTaker,
-        IslandBlockUpdateAccess, ChunkTicketDebugAccess, IslandChunkPassAccess {
+        IslandBlockUpdateAccess, IslandChunkPassAccess {
 
     @Shadow @Final public ChunkMap chunkMap;
     @Shadow @Final
@@ -97,79 +95,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         // — see TicketStorageSyncMixin for the race this closes.
         ((com.axalotl.fabrolia.common.regions.TicketLockBind) this.ticketStorage)
                 .fabrolia$setTicketLock(this.chunkMap);
-    }
-
-    @Override
-    public int fabrolia$liveSimulationLevel(long chunkKey) {
-        synchronized (this.chunkMap) {
-            SimulationChunkTracker tracker =
-                    ((DistanceManagerAccessor) this.distanceManager)
-                            .fabrolia$simulationChunkTracker();
-            return tracker.getLevel(ChunkPos.unpack(chunkKey));
-        }
-    }
-
-    @Override
-    public String fabrolia$ticketDebug(long chunkKey) {
-        synchronized (this.chunkMap) {
-            SimulationChunkTracker tracker =
-                    ((DistanceManagerAccessor) this.distanceManager)
-                            .fabrolia$simulationChunkTracker();
-            int liveLevel = tracker.getLevel(ChunkPos.unpack(chunkKey));
-            int completedLevel =
-                    ((CompletedSimulationView) tracker).fabrolia$completedLevel(chunkKey);
-            ChunkHolder holder = this.getVisibleChunkIfPresent(chunkKey);
-            int targetX = ChunkPos.getX(chunkKey);
-            int targetZ = ChunkPos.getZ(chunkKey);
-            int bestPropagatedLevel = Integer.MAX_VALUE;
-            int retainingCount = 0;
-            StringBuilder retainers = new StringBuilder();
-            for (int dx = -32; dx <= 32; dx++) {
-                for (int dz = -32; dz <= 32; dz++) {
-                    int sourceX = targetX + dx;
-                    int sourceZ = targetZ + dz;
-                    int distance = Math.max(Math.abs(dx), Math.abs(dz));
-                    long sourceKey = ChunkPos.pack(sourceX, sourceZ);
-                    for (Ticket ticket : this.ticketStorage.getTickets(sourceKey)) {
-                        int propagatedLevel = ticket.getTicketLevel() + distance;
-                        bestPropagatedLevel = Math.min(
-                                bestPropagatedLevel, propagatedLevel);
-                        if (!ChunkLevel.isEntityTicking(propagatedLevel)) {
-                            continue;
-                        }
-                        retainingCount++;
-                        if (retainingCount <= 64) {
-                            if (!retainers.isEmpty()) {
-                                retainers.append("; ");
-                            }
-                            retainers.append('[').append(sourceX).append(',')
-                                    .append(sourceZ).append("] d=").append(distance)
-                                    .append(' ').append(ticket)
-                                    .append(" => ").append(propagatedLevel);
-                        }
-                    }
-                }
-            }
-            if (retainingCount > 64) {
-                retainers.append("; ... +").append(retainingCount - 64);
-            }
-            return "liveLevel=" + liveLevel
-                    + ", completedLevel=" + completedLevel
-                    + ", holderTicketLevel="
-                    + (holder == null ? "null" : holder.getTicketLevel())
-                    + ", holderTicking="
-                    + (holder != null && holder.getTickingChunk() != null)
-                    + ", directLoad="
-                    + this.ticketStorage.getTicketDebugString(chunkKey, false)
-                    + ", directSimulation="
-                    + this.ticketStorage.getTicketDebugString(chunkKey, true)
-                    + ", directAll="
-                    + List.copyOf(this.ticketStorage.getTickets(chunkKey))
-                    + ", bestPropagatedLevel="
-                    + (bestPropagatedLevel == Integer.MAX_VALUE
-                    ? "none" : bestPropagatedLevel)
-                    + ", retainers(" + retainingCount + ")=[" + retainers + ']';
-        }
     }
 
     /**
