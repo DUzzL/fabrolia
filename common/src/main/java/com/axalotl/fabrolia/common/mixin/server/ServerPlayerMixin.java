@@ -654,8 +654,6 @@ public abstract class ServerPlayerMixin extends Player implements
                 return original.call(transition);
             }
             com.axalotl.fabrolia.common.parallelised.utils.PlayerDimensionTransition.enter(self);
-            com.axalotl.fabrolia.common.parallelised.utils.PlayerDimensionTransition
-                    .traceFishingTransition("ENTER", self, transition.newLevel());
             ServerPlayer result = null;
             Throwable failure = null;
             try {
@@ -668,8 +666,6 @@ public abstract class ServerPlayerMixin extends Player implements
                         .publishFatalAndSelectWinner(thrown);
             } finally {
                 try {
-                    com.axalotl.fabrolia.common.parallelised.utils.PlayerDimensionTransition
-                            .traceFishingTransition("EXIT", self, transition.newLevel());
                     com.axalotl.fabrolia.common.parallelised.utils.PlayerDimensionTransition.exit(self);
                 } catch (Throwable cleanup) {
                     Throwable candidate = fabrolia$mergePlayerTickFailure(failure, cleanup);

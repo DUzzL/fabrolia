@@ -3,7 +3,6 @@ package com.axalotl.fabrolia.common.regions;
 import com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
-import com.axalotl.fabrolia.common.utils.FabroliaDebug;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.server.level.DistanceManager;
