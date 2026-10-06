@@ -82,7 +82,6 @@ public final class IslandRegistry {
          *  main's sort, so the comparator saw a key move mid-sort. */
         public long driveSortCost;
         public final long bornGameTime;
-        public long lastEventGameTime;
 
         // ---- A2 real scheduler state (consumed by IslandTickUnit) ----
         /** This island's scheduling timeline — its epoch advances once per tick
@@ -194,24 +193,6 @@ public final class IslandRegistry {
             }
         }
 
-        ArrayList<net.minecraft.world.level.BlockEventData> drainPendingBlockEvents() {
-            synchronized (pendingBlockEvents) {
-                if (pendingStampedEvents.isEmpty()) return null;
-                ArrayList<net.minecraft.world.level.BlockEventData> out =
-                        new ArrayList<>(pendingStampedEvents.size());
-                for (StampedEvent se : pendingStampedEvents) {
-                    out.add(se.ev());
-                }
-                pendingStampedEvents.clear();
-                return out;
-            }
-        }
-
-        ArrayList<net.minecraft.world.level.BlockEventData> takeAllBlockEvents() {
-            return drainPendingBlockEvents();
-        }
-
-        /** Coordinator, once per unit: swap out mid-unit registrations. */
         /** Coordinator-only: fresh BEs still waiting for MAIN's beCells fold
          *  (pendingBeAdds drains at MAIN cadence). An island running faster
          *  than main (per-island rate, sprint, /tick rate ramps) must keep
@@ -221,6 +202,7 @@ public final class IslandRegistry {
         final ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> carryBes =
                 new ArrayList<>(4);
 
+        /** Coordinator, once per unit: swap out mid-unit registrations. */
         ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> drainPendingUnitBes() {
             synchronized (pendingUnitBes) {
                 if (pendingUnitBes.isEmpty()) return null;
@@ -541,7 +523,6 @@ public final class IslandRegistry {
         PIsland(long id, long bornGameTime) {
             this.id = id;
             this.bornGameTime = bornGameTime;
-            this.lastEventGameTime = bornGameTime;
             // L anchored to game time at birth: absolute L-lane values already
             // in memory or re-anchored from disk (vanilla saves scheduled ticks
             // and cooldowns RELATIVE) stay coherent when the island's timeline
@@ -718,8 +699,6 @@ public final class IslandRegistry {
                     }
                 }
                 logEvent(gameTime, "MERGE", best, merged, cells.size(), "cell adjacency (≤2-cell gap closed)");
-                PIsland s = islands.get(best);
-                if (s != null) s.lastEventGameTime = gameTime;
             }
             chosen[i] = best;
             newCellsById.put(best, cells);
@@ -777,8 +756,6 @@ public final class IslandRegistry {
                 if (!fresh.isEmpty()) {
                     logEvent(gameTime, "SPLIT", prior, fresh.toLongArray(),
                             keeperSize, "connectivity lost (gap ≥3 cells)");
-                    PIsland s = islands.get(prior);
-                    if (s != null) s.lastEventGameTime = gameTime;
                 }
             }
         }

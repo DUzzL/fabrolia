@@ -552,10 +552,6 @@ public final class AsyncIslandPacketContinuations {
         boolean deferred() {
             return phase.get() == DEFERRED;
         }
-
-        int phase() {
-            return phase.get();
-        }
     }
 
     /** One exact Main controller for the marker published at tryHandleChat. */

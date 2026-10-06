@@ -60,12 +60,12 @@ public final class IslandCommands {
      *  Exactly one execution is admitted per invocation. */
     public static final class Invocation {
         public final long id = NEXT_INVOCATION_ID.getAndIncrement();
-        public final String sourceKind;         // "command_block" | "main" | "function"
-        public final BlockPos sourcePos;        // may be null (console)
+        public final String sourceKind;         // "command_block" | "function" | "island_task"
+        public final BlockPos sourcePos;        // null unless command_block
         public final long sourceIslandId;       // -1 = global context
-        public final long sourceLogicalTick;    // island L (or gameTime for main)
+        public final long sourceLogicalTick;    // island L (0 for island_task)
         public final String command;
-        public final long orderingToken;        // island (id<<20|L) — deterministic per source
+        public final long orderingToken;        // (islandId << 20) ^ L — deterministic per source
         public volatile byte state;
         public volatile int result;
         public volatile Throwable failure;
@@ -1517,12 +1517,6 @@ public final class IslandCommands {
 
     @SuppressWarnings("unchecked")
     private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> RuntimeException rethrowAs(
-            Throwable failure) throws T {
         throw (T) failure;
     }
 

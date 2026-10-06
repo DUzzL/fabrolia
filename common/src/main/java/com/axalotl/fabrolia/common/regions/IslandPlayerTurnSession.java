@@ -751,19 +751,6 @@ public final class IslandPlayerTurnSession<P> {
         }
     }
 
-    public AfterBodyResult containMainFailure(MainFallback<P> fallback) {
-        if (!belongsHere(fallback)) return AfterBodyResult.REJECTED;
-        synchronized (packetLock) {
-            Frame<P> observed = frame.get();
-            if (!isClaim(observed, Phase.MAIN_FALLBACK_RUNNING, fallback)) {
-                return AfterBodyResult.REJECTED;
-            }
-            return frame.compareAndSet(observed, observed.terminal())
-                    ? AfterBodyResult.CONTAINED_NO_MAIN_FALLBACK
-                    : AfterBodyResult.REJECTED;
-        }
-    }
-
     /** Begin an ownership transfer only after the current turn is quiescent. */
     public Optional<Transfer<P>> beginTransfer(OwnerStamp expected) {
         synchronized (packetLock) {

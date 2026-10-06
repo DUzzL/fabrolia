@@ -51,10 +51,6 @@ public final class PoiStripes {
         return STRIPES[h];
     }
 
-    public static Object stripe(BlockPos pos) {
-        return stripe(pos.getX() >> 4, pos.getZ() >> 4);
-    }
-
     /**
      * Retain the resident column through the complete mutation, including its
      * dirty publication. Admission precedes the stripe; neither a loadLock nor

@@ -1,6 +1,5 @@
 package com.axalotl.fabrolia.common.regions;
 
-import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.network.protocol.game.ClientboundChunkBatchFinishedPacket;
 import net.minecraft.network.protocol.game.ClientboundChunkBatchStartPacket;
 import net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket;
@@ -107,7 +106,6 @@ public final class ChunkDelivery {
         volatile Entry entry;          // sealed shared snapshot (READY..ENQUEUED)
         volatile int fenceFails;
         volatile long stateNanos = System.nanoTime();
-        volatile long enqueuedNanos;
         /**
          * Sampled before this record's owner-mailbox lease. Only an entry built
          * after it can answer that request; an older cached entry is the one
@@ -423,7 +421,7 @@ public final class ChunkDelivery {
                 replaced = new AtomicLong();
         // metrics owned by the main batcher/ack path:
         long enqueued, acked, retriesFence,
-                escalations, reroutes, coalesced, staleAcks, batches;
+                escalations, coalesced, staleAcks, batches;
         long nullEntryRecoveries, enqueueFails, cancelledInBatch, requestedTimeouts;
         volatile long lastFullSendNanos;
         long lastAckNanos, lastLivenessReportNanos;
@@ -787,7 +785,6 @@ public final class ChunkDelivery {
                         for (int i = 0; i < admittedCount; i++) {
                             Reservation reservation = admitted[i];
                             reservation.releaseReservationReference();
-                            reservation.rec.enqueuedNanos = nanosCommit;
                         }
                         owner.enqueued += admittedCount;
                         owner.bytesEnqueued += bytesCommit;

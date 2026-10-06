@@ -13,8 +13,6 @@ import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 
-import java.util.concurrent.locks.LockSupport;
-
 /** Production audit — same class as RaidTickMixin: the dragon fight ticks on
  *  MAIN and mutates the dragon/crystals/portal owned by the End's central
  *  island. Claim that island for the fight tick (W cadence for the fight

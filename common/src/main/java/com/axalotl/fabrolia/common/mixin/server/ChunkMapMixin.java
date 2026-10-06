@@ -16,7 +16,6 @@ import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.PlayerMap;
 import net.minecraft.core.SectionPos;
 import net.minecraft.util.datafix.DataFixTypes;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
 import net.minecraft.world.level.chunk.storage.SimpleRegionStorage;
 import org.spongepowered.asm.mixin.*;
@@ -436,16 +435,6 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
         return this.visibleChunkMap.values();
     }
 
-    @Override
-    public Iterable<ChunkHolder> fabrolia$updatingHolders() {
-        return this.updatingChunkMap.values();
-    }
-
-    @Override
-    public Iterable<ChunkHolder> fabrolia$pendingUnloadHolders() {
-        return this.pendingUnloads.values();
-    }
-
     /**
      * The players {@code DistanceManager.playersPerChunk} counts for natural
      * spawning — the source of {@code naturalSpawnChunkCounter}: every PlayerMap
@@ -496,10 +485,6 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
 
     @Shadow
     private volatile Long2ObjectLinkedOpenHashMap<ChunkHolder> visibleChunkMap;
-
-    @Shadow
-    @Final
-    private Long2ObjectLinkedOpenHashMap<ChunkHolder> updatingChunkMap;
 
     @Shadow
     @Final

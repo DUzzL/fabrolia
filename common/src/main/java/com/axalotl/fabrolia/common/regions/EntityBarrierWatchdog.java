@@ -25,7 +25,6 @@ final class EntityBarrierWatchdog {
     private long windowStartedNanos;
     private int consecutiveUnwitnessedPolls;
     private boolean healAttemptedForVersion;
-    private boolean acceptedHealForVersion;
 
     EntityBarrierWatchdog(int pending, long nowNanos) {
         if (pending < 0) throw new IllegalArgumentException("negative entity pending");
@@ -61,7 +60,6 @@ final class EntityBarrierWatchdog {
         healAttemptedForVersion = true;
         consecutiveUnwitnessedPolls = 0;
         if (acceptedRecoveries > 0) {
-            acceptedHealForVersion = true;
             windowStartedNanos = nowNanos;
             return Action.WAIT;
         }
@@ -73,10 +71,6 @@ final class EntityBarrierWatchdog {
 
     int observedPending() {
         return observedPending;
-    }
-
-    boolean acceptedHealForVersion() {
-        return acceptedHealForVersion;
     }
 
     long windowStartedNanos() {
@@ -97,7 +91,6 @@ final class EntityBarrierWatchdog {
         windowStartedNanos = nowNanos;
         consecutiveUnwitnessedPolls = 0;
         healAttemptedForVersion = false;
-        acceptedHealForVersion = false;
         return true;
     }
 }

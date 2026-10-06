@@ -1,10 +1,8 @@
 package com.axalotl.fabrolia.common.parallelised.utils;
 
-import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.AsyncIslandPacketContinuations;
 import com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
-import com.axalotl.fabrolia.common.utils.FabroliaDebug;
 import net.minecraft.server.level.ServerLevel;
 
 import net.minecraft.server.level.ServerPlayer;
@@ -13,7 +11,6 @@ import net.minecraft.world.entity.PortalProcessor;
 import net.minecraft.world.level.portal.TeleportTransition;
 import net.minecraft.util.profiling.Profiler;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.entity.projectile.FishingHook;
 
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
@@ -38,9 +35,6 @@ public final class PlayerDimensionTransition {
      */
     private static final java.util.IdentityHashMap<ServerPlayer, Integer> ACTIVE_DEPTH =
             new java.util.IdentityHashMap<>();
-
-    private static final org.slf4j.Logger FISHING_LOG =
-            org.slf4j.LoggerFactory.getLogger("Fabrolia-FishingStasis");
 
     private PlayerDimensionTransition() {}
 
@@ -94,41 +88,6 @@ public final class PlayerDimensionTransition {
         if (owner == null) return false;
         return AsyncIslandPacketContinuations.enqueueMain(owner, "End credits",
                 () -> AsyncIslandPlayerTicks.runFencedMainMutation("End credits", credits));
-    }
-
-    /** Behavior-neutral owner-side trace emitted outside the transition monitor. */
-    public static void traceFishingTransition(
-            String phase, ServerPlayer player, ServerLevel targetLevel) {
-        if (!FabroliaDebug.FISHING_TRACE) {
-            return;
-        }
-        int depth;
-        synchronized (PlayerDimensionTransition.class) {
-            depth = ACTIVE_DEPTH.getOrDefault(player, 0);
-        }
-        try {
-            FishingHook hook = player.fishing;
-            FISHING_LOG.warn(
-                    "[fishing-stasis] OWNER-TRANSITION phase={} owner={}#{} "
-                            + "ownerRemoval={} currentDim={} targetDim={} depth={} "
-                            + "hook={} hookDim={} hookChunk={} activeSession={} "
-                            + "mainItem={} offItem={} asyncAny={} thread={}",
-                    phase, player.getUUID(), System.identityHashCode(player),
-                    player.getRemovalReason(),
-                    player.level().dimension().identifier(),
-                    targetLevel.dimension().identifier(), depth,
-                    hook == null ? "-" : hook.getUUID(),
-                    hook == null ? "-" : hook.level().dimension().identifier(),
-                    hook == null ? "-" : hook.chunkPosition(),
-                    hook != null && player.fishing == hook,
-                    player.getMainHandItem(), player.getOffhandItem(),
-                    RegionScheduler.anyAsyncActive(),
-                    Thread.currentThread().getName());
-        } catch (Throwable diagnosticFailure) {
-            FISHING_LOG.warn(
-                    "[fishing-stasis] OWNER-TRANSITION trace failed phase={} owner={}",
-                    phase, player.getUUID(), diagnosticFailure);
-        }
     }
 
     public static synchronized void enter(ServerPlayer player) {

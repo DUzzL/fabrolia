@@ -3,7 +3,6 @@ package com.axalotl.fabrolia.common.regions;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.level.ChunkPos;
 
 import java.util.Set;
 import java.util.ArrayDeque;
@@ -674,14 +673,6 @@ public final class Region {
 
     public synchronized long[] snapshotObservedChunks() {
         return observedChunks.toLongArray();
-    }
-
-    public boolean owns(ChunkPos pos) {
-        return owns(pos.pack());
-    }
-
-    public synchronized boolean owns(long packedChunkPos) {
-        return observedChunks.contains(packedChunkPos);
     }
 
     @Override

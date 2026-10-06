@@ -14,7 +14,4 @@ public final class FabroliaDebug {
      *  rate-limited — see {@link PearlTrace}. */
     public static final boolean PEARL_TRACE = true;
 
-    /** Dormant fishing-stasis forensics retained for targeted incident builds. */
-    public static final boolean FISHING_TRACE = false;
-
 }

@@ -1,6 +1,5 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
-import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.RconCommandFenceScope;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;

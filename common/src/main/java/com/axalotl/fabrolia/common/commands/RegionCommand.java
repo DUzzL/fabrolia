@@ -1339,15 +1339,6 @@ public final class RegionCommand {
 
     // ---- temporal control / profiling (2026-07-14) ----------------------
 
-    private static com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland fabroliaIslandAt(
-            net.minecraft.commands.CommandSourceStack src,
-            net.minecraft.server.level.ServerLevel lvl, int bx, int bz) {
-        var rs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(lvl);
-        if (rs == null || !rs.asyncActive) return null;
-        return rs.islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(
-                new net.minecraft.core.BlockPos(bx, 0, bz)));
-    }
-
     private static int islandList(net.minecraft.commands.CommandSourceStack src) {
         int n = 0;
         for (net.minecraft.server.level.ServerLevel lvl : src.getServer().getAllLevels()) {
@@ -1377,10 +1368,6 @@ public final class RegionCommand {
                 .isPhysicalServerThread(ctx.getSource().getServer())) {
             send(ctx, "async islands: ",
                     "REFUSED — scheduler modes may only change on the server thread", false);
-            return 0;
-        }
-        if (turningOn && !com.axalotl.fabrolia.common.regions.IslandTickUnit.unitImplemented()) {
-            send(ctx, "async islands: ", "unavailable (tick unit incomplete in this build)", false);
             return 0;
         }
         if (turningOn && (!FabroliaConfig.regionEventScheduler || !FabroliaConfig.useRegionColorGate())) {

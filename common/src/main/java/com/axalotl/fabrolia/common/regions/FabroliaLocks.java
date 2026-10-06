@@ -49,18 +49,6 @@ public final class FabroliaLocks {
     }
 
     /**
-     * Legacy item-monitor surface. The exact ItemEntity identity is now the
-     * synchronization authority; resolving through a mutable chunk/region can
-     * select a different monitor while the item crosses a grid boundary.
-     */
-    @Deprecated
-    public static Object itemLockOr(net.minecraft.server.level.ServerLevel level,
-                                    net.minecraft.world.entity.item.ItemEntity entity,
-                                    Object fallback) {
-        return entity == null ? fallback : entity;
-    }
-
-    /**
      * Outer serial lane for consumable ticks and native merges. Acquire before
      * either endpoint's stable guard. Gap/synchronous work shares the fallback;
      * autonomous islands have independent lanes separated beyond merge reach.

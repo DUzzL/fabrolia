@@ -3,7 +3,6 @@ package com.axalotl.fabrolia.api.fastutil;
 import it.unimi.dsi.fastutil.SafeMath;
 import it.unimi.dsi.fastutil.bytes.ByteCollection;
 import it.unimi.dsi.fastutil.longs.AbstractLong2ByteMap;
-import it.unimi.dsi.fastutil.longs.Long2ByteMap;
 import it.unimi.dsi.fastutil.longs.Long2IntMap;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;

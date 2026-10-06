@@ -22,6 +22,9 @@ public class FabroliaConfig {
     public static boolean enableFabroliaRandomTicks = true;
     public static boolean enableFabroliaVmpTracking = true;
     public static boolean enableFabroliaDespawn = true;
+    /** Legacy key: nothing reads it. It is still persisted by both loaders and
+     *  shown/toggled by the config and stats commands, but chunk delivery
+     *  (ChunkDelivery / FabroliaPlayerChunkSenderMixin) runs regardless. */
     public static boolean enableFabroliaChunkSend = true;
     public static boolean enableRegionThreading = true;
     /**
@@ -85,7 +88,7 @@ public class FabroliaConfig {
     // R4 stage B "optimistic flip" (ColorGate-off + post-barrier serial border pass) was
     // REMOVED 2026-06-30: its serial main border pass (~44% of scattered entities) was a net
     // 2× regression vs ColorGate's all-parallel 4-wave (user-confirmed). The border metric
-    // below stays for diagnostics.
+    // above stays for diagnostics.
     /** F1 — island-partitioned scheduled block/fluid ticks: due chunks split
      *  by loaded-space islands (≥16-chunk unloaded gap between any two), each
      *  slice runs vanilla's exact collect/run; heaviest slice stays on main
@@ -103,11 +106,11 @@ public class FabroliaConfig {
     // spawncap); Fabrolia only exposes the seam. No provider → Java LocalMobCapCalculator (correct
     // via the Long2ObjectConcurrentHashMap computeIfAbsent overload fix). Global cap stays Java.
 
-    /** Task #35: when the chunk bridge times out on a c2me holder that is
-     *  provably in the FLAG_BROKEN latch (chunk abandoned by the chunk system
-     *  after one upgrade exception — upstream has no retry), clear the flag
-     *  and re-mark the holder dirty via flowsched's public API, budgeted at
-     *  3 attempts per chunk. Runtime toggle: /fabrolia regions chunkheal. */
+    /** Task #35 legacy toggle ({@code /fabrolia regions chunkheal}). The c2me
+     *  FLAG_BROKEN heal it used to gate (clear the latch, re-mark the holder
+     *  dirty) was replaced by the fail-stop forensic probe in C2meStrandHeal;
+     *  nothing reads this flag any more. Kept only so the command keeps its
+     *  current surface. */
     public static volatile boolean chunkBridgeHealBroken = true;
     // Let the parallel-spawn future ride to the entity-phase barrier instead of being
     // awaited at the end of tickChunks — one park covers max(spawn, entities). Random/
@@ -124,11 +127,10 @@ public class FabroliaConfig {
     // same per-region [spawn][random][entities] FIFO and serial entity order. false = legacy
     // group dispatch (rollback lever). Tunable live: /fabrolia regions eventsched.
     public static boolean regionEventScheduler = true;
-    // A2 async islands: independent per-island deadline ticking. DEFAULT OFF and
-    // the /fabrolia regions async toggle REFUSES to enable until the island tick
-    // unit's phase rewire (IslandTickUnit increments 1-4, see
-    // docs/ASYNC-ISLANDS.md + the a2 checkpoint) is complete — enabling a
-    // partial unit would violate the ownership model this exists to enforce.
+    // A2 async islands: independent per-island deadline ticking. DEFAULT OFF;
+    // /fabrolia regions async enables it (requires the event scheduler + color
+    // gate) and persists the choice — see asyncIslandsPersister below and
+    // docs/ASYNC-ISLANDS.md.
     public static volatile boolean asyncIslands = false;
     /** OPERATOR-PREFERENCE PERSISTENCE (2026-07-18 v2, corrected semantics):
      *  /fabrolia regions async [on|off] sets {@link #asyncIslands} AND

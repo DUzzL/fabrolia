@@ -47,12 +47,7 @@ public final class FunctionPlan {
                            UnboundEntryAction<CommandSourceStack> entry) {}
 
     public record RootPlan(Identifier id, CommandFunction<CommandSourceStack> function, Role role,
-                           boolean partitioned, String blocking, List<LinePlan> lines) {
-        public boolean hasEscalation() {
-            for (LinePlan l : lines) if (l.kind() == LineKind.ESCALATE) return true;
-            return false;
-        }
-    }
+                           boolean partitioned, String blocking, List<LinePlan> lines) {}
 
     static final FunctionPlan EMPTY = new FunctionPlan(List.of(), Map.of(),
             Collections.newSetFromMap(new IdentityHashMap<>()), Set.of(), List.of());
@@ -96,11 +91,6 @@ public final class FunctionPlan {
     public RootPlan partitionedLoop(Identifier id) {
         RootPlan r = loops.get(id);
         return r != null && r.partitioned() ? r : null;
-    }
-
-    public boolean anyMainResidentTickRoot() {
-        for (RootPlan r : tickRoots) if (!r.partitioned()) return true;
-        return false;
     }
 
     /** Human-readable plan for {@code /fabrolia functions plan}. */

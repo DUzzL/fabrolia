@@ -3,7 +3,6 @@ package com.axalotl.fabrolia.common.mixin.entity;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.parallelised.utils.FabroliaTrackingDirtyFlag;
 import com.axalotl.fabrolia.common.regions.EntityTickLease;
-import com.axalotl.fabrolia.common.regions.FishingHookRemovalTrace;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -371,10 +370,6 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
                         .LifecycleMutationKind.HARD_EXIT,
                 new Entity[]{self}, () -> {
             synchronized (fabrolia$lock) {
-                if (com.axalotl.fabrolia.common.utils.FabroliaDebug.FISHING_TRACE
-                        && self instanceof FishingHookRemovalTrace trace) {
-                    trace.fabrolia$traceRemoval(reason);
-                }
                 original.call(reason);
             }
             return null;

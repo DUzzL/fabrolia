@@ -27,9 +27,14 @@ runs
 __pycache__/
 *.pyc
 
-# logs and local runtime output
+# runtime output (dev/smoke servers, Mixin debug export, JVM dumps)
 logs/
+crash-reports/
 .mixin.out/
+runtime-smoke.*/
+*.log
+*.hprof
+hs_err_pid*
 
 # local data next to the code (not versioned)
 /stand/

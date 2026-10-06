@@ -1002,11 +1002,6 @@ public final class RegionalPlayerEntityTicksV2 {
         return context != null && context.worker;
     }
 
-    public static boolean isWorkerTickOf(Entity entity) {
-        TickContext context = TICK_CONTEXT.get();
-        return context != null && context.worker && context.root == entity;
-    }
-
     /**
      * Opens an exact-object claim for a ServerPlayer.tick reached through the
      * established main-owned root path while the exact-ordinal phase is open.
@@ -2166,10 +2161,6 @@ public final class RegionalPlayerEntityTicksV2 {
             } catch (Throwable ledgerFailure) {
                 fail(ledgerFailure);
             }
-        }
-
-        synchronized boolean hasOpenLevels() {
-            return !openLevels.isEmpty();
         }
 
         Throwable sealAndCheck() {

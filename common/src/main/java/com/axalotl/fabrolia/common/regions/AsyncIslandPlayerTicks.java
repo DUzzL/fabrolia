@@ -692,34 +692,6 @@ public final class AsyncIslandPlayerTicks {
     }
 
     /**
-     * Exact island venue which owns tracker publication for this listener lifetime.
-     * MAIN_FALLBACK retains an OwnerStamp only as a rollback/ordering receipt; its
-     * vanilla body and tracker publication are physical-Main work, so it must not
-     * masquerade as an island-tail continuation.
-     */
-    static IslandRegistry.PIsland trackingPublicationOwner(
-            ServerPlayer player, IslandTrackedEntityAccess tracker) {
-        IslandPlayerTurnSession.PlayerKind kind = classifyPlayer(player);
-        if (!(player instanceof AsyncIslandPlayerAccess)
-                || kind == null || tracker == null) return null;
-        PlayerState state = state(player);
-        synchronized (state) {
-            IslandPlayerTurnSession.View view = state.session.view();
-            IslandPlayerTurnSession.OwnerStamp owner = view.owner();
-            if (owner == null || owner.playerIdentity() != player
-                    || owner.listenerIdentity() != player.connection
-                    || owner.kind() != kind
-                    || !isIslandListenerOwnedPhase(view.phase())
-                    || state.mainDisconnectPending
-                    || !state.trackingPublication.matches(tracker, owner)) {
-                return null;
-            }
-            return owner.islandIdentity() instanceof IslandRegistry.PIsland island
-                    ? island : null;
-        }
-    }
-
-    /**
      * Transfers a detached self-tracker through the exact already-quiescent A5
      * session close. The rebuild caller owns every island claim and the tracker
      * monitor; no player body is manufactured by this tracker-only handoff.
@@ -4165,13 +4137,6 @@ public final class AsyncIslandPlayerTicks {
         state.mainEntityFallbackAdmitted = false;
         state.mainEntityFallbackPending = false;
         state.activeMainEntityFallback = null;
-    }
-
-    private static boolean scheduleMainHandoff(PlayerState state, ServerPlayer player,
-                                               boolean scheduleEntityTick) {
-        synchronized (state) {
-            return scheduleMainHandoffLocked(state, player, scheduleEntityTick);
-        }
     }
 
     private static boolean scheduleMainHandoffLocked(

@@ -118,10 +118,6 @@ public final class IslandMetrics {
     }
 
     /** Reader-side progress classification. */
-    public static String classify(RegionizedServer rs, IslandRegistry.PIsland p) {
-        return classify(rs, p, actualTps(p));
-    }
-
     private static String classify(RegionizedServer rs, IslandRegistry.PIsland p, double tps) {
         long now = System.nanoTime();
         if (p.unitClaim.get() && p.claimSiteNanos != 0 && now - p.claimSiteNanos > 3_000_000_000L) {
