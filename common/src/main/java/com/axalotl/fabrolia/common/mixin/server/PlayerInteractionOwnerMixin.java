@@ -2,6 +2,7 @@ package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.mixin.network.ServerCommonPacketListenerAccessor;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
+import com.axalotl.fabrolia.common.regions.IslandBlockUpdateAccess;
 import com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks;
 import com.axalotl.fabrolia.common.regions.IslandRegistry;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
@@ -304,8 +305,18 @@ public abstract class PlayerInteractionOwnerMixin {
             return;
         }
         RegionizedServer runtime = RegionScheduler.forLevel(sl);
-        if (runtime == null || !runtime.asyncActive || runtime.currentThreadHoldsAllClaims()) {
+        if (runtime == null || !runtime.asyncActive) {
             RegionScheduler.runSuccessBodyIfHealthy(body);
+            return;
+        }
+        if (runtime.currentThreadHoldsAllClaims()) {
+            RegionScheduler.runSuccessBodyIfHealthy(body);
+            // Same ACK ordering as the claimed path below, while every island is held.
+            IslandRegistry.PIsland target = runtime.islandOwnerOfChunk(chunkPos);
+            if (target != null && !target.retired && !target.pendingBlockUpdates.isEmpty()) {
+                ((IslandBlockUpdateAccess) sl.getChunkSource())
+                        .fabrolia$flushIslandBlockUpdates(runtime, target);
+            }
             return;
         }
         IslandRegistry.PIsland owner = runtime.islandOwnerOfChunk(chunkPos);
@@ -329,6 +340,14 @@ public abstract class PlayerInteractionOwnerMixin {
                     && runtime.islandOwnerOfChunk(chunkPos) == owner
                     && !owner.retired) {
                 RegionScheduler.runSuccessBodyIfHealthy(body);
+                // Main's chunk-tick drain leaves a busy island's holders to that island's
+                // unit tail, which can come after this listener's block-change ACK. While
+                // Main still holds the island, publish what the body dirtied: watchers get
+                // the update before the actor's ACK, as in vanilla.
+                if (!owner.pendingBlockUpdates.isEmpty()) {
+                    ((IslandBlockUpdateAccess) sl.getChunkSource())
+                            .fabrolia$flushIslandBlockUpdates(runtime, owner);
+                }
             }
         } catch (Throwable bodyFailure) {
             failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);

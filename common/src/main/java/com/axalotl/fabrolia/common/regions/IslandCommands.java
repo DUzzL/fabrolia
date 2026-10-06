@@ -1181,6 +1181,11 @@ public final class IslandCommands {
      * owns nothing and must leave the complete callback body unentered.
      */
     public static boolean tryMainClaim(IslandRegistry.PIsland owner) {
+        return tryMainClaim(owner, "tryMainClaim");
+    }
+
+    /** {@link #tryMainClaim(IslandRegistry.PIsland)} recording {@code site} in the claim ledger. */
+    public static boolean tryMainClaim(IslandRegistry.PIsland owner, String site) {
         var server = RegionScheduler.getServer();
         if (server != null && !RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
             throw new IllegalStateException("tryMainClaim entered off physical Main");
@@ -1192,7 +1197,7 @@ public final class IslandCommands {
         MAIN_CLAIMS.increment();
         try {
             RegionScheduler.commitSuccessIfHealthy(() -> {
-                owner.noteClaim("tryMainClaim");
+                owner.noteClaim(site);
                 MAIN_HELD.add(owner);
             });
         } catch (Throwable thrown) {

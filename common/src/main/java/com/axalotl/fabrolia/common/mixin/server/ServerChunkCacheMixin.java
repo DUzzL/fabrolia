@@ -53,6 +53,7 @@ import com.axalotl.fabrolia.common.regions.ChunkRegionKeyed;
 import com.axalotl.fabrolia.common.regions.ChunkTicketDebugAccess;
 import com.axalotl.fabrolia.common.regions.CompletedSimulationView;
 import com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks;
+import com.axalotl.fabrolia.common.regions.GlobalBlockUpdateDrain;
 import com.axalotl.fabrolia.common.regions.IslandBlockUpdateAccess;
 import com.axalotl.fabrolia.common.regions.IslandRegistry;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
@@ -209,6 +210,8 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
      * can erase a holder inserted after the iterator passed it. Claim each
      * holder with remove-under-holder-lock instead; a concurrent producer is
      * either included in this broadcast or re-adds the holder for a later one.
+     * A holder a live island may write is published only under that island's
+     * claim, or handed to the island ({@link GlobalBlockUpdateDrain}).
      */
     @WrapMethod(method = "broadcastChangedChunks")
     private void fabrolia$losslessGlobalBlockUpdateDrain(ProfilerFiller profiler,
@@ -221,10 +224,10 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             // Bound this Main slice. A producer which adds/re-adds after the
             // snapshot remains published for the next pass; it cannot keep a
             // weakly-consistent CHM iterator alive indefinitely.
-            for (ChunkHolder holder : new ArrayList<>(this.chunkHoldersToBroadcast)) {
-                RegionScheduler.runSuccessBodyIfHealthy(
-                        () -> fabrolia$publishChangedHolder(holder));
-            }
+            GlobalBlockUpdateDrain.drainLevel(RegionScheduler.forLevel(this.level),
+                    new ArrayList<>(this.chunkHoldersToBroadcast),
+                    holder -> RegionScheduler.runSuccessBodyIfHealthy(
+                            () -> fabrolia$publishChangedHolder(holder)));
         } catch (Throwable primary) {
             failure = fabrolia$publishFatalAndSelectWinner(primary);
         }

@@ -496,9 +496,11 @@ public final class IslandRegistry {
 
         /**
          * Chunk holders dirtied by this island since its previous publication
-         * slot. The same holder also remains in ServerChunkCache's global set;
-         * the two drains arbitrate with remove-under-holder-lock, so exactly one
-         * publisher wins and a concurrent change is never erased by clear().
+         * slot, plus holders Main's global drain handed over because this island
+         * was busy ({@link GlobalBlockUpdateDrain}). The same holder also remains
+         * in ServerChunkCache's global set; the two drains arbitrate with
+         * remove-under-holder-lock, so exactly one publisher wins and a
+         * concurrent change is never erased by clear().
          */
         public final java.util.Set<net.minecraft.server.level.ChunkHolder>
                 pendingBlockUpdates = java.util.concurrent.ConcurrentHashMap.newKeySet();

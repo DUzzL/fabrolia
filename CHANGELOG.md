@@ -1,5 +1,22 @@
 ## Unreleased
 
+### Fixes
+
+- Crash fix (production 2026-10-06, `ArrayIndexOutOfBoundsException` in
+  `LevelChunk.getBlockEntity` from `ChunkHolder.broadcastChanges`): Main's
+  end-of-chunk-tick block-update broadcast also published chunks of islands
+  that were running their tick, reading the chunk's block-entity map while the
+  island's pistons rewrote it. Main now publishes an island chunk only while it
+  holds that island (non-blocking, yielding to a queued island tick); a busy
+  island publishes the chunk itself at the end of its tick, as it already does
+  for its own changes. Stand with 225 piston clocks: 38,281 such concurrent
+  reads in 2.5 min before, 0 after; clients receive the same piston events and
+  half as many section-update packets (an island chunk was published twice per
+  island tick, now once, as in vanilla). Block changes Main makes in a busy
+  island's chunk (commands, functions) reach other players at that island's
+  next tick end instead of Main's chunk tick; a Main-side player interaction
+  publishes its island's changes before the player's block-change ACK.
+
 ### Whole-mod review (memory, CPU, vanilla parity)
 
 Memory (stand live heap after full GC: 2.19 GB → 1.62 GB; ≈ 1 GB less expected
