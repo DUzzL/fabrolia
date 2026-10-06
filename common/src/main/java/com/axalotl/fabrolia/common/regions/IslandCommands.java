@@ -26,9 +26,9 @@ import java.util.function.BooleanSupplier;
  *       island's logical clock. One shard, on the owner.</li>
  *   <li><b>routed</b> — everything else (selectors, cross-island or
  *       unresolvable coordinates, unknown roots, functions, modded commands).
- *       It executes exactly once on the SERVER thread under a quiesce of
- *       every OTHER island (the source island is stable because its
- *       coordinator parks while it waits) — the safe compatibility path.
+ *       It executes exactly once on the SERVER thread under the global fence
+ *       ({@link #quiesceAllExcept} with {@code null}; the source island is stable
+ *       because its coordinator parks while it waits) — the safe compatibility path.
  *       One shard, on the serialized global domain; the source island's
  *       chain blocks until the result is known, so conditional chains,
  *       success counts and comparator outputs keep exact vanilla values.

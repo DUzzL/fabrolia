@@ -49,7 +49,9 @@ server = dst / 'server'
 mods = server / 'mods'
 if list(mods.glob('fabrolia-*.jar')):
     raise SystemExit('template must not contain a Fabrolia jar')
-shutil.copyfile(jar, mods / jar.name)
+# Keep the production file-name shape: tools and tests look for mods/fabrolia-fabric-*.jar.
+shutil.copyfile(jar, mods / (jar.name if jar.name.startswith('fabrolia-fabric-')
+                             else 'fabrolia-fabric-under-test.jar'))
 for extra in sorted((home / 'extra-mods').glob('*.jar')):
     shutil.copyfile(extra, mods / extra.name)
 

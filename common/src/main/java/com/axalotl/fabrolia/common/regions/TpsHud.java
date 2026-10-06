@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Fabrolia TPS/MSPT HUD (2026-07-14). Subscribe via
- * {@code /fabrolia regions log tps}; an action-bar line updates once per
+ * {@code /fabrolia regions tps}; an action-bar line updates once per
  * second with two metric groups:
  *
  * <pre>Main: 20.0 TPS / 4.8 MSPT | Island Alice: 19.7 TPS / 2.1 MSPT</pre>

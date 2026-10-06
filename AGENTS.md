@@ -34,11 +34,19 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 ```
 
 Jar: `fabric/build/libs/fabrolia-fabric-<version>.jar` (the version string stays
-`0.2.38+alpha-26.3`; releases are told apart by git tags). ~1400 tests, all must pass.
-Some tests read Java source or bytecode and assert on exact strings/opcodes ("wiring"
-tests, e.g. `*WiringTest`, `ResidualFailStopWiringTest`,
-`FullModpackMixinExportVerifierTest`); when a refactor breaks one, decide whether the
-invariant it guards still holds and update it deliberately.
+`0.2.38+alpha-26.3`; the released commit is tagged `prod/current`). ~1400 tests, all must
+pass; `:fabric:build` runs `:common:test` first, so a red test also blocks the jar.
+
+About 57 test classes are **wiring tests**: they read Java source or bytecode and assert
+on exact strings, method names, call counts or instruction order (e.g. `*WiringTest`,
+`ResidualFailStopWiringTest`, `PlayerTickV2WiringTest`). They pin invariants that are hard
+to test behaviourally (fail-stop shape, lock order, publication order). When a refactor
+breaks one, check that the invariant it names still holds, then update the test in the
+same commit; a red wiring test after a pure rename is expected, after a logic change it is
+a warning. Tests that need external jars (Carpet, Lithium, C2ME, VMP, a mixin export) skip
+when the jar is absent. `FullModpackMixinExportVerifierTest` checks the mixin-composed
+classes of the real mod set: `tools/stand/stand.sh export exp-1 <jar>`, then
+`./gradlew :common:verifyFullModpackMixinExport -PfabroliaMixinExportRoot=$PWD/stand/runs/exp-1/server/.mixin.out`.
 
 ## Verify at runtime
 
@@ -107,8 +115,14 @@ player ticks stay on Main). Datapacks include BlazeandCave's Advancements.
 ## Known open items
 
 - Islands do not catch up ticks lost to a pause (Main does); left open by the owner.
-- ServerCore autosaves every 60 s on production (~470 ms tick); recommended
-  `autosave-interval-seconds: 300`. The save path is deliberately left as it is.
+- Production autosaves once a minute (a ~470 ms tick in the 2026-10-05 profile; check
+  ServerCore `autosave-interval-seconds`, 300 is recommended). The save path itself is
+  deliberately left as it is.
 - Carpet/vanilla custom spawners on Main read blocks of island chunks near players
   (reads only; low risk).
 - `Long2ObjectConcurrentHashMap` boxes keys (~1–2 ms/tick of worker CPU).
+- `:common:verifyFullModpackMixinExport` fails in `verifyServerFunctionManager` ("the sticky
+  cleanup receipt must precede fence acquisition"): the assertion pins an older instruction
+  order of `ServerFunctionManager.fabrolia$fenceFunction`; it fails on the production jar as
+  well, so the checks after it never run. Re-derive it from the current code before relying
+  on this verifier.
