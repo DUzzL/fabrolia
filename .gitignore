@@ -22,3 +22,11 @@ build
 eclipse
 run
 runs
+
+# python
+__pycache__/
+*.pyc
+
+# logs and local runtime output
+logs/
+.mixin.out/
