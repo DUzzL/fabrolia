@@ -89,6 +89,10 @@ Every change touching runtime code: tests + `verify`. Threading/performance chan
   `LocalCapBridge`, `ParallelProcessor.executor`/`pumpUntilDone`; Fabrolia's
   `DistanceSortBridge` calls Rustmi by name. Renaming these breaks Rustmi's build or silently disables its integration: update
   `../Rustmi/libs/fabrolia-compile.jar` and run its harness (`../Rustmi/AGENTS.md`).
+- Lithium options Fabrolia forces off: `lithium:options` in `fabric/.../fabric.mod.json` and
+  `neoforge/.../neoforge.mods.toml` (keep both in sync). `mixin.entity.framed_maps` is off
+  because it stops framed maps from pruning departed players (a ~30 MB/h leak on production);
+  the log line `Force-disabling mixin ... (added by mods [fabrolia])` confirms each one.
 
 ## Release and install
 

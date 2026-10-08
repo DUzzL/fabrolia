@@ -41,3 +41,4 @@ side = "BOTH"
 ["lithium:options"]
 "mixin.alloc.chunk_random" = false
 "mixin.ai.sensor.replace_streams.tempting" = false
+"mixin.entity.framed_maps" = false
