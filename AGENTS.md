@@ -126,6 +126,10 @@ player ticks stay on Main). Datapacks include BlazeandCave's Advancements.
 - Carpet/vanilla custom spawners on Main read blocks of island chunks near players
   (reads only; low risk).
 - `Long2ObjectConcurrentHashMap` boxes keys (~1–2 ms/tick of worker CPU).
+- Carpet `/spawn tracking start` crashes the server under async islands: Carpet's
+  `NaturalSpawner` hook writes `SpawnReporter.local_spawns`, which is null on island threads
+  (`NullPointerException` from `ServerChunkCache.fabrolia$tickIslandChunks`, seen 2026-10-07).
+  Production should keep `/carpet commandSpawn false` until this is fixed.
 - `:common:verifyFullModpackMixinExport` fails in `verifyServerFunctionManager` ("the sticky
   cleanup receipt must precede fence acquisition"): the assertion pins an older instruction
   order of `ServerFunctionManager.fabrolia$fenceFunction`; it fails on the production jar as
