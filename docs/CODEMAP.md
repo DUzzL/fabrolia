@@ -164,7 +164,7 @@ Commands are registered in `FabroliaCommand.register` → `ConfigCommand.registe
 | TPS drop on one island | `/fabrolia regions tps`, `/fabrolia regions debug islandsummary`, `regions top`. Code: `IslandMetrics`, `IslandTickUnit.runCoordinated` phases, `IslandScheduledTicks.recordHold` (HOLD streaks), `TemporalControl`. |
 | Island not advancing at all (HOLD / stuck) | `ScheduledTickIslandAdmission.classify`, `IslandScheduledTicks.preflightIslandScheduled`, `PIsland.mainInterest()`, `EntityBarrierWatchdog`, `regions debug flightrec dump` |
 | Main MSPT high | `/fabrolia stats`, `C/utils/TickStats.java`, `ParallelProcessor.pumpUntilDone`, MAIN_SYNC drains (`RegionScheduler.IslandBuckets`, `MainSyncService`), the global lane `dispatchEntityPhase(globalDomain…)`, `GlobalBlockUpdateDrain`, `ChunkDelivery.sendNextChunks`, docs §17 |
-| Main hangs / deadlock | Lock-order comments (§5). `RegionMainBlockingWaitGuard.failIfCurrentThreadParticipates`, `C/mixin/server/BlockableEventLoopMainWaitGuardMixin.java`, `IslandCommands.mainClaim` (pumps while spinning), watchdog: `fabric/src/main/java/com/axalotl/fabrolia/fabric/mixin/server/ServerWatchdogMixin.java` |
+| Main hangs / deadlock | Lock-order comments (§5). `RegionMainBlockingWaitGuard.failIfCurrentThreadParticipates`, `C/mixin/server/BlockableEventLoopMainWaitGuardMixin.java`, `IslandCommands.mainClaim` (pumps while spinning), watchdog: `fabric/src/main/java/com/axalotl/fabrolia/fabric/mixin/server/ServerWatchdogMixin.java`. Main spinning in `RegionWorkerPool.pauseExactTurnAndAwait` / `stop`: a pool obligation (`externalObligations`) whose only servicer is Main; every such venue must be drained by the progress lambdas (`RegionScheduler.pauseExactPlayerTurn`, stop `drainProgress`) and the fail-stop sweep (`RegionScheduler.cancelFailedGenerationQueues`), e.g. `PassiveConnectionLoops` |
 | A datapack behaves differently | `/fabrolia functions plan` (verdict per line) and `/fabrolia functions fences`. Code: `FunctionPlanner`, `IslandFunctionHead`, `IslandFunctionScope`, `C/mixin/commands/Island*GuardMixin.java`, `TimerQueueMixin`. Island functions run at island cadence L (docs §16). |
 | A command misbehaves or fail-stops | `CommandsMixin`, `IslandCommands.quiesceAllExcept`, `*CommandFenceScope`. Command blocks: `IslandCommands.routeCommandBlock`. |
 | Packets out of order | `ConnectionOutbox` (per-connection FIFO, `WorkerScope`), `ConnectionIslandPlayerMixin.fabrolia$orderedOffLoopSend`, `AsyncIslandPacketPolicy` (one `MAIN_FIFO` packet orders everything after it), `IslandPlayerTurnSession.enqueuePacket` |
@@ -242,7 +242,7 @@ Canonical shape: `try { runSuccessBodyIfHealthy(body) } catch (t) { w = publishF
 
 ## 6. `C/regions/` package index (grouped by topic)
 
-All 155 files are listed here, grouped by topic. Each name is `C/regions/<Name>.java`.
+All 153 files are listed here, grouped by topic. Each name is `C/regions/<Name>.java`.
 
 - **Scheduler core:**
   - Scheduling and workers: `RegionScheduler`, `RegionWorkerPool`, `RegionWorkerThread`, `RegionizedServer`, `RegionizedTaskQueue`, `RegionTaskFanIn`, `RegionTickHooks`, `RegionTickingAccess`
@@ -258,7 +258,7 @@ All 155 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   - Player ticks and ownership: `AsyncIslandPlayerTicks`, `AsyncIslandPlayerAccess`, `AsyncIslandPlayerLifecycle`, `IslandPlayerTurnSession`, `PlayerTurnOwnership`, `RegionalPlayerEntityTicksV2`, `PlayerTickActor`, `PlayerTickPhase`, `PlayerTickPhaseStamp`, `PlayerTickKnownModEnvelope`
   - Movement: `PlayerMoveLockPolicy`, `PlayerMoveReadSnapshot`
   - Listeners and Carpet: `AsyncIslandListenerAccess`, `CarpetPlayerMutationRouter`, `FabroliaSenderPlayer`
-- **Packets / connection:** `AsyncIslandPacketPolicy`, `AsyncIslandPacketContinuations`, `ConnectionOutbox`, `FabroliaConnectionEventLoop`
+- **Packets / connection:** `AsyncIslandPacketPolicy`, `AsyncIslandPacketContinuations`, `ConnectionOutbox`, `FabroliaConnectionEventLoop`, `PassiveConnectionLoops` (fake-player EmbeddedChannel queues, run by every Main pool fixed point)
 - **Chunks:**
   - Delivery: `ChunkDelivery`, `ChunkDeliveryCandidates`, `ChunkBatchAckReplay`, `FabroliaFullChunkPublisher`, `FabroliaChunkForgetPublisher`
   - Chunk access and writes: `ChunkBridgeWait`, `ChunkWriteEnqueueFence`, `FabroliaWriteGen`, `WorkerChunkCache`, `C2meStrandHeal`

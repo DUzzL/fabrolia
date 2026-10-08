@@ -5,6 +5,7 @@ import com.axalotl.fabrolia.common.regions.ConnectionOutbox;
 import com.axalotl.fabrolia.common.regions.FabroliaConnectionEventLoop;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.NetherPortalPlayerAccess;
+import com.axalotl.fabrolia.common.regions.PassiveConnectionLoops;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -57,6 +58,9 @@ public abstract class ConnectionIslandPlayerMixin
      * generation before that queue becomes visible: a delayed Netty task may run
      * after normal stop or during an exact-turn exclusive cut, where acquiring a
      * fresh root success permit would be an invalid cross-generation admission.
+     * A passive loop (a fake player's EmbeddedChannel) is noted afterwards, also when
+     * publication failed part-way: its queue runs only when Main operates the channel,
+     * so every pool fixed point runs it ({@link PassiveConnectionLoops}).
      */
     @Override
     public void fabrolia$enqueueEventLoopTask(Runnable task) {
@@ -67,19 +71,23 @@ public abstract class ConnectionIslandPlayerMixin
         }
         EventLoop loop = current.eventLoop();
         ConnectionOutbox outbox = fabrolia$outbox;
-        RegionScheduler.executeTrackedExternal(queued -> outbox.execute(loop, queued), () -> {
-            try {
-                // ExternalTask installs the retained generation's causal token.
-                // Receipt-owned nested success cuts therefore remain valid even
-                // when Netty drains after the root generation stopped accepting.
-                task.run();
-            } catch (Throwable failure) {
-                // Netty executors may log a task exception and keep draining.
-                // Arm physical Main first and rethrow the same first-wins object;
-                // no later channel publication may start in this generation.
-                IslandCommands.publishAndPropagate(failure);
-            }
-        });
+        try {
+            RegionScheduler.executeTrackedExternal(queued -> outbox.execute(loop, queued), () -> {
+                try {
+                    // ExternalTask installs the retained generation's causal token.
+                    // Receipt-owned nested success cuts therefore remain valid even
+                    // when Netty drains after the root generation stopped accepting.
+                    task.run();
+                } catch (Throwable failure) {
+                    // Netty executors may log a task exception and keep draining.
+                    // Arm physical Main first and rethrow the same first-wins object;
+                    // no later channel publication may start in this generation.
+                    IslandCommands.publishAndPropagate(failure);
+                }
+            });
+        } finally {
+            PassiveConnectionLoops.noteQueued(current);
+        }
     }
 
     /**

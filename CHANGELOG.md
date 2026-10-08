@@ -16,6 +16,24 @@
   island's chunk (commands, functions) reach other players at that island's
   next tick end instead of Main's chunk tick; a Main-side player interaction
   publishes its island's changes before the player's block-change ACK.
+- Freeze fix (permanent Main spin after a console/RCON `/tp` of a Carpet bot,
+  e.g. `tp <bot> 6000 -40 6000` between two ticks): a Carpet fake player's
+  connection is a Netty `EmbeddedChannel` whose event loop runs queued tasks
+  only when the channel is next operated on, which vanilla does at the end of
+  `tickChildren` (`resumeFlushing`). The bot's chunk-forget publications from
+  the teleport were pool obligations queued on that loop, and the next tick's
+  exact player turn waited for them before the only thread that could run them
+  got there. Every Main pool fixed point (exact/preparation turn, stop) now runs
+  the queues of such passive channels itself once no worker step is live
+  (`PassiveConnectionLoops`), which is what vanilla's next flush would run; the
+  fail-stop sweep runs them to cancel their permits. A bot logout
+  (`player <bot> kill`) used the same path. Stand (production mod set, RCON
+  `/tp` of a Carpet bot): with `asyncIslands = false` the 0.2.38 jar froze in
+  2 of 2 attempts, the fixed jar in 0 of 10; with `asyncIslands = true` neither
+  froze (2 and 3 attempts). The bot ends up at the target, its old chunks unload.
+- An exact player turn that cannot reach its fixed point now logs the pending
+  obligation counters every 15 s (as pool stop already did) instead of
+  spinning silently.
 
 ### Whole-mod review (memory, CPU, vanilla parity)
 

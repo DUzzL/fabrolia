@@ -720,6 +720,10 @@ public final class RegionScheduler {
                             // fixed point for this level's main-thread bridge
                         }
                     }
+                    // A fake player's transport queue runs only when Main operates its
+                    // channel; its queued pool tasks are obligations of this fixed point.
+                    // Drained only once no worker can publish to the same loop concurrently.
+                    if (stoppingPool.workersIdleForMainService()) PassiveConnectionLoops.runQueued();
                     // Chunk processors above may be required to let a step
                     // reach its finally chain.  MAIN_SYNC bodies below are
                     // new simulation and are forbidden once any such task has
@@ -932,6 +936,14 @@ public final class RegionScheduler {
         } catch (Throwable cleanup) {
             failure = expectedPool.mergeCancellationFailure(failure, cleanup);
         }
+        try {
+            // Netty-equivalent cancellation: after W each queued pool task on a passive
+            // loop only terminalizes its permit and rethrows W into Netty's task log. The
+            // loop also runs the bot's own queued Netty tasks, as its next flush would.
+            PassiveConnectionLoops.runQueued();
+        } catch (Throwable cleanup) {
+            failure = expectedPool.mergeCancellationFailure(failure, cleanup);
+        }
         java.util.ArrayList<RegionizedServer> levels;
         try {
             levels = new java.util.ArrayList<>(PER_LEVEL.values());
@@ -969,6 +981,7 @@ public final class RegionScheduler {
             if (!IslandCommands.failedGenerationQueuesEmpty()) return false;
             if (!MAIN_SYNC.isEmpty()) return false;
             if (NetherPortalTransfers.hasPending()) return false;
+            if (!PassiveConnectionLoops.isEmpty()) return false;
             for (RegionizedServer rs : PER_LEVEL.values()) {
                 for (Region region : rs.snapshot()) {
                     if (!failedGenerationRegionQueuesEmpty(region)) return false;
@@ -1193,6 +1206,11 @@ public final class RegionScheduler {
                     // revalidates its queues and permits after the final fenced pass.
                 }
             }
+            // Transport publications to a fake player's EmbeddedChannel run only when Main
+            // operates that channel (vanilla: resumeFlushing at the end of tickChildren),
+            // so a bot /tp between ticks would otherwise hold this fixed point forever.
+            // Drained only once no worker can publish to the same loop concurrently.
+            if (current.workersIdleForMainService()) PassiveConnectionLoops.runQueued();
             throwWorkerFailureIfAny();
             // A causal worker may have published a main-owned entity obligation
             // immediately before the exact-turn request. External permits keep the

@@ -450,7 +450,8 @@ public final class RegionWorkerPool {
      * Linearizable worker-exclusion fence used by the exact EntityTickList pass.
      * There is no timeout: returning while an old step is live would let it overlap
      * the logical-server actor.  The progress callback may service only causal
-     * chunk-main work and runs outside {@link #lifecycleLock}.
+     * chunk-main work and Main-run transport queues ({@link PassiveConnectionLoops});
+     * it runs outside {@link #lifecycleLock}.
      */
     void pauseExactTurnAndAwait(Runnable progress) {
         pauseExactTurnAndAwait(progress, false);
@@ -492,6 +493,7 @@ public final class RegionWorkerPool {
 
         boolean validatingPausedCut = false;
         Throwable fatalDuringPause = null;
+        long nextStillWaitingDiagnostic = System.nanoTime() + 15_000_000_000L;
         for (;;) {
             boolean yieldForRoutedCommand = false;
             synchronized (lifecycleLock) {
@@ -539,6 +541,15 @@ public final class RegionWorkerPool {
                     if (interrupted) Thread.currentThread().interrupt();
                 }
             }
+            long now = System.nanoTime();
+            if (now >= nextStillWaitingDiagnostic) {
+                nextStillWaitingDiagnostic = now + 15_000_000_000L;
+                try {
+                    logExactTurnStillWaiting(retainQueuedRegions);
+                } catch (Throwable ignored) {
+                    // Diagnostics never decide the generation's fate.
+                }
+            }
             try {
                 throwIfFailed();
                 progress.run();
@@ -583,6 +594,40 @@ public final class RegionWorkerPool {
             RegionWorkerPool.<RuntimeException>rethrow(fatalDuringPause);
         }
         return true;
+    }
+
+    /**
+     * No timeout: an exact turn which cannot reach its fixed point keeps waiting, but
+     * names the obligation every 15 s (as {@link #stop} does) instead of spinning silently.
+     */
+    private void logExactTurnStillWaiting(boolean retainQueuedRegions) {
+        long external;
+        long regional;
+        long admissions;
+        int steps;
+        synchronized (lifecycleLock) {
+            external = externalObligations;
+            regional = queuedRegionalObligations;
+            admissions = exactRootAdmissions;
+            steps = activeSteps.get();
+        }
+        LOGGER.error("RegionWorkerPool: exact-turn pause still waiting; the turn stays closed "
+                        + "(retainQueuedRegions={}, externalObligations={}, "
+                        + "queuedRegionalObligations={}, rootAdmissions={}, activeSteps={}, "
+                        + "ready={}, global={}, mainOnly={}, mainSafe={}, units={})",
+                retainQueuedRegions, external, regional, admissions, steps, ready.size(),
+                globalTasks.size(), mainOnlyTasks.size(), mainSafeTasks.size(), unitTasks.size());
+    }
+
+    /**
+     * No pool step is live, queued or being admitted: the only open obligations are external
+     * permits. Main fixed points service venues that workers may also touch (fake-player
+     * transport queues) only then.
+     */
+    boolean workersIdleForMainService() {
+        synchronized (lifecycleLock) {
+            return activeSteps.get() == 0 && ordinaryQueuesEmpty() && exactRootAdmissions == 0L;
+        }
     }
 
     private boolean exactTurnQuiescentLocked(boolean retainQueuedRegions) {
