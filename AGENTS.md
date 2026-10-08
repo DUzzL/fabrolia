@@ -130,6 +130,13 @@ player ticks stay on Main). Datapacks include BlazeandCave's Advancements.
   `NaturalSpawner` hook writes `SpawnReporter.local_spawns`, which is null on island threads
   (`NullPointerException` from `ServerChunkCache.fabrolia$tickIslandChunks`, seen 2026-10-07).
   Production should keep `/carpet commandSpawn false` until this is fixed.
+- Memory leak in Lithium, not Fabrolia (production heap dump 2026-10-08: 379 `ServerPlayer`
+  for 25 online, ≈ 600 MB after 19.4 h, ~30 MB/h): Lithium's `mixin.entity.framed_maps`
+  makes a framed map's `tickCarriedBy` visit only the ticking player, so players who left or
+  died are never pruned from `MapItemSavedData.carriedByPlayers` of maps in item frames.
+  Reproduces with vanilla + Lithium only; reported upstream by the owner (CaffeineMC/lithium).
+  Fabrolia deliberately does not override it (owner's decision). Workaround on the server:
+  `mixin.entity.framed_maps=false` in `config/lithium.properties`, or periodic restarts.
 - `:common:verifyFullModpackMixinExport` fails in `verifyServerFunctionManager` ("the sticky
   cleanup receipt must precede fence acquisition"): the assertion pins an older instruction
   order of `ServerFunctionManager.fabrolia$fenceFunction`; it fails on the production jar as
