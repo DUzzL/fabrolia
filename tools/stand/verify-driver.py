@@ -105,6 +105,13 @@ def lines_since(start, pred=lambda l: True):
         return [line for serial, line in campaign.lines if serial > start and pred(line)]
 
 
+def skin_fetch_noise(lines):
+    """Exception lines that belong to a SkinRestorer skin fetch. Unsandboxed stands reach the
+    real Mojang API, which answers the fake client names with 404/429 ('not found', 'too many
+    requests'): network noise, not a server fault."""
+    return {i for i in range(1, len(lines)) if 'SkinRestorer-Fetch' in lines[i - 1]}
+
+
 def spark_tps(key):
     start = cursor()
     ex('spark tps')
@@ -328,7 +335,10 @@ def check_nether():
         res[name]['final_not_nether'] = not in_dim('nether', name, 'the_nether')
     flight2 = raw('nether', 'fabrolia regions debug flightrec')
     items_nether2 = raw('nether', 'execute in minecraft:the_nether if entity @e[type=item]')
-    ise = lines_since(0, lambda l: 'IllegalStateException' in l)
+    with campaign.condition:
+        recent = [line for serial, line in campaign.lines]
+    skin = skin_fetch_noise(recent)
+    ise = [l for i, l in enumerate(recent) if 'IllegalStateException' in l and i not in skin]
     ok = all(r.get('reached_nether') and r.get('reached_overworld') and r.get('final_overworld')
              and r.get('final_not_nether') for r in res.values()) and not ise \
         and all(any('Test passed' in l for l in b) for b in blocks)
@@ -436,9 +446,11 @@ def post_stop():
             c['announcement_note'] = 'not exactly one Town02 challenge announcement per online client'
     # Log scan
     log = (server / 'logs' / 'latest.log').read_text(errors='replace').splitlines()
-    hits = [l for l in log if PATTERN.search(l)]
+    skin = skin_fetch_noise(log)
+    hits = [l for i, l in enumerate(log) if PATTERN.search(l) and i not in skin]
     bad = [l for l in hits if not any(b in l for b in BENIGN)]
     noise = {b: sum(1 for l in log if b in l) for b in BENIGN}
+    noise['SkinRestorer fetch exceptions (network)'] = sum(1 for i in skin if 'Exception' in log[i])
     crash = sorted(p.name for p in (server / 'crash-reports').glob('*')) if (server / 'crash-reports').exists() else []
     check('6_log_and_crash', not bad and not crash, bad_lines=bad[:200], bad_count=len(bad), noise_counts=noise,
           crash_reports=crash, tps=report['raw'].get('tps_warm', []) + report['raw'].get('tps_end', []))
