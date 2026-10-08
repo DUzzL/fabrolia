@@ -34,16 +34,6 @@
 - An exact player turn that cannot reach its fixed point now logs the pending
   obligation counters every 15 s (as pool stop already did) instead of
   spinning silently.
-- Memory leak fix (production heap dump 2026-10-08, 19.4 h uptime: 379
-  `ServerPlayer` objects for 25 online, ≈ 600 MB, 109 410 map holders): Lithium's
-  `mixin.entity.framed_maps` makes a framed map's `tickCarriedBy` look only at the
-  ticking player, so a player who left or died is never pruned from the
-  `carriedByPlayers` of any map in an item frame (map-art walls) and keeps the
-  whole old `ServerPlayer` alive. Fabrolia now disables that Lithium option
-  (`lithium:options` in both loader manifests): vanilla prunes them again.
-  Stand (map in two frames, 20 bot logins/logouts, one player online): vanilla
-  + Carpet 1 holder; + Lithium 22; production mods without Fabrolia 20; with
-  this jar 1–2.
 
 ### Whole-mod review (memory, CPU, vanilla parity)
 
