@@ -20,12 +20,18 @@ WORKER = ['net.minecraft.server.level.ServerChunkCache.getChunk',
           'eventFdWrite',
           'net.minecraft.network.Connection.send',
           'com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap.get',
-          'com.axalotl.fabrolia.common.regions.IslandTickUnit.awaitEntityBarrier']
+          'com.axalotl.fabrolia.common.regions.IslandTickUnit.awaitEntityBarrier',
+          'com.axalotl.fabrolia.common.regions.RegionizedServer.tickOwned',
+          'com.axalotl.fabrolia.common.regions.RegionizedServer.tickIslandEntitiesInVanillaOrder',
+          'net.minecraft.world.level.entity.EntityTickList.fabrolia$snapshotEntities',
+          'com.axalotl.fabrolia.common.regions.IslandBlockEvents.runIslandEventsEntered']
 MAIN = ['net.minecraft.server.MinecraftServer.tickServer',
         'net.minecraft.server.level.ServerChunkCache.trackerOnMain',
         'com.axalotl.fabrolia.common.regions.IslandCommands.quiesceAllExcept',
         'com.axalotl.fabrolia.common.regions.IslandCommands.mainClaim',
-        'eventFdWrite']
+        'eventFdWrite',
+        'com.axalotl.fabrolia.common.regions.RegionizedServer.tickGlobalEntitiesInVanillaOrder',
+        'net.minecraft.world.level.entity.EntityTickList.fabrolia$snapshotEntities']
 
 
 def match(label, t):
@@ -35,7 +41,14 @@ def match(label, t):
 
 for path in sys.argv[1:]:
     a = core.Analysis(core.load(path), path)
-    secs = 60.0 * len(a.window_ids)
+    # Spark's first/last windows may cover only part of a minute, and long
+    # profiles may retain only their tail. Normalize the samples by the
+    # retained windows intersected with the actual capture, not 60 s/bucket.
+    secs = sum(max(0, min(a.md.end_time, a.window_start(k) + a.window_duration(k))
+                      - max(a.md.start_time, a.window_start(k)))
+               for k in range(len(a.window_ids))) / 1000.0
+    if secs <= 0:
+        raise ValueError(f'{path}: no retained capture duration')
     for group, targets, pred in (('Region-Worker', WORKER, lambda n: 'Region-Worker' in n),
                                  ('Server thread', MAIN, lambda n: n == 'Server thread')):
         incl = defaultdict(float)
@@ -48,8 +61,10 @@ for path in sys.argv[1:]:
                 for t in targets:
                     if match(e['label'], t):
                         incl[t] += sum(e['w'])
-        ticks = a.norm_ticks or 1
+        ticks = a.norm_ticks
+        running_per_tick = f'{running / ticks:.2f} ms/tick' if ticks else 'ms/tick unavailable'
         print(f'== {Path(path).parts[-5] if len(Path(path).parts) > 5 else path} [{group}] windows={len(a.window_ids)} '
-              f'running {running / secs:.1f} ms/s ({running / ticks:.2f} ms/tick)')
+              f'seconds={secs:.3f} running {running / secs:.1f} ms/s ({running_per_tick})')
         for t in targets:
-            print(f'{incl[t] / secs:9.1f} ms/s {incl[t] / ticks:8.2f} ms/tick  {t}')
+            per_tick = f'{incl[t] / ticks:8.2f} ms/tick' if ticks else 'ms/tick unavailable'
+            print(f'{incl[t] / secs:9.1f} ms/s {per_tick}  {t}')

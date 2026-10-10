@@ -1,0 +1,5610 @@
+{
+  "source": "https://spark.lucko.me/rOM0K82a4R",
+  "sha256": "f8539441088e10afaa447551f8e4c9f5132f89c4014dd6c990943163faedd06a",
+  "start_timestamp_ms": 1791656324241,
+  "end_timestamp_ms": 1791656446147,
+  "interval_microseconds": 4000,
+  "interval_ms": 4.0,
+  "thread_dumper": {
+    "type": "ALL",
+    "ids": [],
+    "patterns": []
+  },
+  "normalization_ticks": 2367,
+  "windows": [
+    {
+      "k": 0,
+      "window": 29860939,
+      "start": 1791656324245,
+      "duration": 60183,
+      "has_stats": true,
+      "ticks": 1167,
+      "tps": 19.35982206120894,
+      "mspt_median": 18.176198,
+      "mspt_max": 513.759634,
+      "cpu_process": 0.6368918008918009,
+      "cpu_system": 0.6369076625716625,
+      "players": 31,
+      "entities": 12064,
+      "tile_entities": -1,
+      "chunks": 23560
+    },
+    {
+      "k": 1,
+      "window": 29860940,
+      "start": 1791656384428,
+      "duration": 59982,
+      "has_stats": true,
+      "ticks": 1200,
+      "tps": 20.01399066208979,
+      "mspt_median": 18.176919,
+      "mspt_max": 521.016313,
+      "cpu_process": 0.6026096096096096,
+      "cpu_system": 0.6026026355105105,
+      "players": 30,
+      "entities": 12143,
+      "tile_entities": -1,
+      "chunks": 22659
+    }
+  ],
+  "threads": {
+    "Fabrolia-Region-Worker (x17)": {
+      "sampled_ms": 1988296.0,
+      "states_ms": {
+        "running": 977868.0,
+        "park": 967248.0,
+        "wait": 5648.0,
+        "blocked": 15512.0,
+        "sleep": 0.0,
+        "io": 2604.0,
+        "safepoint": 19416.0
+      },
+      "states_by_window_ms": {
+        "running": [
+          496512.0,
+          481356.0
+        ],
+        "park": [
+          468964.0,
+          498284.0
+        ],
+        "wait": [
+          3724.0,
+          1924.0
+        ],
+        "blocked": [
+          8364.0,
+          7148.0
+        ],
+        "sleep": [
+          0.0,
+          0.0
+        ],
+        "io": [
+          1492.0,
+          1112.0
+        ],
+        "safepoint": [
+          11484.0,
+          7932.0
+        ]
+      },
+      "wait_sites": [
+        {
+          "state": 1,
+          "site": "com.axalotl.fabrolia.common.regions.RegionWorkerPool.workerLoop",
+          "owner": "fabrolia",
+          "total": 784964.0,
+          "w": [
+            378556.0,
+            406408.0
+          ]
+        },
+        {
+          "state": 1,
+          "site": "com.axalotl.fabrolia.common.regions.IslandTickUnit.awaitEntityBarrier",
+          "owner": "fabrolia",
+          "total": 173516.0,
+          "w": [
+            85856.0,
+            87660.0
+          ]
+        },
+        {
+          "state": 1,
+          "site": "com.axalotl.fabrolia.common.regions.EpochDomain$EntityDispatchPublication.awaitAccepted",
+          "owner": "fabrolia",
+          "total": 7784.0,
+          "w": [
+            3964.0,
+            3820.0
+          ]
+        },
+        {
+          "state": 2,
+          "site": "com.axalotl.fabrolia.common.regions.RegionWorkerPool.awaitLifecycleChange",
+          "owner": "fabrolia",
+          "total": 4948.0,
+          "w": [
+            3216.0,
+            1732.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "com.axalotl.fabrolia.common.regions.RegionWorkerPool.workerLoop",
+          "owner": "fabrolia",
+          "total": 3448.0,
+          "w": [
+            1760.0,
+            1688.0
+          ]
+        },
+        {
+          "state": 5,
+          "site": "io.netty.channel.epoll.Native.eventFdWrite",
+          "owner": "(unattributed: io.netty.channel)",
+          "total": 2604.0,
+          "w": [
+            1492.0,
+            1112.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "com.axalotl.fabrolia.common.utils.PoiChunkLoadFence.acquire",
+          "owner": "fabrolia",
+          "total": 2328.0,
+          "w": [
+            1356.0,
+            972.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "com.axalotl.fabrolia.common.regions.RegionScheduler.acceptsUnitFor",
+          "owner": "fabrolia",
+          "total": 2304.0,
+          "w": [
+            984.0,
+            1320.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "net.minecraft.world.entity.item.ItemEntity.wrapMethod$bpn000$fabrolia$syncWholeItemTick",
+          "owner": "fabrolia",
+          "total": 2300.0,
+          "w": [
+            1336.0,
+            964.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "net.minecraft.world.level.chunk.PalettedContainer.get",
+          "owner": "minecraft",
+          "total": 2120.0,
+          "w": [
+            1040.0,
+            1080.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "net.minecraft.server.level.ChunkMap.getVisibleChunkIfPresent",
+          "owner": "c2me-rewrites-chunk-system",
+          "total": 964.0,
+          "w": [
+            612.0,
+            352.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "com.axalotl.fabrolia.common.regions.RegionWorkerPool.mayServiceDetachedTransfers",
+          "owner": "fabrolia",
+          "total": 840.0,
+          "w": [
+            420.0,
+            420.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "net.minecraft.world.level.chunk.LevelChunk$RebindableTickingBlockEntityWrapper.getPos",
+          "owner": "minecraft",
+          "total": 840.0,
+          "w": [
+            364.0,
+            476.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "net.minecraft.server.level.ServerChunkCache.md0f53a3$fabrolia$lambda$fabrolia$tickIslandChunks$5$6",
+          "owner": "fabrolia",
+          "total": 652.0,
+          "w": [
+            572.0,
+            80.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "net.caffeinemc.mods.lithium.common.entity.pushable.EntityPushablePredicate$1.test",
+          "owner": "lithium",
+          "total": 604.0,
+          "w": [
+            484.0,
+            120.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "net.minecraft.world.entity.ai.goal.GoalSelector.tick",
+          "owner": "minecraft",
+          "total": 596.0,
+          "w": [
+            252.0,
+            344.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "net.minecraft.server.level.PlayerMap.wrapMethod$cfb000$fabrolia$snapshotAllPlayers",
+          "owner": "fabrolia",
+          "total": 584.0,
+          "w": [
+            332.0,
+            252.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "net.minecraft.server.level.ServerLevel.wrapMethod$cic000$fabrolia$snapshotDragonParts",
+          "owner": "fabrolia",
+          "total": 576.0,
+          "w": [
+            368.0,
+            208.0
+          ]
+        },
+        {
+          "state": 1,
+          "site": "com.ishland.flowsched.scheduler.StatusAdvancingScheduler.getHolder",
+          "owner": "c2me-base",
+          "total": 552.0,
+          "w": [
+            304.0,
+            248.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "net.minecraft.world.entity.ai.Brain.getRunningBehaviors",
+          "owner": "minecraft",
+          "total": 544.0,
+          "w": [
+            268.0,
+            276.0
+          ]
+        }
+      ],
+      "selected_methods": [
+        {
+          "total": 532652.0,
+          "excl": 640.0,
+          "running": 640.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.RegionizedServer.tickOwned",
+          "w": [
+            271908.0,
+            260744.0
+          ]
+        },
+        {
+          "total": 532652.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.RegionizedServer.runOwedEntityPhase",
+          "w": [
+            271900.0,
+            260752.0
+          ]
+        },
+        {
+          "total": 475076.0,
+          "excl": 16.0,
+          "running": 16.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandTickUnit.awaitEntityBarrier",
+          "w": [
+            244160.0,
+            230916.0
+          ]
+        },
+        {
+          "total": 100600.0,
+          "excl": 79620.0,
+          "running": 79620.0,
+          "owner": "io_github_axalotldev_api",
+          "label": "com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap.get",
+          "w": [
+            50692.0,
+            49908.0
+          ]
+        },
+        {
+          "total": 91416.0,
+          "excl": 20.0,
+          "running": 20.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.spawnForChunk",
+          "w": [
+            46980.0,
+            44436.0
+          ]
+        },
+        {
+          "total": 82344.0,
+          "excl": 84.0,
+          "running": 84.0,
+          "owner": "fabrolia",
+          "label": "net.minecraft.world.level.NaturalSpawner.wrapOperation$ccb000$fabrolia$releasePackAfterSpawn$mixinextras$bridge$47",
+          "w": [
+            42304.0,
+            40040.0
+          ]
+        },
+        {
+          "total": 82228.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "fabrolia",
+          "label": "net.minecraft.world.level.NaturalSpawner.wrapOperation$ccb000$fabrolia$releasePackAfterSpawn",
+          "w": [
+            42244.0,
+            39984.0
+          ]
+        },
+        {
+          "total": 81456.0,
+          "excl": 36.0,
+          "running": 36.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.NaturalSpawner$$Lambda.0x00000000613d2c38.run",
+          "w": [
+            41804.0,
+            39652.0
+          ]
+        },
+        {
+          "total": 81420.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "fabrolia",
+          "label": "net.minecraft.world.level.NaturalSpawner.md0f53a3$fabrolia$lambda$fabrolia$releasePackAfterSpawn$0$3",
+          "w": [
+            41784.0,
+            39636.0
+          ]
+        },
+        {
+          "total": 81408.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.NaturalSpawner$$Lambda.0x00000000613d2808.call",
+          "w": [
+            41784.0,
+            39624.0
+          ]
+        },
+        {
+          "total": 81408.0,
+          "excl": 24.0,
+          "running": 24.0,
+          "owner": "mixinextras",
+          "label": "net.minecraft.world.level.NaturalSpawner.mixinextras$bridge$redirect$zjo000$carpet$spawnMultipleTimes$51",
+          "w": [
+            41784.0,
+            39624.0
+          ]
+        },
+        {
+          "total": 81384.0,
+          "excl": 20.0,
+          "running": 20.0,
+          "owner": "carpet",
+          "label": "net.minecraft.world.level.NaturalSpawner.redirect$zjo000$carpet$spawnMultipleTimes",
+          "w": [
+            41768.0,
+            39616.0
+          ]
+        },
+        {
+          "total": 80928.0,
+          "excl": 56.0,
+          "running": 56.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.spawnCategoryForChunk",
+          "w": [
+            41564.0,
+            39364.0
+          ]
+        },
+        {
+          "total": 67196.0,
+          "excl": 308.0,
+          "running": 308.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.spawnCategoryForPosition",
+          "w": [
+            34628.0,
+            32568.0
+          ]
+        },
+        {
+          "total": 63220.0,
+          "excl": 16.0,
+          "running": 16.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks.tickIslandCells",
+          "w": [
+            32168.0,
+            31052.0
+          ]
+        },
+        {
+          "total": 60612.0,
+          "excl": 96.0,
+          "running": 96.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks.tickMerged",
+          "w": [
+            30820.0,
+            29792.0
+          ]
+        },
+        {
+          "total": 56156.0,
+          "excl": 44.0,
+          "running": 44.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks.tickOne",
+          "w": [
+            28712.0,
+            27444.0
+          ]
+        },
+        {
+          "total": 51656.0,
+          "excl": 148.0,
+          "running": 148.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming.preEntityTick",
+          "w": [
+            26384.0,
+            25272.0
+          ]
+        },
+        {
+          "total": 49512.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks$$Lambda.0x000000006107b6a8.run",
+          "w": [
+            25396.0,
+            24116.0
+          ]
+        },
+        {
+          "total": 45648.0,
+          "excl": 3656.0,
+          "running": 3656.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.server.level.ServerLevel.tickChunk",
+          "w": [
+            23172.0,
+            22476.0
+          ]
+        },
+        {
+          "total": 43656.0,
+          "excl": 1856.0,
+          "running": 1856.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.collect",
+          "w": [
+            22204.0,
+            21452.0
+          ]
+        },
+        {
+          "total": 37632.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.entity.PersistentEntitySectionManager.areEntitiesLoaded",
+          "w": [
+            19244.0,
+            18388.0
+          ]
+        },
+        {
+          "total": 25228.0,
+          "excl": 16.0,
+          "running": 16.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.getRandomSpawnMobAt",
+          "w": [
+            13012.0,
+            12216.0
+          ]
+        },
+        {
+          "total": 25040.0,
+          "excl": 28.0,
+          "running": 28.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.NetherPortalTransfers.tryCohort",
+          "w": [
+            12448.0,
+            12592.0
+          ]
+        },
+        {
+          "total": 18700.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.runIslandScheduled",
+          "w": [
+            9424.0,
+            9276.0
+          ]
+        },
+        {
+          "total": 16224.0,
+          "excl": 1588.0,
+          "running": 1588.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.add",
+          "w": [
+            8332.0,
+            7892.0
+          ]
+        },
+        {
+          "total": 14868.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "servercore",
+          "label": "net.minecraft.world.level.NaturalSpawner.redirect$ebe000$servercore$fastBiomeLookup",
+          "w": [
+            7628.0,
+            7240.0
+          ]
+        },
+        {
+          "total": 13668.0,
+          "excl": 52.0,
+          "running": 52.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.getRandomPosWithin",
+          "w": [
+            6908.0,
+            6760.0
+          ]
+        },
+        {
+          "total": 13488.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.reduceSerialCells",
+          "w": [
+            6928.0,
+            6560.0
+          ]
+        },
+        {
+          "total": 12248.0,
+          "excl": 56.0,
+          "running": 56.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.entity.PersistentEntitySectionManager.canPositionTick",
+          "w": [
+            6188.0,
+            6060.0
+          ]
+        },
+        {
+          "total": 11412.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.reduce",
+          "w": [
+            5944.0,
+            5468.0
+          ]
+        },
+        {
+          "total": 11228.0,
+          "excl": 28.0,
+          "running": 28.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.fabrolia$reduceRange",
+          "w": [
+            5840.0,
+            5388.0
+          ]
+        },
+        {
+          "total": 11164.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.mobsAt",
+          "w": [
+            5856.0,
+            5308.0
+          ]
+        },
+        {
+          "total": 11124.0,
+          "excl": 16.0,
+          "running": 16.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$$Lambda.0x0000000061215a40.run",
+          "w": [
+            5780.0,
+            5344.0
+          ]
+        },
+        {
+          "total": 11040.0,
+          "excl": 676.0,
+          "running": 676.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.lambda$fabrolia$reduceRange$1",
+          "w": [
+            5728.0,
+            5312.0
+          ]
+        },
+        {
+          "total": 9504.0,
+          "excl": 304.0,
+          "running": 304.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.preflightIslandScheduled",
+          "w": [
+            4736.0,
+            4768.0
+          ]
+        },
+        {
+          "total": 8928.0,
+          "excl": 20.0,
+          "running": 20.0,
+          "owner": "fabrolia",
+          "label": "net.minecraft.world.level.NaturalSpawner.wrapOperation$ccb000$fabrolia$approveAndReservePack",
+          "w": [
+            4624.0,
+            4304.0
+          ]
+        },
+        {
+          "total": 8860.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.NaturalSpawner$$Lambda.0x00000000613d16b0.call",
+          "w": [
+            4576.0,
+            4284.0
+          ]
+        },
+        {
+          "total": 8860.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "mixinextras",
+          "label": "net.minecraft.world.level.NaturalSpawner.mixinextras$bridge$canSpawnForCategoryLocal$50",
+          "w": [
+            4576.0,
+            4284.0
+          ]
+        },
+        {
+          "total": 8860.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner$SpawnState.canSpawnForCategoryLocal",
+          "w": [
+            4576.0,
+            4284.0
+          ]
+        },
+        {
+          "total": 7676.0,
+          "excl": 56.0,
+          "running": 56.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.probeCausalPreflightCell",
+          "w": [
+            3880.0,
+            3796.0
+          ]
+        },
+        {
+          "total": 7256.0,
+          "excl": 24.0,
+          "running": 24.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.runCollectedSlice",
+          "w": [
+            3580.0,
+            3676.0
+          ]
+        },
+        {
+          "total": 7196.0,
+          "excl": 156.0,
+          "running": 156.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.discoverIslandDueChunks",
+          "w": [
+            3620.0,
+            3576.0
+          ]
+        },
+        {
+          "total": 7136.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.runOneCollectedTick",
+          "w": [
+            3516.0,
+            3620.0
+          ]
+        },
+        {
+          "total": 7092.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks$$Lambda.0x000000006124b680.run",
+          "w": [
+            3484.0,
+            3608.0
+          ]
+        },
+        {
+          "total": 7080.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.lambda$runOneCollectedTick$0",
+          "w": [
+            3476.0,
+            3604.0
+          ]
+        },
+        {
+          "total": 6704.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.runKernel",
+          "w": [
+            3536.0,
+            3168.0
+          ]
+        },
+        {
+          "total": 6576.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.prepareIslandLane",
+          "w": [
+            3376.0,
+            3200.0
+          ]
+        },
+        {
+          "total": 6560.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.runCollectedIslandLane",
+          "w": [
+            3204.0,
+            3356.0
+          ]
+        },
+        {
+          "total": 4836.0,
+          "excl": 36.0,
+          "running": 36.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.probeCellDueChunks",
+          "w": [
+            2464.0,
+            2372.0
+          ]
+        },
+        {
+          "total": 3844.0,
+          "excl": 1868.0,
+          "running": 1868.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.reorderVanilla",
+          "w": [
+            1916.0,
+            1928.0
+          ]
+        },
+        {
+          "total": 3584.0,
+          "excl": 56.0,
+          "running": 56.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.isRightDistanceToPlayerAndSpawnPoint",
+          "w": [
+            1824.0,
+            1760.0
+          ]
+        },
+        {
+          "total": 3392.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.runVanillaIslandLane",
+          "w": [
+            1748.0,
+            1644.0
+          ]
+        },
+        {
+          "total": 3252.0,
+          "excl": 40.0,
+          "running": 40.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming.postEntityTick",
+          "w": [
+            1724.0,
+            1528.0
+          ]
+        },
+        {
+          "total": 2724.0,
+          "excl": 256.0,
+          "running": 256.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.clear",
+          "w": [
+            1420.0,
+            1304.0
+          ]
+        },
+        {
+          "total": 2084.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.commitPreparedBlockLane",
+          "w": [
+            1064.0,
+            1020.0
+          ]
+        },
+        {
+          "total": 2052.0,
+          "excl": 20.0,
+          "running": 20.0,
+          "owner": "fabrolia",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.fabrolia$chunkTicking",
+          "w": [
+            1024.0,
+            1028.0
+          ]
+        },
+        {
+          "total": 2048.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.fabrolia$snapshotCellKeys",
+          "w": [
+            976.0,
+            1072.0
+          ]
+        },
+        {
+          "total": 2028.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$$Lambda.0x00000000610778b8.run",
+          "w": [
+            964.0,
+            1064.0
+          ]
+        },
+        {
+          "total": 2028.0,
+          "excl": 36.0,
+          "running": 36.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.lambda$fabrolia$snapshotCellKeys$0",
+          "w": [
+            964.0,
+            1064.0
+          ]
+        },
+        {
+          "total": 1976.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.isValidSpawnPostitionForType",
+          "w": [
+            1152.0,
+            824.0
+          ]
+        },
+        {
+          "total": 1800.0,
+          "excl": 108.0,
+          "running": 108.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$CellIndex.copyInto",
+          "w": [
+            852.0,
+            948.0
+          ]
+        },
+        {
+          "total": 1780.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.prepareBlockSlice",
+          "w": [
+            932.0,
+            848.0
+          ]
+        },
+        {
+          "total": 1192.0,
+          "excl": 48.0,
+          "running": 48.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks.tickSlice",
+          "w": [
+            636.0,
+            556.0
+          ]
+        },
+        {
+          "total": 1180.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.canSpawnMobAt",
+          "w": [
+            676.0,
+            504.0
+          ]
+        },
+        {
+          "total": 1080.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.entity.item.PrimedTnt.tick",
+          "w": [
+            628.0,
+            452.0
+          ]
+        },
+        {
+          "total": 896.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.runSlice",
+          "w": [
+            504.0,
+            392.0
+          ]
+        },
+        {
+          "total": 892.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.originSlot",
+          "w": [
+            460.0,
+            432.0
+          ]
+        },
+        {
+          "total": 724.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.explode",
+          "w": [
+            476.0,
+            248.0
+          ]
+        },
+        {
+          "total": 724.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "net.minecraft.world.level.ServerExplosion.wrapMethod$doh000$rustmi$explosionContext",
+          "w": [
+            476.0,
+            248.0
+          ]
+        },
+        {
+          "total": 724.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.ServerExplosion$$Lambda.0x00000000615a2450.call",
+          "w": [
+            476.0,
+            248.0
+          ]
+        },
+        {
+          "total": 724.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "mixinextras",
+          "label": "net.minecraft.world.level.ServerExplosion.mixinextras$bridge$explode$mixinextras$wrapped$66$67",
+          "w": [
+            476.0,
+            248.0
+          ]
+        },
+        {
+          "total": 724.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.explode$mixinextras$wrapped$66",
+          "w": [
+            476.0,
+            248.0
+          ]
+        },
+        {
+          "total": 696.0,
+          "excl": 20.0,
+          "running": 20.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.sensorEnd",
+          "w": [
+            384.0,
+            312.0
+          ]
+        },
+        {
+          "total": 664.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.commitPreparedIslandSliceUnchecked",
+          "w": [
+            268.0,
+            396.0
+          ]
+        },
+        {
+          "total": 640.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.commitPreparedIslandSlice",
+          "w": [
+            268.0,
+            372.0
+          ]
+        },
+        {
+          "total": 592.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.sensorBegin",
+          "w": [
+            312.0,
+            280.0
+          ]
+        },
+        {
+          "total": 572.0,
+          "excl": 84.0,
+          "running": 84.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.collectSlice",
+          "w": [
+            300.0,
+            272.0
+          ]
+        },
+        {
+          "total": 556.0,
+          "excl": 24.0,
+          "running": 24.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$CellIndex$$Lambda.0x000000006107c240.apply",
+          "w": [
+            224.0,
+            332.0
+          ]
+        },
+        {
+          "total": 536.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.collectCommittedIslandLane",
+          "w": [
+            284.0,
+            252.0
+          ]
+        },
+        {
+          "total": 532.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$CellIndex.lambda$copyInto$0",
+          "w": [
+            220.0,
+            312.0
+          ]
+        },
+        {
+          "total": 512.0,
+          "excl": 96.0,
+          "running": 96.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.update",
+          "w": [
+            236.0,
+            276.0
+          ]
+        },
+        {
+          "total": 472.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.calculateExplodedPositions",
+          "w": [
+            340.0,
+            132.0
+          ]
+        },
+        {
+          "total": 472.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "net.minecraft.world.level.ServerExplosion.wrapMethod$doh000$rustmi$sweep",
+          "w": [
+            340.0,
+            132.0
+          ]
+        },
+        {
+          "total": 380.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.validatePreparedIslandLane",
+          "w": [
+            180.0,
+            200.0
+          ]
+        },
+        {
+          "total": 380.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.isInNetherFortressBounds",
+          "w": [
+            180.0,
+            200.0
+          ]
+        },
+        {
+          "total": 360.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.hasDuePulseSensitiveTick",
+          "w": [
+            196.0,
+            164.0
+          ]
+        },
+        {
+          "total": 352.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "servercore",
+          "label": "net.minecraft.world.level.NaturalSpawner.redirect$ebn000$servercore$preventAddingTickets",
+          "w": [
+            164.0,
+            188.0
+          ]
+        },
+        {
+          "total": 336.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks$ChunkTickGate.ticks",
+          "w": [
+            184.0,
+            152.0
+          ]
+        },
+        {
+          "total": 292.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks.registerTicker",
+          "w": [
+            168.0,
+            124.0
+          ]
+        },
+        {
+          "total": 268.0,
+          "excl": 20.0,
+          "running": 20.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.fabrolia$syncCostSet",
+          "w": [
+            112.0,
+            156.0
+          ]
+        },
+        {
+          "total": 268.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "(unattributed: com.github.tatercertified)",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch$$Lambda.0x00000000612f8af8.compare",
+          "w": [
+            120.0,
+            148.0
+          ]
+        },
+        {
+          "total": 256.0,
+          "excl": 236.0,
+          "running": 236.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.lambda$reorderVanilla$0",
+          "w": [
+            112.0,
+            144.0
+          ]
+        },
+        {
+          "total": 212.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.getMobForSpawn",
+          "w": [
+            80.0,
+            132.0
+          ]
+        },
+        {
+          "total": 208.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "carpet",
+          "label": "net.minecraft.world.level.NaturalSpawner.redirect$zjo000$carpet$spawnEntity",
+          "w": [
+            116.0,
+            92.0
+          ]
+        },
+        {
+          "total": 208.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: com.github.tatercertified)",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$$Lambda.0x0000000060f64650.nearestLiving",
+          "w": [
+            116.0,
+            92.0
+          ]
+        },
+        {
+          "total": 208.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming.nearestLivingForSensor",
+          "w": [
+            116.0,
+            92.0
+          ]
+        },
+        {
+          "total": 208.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.nearestLiving",
+          "w": [
+            116.0,
+            92.0
+          ]
+        },
+        {
+          "total": 208.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.interactWithBlocks",
+          "w": [
+            108.0,
+            100.0
+          ]
+        },
+        {
+          "total": 204.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "carpet",
+          "label": "net.minecraft.world.level.NaturalSpawner.redirect$zjo000$carpet$create",
+          "w": [
+            76.0,
+            128.0
+          ]
+        },
+        {
+          "total": 200.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.overflowCandidates",
+          "w": [
+            100.0,
+            100.0
+          ]
+        },
+        {
+          "total": 192.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.fabrolia$sortedKeys",
+          "w": [
+            100.0,
+            92.0
+          ]
+        },
+        {
+          "total": 160.0,
+          "excl": 160.0,
+          "running": 160.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.entityAt",
+          "w": [
+            76.0,
+            84.0
+          ]
+        },
+        {
+          "total": 152.0,
+          "excl": 20.0,
+          "running": 20.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.census",
+          "w": [
+            72.0,
+            80.0
+          ]
+        },
+        {
+          "total": 132.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.fabrolia$mergeParts",
+          "w": [
+            72.0,
+            60.0
+          ]
+        },
+        {
+          "total": 128.0,
+          "excl": 20.0,
+          "running": 20.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.getFilteredSpawningCategories",
+          "w": [
+            56.0,
+            72.0
+          ]
+        },
+        {
+          "total": 120.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$$Lambda.0x000000006121c200.run",
+          "w": [
+            64.0,
+            56.0
+          ]
+        },
+        {
+          "total": 120.0,
+          "excl": 72.0,
+          "running": 72.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.lambda$fabrolia$mergeParts$0",
+          "w": [
+            64.0,
+            56.0
+          ]
+        },
+        {
+          "total": 116.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.inEntityTickingRange",
+          "w": [
+            68.0,
+            48.0
+          ]
+        },
+        {
+          "total": 108.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.fabrolia$apply",
+          "w": [
+            56.0,
+            52.0
+          ]
+        },
+        {
+          "total": 104.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.candidateCount",
+          "w": [
+            72.0,
+            32.0
+          ]
+        },
+        {
+          "total": 100.0,
+          "excl": 100.0,
+          "running": 100.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.includeQueryEnvelope",
+          "w": [
+            40.0,
+            60.0
+          ]
+        },
+        {
+          "total": 96.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks$$Lambda.0x000000006136e878.test",
+          "w": [
+            52.0,
+            44.0
+          ]
+        },
+        {
+          "total": 88.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner$SpawnState.<init>",
+          "w": [
+            28.0,
+            60.0
+          ]
+        },
+        {
+          "total": 88.0,
+          "excl": 28.0,
+          "running": 28.0,
+          "owner": "fabrolia",
+          "label": "net.minecraft.world.level.NaturalSpawner$SpawnState.handler$ccd000$fabrolia$initAtomicCounts",
+          "w": [
+            28.0,
+            60.0
+          ]
+        },
+        {
+          "total": 84.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks.lambda$tickIslandCells$0",
+          "w": [
+            40.0,
+            44.0
+          ]
+        },
+        {
+          "total": 84.0,
+          "excl": 28.0,
+          "running": 28.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming.currentThreadBatch",
+          "w": [
+            52.0,
+            32.0
+          ]
+        },
+        {
+          "total": 80.0,
+          "excl": 16.0,
+          "running": 16.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner$SpawnState.canSpawnForCategoryGlobal",
+          "w": [
+            36.0,
+            44.0
+          ]
+        },
+        {
+          "total": 72.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.applyLaneDiagnosticsSafely",
+          "w": [
+            32.0,
+            40.0
+          ]
+        },
+        {
+          "total": 72.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "carpet",
+          "label": "net.minecraft.world.level.NaturalSpawner.redirect$zjo000$carpet$getSqDistanceTo",
+          "w": [
+            40.0,
+            32.0
+          ]
+        },
+        {
+          "total": 68.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks$$Lambda.0x0000000061075218.run",
+          "w": [
+            28.0,
+            40.0
+          ]
+        },
+        {
+          "total": 68.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.lambda$runIslandScheduled$0",
+          "w": [
+            28.0,
+            40.0
+          ]
+        },
+        {
+          "total": 68.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.fabrolia$costTypes",
+          "w": [
+            28.0,
+            40.0
+          ]
+        },
+        {
+          "total": 68.0,
+          "excl": 68.0,
+          "running": 68.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.keysAsInverse",
+          "w": [
+            32.0,
+            36.0
+          ]
+        },
+        {
+          "total": 64.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "phantom-spawning",
+          "label": "net.minecraft.world.level.NaturalSpawner$SpawnState.wrapOperation$dmn000$phantom-spawning$ps$onCheckMobCap_Spawner",
+          "w": [
+            28.0,
+            36.0
+          ]
+        },
+        {
+          "total": 64.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.<init>",
+          "w": [
+            28.0,
+            36.0
+          ]
+        },
+        {
+          "total": 64.0,
+          "excl": 64.0,
+          "running": 64.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.allocate",
+          "w": [
+            28.0,
+            36.0
+          ]
+        },
+        {
+          "total": 60.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.applyPreparedDiagnostics",
+          "w": [
+            24.0,
+            36.0
+          ]
+        },
+        {
+          "total": 56.0,
+          "excl": 16.0,
+          "running": 16.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.pollCollectedTick",
+          "w": [
+            28.0,
+            28.0
+          ]
+        },
+        {
+          "total": 52.0,
+          "excl": 40.0,
+          "running": 40.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.registerSlice",
+          "w": [
+            24.0,
+            28.0
+          ]
+        },
+        {
+          "total": 52.0,
+          "excl": 52.0,
+          "running": 52.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCrammingGeometry.sensorBoxCovered",
+          "w": [
+            36.0,
+            16.0
+          ]
+        },
+        {
+          "total": 40.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks$$Lambda.0x00000000615cc388.run",
+          "w": [
+            16.0,
+            24.0
+          ]
+        },
+        {
+          "total": 40.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks.lambda$tickPartitioned$1",
+          "w": [
+            16.0,
+            24.0
+          ]
+        },
+        {
+          "total": 40.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.willTickCollected",
+          "w": [
+            20.0,
+            20.0
+          ]
+        },
+        {
+          "total": 40.0,
+          "excl": 40.0,
+          "running": 40.0,
+          "owner": "(unattributed: com.github.tatercertified)",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch$$Lambda.0x00000000612f88a0.test",
+          "w": [
+            16.0,
+            24.0
+          ]
+        },
+        {
+          "total": 36.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks.tickCells",
+          "w": [
+            12.0,
+            24.0
+          ]
+        },
+        {
+          "total": 36.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks$$Lambda.0x000000006124a908.compare",
+          "w": [
+            24.0,
+            12.0
+          ]
+        },
+        {
+          "total": 36.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.lambda$containerOrder$0",
+          "w": [
+            24.0,
+            12.0
+          ]
+        },
+        {
+          "total": 36.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$$Lambda.0x000000006118a318.test",
+          "w": [
+            16.0,
+            20.0
+          ]
+        },
+        {
+          "total": 36.0,
+          "excl": 36.0,
+          "running": 36.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.NaturalSpawner$$Lambda.0x00000000613d2c38.<init>",
+          "w": [
+            16.0,
+            20.0
+          ]
+        },
+        {
+          "total": 36.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "carpet",
+          "label": "net.minecraft.world.level.NaturalSpawner.wrapOperation$zjo000$carpet$doesNotCollide",
+          "w": [
+            8.0,
+            28.0
+          ]
+        },
+        {
+          "total": 36.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.hurtEntities",
+          "w": [
+            28.0,
+            8.0
+          ]
+        },
+        {
+          "total": 36.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.scratchCandidateSlot",
+          "w": [
+            12.0,
+            24.0
+          ]
+        },
+        {
+          "total": 32.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$$Lambda.0x0000000060f96240.run",
+          "w": [
+            16.0,
+            16.0
+          ]
+        },
+        {
+          "total": 32.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.isValidEmptySpawnBlock",
+          "w": [
+            20.0,
+            12.0
+          ]
+        },
+        {
+          "total": 28.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$VectorUpdate.apply",
+          "w": [
+            12.0,
+            16.0
+          ]
+        },
+        {
+          "total": 28.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.NaturalSpawner$$Lambda.0x00000000613d7070.call",
+          "w": [
+            8.0,
+            20.0
+          ]
+        },
+        {
+          "total": 28.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "mixinextras",
+          "label": "net.minecraft.world.level.NaturalSpawner.mixinextras$bridge$noCollision$48",
+          "w": [
+            8.0,
+            20.0
+          ]
+        },
+        {
+          "total": 28.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.ServerExplosion$$Lambda.0x00000000615a3348.call",
+          "w": [
+            12.0,
+            16.0
+          ]
+        },
+        {
+          "total": 28.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "mixinextras",
+          "label": "net.minecraft.world.level.ServerExplosion.mixinextras$bridge$calculateExplodedPositions$mixinextras$wrapped$68$69",
+          "w": [
+            12.0,
+            16.0
+          ]
+        },
+        {
+          "total": 28.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.calculateExplodedPositions$mixinextras$wrapped$68",
+          "w": [
+            12.0,
+            16.0
+          ]
+        },
+        {
+          "total": 28.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "lithium",
+          "label": "net.minecraft.world.level.ServerExplosion.handler$dkl000$lithium$collectBlocks",
+          "w": [
+            12.0,
+            16.0
+          ]
+        },
+        {
+          "total": 24.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.server.level.ServerLevel.shouldTickBlocksAt",
+          "w": [
+            16.0,
+            8.0
+          ]
+        },
+        {
+          "total": 24.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "carpet",
+          "label": "net.minecraft.world.level.NaturalSpawner.handler$zjo000$carpet$checkSpawns",
+          "w": [
+            4.0,
+            20.0
+          ]
+        },
+        {
+          "total": 24.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "servercore",
+          "label": "net.minecraft.world.level.NaturalSpawner.redirect$eba000$servercore$canSpawn",
+          "w": [
+            8.0,
+            16.0
+          ]
+        },
+        {
+          "total": 24.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "lithium",
+          "label": "net.minecraft.world.level.ServerExplosion.performRayCast",
+          "w": [
+            12.0,
+            12.0
+          ]
+        },
+        {
+          "total": 20.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.lambda$reduce$0",
+          "w": [
+            12.0,
+            8.0
+          ]
+        },
+        {
+          "total": 20.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$CellIndex.add",
+          "w": [
+            12.0,
+            8.0
+          ]
+        },
+        {
+          "total": 20.0,
+          "excl": 20.0,
+          "running": 20.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks$$Lambda.0x000000006127f640.test",
+          "w": [
+            12.0,
+            8.0
+          ]
+        },
+        {
+          "total": 20.0,
+          "excl": 20.0,
+          "running": 20.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCrammingGeometry.colliderWithinHalo",
+          "w": [
+            8.0,
+            12.0
+          ]
+        },
+        {
+          "total": 16.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.candidateSlot",
+          "w": [
+            8.0,
+            8.0
+          ]
+        },
+        {
+          "total": 16.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "lithium",
+          "label": "net.minecraft.world.level.ServerExplosion.traverseBlock",
+          "w": [
+            4.0,
+            12.0
+          ]
+        },
+        {
+          "total": 12.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$CellIndex$$Lambda.0x0000000061216438.apply",
+          "w": [
+            12.0,
+            0.0
+          ]
+        },
+        {
+          "total": 12.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.NaturalSpawner$$Lambda.0x00000000613d25d8.run",
+          "w": [
+            4.0,
+            8.0
+          ]
+        },
+        {
+          "total": 12.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "net.minecraft.world.level.NaturalSpawner$SpawnState.afterSpawn",
+          "w": [
+            4.0,
+            8.0
+          ]
+        },
+        {
+          "total": 12.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.getSeenPercent",
+          "w": [
+            8.0,
+            4.0
+          ]
+        },
+        {
+          "total": 12.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "rustmi",
+          "label": "net.minecraft.world.level.ServerExplosion.wrapMethod$doh000$rustmi$seen",
+          "w": [
+            8.0,
+            4.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks$ChunkTickGate.forLevel",
+          "w": [
+            4.0,
+            4.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks$$Lambda.0x000000006133ed60.run",
+          "w": [
+            4.0,
+            4.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.applyBudgetDiagnostics",
+          "w": [
+            4.0,
+            4.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks$$Lambda.0x0000000061254cd0.run",
+          "w": [
+            4.0,
+            4.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$CellIndex.lambda$add$0",
+          "w": [
+            8.0,
+            0.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.NaturalSpawner.isValidPositionForMob",
+          "w": [
+            8.0,
+            0.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.NaturalSpawner$$Lambda.0x00000000613d21a0.test",
+          "w": [
+            8.0,
+            0.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "net.minecraft.world.level.NaturalSpawner$SpawnState.canSpawn",
+          "w": [
+            8.0,
+            0.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.ServerExplosion$$Lambda.0x00000000615a39e8.call",
+          "w": [
+            8.0,
+            0.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "mixinextras",
+          "label": "net.minecraft.world.level.ServerExplosion.mixinextras$bridge$getSeenPercent$mixinextras$wrapped$70$71",
+          "w": [
+            8.0,
+            0.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.getSeenPercent$mixinextras$wrapped$70",
+          "w": [
+            8.0,
+            0.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "lithium",
+          "label": "net.minecraft.world.level.ServerExplosion.redirect$dko000$lithium$simplifyRaycast",
+          "w": [
+            8.0,
+            0.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.ServerExplosion$Anonymous$6e56f93541273671b65038ae9b14256f.apply",
+          "w": [
+            8.0,
+            0.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "lithium",
+          "label": "net.minecraft.world.level.ServerExplosion.tryMarkBlockForDestruction",
+          "w": [
+            0.0,
+            8.0
+          ]
+        },
+        {
+          "total": 8.0,
+          "excl": 8.0,
+          "running": 8.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.cramming.RegionalCrammingGeometry.originWithinCoveredArea",
+          "w": [
+            0.0,
+            8.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks$$Lambda.0x000000006136fa88.test",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks.lambda$tickIslandCells$1",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks$SliceExecution.<init>",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.currentClockStamp",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.lambda$runVanillaIslandLane$0",
+          "w": [
+            4.0,
+            0.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks$$Lambda.0x000000006124b680.<init>",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$$Lambda.0x0000000061215a40.<init>",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus$CellIndex$$Lambda.0x000000006107c240.<init>",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.NaturalSpawner$$Lambda.0x00000000613d21a0.<init>",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.noteHold",
+          "w": [
+            4.0,
+            0.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks$$Lambda.0x00000000612d5a78.run",
+          "w": [
+            4.0,
+            0.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.lambda$noteHold$0",
+          "w": [
+            4.0,
+            0.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.reportHold",
+          "w": [
+            4.0,
+            0.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.describeChunkReadiness",
+          "w": [
+            4.0,
+            0.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.ServerExplosion$Anonymous$6e56f93541273671b65038ae9b14256f.getBlock",
+          "w": [
+            4.0,
+            0.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "rustmi_base",
+          "label": "net.minecraft.world.level.ServerExplosion.redirect$dok000$rustmi_base$rustmi$useVanillaMethod",
+          "w": [
+            4.0,
+            0.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks$FailStopGate.claimSlice",
+          "w": [
+            4.0,
+            0.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.getIndirectSourceEntity",
+          "w": [
+            4.0,
+            0.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "(unattributed: net.minecraft.world)",
+          "label": "net.minecraft.world.level.ServerExplosion$$Lambda.0x00000000615e4928.accept",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.lambda$interactWithBlocks$0",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion.addOrAppendStack",
+          "w": [
+            0.0,
+            4.0
+          ]
+        },
+        {
+          "total": 4.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.ServerExplosion$StackCollector.tryMerge",
+          "w": [
+            0.0,
+            4.0
+          ]
+        }
+      ],
+      "selected_subtree_states_ms": {
+        "RegionizedServer.tickOwned": {
+          "running": 515344.0,
+          "park": 336.0,
+          "wait": 256.0,
+          "blocked": 5960.0,
+          "sleep": 0.0,
+          "io": 4.0,
+          "safepoint": 10752.0
+        },
+        "IslandTickUnit.awaitEntityBarrier": {
+          "running": 292056.0,
+          "park": 173704.0,
+          "wait": 60.0,
+          "blocked": 3740.0,
+          "sleep": 0.0,
+          "io": 4.0,
+          "safepoint": 5512.0
+        },
+        "RegionizedServer.runOwed": {
+          "running": 515344.0,
+          "park": 336.0,
+          "wait": 256.0,
+          "blocked": 5960.0,
+          "sleep": 0.0,
+          "io": 4.0,
+          "safepoint": 10752.0
+        },
+        "Long2ObjectConcurrentHashMap.get": {
+          "running": 100044.0,
+          "park": 0.0,
+          "wait": 336.0,
+          "blocked": 64.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 156.0
+        },
+        "RegionalCramming": {
+          "running": 55916.0,
+          "park": 0.0,
+          "wait": 0.0,
+          "blocked": 112.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 748.0
+        },
+        "IslandScheduledTicks": {
+          "running": 27308.0,
+          "park": 4.0,
+          "wait": 0.0,
+          "blocked": 620.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 284.0
+        },
+        "IslandBlockEntityTicks": {
+          "running": 61992.0,
+          "park": 16.0,
+          "wait": 0.0,
+          "blocked": 184.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 1356.0
+        },
+        "NaturalSpawner": {
+          "running": 89344.0,
+          "park": 108.0,
+          "wait": 256.0,
+          "blocked": 12.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 1960.0
+        },
+        "ServerLevel.tickChunk": {
+          "running": 45208.0,
+          "park": 8.0,
+          "wait": 0.0,
+          "blocked": 144.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 288.0
+        },
+        "NetherPortalTransfers.tryCohort": {
+          "running": 23992.0,
+          "park": 24.0,
+          "wait": 160.0,
+          "blocked": 288.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 576.0
+        },
+        "PrimedTnt.tick": {
+          "running": 856.0,
+          "park": 4.0,
+          "wait": 0.0,
+          "blocked": 4.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 216.0
+        },
+        "ServerExplosion": {
+          "running": 536.0,
+          "park": 0.0,
+          "wait": 0.0,
+          "blocked": 0.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 188.0
+        },
+        "PersistentEntitySectionManager.areEntitiesLoaded": {
+          "running": 37632.0,
+          "park": 0.0,
+          "wait": 0.0,
+          "blocked": 0.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 0.0
+        },
+        "PersistentEntitySectionManager.canPositionTick": {
+          "running": 11920.0,
+          "park": 0.0,
+          "wait": 224.0,
+          "blocked": 44.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 60.0
+        },
+        "ServerLevel.shouldTickBlocksAt": {
+          "running": 24.0,
+          "park": 0.0,
+          "wait": 0.0,
+          "blocked": 0.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 0.0
+        },
+        "SpawnCensus": {
+          "running": 13324.0,
+          "park": 24.0,
+          "wait": 0.0,
+          "blocked": 36.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 632.0
+        }
+      },
+      "top_running_self": [
+        {
+          "excl": 79620.0,
+          "running": 79620.0,
+          "owner": "io_github_axalotldev_api",
+          "label": "com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap.get"
+        },
+        {
+          "excl": 35508.0,
+          "running": 35508.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.chunk.PalettedContainer.get"
+        },
+        {
+          "excl": 24960.0,
+          "running": 24960.0,
+          "owner": "(native)",
+          "label": "itable stub"
+        },
+        {
+          "excl": 23184.0,
+          "running": 23184.0,
+          "owner": "(jdk)",
+          "label": "java.util.concurrent.ConcurrentHashMap.get"
+        },
+        {
+          "excl": 22108.0,
+          "running": 22108.0,
+          "owner": "(native)",
+          "label": "lookup_secondary_supers_table_slow_path"
+        },
+        {
+          "excl": 17628.0,
+          "running": 17628.0,
+          "owner": "(jdk)",
+          "label": "java.util.concurrent.ConcurrentHashMap.tabAt"
+        },
+        {
+          "excl": 14224.0,
+          "running": 14224.0,
+          "owner": "(native)",
+          "label": "vtable stub"
+        },
+        {
+          "excl": 12796.0,
+          "running": 12796.0,
+          "owner": "(jdk)",
+          "label": "java.lang.invoke.DirectMethodHandle$Holder.invokeSpecial"
+        },
+        {
+          "excl": 11576.0,
+          "running": 11576.0,
+          "owner": "(unattributed: it.unimi.dsi)",
+          "label": "it.unimi.dsi.fastutil.objects.Object2ReferenceOpenHashMap.get"
+        },
+        {
+          "excl": 11100.0,
+          "running": 11100.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.level.chunk.LevelChunkSection.isRandomlyTickingBlocks"
+        },
+        {
+          "excl": 10904.0,
+          "running": 10904.0,
+          "owner": "(jdk)",
+          "label": "java.util.HashMap.getNode"
+        },
+        {
+          "excl": 10032.0,
+          "running": 10020.0,
+          "owner": "(native)",
+          "label": "libc.so.6.pthread_cond_signal"
+        },
+        {
+          "excl": 9752.0,
+          "running": 9752.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.network.syncher.SynchedEntityData$DataItem.getValue"
+        },
+        {
+          "excl": 9524.0,
+          "running": 9524.0,
+          "owner": "c2me-base",
+          "label": "com.ishland.flowsched.scheduler.ItemHolder.getFutureForStatus0"
+        },
+        {
+          "excl": 9280.0,
+          "running": 9280.0,
+          "owner": "c2me-rewrites-chunk-system",
+          "label": "net.minecraft.server.level.ChunkMap.getUpdatingChunkIfPresent"
+        },
+        {
+          "excl": 8648.0,
+          "running": 8648.0,
+          "owner": "(jdk)",
+          "label": "java.lang.invoke.VarHandleLongs$Array.getVolatile"
+        },
+        {
+          "excl": 8632.0,
+          "running": 8632.0,
+          "owner": "(jdk)",
+          "label": "java.util.concurrent.ConcurrentHashMap$Traverser.advance"
+        },
+        {
+          "excl": 8436.0,
+          "running": 8436.0,
+          "owner": "rustmi",
+          "label": "com.github.tatercertified.nalim.collision.CollisionEngine.tryCollide"
+        },
+        {
+          "excl": 8092.0,
+          "running": 8092.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.network.syncher.SynchedEntityData.getItem"
+        },
+        {
+          "excl": 8092.0,
+          "running": 8092.0,
+          "owner": "(unattributed: it.unimi.dsi)",
+          "label": "it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap.get"
+        }
+      ],
+      "callers": {
+        "Long2ObjectConcurrentHashMap.get": [
+          {
+            "chain": "net.minecraft.world.level.entity.PersistentEntitySectionManager.areEntitiesLoaded <- net.minecraft.server.level.ServerLevel.areEntitiesLoaded <- net.minecraft.world.level.chunk.LevelChunk$BoundTickingBlockEntity.redirect$dkd000$lithium$cachedCanTickBlockEntity <- net.minecraft.world.level.chunk.LevelChunk$BoundTickingBlockEntity.tick <- net.minecraft.world.level.chunk.LevelChunk$RebindableTickingBlockEntityWrapper.tick",
+            "total_ms": 37104.0,
+            "ms_per_main_tick": 15.67553865652725
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.ThreadedRegionizer.peekByGridKey <- com.axalotl.fabrolia.common.regions.RegionizedServer.islandOwnerOfCell <- com.axalotl.fabrolia.common.regions.RegionizedServer.islandOwnerOfChunk <- com.axalotl.fabrolia.common.regions.NetherPortalPreparation$Request.footprint <- com.axalotl.fabrolia.common.regions.NetherPortalTransfers$Transfer.addFootprint",
+            "total_ms": 11504.0,
+            "ms_per_main_tick": 4.860160540768906
+          },
+          {
+            "chain": "net.minecraft.world.level.entity.EntitySectionStorage.forEachAccessibleNonEmptySection <- net.minecraft.world.level.entity.EntitySectionStorage.getEntities <- net.minecraft.world.level.entity.LevelEntityGetterAdapter.get <- net.minecraft.world.level.Level.getEntities <- com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.collect",
+            "total_ms": 7788.0,
+            "ms_per_main_tick": 3.2902408111533585
+          },
+          {
+            "chain": "net.minecraft.world.level.entity.PersistentEntitySectionManager.canPositionTick <- net.minecraft.server.level.ServerLevel.isPositionEntityTicking <- net.minecraft.world.entity.LivingEntity.mixinextras$bridge$isPositionEntityTicking$505 <- net.minecraft.world.entity.LivingEntity$$Lambda.0x0000000061312a30.call <- net.minecraft.world.entity.LivingEntity.wrapOperation$dob000$rustmi$memoTicking",
+            "total_ms": 7376.0,
+            "ms_per_main_tick": 3.1161808196028726
+          },
+          {
+            "chain": "net.minecraft.world.level.entity.EntitySectionStorage.getSection <- net.minecraft.world.level.entity.EntitySectionStorage.consumeSection <- net.minecraft.world.level.entity.EntitySectionStorage.forEachInColumn <- net.minecraft.world.level.entity.EntitySectionStorage.handler$dff000$lithium$forEachInBox <- net.minecraft.world.level.entity.EntitySectionStorage.forEachAccessibleNonEmptySection",
+            "total_ms": 7296.0,
+            "ms_per_main_tick": 3.082382762991128
+          },
+          {
+            "chain": "net.minecraft.world.level.entity.EntitySectionStorage.forEachAccessibleNonEmptySection <- net.minecraft.world.level.entity.EntitySectionStorage.getEntities <- net.minecraft.world.level.entity.LevelEntityGetterAdapter.get <- net.minecraft.world.level.Level.getEntities <- net.minecraft.world.level.Level.getEntities",
+            "total_ms": 3716.0,
+            "ms_per_main_tick": 1.5699197296155472
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.IslandScheduledTicks.probeCausalPreflightCell <- com.axalotl.fabrolia.common.regions.IslandScheduledTicks.preflightIslandScheduled <- com.axalotl.fabrolia.common.regions.IslandTickUnit.runCoordinated <- com.axalotl.fabrolia.common.regions.IslandTickUnit$UnitPublication.run <- com.axalotl.fabrolia.common.regions.RegionScheduler$FailureCancellableRoot.run",
+            "total_ms": 3308.0,
+            "ms_per_main_tick": 1.3975496408956485
+          },
+          {
+            "chain": "net.minecraft.world.level.entity.PersistentEntitySectionManager.canPositionTick <- net.minecraft.server.level.ServerLevel.canSpawnEntitiesInChunk <- net.minecraft.world.level.NaturalSpawner.isRightDistanceToPlayerAndSpawnPoint <- net.minecraft.world.level.NaturalSpawner.spawnCategoryForPosition <- net.minecraft.world.level.NaturalSpawner.spawnCategoryForChunk",
+            "total_ms": 2920.0,
+            "ms_per_main_tick": 1.2336290663286862
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.ThreadedRegionizer.peekByGridKey <- com.axalotl.fabrolia.common.regions.RegionizedServer.islandOwnerOfCell <- net.minecraft.server.level.ServerChunkCache.fabrolia$tickIslandChunks <- com.axalotl.fabrolia.common.regions.IslandTickUnit.runCoordinated <- com.axalotl.fabrolia.common.regions.IslandTickUnit$UnitPublication.run",
+            "total_ms": 2136.0,
+            "ms_per_main_tick": 0.9024081115335868
+          },
+          {
+            "chain": "net.minecraft.world.level.entity.PersistentEntitySectionManager.canPositionTick <- net.minecraft.server.level.ServerLevel.isPositionEntityTicking <- com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.fabrolia$chunkTicking <- com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.add <- com.github.tatercertified.nalim.cramming.RegionalCramming$RegionBatch.collect",
+            "total_ms": 1896.0,
+            "ms_per_main_tick": 0.8010139416983524
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.TickDomains.enforceConsumerDomain <- com.axalotl.fabrolia.common.regions.IslandScheduledTicks.probeCellDueChunks <- com.axalotl.fabrolia.common.regions.IslandScheduledTicks.discoverIslandDueChunks <- com.axalotl.fabrolia.common.regions.IslandScheduledTicks.prepareIslandLane <- com.axalotl.fabrolia.common.regions.IslandScheduledTicks.runIslandScheduled",
+            "total_ms": 1848.0,
+            "ms_per_main_tick": 0.7807351077313055
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks.tickIslandCells <- com.axalotl.fabrolia.common.regions.IslandTickUnit.runCoordinated <- com.axalotl.fabrolia.common.regions.IslandTickUnit$UnitPublication.run <- com.axalotl.fabrolia.common.regions.RegionScheduler$FailureCancellableRoot.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool$QueuedRootTask.run",
+            "total_ms": 1208.0,
+            "ms_per_main_tick": 0.5103506548373469
+          }
+        ],
+        "IslandTickUnit.awaitEntityBarrier": [
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.IslandTickUnit.runCoordinated <- com.axalotl.fabrolia.common.regions.IslandTickUnit$UnitPublication.run <- com.axalotl.fabrolia.common.regions.RegionScheduler$FailureCancellableRoot.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool$QueuedRootTask.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.workOnceBody",
+            "total_ms": 475076.0,
+            "ms_per_main_tick": 200.70806928601604
+          }
+        ],
+        "NetherPortalTransfers.tryCohort": [
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.NetherPortalTransfers.serviceOne <- com.axalotl.fabrolia.common.regions.NetherPortalTransfers.serviceOne <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.workOnceBody <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.workOnce <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.workOnce",
+            "total_ms": 19920.0,
+            "ms_per_main_tick": 8.415716096324461
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.NetherPortalTransfers.serviceOne <- com.axalotl.fabrolia.common.regions.NetherPortalTransfers.beforeUnitAdmission <- com.axalotl.fabrolia.common.regions.IslandTickUnit.runCoordinated <- com.axalotl.fabrolia.common.regions.IslandTickUnit$UnitPublication.run <- com.axalotl.fabrolia.common.regions.RegionScheduler$FailureCancellableRoot.run",
+            "total_ms": 5120.0,
+            "ms_per_main_tick": 2.1630756231516686
+          }
+        ]
+      }
+    },
+    "Server thread": {
+      "sampled_ms": 116976.0,
+      "states_ms": {
+        "running": 57732.0,
+        "park": 48612.0,
+        "wait": 7804.0,
+        "blocked": 1248.0,
+        "sleep": 4.0,
+        "io": 164.0,
+        "safepoint": 1412.0
+      },
+      "states_by_window_ms": {
+        "running": [
+          29552.0,
+          28180.0
+        ],
+        "park": [
+          23004.0,
+          25608.0
+        ],
+        "wait": [
+          4296.0,
+          3508.0
+        ],
+        "blocked": [
+          672.0,
+          576.0
+        ],
+        "sleep": [
+          4.0,
+          0.0
+        ],
+        "io": [
+          96.0,
+          68.0
+        ],
+        "safepoint": [
+          648.0,
+          764.0
+        ]
+      },
+      "wait_sites": [
+        {
+          "state": 1,
+          "site": "net.minecraft.server.MinecraftServer.waitForTasks",
+          "owner": "minecraft",
+          "total": 24904.0,
+          "w": [
+            10828.0,
+            14076.0
+          ]
+        },
+        {
+          "state": 1,
+          "site": "com.axalotl.fabrolia.common.regions.IslandCommands.mainClaim",
+          "owner": "fabrolia",
+          "total": 7808.0,
+          "w": [
+            4128.0,
+            3680.0
+          ]
+        },
+        {
+          "state": 2,
+          "site": "com.axalotl.fabrolia.common.regions.RegionWorkerPool.awaitLifecycleChange",
+          "owner": "fabrolia",
+          "total": 7684.0,
+          "w": [
+            4176.0,
+            3508.0
+          ]
+        },
+        {
+          "state": 1,
+          "site": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.fabrolia$awaitFanout",
+          "owner": "fabrolia",
+          "total": 4108.0,
+          "w": [
+            2036.0,
+            2072.0
+          ]
+        },
+        {
+          "state": 1,
+          "site": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.wrapMethod$cgd000$fabrolia$lockTick",
+          "owner": "fabrolia",
+          "total": 3148.0,
+          "w": [
+            1500.0,
+            1648.0
+          ]
+        },
+        {
+          "state": 1,
+          "site": "com.axalotl.fabrolia.common.regions.RegionizedServer.quiesceAllIslandsInner",
+          "owner": "fabrolia",
+          "total": 2972.0,
+          "w": [
+            1392.0,
+            1580.0
+          ]
+        },
+        {
+          "state": 1,
+          "site": "com.axalotl.fabrolia.common.regions.IslandCommands.quiesceAllExcept",
+          "owner": "fabrolia",
+          "total": 2572.0,
+          "w": [
+            1324.0,
+            1248.0
+          ]
+        },
+        {
+          "state": 1,
+          "site": "com.axalotl.fabrolia.common.regions.RegionScheduler$IslandBuckets.waitForRemaining",
+          "owner": "fabrolia",
+          "total": 1620.0,
+          "w": [
+            948.0,
+            672.0
+          ]
+        },
+        {
+          "state": 1,
+          "site": "com.axalotl.fabrolia.common.parallelised.utils.SpawnCensus.fabrolia$awaitCensusFanIn",
+          "owner": "fabrolia",
+          "total": 1412.0,
+          "w": [
+            808.0,
+            604.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "com.axalotl.fabrolia.common.regions.RegionScheduler.beginSuccessBodyIfHealthy",
+          "owner": "fabrolia",
+          "total": 304.0,
+          "w": [
+            168.0,
+            136.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "com.axalotl.fabrolia.common.regions.RegionWorkerPool.pauseExactTurnAndAwait",
+          "owner": "fabrolia",
+          "total": 268.0,
+          "w": [
+            140.0,
+            128.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "com.axalotl.fabrolia.common.regions.RegionScheduler.callSuccessBooleanIfHealthy",
+          "owner": "fabrolia",
+          "total": 232.0,
+          "w": [
+            232.0,
+            0.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "com.ishland.vmp.common.maps.AreaMap.updateAdds",
+          "owner": "vmp",
+          "total": 180.0,
+          "w": [
+            0.0,
+            180.0
+          ]
+        },
+        {
+          "state": 5,
+          "site": "io.netty.channel.epoll.Native.eventFdWrite",
+          "owner": "(unattributed: io.netty.channel)",
+          "total": 164.0,
+          "w": [
+            96.0,
+            68.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "com.mojang.serialization.DataResult$Instance.ap2",
+          "owner": "(unattributed: com.mojang.serialization)",
+          "total": 160.0,
+          "w": [
+            0.0,
+            160.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "net.minecraft.world.entity.EquipmentSlotGroup.test",
+          "owner": "minecraft",
+          "total": 156.0,
+          "w": [
+            156.0,
+            0.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "com.axalotl.fabrolia.common.regions.RegionScheduler.commitSuccessIfHealthy",
+          "owner": "fabrolia",
+          "total": 136.0,
+          "w": [
+            60.0,
+            76.0
+          ]
+        },
+        {
+          "state": 6,
+          "site": "it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap.get",
+          "owner": "(unattributed: it.unimi.dsi)",
+          "total": 132.0,
+          "w": [
+            0.0,
+            132.0
+          ]
+        },
+        {
+          "state": 2,
+          "site": "com.mojang.serialization.DataResult$Success.setLifecycle",
+          "owner": "(unattributed: com.mojang.serialization)",
+          "total": 120.0,
+          "w": [
+            120.0,
+            0.0
+          ]
+        },
+        {
+          "state": 3,
+          "site": "com.axalotl.fabrolia.common.regions.RegionScheduler.executeTrackedExternal",
+          "owner": "fabrolia",
+          "total": 96.0,
+          "w": [
+            56.0,
+            40.0
+          ]
+        }
+      ],
+      "selected_methods": [
+        {
+          "total": 60332.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.server.MinecraftServer.tickServer",
+          "w": [
+            29588.0,
+            30744.0
+          ]
+        },
+        {
+          "total": 16784.0,
+          "excl": 12.0,
+          "running": 12.0,
+          "owner": "fabrolia",
+          "label": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.wrapMethod$cgd000$fabrolia$lockTick",
+          "w": [
+            8084.0,
+            8700.0
+          ]
+        },
+        {
+          "total": 15016.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.NetherPortalPreparation.serviceMain",
+          "w": [
+            8280.0,
+            6736.0
+          ]
+        },
+        {
+          "total": 14076.0,
+          "excl": 16.0,
+          "running": 16.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.RegionWorkerPool.pauseExactTurnAndAwait",
+          "w": [
+            7764.0,
+            6312.0
+          ]
+        },
+        {
+          "total": 13608.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.wrapMethod$cgd000$fabrolia$tick0",
+          "w": [
+            6576.0,
+            7032.0
+          ]
+        },
+        {
+          "total": 13232.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.fabrolia$tickTrackers",
+          "w": [
+            6416.0,
+            6816.0
+          ]
+        },
+        {
+          "total": 9100.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandCommands.mainClaim",
+          "w": [
+            4764.0,
+            4336.0
+          ]
+        },
+        {
+          "total": 7872.0,
+          "excl": 16.0,
+          "running": 16.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.drainMainIngress",
+          "w": [
+            4536.0,
+            3336.0
+          ]
+        },
+        {
+          "total": 7320.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.runMainListenerTick",
+          "w": [
+            3524.0,
+            3796.0
+          ]
+        },
+        {
+          "total": 7000.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandCommands.mainClaimScoped",
+          "w": [
+            3488.0,
+            3512.0
+          ]
+        },
+        {
+          "total": 6788.0,
+          "excl": 200.0,
+          "running": 200.0,
+          "owner": "c2me-opts-scheduling",
+          "label": "net.minecraft.server.level.ChunkMap.c2me$runOneChunkAutoSave",
+          "w": [
+            3768.0,
+            3020.0
+          ]
+        },
+        {
+          "total": 6508.0,
+          "excl": 64.0,
+          "running": 64.0,
+          "owner": "fabrolia",
+          "label": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.fabrolia$snapshotTrackers",
+          "w": [
+            3160.0,
+            3348.0
+          ]
+        },
+        {
+          "total": 4116.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.fabrolia$awaitFanout",
+          "w": [
+            2036.0,
+            2080.0
+          ]
+        },
+        {
+          "total": 3356.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.RegionizedServer.quiesceAllIslandsInner",
+          "w": [
+            1600.0,
+            1756.0
+          ]
+        },
+        {
+          "total": 2760.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.IslandCommands.quiesceAllExcept",
+          "w": [
+            1448.0,
+            1312.0
+          ]
+        },
+        {
+          "total": 864.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.NetherPortalPreparation$Request.prepareMain",
+          "w": [
+            468.0,
+            396.0
+          ]
+        },
+        {
+          "total": 832.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.server.MinecraftServer.autoSave",
+          "w": [
+            416.0,
+            416.0
+          ]
+        },
+        {
+          "total": 768.0,
+          "excl": 4.0,
+          "running": 4.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.NetherPortalPreparation$Request.snapshotPositions",
+          "w": [
+            416.0,
+            352.0
+          ]
+        },
+        {
+          "total": 604.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.server.MinecraftServer.saveAllChunks",
+          "w": [
+            284.0,
+            320.0
+          ]
+        },
+        {
+          "total": 596.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.server.MinecraftServer.saveAllChunks$mixinextras$wrapped$446",
+          "w": [
+            280.0,
+            316.0
+          ]
+        },
+        {
+          "total": 544.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.server.level.ServerLevel.save",
+          "w": [
+            252.0,
+            292.0
+          ]
+        },
+        {
+          "total": 544.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.server.level.ServerLevel.save$mixinextras$wrapped$442",
+          "w": [
+            252.0,
+            292.0
+          ]
+        },
+        {
+          "total": 228.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.wrapMethod$cgd000$fabrolia$lockRemove",
+          "w": [
+            92.0,
+            136.0
+          ]
+        },
+        {
+          "total": 136.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "fabrolia",
+          "label": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.wrapMethod$cgd000$fabrolia$skipRemovedIndexInsertion",
+          "w": [
+            60.0,
+            76.0
+          ]
+        },
+        {
+          "total": 16.0,
+          "excl": 0.0,
+          "running": 0.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.server.level.ServerLevel.saveLevelData",
+          "w": [
+            8.0,
+            8.0
+          ]
+        }
+      ],
+      "selected_subtree_states_ms": {
+        "MinecraftServer.tickServer": {
+          "running": 36976.0,
+          "park": 21260.0,
+          "wait": 120.0,
+          "blocked": 572.0,
+          "sleep": 0.0,
+          "io": 152.0,
+          "safepoint": 1252.0
+        },
+        "NetherPortalPreparation.serviceMain": {
+          "running": 6356.0,
+          "park": 628.0,
+          "wait": 7684.0,
+          "blocked": 316.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 32.0
+        },
+        "NetherPortalPreparation$Request.prepareMain": {
+          "running": 864.0,
+          "park": 0.0,
+          "wait": 0.0,
+          "blocked": 0.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 0.0
+        },
+        "RegionWorkerPool.pauseExactTurnAndAwait": {
+          "running": 5420.0,
+          "park": 628.0,
+          "wait": 7684.0,
+          "blocked": 312.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 32.0
+        },
+        "IslandCommands.mainClaim": {
+          "running": 1256.0,
+          "park": 7812.0,
+          "wait": 0.0,
+          "blocked": 40.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 0.0
+        },
+        "RegionizedServer.quiesceAllIslandsInner": {
+          "running": 364.0,
+          "park": 2980.0,
+          "wait": 0.0,
+          "blocked": 12.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 0.0
+        },
+        "IslandCommands.quiesceAllExcept": {
+          "running": 184.0,
+          "park": 2572.0,
+          "wait": 0.0,
+          "blocked": 4.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 0.0
+        },
+        "NearbyEntityTracking.wrapMethod": {
+          "running": 9004.0,
+          "park": 7256.0,
+          "wait": 0.0,
+          "blocked": 180.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 348.0
+        },
+        "NearbyEntityTracking.fabrolia$tickTrackers": {
+          "running": 8600.0,
+          "park": 4108.0,
+          "wait": 0.0,
+          "blocked": 176.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 348.0
+        },
+        "NearbyEntityTracking.fabrolia$snapshotTrackers": {
+          "running": 5184.0,
+          "park": 1100.0,
+          "wait": 0.0,
+          "blocked": 44.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 180.0
+        },
+        "NearbyEntityTracking.fabrolia$awaitFanout": {
+          "running": 8.0,
+          "park": 4108.0,
+          "wait": 0.0,
+          "blocked": 0.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 0.0
+        },
+        "ChunkMap.c2me$runOneChunkAutoSave": {
+          "running": 6500.0,
+          "park": 0.0,
+          "wait": 0.0,
+          "blocked": 200.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 88.0
+        },
+        "AsyncIslandPlayerTicks.runMainListenerTick": {
+          "running": 1600.0,
+          "park": 5540.0,
+          "wait": 0.0,
+          "blocked": 24.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 156.0
+        },
+        "AsyncIslandPlayerTicks.drainMainIngress": {
+          "running": 5872.0,
+          "park": 1896.0,
+          "wait": 0.0,
+          "blocked": 52.0,
+          "sleep": 4.0,
+          "io": 8.0,
+          "safepoint": 40.0
+        },
+        "MinecraftServer.saveAllChunks": {
+          "running": 560.0,
+          "park": 8.0,
+          "wait": 0.0,
+          "blocked": 0.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 36.0
+        },
+        "MinecraftServer.autoSave": {
+          "running": 788.0,
+          "park": 8.0,
+          "wait": 0.0,
+          "blocked": 0.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 36.0
+        },
+        "ServerLevel.save": {
+          "running": 508.0,
+          "park": 0.0,
+          "wait": 0.0,
+          "blocked": 0.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 36.0
+        },
+        "NetherPortalPreparation$Request.snapshotPositions": {
+          "running": 768.0,
+          "park": 0.0,
+          "wait": 0.0,
+          "blocked": 0.0,
+          "sleep": 0.0,
+          "io": 0.0,
+          "safepoint": 0.0
+        }
+      },
+      "top_running_self": [
+        {
+          "excl": 3900.0,
+          "running": 3876.0,
+          "owner": "(native)",
+          "label": "libc.so.6.pthread_cond_signal"
+        },
+        {
+          "excl": 2836.0,
+          "running": 2836.0,
+          "owner": "io_github_axalotldev_api",
+          "label": "com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap.get"
+        },
+        {
+          "excl": 1784.0,
+          "running": 1784.0,
+          "owner": "(native)",
+          "label": "itable stub"
+        },
+        {
+          "excl": 1176.0,
+          "running": 1176.0,
+          "owner": "(jdk)",
+          "label": "java.util.concurrent.ConcurrentHashMap.tabAt"
+        },
+        {
+          "excl": 1152.0,
+          "running": 1152.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.world.entity.Entity.position"
+        },
+        {
+          "excl": 1080.0,
+          "running": 1080.0,
+          "owner": "(jdk)",
+          "label": "java.util.concurrent.ConcurrentHashMap.get"
+        },
+        {
+          "excl": 1020.0,
+          "running": 1020.0,
+          "owner": "vmp",
+          "label": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.getEntityChunkPos"
+        },
+        {
+          "excl": 1020.0,
+          "running": 1020.0,
+          "owner": "fabrolia",
+          "label": "net.minecraft.server.level.ChunkMap$TrackedEntity.fabrolia$passSnapshot"
+        },
+        {
+          "excl": 828.0,
+          "running": 828.0,
+          "owner": "(unattributed: com.mojang.serialization)",
+          "label": "com.mojang.serialization.Codec$16.write"
+        },
+        {
+          "excl": 748.0,
+          "running": 748.0,
+          "owner": "(unattributed: net.minecraft.resources)",
+          "label": "net.minecraft.resources.ResourceKey$$Lambda.0x000000005f7d1fa0.apply"
+        },
+        {
+          "excl": 740.0,
+          "running": 740.0,
+          "owner": "(unattributed: it.unimi.dsi)",
+          "label": "it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap.get"
+        },
+        {
+          "excl": 652.0,
+          "running": 652.0,
+          "owner": "(jdk)",
+          "label": "java.util.concurrent.atomic.AtomicLong.get"
+        },
+        {
+          "excl": 644.0,
+          "running": 644.0,
+          "owner": "(unattributed: net.minecraft.resources)",
+          "label": "net.minecraft.resources.Identifier$$Lambda.0x000000005f474450.apply"
+        },
+        {
+          "excl": 636.0,
+          "running": 636.0,
+          "owner": "(unattributed: com.axalotl.fabrolia)",
+          "label": "com.axalotl.fabrolia.common.regions.IslandBlockEntityTicks$$Lambda.0x000000006148a330.test"
+        },
+        {
+          "excl": 580.0,
+          "running": 580.0,
+          "owner": "(unattributed: it.unimi.dsi)",
+          "label": "it.unimi.dsi.fastutil.objects.ReferenceLinkedOpenHashSet.contains"
+        },
+        {
+          "excl": 572.0,
+          "running": 572.0,
+          "owner": "fabrolia",
+          "label": "com.ishland.vmp.common.playerwatching.NearbyEntityTracking.fabrolia$snapshotRange"
+        },
+        {
+          "excl": 568.0,
+          "running": 568.0,
+          "owner": "(jdk)",
+          "label": "java.util.concurrent.atomic.AtomicReference.get"
+        },
+        {
+          "excl": 548.0,
+          "running": 548.0,
+          "owner": "fabrolia",
+          "label": "com.axalotl.fabrolia.common.regions.CompletedChunkLevels.forEach"
+        },
+        {
+          "excl": 536.0,
+          "running": 536.0,
+          "owner": "minecraft",
+          "label": "net.minecraft.core.SectionPos.blockToSectionCoord"
+        },
+        {
+          "excl": 520.0,
+          "running": 520.0,
+          "owner": "(unattributed: net.minecraft.advancements)",
+          "label": "net.minecraft.advancements.triggers.InventoryChangeTrigger$$Lambda.0x00000000613c6250.test"
+        }
+      ],
+      "callers": {
+        "IslandCommands.mainClaim": [
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.RegionScheduler.runWithMainEntityClaim <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.lambda$runMainListenerTick$0 <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks$$Lambda.0x000000006148a7a8.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedCausalBody <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runSuccessBodyIfHealthy",
+            "total_ms": 6308.0,
+            "ms_per_main_tick": 2.6649767638360795
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.drainMainIngress <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.lambda$scheduleMainIngressTaskLocked$1 <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks$$Lambda.0x0000000061440f58.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedExternalBody <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runSuccessBodyIfHealthy",
+            "total_ms": 1520.0,
+            "ms_per_main_tick": 0.6421630756231517
+          },
+          {
+            "chain": "net.minecraft.server.network.ServerGamePacketListenerImpl.withOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.md0f53a3$fabrolia$lambda$fabrolia$ownUseItemOn$2$1d <- net.minecraft.server.network.ServerGamePacketListenerImpl$$Lambda.0x00000000614aaf08.accept <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.runVanillaPacketBody <- net.minecraft.server.network.ServerGamePacketListenerImpl.wrapMethod$cep000$fabrolia$ownUseItemOn",
+            "total_ms": 564.0,
+            "ms_per_main_tick": 0.23827629911280102
+          },
+          {
+            "chain": "net.minecraft.world.level.dimension.end.EnderDragonFight.wrapMethod$cgl000$fabrolia$ownerSafeFightTick <- net.minecraft.world.level.dimension.end.EnderDragonFight.tick <- net.minecraft.server.level.ServerLevel.mixinextras$bridge$tick$416 <- net.minecraft.server.level.ServerLevel$$Lambda.0x0000000060fca310.call <- net.minecraft.server.level.ServerLevel.md0f53a3$fabrolia$lambda$fabrolia$admitEnderDragonFightTick$0$31",
+            "total_ms": 480.0,
+            "ms_per_main_tick": 0.20278833967046894
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.drainMainIngress <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.finishMainEntityFallback <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.lambda$publishMainEntityFallback$1 <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks$$Lambda.0x00000000614415c8.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedExternalBody",
+            "total_ms": 108.0,
+            "ms_per_main_tick": 0.045627376425855515
+          },
+          {
+            "chain": "net.minecraft.server.network.ServerGamePacketListenerImpl.withOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.withOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.md0f53a3$fabrolia$lambda$fabrolia$ownPickBlock$0$f <- net.minecraft.server.network.ServerGamePacketListenerImpl$$Lambda.0x00000000615e51f8.accept <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.runVanillaPacketBody",
+            "total_ms": 36.0,
+            "ms_per_main_tick": 0.015209125475285171
+          },
+          {
+            "chain": "net.minecraft.server.network.ServerGamePacketListenerImpl.withOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.md0f53a3$fabrolia$lambda$fabrolia$ownPlayerAction$0$1b <- net.minecraft.server.network.ServerGamePacketListenerImpl$$Lambda.0x000000006157a000.accept <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.runVanillaPacketBody <- net.minecraft.server.network.ServerGamePacketListenerImpl.wrapMethod$cep000$fabrolia$ownPlayerAction",
+            "total_ms": 32.0,
+            "ms_per_main_tick": 0.01351922264469793
+          },
+          {
+            "chain": "net.minecraft.server.network.ServerGamePacketListenerImpl.withOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.withOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.withPlayerOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl$$Lambda.0x000000006150e680.accept <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.runVanillaPacketBody",
+            "total_ms": 16.0,
+            "ms_per_main_tick": 0.006759611322348965
+          },
+          {
+            "chain": "net.minecraft.server.network.ServerGamePacketListenerImpl.withOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.withOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.withPlayerOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.md0f53a3$fabrolia$lambda$fabrolia$ownUseItem$0$19 <- net.minecraft.server.network.ServerGamePacketListenerImpl$$Lambda.0x0000000061540460.accept",
+            "total_ms": 12.0,
+            "ms_per_main_tick": 0.005069708491761723
+          },
+          {
+            "chain": "net.minecraft.server.network.ServerGamePacketListenerImpl.withOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.withOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl.withPlayerOwner <- net.minecraft.server.network.ServerGamePacketListenerImpl$$Lambda.0x000000006152bae0.accept <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.runVanillaPacketBody",
+            "total_ms": 12.0,
+            "ms_per_main_tick": 0.005069708491761723
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.ChunkDelivery.lease <- com.axalotl.fabrolia.common.regions.ChunkDelivery.selectCandidate <- com.axalotl.fabrolia.common.regions.ChunkDelivery.lambda$sendNextChunks$1 <- com.axalotl.fabrolia.common.regions.ChunkDelivery$$Lambda.0x0000000061431938.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedCausalBody",
+            "total_ms": 12.0,
+            "ms_per_main_tick": 0.005069708491761723
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.RegionScheduler.runWithMainEntityClaim <- com.axalotl.fabrolia.common.regions.RegionScheduler.runWithMainEntityClaim <- com.axalotl.fabrolia.common.regions.RegionScheduler.runMainSyncEntityTask <- com.axalotl.fabrolia.common.regions.RegionScheduler.runOneMainSync <- com.axalotl.fabrolia.common.regions.RegionScheduler$$Lambda.0x0000000061447188.accept",
+            "total_ms": 4.0,
+            "ms_per_main_tick": 0.0016899028305872412
+          }
+        ],
+        "RegionWorkerPool.pauseExactTurnAndAwait": [
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.RegionWorkerPool.pauseMainPreparationAndAwait <- com.axalotl.fabrolia.common.regions.RegionScheduler.pauseExactPlayerTurn <- com.axalotl.fabrolia.common.regions.RegionScheduler.pauseMainPreparationTurn <- com.axalotl.fabrolia.common.regions.NetherPortalPreparation.serviceMain <- com.axalotl.fabrolia.common.regions.NetherPortalTransfers.serviceMain",
+            "total_ms": 14076.0,
+            "ms_per_main_tick": 5.946768060836502
+          }
+        ],
+        "RegionizedServer.quiesceAllIslandsInner": [
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.RegionizedServer.quiesceAllIslands <- com.axalotl.fabrolia.common.regions.RegionizedServer.rebuildIslandsIfDirty <- net.minecraft.server.level.ServerLevel.md0f53a3$fabrolia$lambda$fabrolia$rebuildPlayerIndex$0$0 <- net.minecraft.server.level.ServerLevel$$Lambda.0x0000000060f742f0.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedExternalBody",
+            "total_ms": 3116.0,
+            "ms_per_main_tick": 1.316434305027461
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.RegionizedServer.quiesceAllIslands <- com.axalotl.fabrolia.common.regions.RegionizedServer.rebuildIslandsIfDirty <- net.minecraft.server.level.ServerChunkCache.md0f53a3$fabrolia$lambda$fabrolia$armDeferredChunkWork$0$10 <- net.minecraft.server.level.ServerChunkCache$$Lambda.0x0000000060faa0e8.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedCausalBody",
+            "total_ms": 240.0,
+            "ms_per_main_tick": 0.10139416983523447
+          }
+        ],
+        "IslandCommands.quiesceAllExcept": [
+          {
+            "chain": "net.minecraft.world.level.timers.TimerQueue.fabrolia$tickServerQueue <- net.minecraft.world.level.timers.TimerQueue.wrapMethod$bnm000$fabrolia$fenceDueFunctionsOnce <- net.minecraft.world.level.timers.TimerQueue.tick <- net.minecraft.server.level.ServerLevel.tickTime <- net.minecraft.server.level.ServerLevel.mixinextras$bridge$tickTime$411",
+            "total_ms": 2208.0,
+            "ms_per_main_tick": 0.9328263624841572
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBatchScope.ensureEvaluationFence <- com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer.drainRouted <- com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer.beginTickHeadWindow <- net.minecraft.server.ServerFunctionManager.md0f53a3$fabrolia$lambda$fabrolia$markTickTag$0$c <- net.minecraft.server.ServerFunctionManager$$Lambda.0x0000000060f67658.run",
+            "total_ms": 244.0,
+            "ms_per_main_tick": 0.10308407266582172
+          },
+          {
+            "chain": "net.minecraft.server.ServerFunctionManager.wrapMethod$bnk000$fabrolia$fenceFunction <- net.minecraft.server.ServerFunctionManager.execute <- net.minecraft.world.level.timers.FunctionCallback.lambda$handle$0 <- net.minecraft.world.level.timers.FunctionCallback$$Lambda.0x00000000612b3df8.accept <- net.minecraft.world.level.timers.FunctionCallback.handle",
+            "total_ms": 228.0,
+            "ms_per_main_tick": 0.09632446134347275
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.IslandCommands.fabrolia$drainRoutedBatchEntered <- com.axalotl.fabrolia.common.regions.IslandCommands.lambda$drainRoutedBatch$0 <- com.axalotl.fabrolia.common.regions.IslandCommands$$Lambda.0x0000000060fb5750.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedExternalBody <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runSuccessBodyIfHealthy",
+            "total_ms": 32.0,
+            "ms_per_main_tick": 0.01351922264469793
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.beginPhysicalMainDisconnect <- com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks.runPhysicalMainDisconnect <- net.minecraft.server.network.ServerGamePacketListenerImpl.wrapMethod$cfj000$fabrolia$scopePhysicalMainDisconnect <- net.minecraft.server.network.ServerGamePacketListenerImpl.onDisconnect <- net.minecraft.network.Connection.handleDisconnection",
+            "total_ms": 24.0,
+            "ms_per_main_tick": 0.010139416983523447
+          },
+          {
+            "chain": "com.axalotl.fabrolia.common.regions.IslandCommands.fabrolia$drainRoutedBatchEntered <- com.axalotl.fabrolia.common.regions.IslandCommands.lambda$drainRoutedBatch$0 <- com.axalotl.fabrolia.common.regions.IslandCommands$$Lambda.0x0000000060fb5750.run <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedCausalBody <- com.axalotl.fabrolia.common.regions.RegionWorkerPool.runSuccessBodyIfHealthy",
+            "total_ms": 16.0,
+            "ms_per_main_tick": 0.006759611322348965
+          },
+          {
+            "chain": "net.minecraft.server.MinecraftServer.wrapMethod$cec000$fabrolia$quiesceIslandsForServerSave <- net.minecraft.server.MinecraftServer.saveAllChunks <- net.minecraft.server.dedicated.DedicatedServer.saveAllChunks <- net.minecraft.server.MinecraftServer.saveEverything <- net.minecraft.server.MinecraftServer.autoSave",
+            "total_ms": 8.0,
+            "ms_per_main_tick": 0.0033798056611744824
+          }
+        ]
+      }
+    }
+  },
+  "interpretation": "Wall-time samples include waiting. Inclusive method values overlap. Worker times are pooled across 17 workers; dividing by global ticks does not measure island MSPT. Window tick totals differ slightly from whole-profile metadata. GC avg_frequency uses JVM uptime; compute capture frequency from duration/count.",
+  "thread_overview": [
+    {
+      "name": "Async-profiler Timer",
+      "sampled_ms": 117200.0,
+      "states_ms": {
+        "running": 24.0,
+        "park": 0.0,
+        "wait": 117148.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 4.0,
+        "safepoint": 24.0
+      }
+    },
+    {
+      "name": "Attach Listener",
+      "sampled_ms": 117312.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 117312.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "BlueMap-FJP (x19)",
+      "sampled_ms": 2227276.0,
+      "states_ms": {
+        "running": 15068.0,
+        "park": 2211600.0,
+        "wait": 256.0,
+        "blocked": 168.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 184.0
+      }
+    },
+    {
+      "name": "BlueMap-InstancePool-RecycleTimer",
+      "sampled_ms": 117312.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117312.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "BlueMap-MapUpdateService (x3)",
+      "sampled_ms": 351640.0,
+      "states_ms": {
+        "running": 68.0,
+        "park": 351468.0,
+        "wait": 32.0,
+        "blocked": 72.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "BlueMap-MapUpdateService-Timer",
+      "sampled_ms": 117208.0,
+      "states_ms": {
+        "running": 56.0,
+        "park": 0.0,
+        "wait": 117152.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "BlueMap-Plugin-Timer",
+      "sampled_ms": 117312.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117312.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "BlueMap-ProgressTracker-Timer (x1)",
+      "sampled_ms": 117296.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117296.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "BlueMap-RenderThread-0 (x1)",
+      "sampled_ms": 117100.0,
+      "states_ms": {
+        "running": 87408.0,
+        "park": 0.0,
+        "wait": 27464.0,
+        "blocked": 8.0,
+        "sleep": 0.0,
+        "io": 236.0,
+        "safepoint": 1984.0
+      }
+    },
+    {
+      "name": "BlueMap-Scheduler (x1)",
+      "sampled_ms": 117200.0,
+      "states_ms": {
+        "running": 12.0,
+        "park": 117188.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "BlueMap-WebbAppImpl-Timer",
+      "sampled_ms": 117312.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117312.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "BlueMap-Webserver",
+      "sampled_ms": 117192.0,
+      "states_ms": {
+        "running": 40.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 117152.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "C1 CompilerThre",
+      "sampled_ms": 117296.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117296.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "C2 CompilerThre",
+      "sampled_ms": 117296.0,
+      "states_ms": {
+        "running": 60.0,
+        "park": 0.0,
+        "wait": 117236.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "C2ME Storage (x9)",
+      "sampled_ms": 1055060.0,
+      "states_ms": {
+        "running": 1008.0,
+        "park": 0.0,
+        "wait": 1053828.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 224.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Common-Cleaner",
+      "sampled_ms": 117320.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117320.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "ConfigSaver",
+      "sampled_ms": 117320.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117320.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "DefaultDispatcher-worker (x6)",
+      "sampled_ms": 703672.0,
+      "states_ms": {
+        "running": 52.0,
+        "park": 703620.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "DestroyJavaVM",
+      "sampled_ms": 117320.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117320.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Fabrolia-Rate-Pacer",
+      "sampled_ms": 116928.0,
+      "states_ms": {
+        "running": 3364.0,
+        "park": 98452.0,
+        "wait": 14768.0,
+        "blocked": 344.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Fabrolia-Region-Worker (x17)",
+      "sampled_ms": 1988296.0,
+      "states_ms": {
+        "running": 977868.0,
+        "park": 967248.0,
+        "wait": 5648.0,
+        "blocked": 15512.0,
+        "sleep": 0.0,
+        "io": 2604.0,
+        "safepoint": 19416.0
+      }
+    },
+    {
+      "name": "Fabrolia-Save-IO (x8)",
+      "sampled_ms": 241024.0,
+      "states_ms": {
+        "running": 1400.0,
+        "park": 238548.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 936.0,
+        "safepoint": 140.0
+      }
+    },
+    {
+      "name": "Fabrolia-Tick-Pool-Thread (x14)",
+      "sampled_ms": 1639940.0,
+      "states_ms": {
+        "running": 33276.0,
+        "park": 1604140.0,
+        "wait": 36.0,
+        "blocked": 1916.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 572.0
+      }
+    },
+    {
+      "name": "FileSystemWatchService",
+      "sampled_ms": 820904.0,
+      "states_ms": {
+        "running": 104.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 820800.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Finalizer",
+      "sampled_ms": 117276.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117276.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "ForkJoinPool-5-worker (x1)",
+      "sampled_ms": 99800.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 99800.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "ForkJoinPool-8-delayScheduler",
+      "sampled_ms": 117200.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117200.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "ForkJoinPool-8-worker (x19)",
+      "sampled_ms": 2227704.0,
+      "states_ms": {
+        "running": 836.0,
+        "park": 2226660.0,
+        "wait": 0.0,
+        "blocked": 132.0,
+        "sleep": 0.0,
+        "io": 76.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "ForkJoinPool.commonPool-worker (x1)",
+      "sampled_ms": 2060.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 1928.0,
+        "wait": 132.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Function Compiler",
+      "sampled_ms": 117320.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117320.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "G1 Conc (x4)",
+      "sampled_ms": 469008.0,
+      "states_ms": {
+        "running": 48048.0,
+        "park": 0.0,
+        "wait": 420912.0,
+        "blocked": 0.0,
+        "sleep": 48.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "G1 Main Marker",
+      "sampled_ms": 117288.0,
+      "states_ms": {
+        "running": 376.0,
+        "park": 0.0,
+        "wait": 116912.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "G1 Refine (x4)",
+      "sampled_ms": 469120.0,
+      "states_ms": {
+        "running": 9712.0,
+        "park": 0.0,
+        "wait": 459392.0,
+        "blocked": 0.0,
+        "sleep": 16.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "G1 Service",
+      "sampled_ms": 117208.0,
+      "states_ms": {
+        "running": 4.0,
+        "park": 0.0,
+        "wait": 117204.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "GC Thread (x14)",
+      "sampled_ms": 1640944.0,
+      "states_ms": {
+        "running": 29580.0,
+        "park": 0.0,
+        "wait": 1611312.0,
+        "blocked": 0.0,
+        "sleep": 52.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "H2-save",
+      "sampled_ms": 117312.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117312.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "H2-serialization",
+      "sampled_ms": 117316.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117316.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "HTTP-Dispatcher",
+      "sampled_ms": 117196.0,
+      "states_ms": {
+        "running": 4.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 117192.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "HttpClient-1-SelectorManager",
+      "sampled_ms": 117208.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 117208.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "HttpClient-2-SelectorManager",
+      "sampled_ms": 117204.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 117204.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "IO-Worker (x11)",
+      "sampled_ms": 693752.0,
+      "states_ms": {
+        "running": 2104.0,
+        "park": 689016.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 2480.0,
+        "safepoint": 152.0
+      }
+    },
+    {
+      "name": "JDA Gateway-Worker (x1)",
+      "sampled_ms": 117208.0,
+      "states_ms": {
+        "running": 4.0,
+        "park": 117200.0,
+        "wait": 0.0,
+        "blocked": 4.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "JDA MainWS-ReadThread",
+      "sampled_ms": 117300.0,
+      "states_ms": {
+        "running": 8.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 117292.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "JDA MainWS-WriteThread",
+      "sampled_ms": 117308.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117308.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "JDA RateLimit-Elastic-Worker (x1)",
+      "sampled_ms": 117312.0,
+      "states_ms": {
+        "running": 4.0,
+        "park": 116840.0,
+        "wait": 460.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 8.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "JDA RateLimit-Scheduler-Worker (x2)",
+      "sampled_ms": 234624.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 234624.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "JNA Cleaner",
+      "sampled_ms": 117308.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117308.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Java2D Disposer",
+      "sampled_ms": 117244.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117244.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Ledger Database",
+      "sampled_ms": 115348.0,
+      "states_ms": {
+        "running": 984.0,
+        "park": 111028.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 3336.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Log4j2-AsyncAppenderEventDispatcher-1-SysOut",
+      "sampled_ms": 117200.0,
+      "states_ms": {
+        "running": 8.0,
+        "park": 117180.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 12.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Log4j2-AsyncAppenderEventDispatcher-2-File",
+      "sampled_ms": 117204.0,
+      "states_ms": {
+        "running": 4.0,
+        "park": 117200.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Log4j2-AsyncAppenderEventDispatcher-3-ServerGuiConsole",
+      "sampled_ms": 117208.0,
+      "states_ms": {
+        "running": 4.0,
+        "park": 117204.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Log4j2-AsyncAppenderEventDispatcher-4-Tracy",
+      "sampled_ms": 117208.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117208.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "MVStore background writer /home/container/mods/luckperms/luckperms-h2-v2.mv.db",
+      "sampled_ms": 116856.0,
+      "states_ms": {
+        "running": 36.0,
+        "park": 0.0,
+        "wait": 116812.0,
+        "blocked": 8.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "MasterPoller",
+      "sampled_ms": 117184.0,
+      "states_ms": {
+        "running": 36.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 117148.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Minecraft Services Discovery",
+      "sampled_ms": 117316.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117316.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Monitor Deflati",
+      "sampled_ms": 117192.0,
+      "states_ms": {
+        "running": 12.0,
+        "park": 0.0,
+        "wait": 117180.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Netty Epoll IO (x38)",
+      "sampled_ms": 4448324.0,
+      "states_ms": {
+        "running": 37516.0,
+        "park": 12.0,
+        "wait": 484.0,
+        "blocked": 348.0,
+        "sleep": 0.0,
+        "io": 4408676.0,
+        "safepoint": 1288.0
+      }
+    },
+    {
+      "name": "Notification Thread",
+      "sampled_ms": 117320.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117320.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "OkHttp TaskRunner",
+      "sampled_ms": 124736.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 22932.0,
+        "wait": 101804.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "OkHttp discord.com",
+      "sampled_ms": 117308.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 15500.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 101808.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Okio Watchdog",
+      "sampled_ms": 2520.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 2520.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "PacketSplitter-Cleaner",
+      "sampled_ms": 117288.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117288.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Reference Handler",
+      "sampled_ms": 117208.0,
+      "states_ms": {
+        "running": 72.0,
+        "park": 0.0,
+        "wait": 117124.0,
+        "blocked": 12.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Rustmi-NativeSections-Cleaner",
+      "sampled_ms": 117212.0,
+      "states_ms": {
+        "running": 116.0,
+        "park": 0.0,
+        "wait": 117096.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "RxCachedWorkerPoolEvictor (x1)",
+      "sampled_ms": 117316.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117316.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Server Watchdog",
+      "sampled_ms": 117312.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 117312.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Server console handler",
+      "sampled_ms": 117316.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 117316.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Server thread",
+      "sampled_ms": 116976.0,
+      "states_ms": {
+        "running": 57732.0,
+        "park": 48612.0,
+        "wait": 7804.0,
+        "blocked": 1248.0,
+        "sleep": 4.0,
+        "io": 164.0,
+        "safepoint": 1412.0
+      }
+    },
+    {
+      "name": "Service Thread",
+      "sampled_ms": 117204.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117036.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 168.0
+      }
+    },
+    {
+      "name": "Signal Dispatcher",
+      "sampled_ms": 117320.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117320.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "ThreadStateHolderCleaner",
+      "sampled_ms": 117316.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117316.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Timer (x3)",
+      "sampled_ms": 351960.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 351960.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "Timer hack thread",
+      "sampled_ms": 117320.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 117320.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "VM Periodic Tas",
+      "sampled_ms": 117296.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117296.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "VM Thread",
+      "sampled_ms": 117208.0,
+      "states_ms": {
+        "running": 120.0,
+        "park": 0.0,
+        "wait": 117088.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "VirtualThread-unblocker",
+      "sampled_ms": 117284.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117284.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "VoiceChatPacketProcessingThread",
+      "sampled_ms": 117036.0,
+      "states_ms": {
+        "running": 1156.0,
+        "park": 115460.0,
+        "wait": 160.0,
+        "blocked": 8.0,
+        "sleep": 0.0,
+        "io": 252.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "VoiceChatServerThread",
+      "sampled_ms": 117120.0,
+      "states_ms": {
+        "running": 280.0,
+        "park": 4.0,
+        "wait": 0.0,
+        "blocked": 8.0,
+        "sleep": 0.0,
+        "io": 115044.0,
+        "safepoint": 1784.0
+      }
+    },
+    {
+      "name": "WorldEdit Session Manager",
+      "sampled_ms": 117312.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117312.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "WorldEdit-RecursiveDirectoryWatcher",
+      "sampled_ms": 117316.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117316.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "c2me-sched",
+      "sampled_ms": 117140.0,
+      "states_ms": {
+        "running": 1264.0,
+        "park": 0.0,
+        "wait": 115876.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "c2me-worker (x16)",
+      "sampled_ms": 1872480.0,
+      "states_ms": {
+        "running": 47812.0,
+        "park": 1822944.0,
+        "wait": 80.0,
+        "blocked": 1016.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 628.0
+      }
+    },
+    {
+      "name": "config-file-watcher-0 (x1)",
+      "sampled_ms": 117204.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 116996.0,
+        "wait": 0.0,
+        "blocked": 208.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "groupchat-log-cleanup",
+      "sampled_ms": 117308.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117308.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "idle-timeout-task",
+      "sampled_ms": 117292.0,
+      "states_ms": {
+        "running": 4.0,
+        "park": 0.0,
+        "wait": 117288.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "java",
+      "sampled_ms": 117320.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 0.0,
+        "wait": 117320.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "kotlinx.coroutines.DefaultExecutor",
+      "sampled_ms": 117204.0,
+      "states_ms": {
+        "running": 12.0,
+        "park": 117192.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "luckperms-scheduler",
+      "sampled_ms": 117204.0,
+      "states_ms": {
+        "running": 24.0,
+        "park": 117156.0,
+        "wait": 0.0,
+        "blocked": 24.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "luckperms-worker (x10)",
+      "sampled_ms": 1169048.0,
+      "states_ms": {
+        "running": 28.0,
+        "park": 1169020.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "minecraft_overworld - Light",
+      "sampled_ms": 117116.0,
+      "states_ms": {
+        "running": 100.0,
+        "park": 117012.0,
+        "wait": 0.0,
+        "blocked": 4.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "minecraft_the_end - Light",
+      "sampled_ms": 117156.0,
+      "states_ms": {
+        "running": 40.0,
+        "park": 117116.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "minecraft_the_nether - Light",
+      "sampled_ms": 117136.0,
+      "states_ms": {
+        "running": 36.0,
+        "park": 117100.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "pool-16-thread (x19)",
+      "sampled_ms": 2228928.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 2228928.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "scalablelux (x6)",
+      "sampled_ms": 703896.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 703896.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "spark-async-sampler-worker-12-thread (x1)",
+      "sampled_ms": 117284.0,
+      "states_ms": {
+        "running": 1264.0,
+        "park": 115960.0,
+        "wait": 48.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 12.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "spark-monitoring-2-thread (x4)",
+      "sampled_ms": 467824.0,
+      "states_ms": {
+        "running": 52.0,
+        "park": 467748.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 24.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "spark-worker-pool-1-thread (x4)",
+      "sampled_ms": 469248.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 469248.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "statsexporter-cache (x1)",
+      "sampled_ms": 117312.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 117312.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    },
+    {
+      "name": "statsexporter-http (x2)",
+      "sampled_ms": 234624.0,
+      "states_ms": {
+        "running": 0.0,
+        "park": 234624.0,
+        "wait": 0.0,
+        "blocked": 0.0,
+        "sleep": 0.0,
+        "io": 0.0,
+        "safepoint": 0.0
+      }
+    }
+  ],
+  "metric_points_during_capture": [
+    {
+      "t": 1791656329096,
+      "tps": 20.31629082146601,
+      "tick_duration": {
+        "mean": 25.40315728,
+        "max": 115.759141,
+        "min": 5.189483,
+        "median": 18.978055,
+        "percentile95": 73.906938
+      },
+      "cpu_usage_process": 0.6918918918918919,
+      "cpu_usage_system": 0.6921450270270271,
+      "memory_usage_heap": {
+        "used": "13490484152",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550364488",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 2351282092.516735,
+      "world_info": {
+        "players": 31,
+        "entities": 12015,
+        "tile_entities": -1,
+        "chunks": 23563
+      },
+      "player_ping": {
+        "mean": 139.6451612903226,
+        "max": 406.0,
+        "min": 48.0,
+        "median": 128.0,
+        "percentile95": 293.0
+      }
+    },
+    {
+      "t": 1791656339216,
+      "tps": 17.834152484937466,
+      "tick_duration": {
+        "mean": 32.931473665,
+        "max": 153.691359,
+        "min": 6.517223,
+        "median": 24.293426,
+        "percentile95": 91.274937
+      },
+      "cpu_usage_process": 0.8151351351351351,
+      "cpu_usage_system": 0.8150808648648649,
+      "memory_usage_heap": {
+        "used": "17802193272",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550331336",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 2135793839.6877813,
+      "world_info": {
+        "players": 31,
+        "entities": 12065,
+        "tile_entities": -1,
+        "chunks": 23536
+      },
+      "player_ping": {
+        "mean": 139.67741935483872,
+        "max": 389.0,
+        "min": 44.0,
+        "median": 131.0,
+        "percentile95": 293.0
+      }
+    },
+    {
+      "t": 1791656349223,
+      "tps": 18.563537110499023,
+      "tick_duration": {
+        "mean": 26.62943987,
+        "max": 216.31505,
+        "min": 6.178083,
+        "median": 19.815101,
+        "percentile95": 82.978197
+      },
+      "cpu_usage_process": 0.601081081081081,
+      "cpu_usage_system": 0.6009942162162162,
+      "memory_usage_heap": {
+        "used": "16649905232",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550331336",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 1968390859.7719545,
+      "world_info": {
+        "players": 31,
+        "entities": 11996,
+        "tile_entities": -1,
+        "chunks": 23534
+      },
+      "player_ping": {
+        "mean": 138.67741935483872,
+        "max": 368.0,
+        "min": 44.0,
+        "median": 133.0,
+        "percentile95": 298.0
+      }
+    },
+    {
+      "t": 1791656359242,
+      "tps": 19.894485367287004,
+      "tick_duration": {
+        "mean": 25.573425535000002,
+        "max": 513.759634,
+        "min": 5.146573,
+        "median": 16.410675,
+        "percentile95": 78.864318
+      },
+      "cpu_usage_process": 0.6270270270270271,
+      "cpu_usage_system": 0.6272991351351351,
+      "memory_usage_heap": {
+        "used": "16818208224",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550331336",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 2162212502.4,
+      "world_info": {
+        "players": 31,
+        "entities": 12010,
+        "tile_entities": -1,
+        "chunks": 23468
+      },
+      "player_ping": {
+        "mean": 138.29032258064515,
+        "max": 368.0,
+        "min": 44.0,
+        "median": 125.0,
+        "percentile95": 291.0
+      }
+    },
+    {
+      "t": 1791656369249,
+      "tps": 19.840096872304546,
+      "tick_duration": {
+        "mean": 22.77493431,
+        "max": 180.093646,
+        "min": 6.893329,
+        "median": 15.27076,
+        "percentile95": 68.547078
+      },
+      "cpu_usage_process": 0.6443243243243243,
+      "cpu_usage_system": 0.6446196216216217,
+      "memory_usage_heap": {
+        "used": "16326835088",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550336296",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 2133569605.6,
+      "world_info": {
+        "players": 31,
+        "entities": 12157,
+        "tile_entities": -1,
+        "chunks": 23484
+      },
+      "player_ping": {
+        "mean": 137.90322580645162,
+        "max": 371.0,
+        "min": 43.0,
+        "median": 121.0,
+        "percentile95": 291.0
+      }
+    },
+    {
+      "t": 1791656379306,
+      "tps": 19.99390196586809,
+      "tick_duration": {
+        "mean": 24.7109266,
+        "max": 213.375715,
+        "min": 5.27195,
+        "median": 16.411197,
+        "percentile95": 80.239746
+      },
+      "cpu_usage_process": 0.4972972972972973,
+      "cpu_usage_system": 0.49759783783783784,
+      "memory_usage_heap": {
+        "used": "15769736224",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550338088",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 2089867830.4,
+      "world_info": {
+        "players": 31,
+        "entities": 12040,
+        "tile_entities": -1,
+        "chunks": 23560
+      },
+      "player_ping": {
+        "mean": 136.5483870967742,
+        "max": 365.0,
+        "min": 43.0,
+        "median": 121.0,
+        "percentile95": 292.0
+      }
+    },
+    {
+      "t": 1791656389386,
+      "tps": 19.933538459191578,
+      "tick_duration": {
+        "mean": 23.95952661,
+        "max": 98.909413,
+        "min": 5.001991,
+        "median": 18.374,
+        "percentile95": 80.717937
+      },
+      "cpu_usage_process": 0.4972972972972973,
+      "cpu_usage_system": 0.49759783783783784,
+      "memory_usage_heap": {
+        "used": "15405017832",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550351912",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 2017670555.2,
+      "world_info": {
+        "players": 31,
+        "entities": 12083,
+        "tile_entities": -1,
+        "chunks": 23585
+      },
+      "player_ping": {
+        "mean": 136.90322580645162,
+        "max": 365.0,
+        "min": 43.0,
+        "median": 120.0,
+        "percentile95": 281.0
+      }
+    },
+    {
+      "t": 1791656399411,
+      "tps": 19.727714225572207,
+      "tick_duration": {
+        "mean": 26.495213475,
+        "max": 262.019409,
+        "min": 6.152195,
+        "median": 16.76882,
+        "percentile95": 87.309088
+      },
+      "cpu_usage_process": 0.841081081081081,
+      "cpu_usage_system": 0.841142,
+      "memory_usage_heap": {
+        "used": "13727069888",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550351976",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 2070607306.4,
+      "world_info": {
+        "players": 31,
+        "entities": 12199,
+        "tile_entities": -1,
+        "chunks": 23588
+      },
+      "player_ping": {
+        "mean": 135.6451612903226,
+        "max": 357.0,
+        "min": 50.0,
+        "median": 123.0,
+        "percentile95": 281.0
+      }
+    },
+    {
+      "t": 1791656409458,
+      "tps": 19.95714018942061,
+      "tick_duration": {
+        "mean": 25.757298505,
+        "max": 91.314915,
+        "min": 6.236454,
+        "median": 21.416073,
+        "percentile95": 74.633279
+      },
+      "cpu_usage_process": 0.52,
+      "cpu_usage_system": 0.5205217297297298,
+      "memory_usage_heap": {
+        "used": "12398141592",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550355560",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 1941841470.4,
+      "world_info": {
+        "players": 31,
+        "entities": 12239,
+        "tile_entities": -1,
+        "chunks": 23600
+      },
+      "player_ping": {
+        "mean": 134.6451612903226,
+        "max": 355.0,
+        "min": 50.0,
+        "median": 118.0,
+        "percentile95": 286.0
+      }
+    },
+    {
+      "t": 1791656419510,
+      "tps": 20.033780901254353,
+      "tick_duration": {
+        "mean": 22.280066435,
+        "max": 521.016313,
+        "min": 4.838664,
+        "median": 15.496557,
+        "percentile95": 68.041488
+      },
+      "cpu_usage_process": 0.44054054054054054,
+      "cpu_usage_system": 0.4405749189189189,
+      "memory_usage_heap": {
+        "used": "12549972576",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550355560",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 2336068808.0,
+      "world_info": {
+        "players": 31,
+        "entities": 12144,
+        "tile_entities": -1,
+        "chunks": 23559
+      },
+      "player_ping": {
+        "mean": 133.48387096774192,
+        "max": 355.0,
+        "min": 46.0,
+        "median": 115.0,
+        "percentile95": 289.0
+      }
+    },
+    {
+      "t": 1791656429546,
+      "tps": 19.575299234902374,
+      "tick_duration": {
+        "mean": 22.898416715,
+        "max": 134.757612,
+        "min": 5.502032,
+        "median": 15.652389,
+        "percentile95": 72.478296
+      },
+      "cpu_usage_process": 0.5832432432432433,
+      "cpu_usage_system": 0.5831042162162162,
+      "memory_usage_heap": {
+        "used": "17684326544",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550355560",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 1974352708.0,
+      "world_info": {
+        "players": 31,
+        "entities": 12013,
+        "tile_entities": -1,
+        "chunks": 23508
+      },
+      "player_ping": {
+        "mean": 131.90322580645162,
+        "max": 399.0,
+        "min": 40.0,
+        "median": 114.0,
+        "percentile95": 289.0
+      }
+    },
+    {
+      "t": 1791656439598,
+      "tps": 21.410101257661903,
+      "tick_duration": {
+        "mean": 32.66689298,
+        "max": 322.670236,
+        "min": 6.354866,
+        "median": 20.501434,
+        "percentile95": 98.174823
+      },
+      "cpu_usage_process": 0.695045045045045,
+      "cpu_usage_system": 0.6950165765765766,
+      "memory_usage_heap": {
+        "used": "15306275448",
+        "committed": "20023607296",
+        "init": "134217728",
+        "max": "32858177536"
+      },
+      "memory_usage_non_heap": {
+        "used": "550349160",
+        "committed": "561250304",
+        "init": "7667712",
+        "max": "-1"
+      },
+      "memory_allocation": 1952276988.8,
+      "world_info": {
+        "players": 30,
+        "entities": 12148,
+        "tile_entities": -1,
+        "chunks": 22667
+      },
+      "player_ping": {
+        "mean": 135.13333333333333,
+        "max": 382.0,
+        "min": 40.0,
+        "median": 119.0,
+        "percentile95": 308.0
+      }
+    }
+  ],
+  "platform_gc": {
+    "G1 Concurrent GC": {
+      "total": "8",
+      "avg_time": 12.375,
+      "avg_frequency": 11846838.0
+    },
+    "G1 Old Generation": {},
+    "G1 Young Generation": {
+      "total": "35",
+      "avg_time": 64.48571428571428,
+      "avg_frequency": 2707787.0
+    }
+  },
+  "entity_paths_observed": {
+    "RegionizedServer.tickOwned": true,
+    "RegionizedServer.tickIslandEntitiesInVanillaOrder": false
+  }
+}

@@ -1,6 +1,120 @@
-## Unreleased
+## 3.0.1-alpha (2026-10-11)
+
+- Remove the ineffective `/fabrolia regions chunkheal on/off` command and its
+  unread configuration flag. The C2ME broken-strand fail-stop diagnosis remains
+  active; it never depended on that flag.
+- Remove the private worker-pool wrappers `leaveRootAdmission` and
+  `reserveExternalTask`, which had no production callers. Test fixtures now use
+  shared test-only access to the existing locked reservation and admission
+  cleanup paths; no helper is packaged with the mod.
+- Validation: unit tests and a complete second 40-client campaign passed. The
+  first campaign hit an intermittent exact player/session topology-handoff
+  crash in unchanged code; its cause remains unresolved. The preceding 3.0.0
+  control also passed. See `docs/reviews/2026-10-11/unused-code-cleanup/`.
+
+## 3.0.0-alpha (2026-10-10)
+
+### Build and project organization
+
+- Fabric releases are named `fabrolia-alpha_3.0.0.jar`; loader metadata uses
+  `3.0.0-alpha`. Minor releases increment the middle number and reset patch;
+  bugfixes increment patch. `gradle.properties` is the single source of truth,
+  with a version-bump CLI and an explicit artifact check under `tools/release/`.
+  The Minecraft target and nested API version remain independent.
+- Share Java 25/vector-module and loader release conventions in `buildSrc`;
+  remove duplicate compiler and plugin configuration. Archive order/timestamps
+  are deterministic. Both upload configurations select their current jar task,
+  so leftover jars cannot be accidentally selected. No upload occurs during build.
+- Preserve release filenames in the stand and accept the new name in artifact
+  discovery. Add a documentation index, release guide and region package map;
+  remove the Fabric example-mod contact placeholders.
 
 ### Fixes
+
+- Nether portal preparation no longer pauses the whole worker pool on every
+  tick while a request only waits for chunk or POI loads Main already
+  requested. Worker footprint checks re-required the unchanged FULL anchor of
+  a not-yet-island destination cell on every attempt, which re-armed a Main
+  turn each tick until the chunk loaded (production profile 2026-10-10:
+  ~6 ms/Main tick in `pauseExactTurnAndAwait`, 0.4 ms in the actual
+  preparation). A new demand, publication, border change or a completed load
+  still takes the Main turn at once; ticket, load and transfer order are
+  unchanged. Footprint ownership is resolved once per grid cell instead of
+  once per chunk.
+- Main skips the whole-level entity snapshot when no global-lane region holds
+  an entity (the normal async state: populated cells join islands at the
+  level head); stand profile: 1.92 → 0.02 ms per Main tick. Island and global
+  cuts resolve each grid key once instead of one concurrent-map probe per
+  entity (island cut −25 %, its lookups −88 %). The global pass again
+  re-routes a moved entity's region index, as the region tick body did before.
+  Both entries verified on one jar: 1,442 tests (8 optional skipped), TNT
+  parity 53/53 async and 52/52 sync against the 26.3 reference, all 11 stand
+  checks with 40 clients (Nether round trips 5–9 s), the original compact raid
+  farm through victory, and the loaded-ring, low-distance and village-removal
+  raid checks. See `docs/TNT-FIX-2026-10-10.md` (follow-up).
+- Preserve Vanilla 26.3 entity insertion order across an island's regions.
+  Join regional pre-entity work, then visit a finite snapshot of the actual
+  EntityTickList on that island's coordinator; independent islands remain
+  parallel. New entities created during the pass wait for its next snapshot.
+  The global remainder uses the canonical Vanilla consumer on Main.
+  Exclusive, authenticated island ownership keeps explosion block removal
+  and its TNT ignition callback together across internal region boundaries.
+  Nonlocal final TNT footprints use the existing all-island Main fence.
+  Verified against the actual 26.3 reference in eight TNT cases, both async
+  and synchronous modes; the old jar fails the impulse-order regression.
+  All 11 general stand checks with 40 clients passed. Build: 1,431 passed,
+  8 optional checks skipped. End-portal/save/restart regression: 37 checks
+  passed. Matched items+pistons load profiles are recorded in
+  `docs/TNT-FIX-2026-10-10.md`, including snapshot overhead and host limits.
+- Keep pending block events admitted until their individual dequeue. Reposting
+  an already queued event no longer duplicates it, and clearBlockEvents reaches
+  shared, captured and island-stashed events. Topology carries preserve the
+  identity of each admission and cannot resurrect a cancelled event.
+- Restore 26.3 village-distance queries to a resident graph lookup. Remove
+  the extra synchronous POI load from every query and its unused accessor.
+  Accepted POI notifications still drain before graph relaxation, so creating
+  or removing a village source is visible in the same query.
+- Let deferred entity visibility changes progress during vanilla's managed
+  entity-load wait, including player login. Previously a queued load promotion
+  could wait for the world tick suspended by that same login. The existing
+  non-blocking chunk-owner transactions now also drain before
+  `processPendingLoads`; entity and island clocks are not advanced.
+- Restore Minecraft 26.3 raid rules: remove the custom 100-tick village-loss
+  grace and extended vertical relocation search. Raids use vanilla's immediate
+  STOP/LOSS decision and radius-2 section search. Remove automatic raid PORTAL
+  tickets: existing player, portal and forceload tickets determine spawning and
+  unloading, as in vanilla. The loaded raid footprint already forms one island
+  at the production grid size; dispatch and tick ownership remain intact.
+  This also removes unnecessary POI scans and forced chunk ticks. Older designs
+  unsupported by vanilla 26.3 are not revived. See
+  `docs/RAID-TICKET-FIX-2026-10-09.md` for validation and limitations.
+- Prevent primitive concurrent maps from returning another key's value after
+  A→B→A slot reuse. Slot generations cover all published key/value writes;
+  reads remain lock-free. Correct default-value removal, backed key/value
+  views, and write-through snapshot entries for the confirmed collection bugs.
+- Preserve the End falling-block landing gate during saves and scheduler stop.
+  Save held arrival operations and airborne predecessor identities in destination
+  SavedData, restore before the first level tick (including lazy dimensions),
+  and retain the same gate on Main while the scheduler is off. Recovery waits
+  for loaded/accessible predecessors and renews the necessary portal leases.
+  Completed saves and clean restarts are covered; this is not a multi-file crash
+  transaction journal. Verified with 1,399 tests (8 optional checks skipped),
+  both loader builds, all 11 checks with 40 clients, and 37 real End-portal checks
+  including unequal clocks, no End forceloads, two restarts, live off/on,
+  new arrivals on Main, normal sand placement and the next regeneration's drop.
+  See `docs/CRITICAL-FIXES-2026-10-08.md` for evidence and performance costs.
+- Keep deferred portal-ticket requests bound to their original world and chunk.
+  Removing, merging, or teleporting the requesting entity again no longer drops
+  the accepted request or redirects it to another dimension.
+
+- Automatically refuse Carpet `/spawn tracking start` (including area filters) and
+  `/spawn test` while Fabrolia's parallel spawning or async islands are enabled.
+  Carpet's shared world-cycle counters are unsafe outside its synchronous chunk pass;
+  its tracking hooks now report inactive and end any existing session on a mode change.
+  Other `/spawn` commands remain available, and serial spawning retains tracking.
+  Verified with 1,392 tests (8 optional external checks skipped), both loader builds,
+  live serial/parallel mode changes, startup without Carpet, and all 11 stand checks
+  with 40 protocol clients (`carpet-guard-v1`).
 
 - Crash fix (production 2026-10-06, `ArrayIndexOutOfBoundsException` in
   `LevelChunk.getBlockEntity` from `ChunkHolder.broadcastChanges`): Main's
@@ -456,4 +570,3 @@ Fixes and leaks:
   claim is skipped instead of running against the replaced player/listener.
 - Physical-Main disconnect no longer reads the server through player/level
   state.
-

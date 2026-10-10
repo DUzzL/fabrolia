@@ -1,0 +1,498 @@
+{
+  "comparisons": {
+    "same_40_client_piston_work": [
+      {
+        "candidate_sha256": "8d7514598c08eb539b49ba769fd43892678c10021206d5d7c752870cb78b4fc3",
+        "changed_frames": [
+          {
+            "exclusive_running_ms_per_second": 0.16041193785641528,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager.sectionsToVillage",
+            "inclusive_ms_per_recorded_main_tick": 1.9051580698835275,
+            "inclusive_ms_per_second": 36.7343337691191,
+            "inclusive_sampled_ms": 4580.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager.wrapOperation$cam000$fabrolia$drainOnQuery",
+            "inclusive_ms_per_recorded_main_tick": 1.860232945091514,
+            "inclusive_ms_per_second": 35.86810930469446,
+            "inclusive_sampled_ms": 4472.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.1283295502851322,
+            "frame": "net.minecraft.server.level.ServerLevel.sectionsToVillage",
+            "inclusive_ms_per_recorded_main_tick": 1.8186356073211314,
+            "inclusive_ms_per_second": 35.066049615412375,
+            "inclusive_sampled_ms": 4372.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.2566591005702644,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager$DistanceTracker.fabrolia$drainTrackerUpdates",
+            "inclusive_ms_per_recorded_main_tick": 0.024958402662229616,
+            "inclusive_ms_per_second": 0.48123581356924583,
+            "inclusive_sampled_ms": 60.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.service",
+            "inclusive_ms_per_recorded_main_tick": 0.0033277870216306157,
+            "inclusive_ms_per_second": 0.0641647751425661,
+            "inclusive_sampled_ms": 8.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.03208238757128305,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch$$Lambda.0x00000ffe02d5a9f0.run",
+            "inclusive_ms_per_recorded_main_tick": 0.0016638935108153079,
+            "inclusive_ms_per_second": 0.03208238757128305,
+            "inclusive_sampled_ms": 4.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.03208238757128305,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager$DistanceTracker.fabrolia$drainTrackerUpdates",
+            "inclusive_ms_per_recorded_main_tick": 0.0016638935108153079,
+            "inclusive_ms_per_second": 0.03208238757128305,
+            "inclusive_sampled_ms": 4.0,
+            "thread": "Server thread"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.03208238757128305,
+            "frame": "net.minecraft.world.level.entity.PersistentEntitySectionManager.processPendingLoads",
+            "inclusive_ms_per_recorded_main_tick": 0.0016638935108153079,
+            "inclusive_ms_per_second": 0.03208238757128305,
+            "inclusive_sampled_ms": 4.0,
+            "thread": "Server thread"
+          }
+        ],
+        "duration_seconds": 124.679,
+        "interval_microseconds": 4000,
+        "profile": "stand/runs/raid-parity-perf-before-v1/server/config/spark/profile-2026-10-09_17.30.32.sparkprofile",
+        "profile_sha256": "3bbe475ae2453f3b6c7db4a7eab70f0a7a8310f5658d74d8896aff477410929a",
+        "recorded_main_ticks": 2404,
+        "retained_window_seconds": 123.404,
+        "run": "raid-parity-perf-before-v1",
+        "sampler_engine": "ASYNC",
+        "status": "CAPTURED",
+        "thread_metrics": [
+          {
+            "name": "Fabrolia-Region-Worker (x6)",
+            "running_ms_per_second": 2290.93913169018,
+            "sampled_wall_ms": 665180.0
+          },
+          {
+            "name": "Server thread",
+            "running_ms_per_second": 279.72633723401697,
+            "sampled_wall_ms": 110844.0
+          }
+        ]
+      },
+      {
+        "candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+        "changed_frames": [
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager.sectionsToVillage",
+            "inclusive_ms_per_recorded_main_tick": 0.11827515400410678,
+            "inclusive_ms_per_second": 2.3622047244094486,
+            "inclusive_sampled_ms": 288.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.server.level.ServerLevel.sectionsToVillage",
+            "inclusive_ms_per_recorded_main_tick": 0.11498973305954825,
+            "inclusive_ms_per_second": 2.2965879265091864,
+            "inclusive_sampled_ms": 280.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.09842519685039369,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager.wrapOperation$cam000$fabrolia$drainOnQuery",
+            "inclusive_ms_per_recorded_main_tick": 0.05585215605749486,
+            "inclusive_ms_per_second": 1.1154855643044619,
+            "inclusive_sampled_ms": 136.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.22965879265091863,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager$DistanceTracker.fabrolia$drainTrackerUpdates",
+            "inclusive_ms_per_recorded_main_tick": 0.01642710472279261,
+            "inclusive_ms_per_second": 0.32808398950131235,
+            "inclusive_sampled_ms": 40.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.service",
+            "inclusive_ms_per_recorded_main_tick": 0.008213552361396304,
+            "inclusive_ms_per_second": 0.16404199475065617,
+            "inclusive_sampled_ms": 20.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.09842519685039369,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch$$Lambda.0x000001fc02d3e898.run",
+            "inclusive_ms_per_recorded_main_tick": 0.004928131416837783,
+            "inclusive_ms_per_second": 0.09842519685039369,
+            "inclusive_sampled_ms": 12.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.16404199475065617,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager$DistanceTracker.fabrolia$drainTrackerUpdates",
+            "inclusive_ms_per_recorded_main_tick": 0.009856262833675565,
+            "inclusive_ms_per_second": 0.19685039370078738,
+            "inclusive_sampled_ms": 24.0,
+            "thread": "Server thread"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.level.entity.PersistentEntitySectionManager.processPendingLoads",
+            "inclusive_ms_per_recorded_main_tick": 0.0016427104722792608,
+            "inclusive_ms_per_second": 0.03280839895013123,
+            "inclusive_sampled_ms": 4.0,
+            "thread": "Server thread"
+          }
+        ],
+        "duration_seconds": 121.92,
+        "interval_microseconds": 4000,
+        "profile": "stand/runs/raid-parity-perf-final-v1/server/config/spark/profile-2026-10-09_17.36.14.sparkprofile",
+        "profile_sha256": "880674c12a87c6f3a6512b6fcef5ad6168dc65b91ba5a8b6ceba57f40fd45130",
+        "recorded_main_ticks": 2435,
+        "retained_window_seconds": 121.299,
+        "run": "raid-parity-perf-final-v1",
+        "sampler_engine": "ASYNC",
+        "status": "CAPTURED",
+        "thread_metrics": [
+          {
+            "name": "Fabrolia-Region-Worker (x6)",
+            "running_ms_per_second": 2372.4409448818897,
+            "sampled_wall_ms": 669128.0
+          },
+          {
+            "name": "Server thread",
+            "running_ms_per_second": 283.3333333333333,
+            "sampled_wall_ms": 111532.0
+          }
+        ]
+      }
+    ],
+    "same_loaded_raid_work": [
+      {
+        "candidate_sha256": "643af1157e22d6e69b1fd7b62585c2012f45a999981c5d8d03a28037c969465a",
+        "changed_frames": [
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.service",
+            "inclusive_ms_per_recorded_main_tick": 0.07423904974016332,
+            "inclusive_ms_per_second": 1.479902918368555,
+            "inclusive_sampled_ms": 100.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch$$Lambda.0x000003fc02fb4d00.run",
+            "inclusive_ms_per_recorded_main_tick": 0.06829992576095026,
+            "inclusive_ms_per_second": 1.3615106848990706,
+            "inclusive_sampled_ms": 92.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.lambda$service$0",
+            "inclusive_ms_per_recorded_main_tick": 0.06829992576095026,
+            "inclusive_ms_per_second": 1.3615106848990706,
+            "inclusive_sampled_ms": 92.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.serviceOneRaidEntered",
+            "inclusive_ms_per_recorded_main_tick": 0.06829992576095026,
+            "inclusive_ms_per_second": 1.3615106848990706,
+            "inclusive_sampled_ms": 92.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.tickOwned",
+            "inclusive_ms_per_recorded_main_tick": 0.06829992576095026,
+            "inclusive_ms_per_second": 1.3615106848990706,
+            "inclusive_sampled_ms": 92.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.entity.raid.Raid.tick",
+            "inclusive_ms_per_recorded_main_tick": 0.06829992576095026,
+            "inclusive_ms_per_second": 1.3615106848990706,
+            "inclusive_sampled_ms": 92.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.entity.raid.Raid.tick$mixinextras$wrapped$105",
+            "inclusive_ms_per_recorded_main_tick": 0.06533036377134373,
+            "inclusive_ms_per_second": 1.3023145681643284,
+            "inclusive_sampled_ms": 88.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.server.level.ServerLevel.sectionsToVillage",
+            "inclusive_ms_per_recorded_main_tick": 0.020786933927245732,
+            "inclusive_ms_per_second": 0.4143728171431954,
+            "inclusive_sampled_ms": 28.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager.sectionsToVillage",
+            "inclusive_ms_per_recorded_main_tick": 0.020786933927245732,
+            "inclusive_ms_per_second": 0.4143728171431954,
+            "inclusive_sampled_ms": 28.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0591961167347422,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager.wrapOperation$cam000$fabrolia$drainOnQuery",
+            "inclusive_ms_per_recorded_main_tick": 0.020786933927245732,
+            "inclusive_ms_per_second": 0.4143728171431954,
+            "inclusive_sampled_ms": 28.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager$DistanceTracker.fabrolia$drainTrackerUpdates",
+            "inclusive_ms_per_recorded_main_tick": 0.005939123979213066,
+            "inclusive_ms_per_second": 0.1183922334694844,
+            "inclusive_sampled_ms": 8.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.1183922334694844,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch$$Lambda.0x000003fc02d415c0.run",
+            "inclusive_ms_per_recorded_main_tick": 0.005939123979213066,
+            "inclusive_ms_per_second": 0.1183922334694844,
+            "inclusive_sampled_ms": 8.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0591961167347422,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.dispatch",
+            "inclusive_ms_per_recorded_main_tick": 0.014847809948032665,
+            "inclusive_ms_per_second": 0.295980583673711,
+            "inclusive_sampled_ms": 20.0,
+            "thread": "Server thread"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandMerge.onRaidDispatched",
+            "inclusive_ms_per_recorded_main_tick": 0.011878247958426132,
+            "inclusive_ms_per_second": 0.2367844669389688,
+            "inclusive_sampled_ms": 16.0,
+            "thread": "Server thread"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0591961167347422,
+            "frame": "net.minecraft.world.level.entity.PersistentEntitySectionManager.processPendingLoads",
+            "inclusive_ms_per_recorded_main_tick": 0.002969561989606533,
+            "inclusive_ms_per_second": 0.0591961167347422,
+            "inclusive_sampled_ms": 4.0,
+            "thread": "Server thread"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0591961167347422,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager$DistanceTracker.fabrolia$drainTrackerUpdates",
+            "inclusive_ms_per_recorded_main_tick": 0.002969561989606533,
+            "inclusive_ms_per_second": 0.0591961167347422,
+            "inclusive_sampled_ms": 4.0,
+            "thread": "Server thread"
+          }
+        ],
+        "duration_seconds": 67.572,
+        "interval_microseconds": 4000,
+        "profile": "stand/runs/raid-loaded-old-v1/server/config/spark/profile-2026-10-09_15.29.17.sparkprofile",
+        "profile_sha256": "58d42e4c24df5ff0d0b03b41f3bc9e32dde6cb531797a2508a6bd7f829715c49",
+        "recorded_main_ticks": 1347,
+        "retained_window_seconds": 67.354,
+        "run": "raid-loaded-old-v1",
+        "sampler_engine": "ASYNC",
+        "status": "CAPTURED",
+        "thread_metrics": [
+          {
+            "name": "Fabrolia-Region-Worker (x6)",
+            "running_ms_per_second": 79.14520807435032,
+            "sampled_wall_ms": 399144.0
+          },
+          {
+            "name": "Server thread",
+            "running_ms_per_second": 40.13496714615521,
+            "sampled_wall_ms": 66528.0
+          }
+        ]
+      },
+      {
+        "candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+        "changed_frames": [
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.service",
+            "inclusive_ms_per_recorded_main_tick": 0.09502598366740905,
+            "inclusive_ms_per_second": 1.8957345971563981,
+            "inclusive_sampled_ms": 128.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch$$Lambda.0x000000f002faf200.run",
+            "inclusive_ms_per_recorded_main_tick": 0.09205642167780252,
+            "inclusive_ms_per_second": 1.8364928909952607,
+            "inclusive_sampled_ms": 124.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.lambda$service$0",
+            "inclusive_ms_per_recorded_main_tick": 0.09205642167780252,
+            "inclusive_ms_per_second": 1.8364928909952607,
+            "inclusive_sampled_ms": 124.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.11848341232227488,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.serviceOneRaidEntered",
+            "inclusive_ms_per_recorded_main_tick": 0.09205642167780252,
+            "inclusive_ms_per_second": 1.8364928909952607,
+            "inclusive_sampled_ms": 124.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.tickOwned",
+            "inclusive_ms_per_recorded_main_tick": 0.08611729769858946,
+            "inclusive_ms_per_second": 1.7180094786729858,
+            "inclusive_sampled_ms": 116.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.entity.raid.Raid.tick",
+            "inclusive_ms_per_recorded_main_tick": 0.08314773570898293,
+            "inclusive_ms_per_second": 1.6587677725118484,
+            "inclusive_sampled_ms": 112.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.entity.raid.Raid.tick$mixinextras$wrapped$100",
+            "inclusive_ms_per_recorded_main_tick": 0.06533036377134373,
+            "inclusive_ms_per_second": 1.3033175355450237,
+            "inclusive_sampled_ms": 88.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.server.level.ServerLevel.sectionsToVillage",
+            "inclusive_ms_per_recorded_main_tick": 0.008908685968819599,
+            "inclusive_ms_per_second": 0.17772511848341233,
+            "inclusive_sampled_ms": 12.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager.sectionsToVillage",
+            "inclusive_ms_per_recorded_main_tick": 0.008908685968819599,
+            "inclusive_ms_per_second": 0.17772511848341233,
+            "inclusive_sampled_ms": 12.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager.wrapOperation$cam000$fabrolia$drainOnQuery",
+            "inclusive_ms_per_recorded_main_tick": 0.005939123979213066,
+            "inclusive_ms_per_second": 0.11848341232227488,
+            "inclusive_sampled_ms": 8.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.05924170616113744,
+            "frame": "net.minecraft.world.entity.ai.village.poi.PoiManager$DistanceTracker.fabrolia$drainTrackerUpdates",
+            "inclusive_ms_per_recorded_main_tick": 0.005939123979213066,
+            "inclusive_ms_per_second": 0.11848341232227488,
+            "inclusive_sampled_ms": 8.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.05924170616113744,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch$$Lambda.0x000000f002d3a2e0.run",
+            "inclusive_ms_per_recorded_main_tick": 0.002969561989606533,
+            "inclusive_ms_per_second": 0.05924170616113744,
+            "inclusive_sampled_ms": 4.0,
+            "thread": "Fabrolia-Region-Worker (x6)"
+          },
+          {
+            "exclusive_running_ms_per_second": 0.0,
+            "frame": "com.axalotl.fabrolia.common.regions.RaidIslandDispatch.dispatch",
+            "inclusive_ms_per_recorded_main_tick": 0.005939123979213066,
+            "inclusive_ms_per_second": 0.11848341232227488,
+            "inclusive_sampled_ms": 8.0,
+            "thread": "Server thread"
+          }
+        ],
+        "duration_seconds": 67.52,
+        "interval_microseconds": 4000,
+        "profile": "stand/runs/raid-loaded-final-v2/server/config/spark/profile-2026-10-09_17.22.55.sparkprofile",
+        "profile_sha256": "840306300ef09e29685898d113e021f38df00e651efbe833251708a372ed9b80",
+        "recorded_main_ticks": 1347,
+        "retained_window_seconds": 67.375,
+        "run": "raid-loaded-final-v2",
+        "sampler_engine": "ASYNC",
+        "status": "CAPTURED",
+        "thread_metrics": [
+          {
+            "name": "Fabrolia-Region-Worker (x6)",
+            "running_ms_per_second": 84.06398104265404,
+            "sampled_wall_ms": 393664.0
+          },
+          {
+            "name": "Server thread",
+            "running_ms_per_second": 39.33649289099526,
+            "sampled_wall_ms": 65604.0
+          }
+        ]
+      }
+    ]
+  },
+  "limits": [
+    "Wall sampling includes waits. A short sampled comparison is not a production TPS guarantee.",
+    "Old and new loaded-ring runs both need one actual wave; low-simulation runs do different work and are not a speed comparison."
+  ],
+  "normalization": "Exact metadata end_time minus start_time; never 60 seconds multiplied by the number of partial windows. Inclusive values are per method and recursion-safe. Rows overlap and must not be added together. Missing rows mean no sample, not zero execution cost.",
+  "performance_interpretation": {
+    "conclusion": "The changed POI-query frame is lower in this matched capture; the managed-load inbox has no material sampled increase. Total running samples are slightly higher, so there is no overall TPS or hourly-rate improvement claim.",
+    "entity_load_inbox_inclusive_sampled_ms_per_second": {
+      "before": 0.032,
+      "final": 0.033
+    },
+    "main_running_sampled_ms_per_second": {
+      "before": 279.73,
+      "final": 283.33
+    },
+    "piston_workload": "Identical driver and world command hashes; 40 clients connect, the same five walkers disconnect before capture, and the same 35 players remain online in both profiles.",
+    "poi_query_inclusive_sampled_ms_per_second": {
+      "before": 36.734,
+      "final": 2.362
+    },
+    "worker_running_sampled_ms_per_second": {
+      "before": 2290.94,
+      "final": 2372.44
+    }
+  },
+  "version": "26.3"
+}

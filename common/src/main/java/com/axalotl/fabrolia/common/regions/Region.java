@@ -317,6 +317,24 @@ public final class Region {
      * required post-CAS fence against entering the replacement timeline.
      */
     boolean tryClaim(Thread worker, EpochDomain expectedDomain, long expectedEpoch) {
+        return tryClaim(worker, expectedDomain, expectedEpoch, false);
+    }
+
+    /**
+     * The queue dispatch is already sealed, but its island coordinator still
+     * owns the complete unit. Only its authenticated serial entity phase may
+     * reopen a region claim; ready/queue consumers retain the ordinary seal.
+     */
+    boolean tryClaimIslandEntityPhase(RegionWorkerThread worker,
+                                     EpochDomain expectedDomain, long expectedEpoch) {
+        if (worker != Thread.currentThread() || !IslandEntityPhaseScope.owns(this)) {
+            throw new IllegalStateException("serial entity region claim without exclusive island authority");
+        }
+        return tryClaim(worker, expectedDomain, expectedEpoch, true);
+    }
+
+    private boolean tryClaim(Thread worker, EpochDomain expectedDomain, long expectedEpoch,
+                             boolean islandEntityPhase) {
         if (worker == null) throw new NullPointerException("worker");
         if (expectedDomain != null && expectedDomain.epoch != expectedEpoch) {
             return false;
@@ -335,7 +353,7 @@ public final class Region {
                     || observedDomain != expectedDomain
                     || (observedDomain != null
                         && (observedDomain.epoch != expectedEpoch
-                            || sealedDoneEpoch >= expectedEpoch))) {
+                            || !islandEntityPhase && sealedDoneEpoch >= expectedEpoch))) {
                 if (!currentWorker.compareAndSet(worker, null)) {
                     throw new IllegalStateException(
                             "region claim changed while refusing a stale/sealed/rebasing epoch");

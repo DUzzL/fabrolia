@@ -169,11 +169,21 @@ public abstract class PersistentEntityUnloadRetryMixin
         fabrolia$drainStatusTransitions(false);
     }
 
-    /** One pass per level tick: the only pass that counts deferrals and may
-     * raise/clear the owner's {@code statusClaimWanted} (see
+    /** One pass per level tick; managed entity-load waits also poll this pass.
+     * It counts deferrals and may raise/clear {@code statusClaimWanted} (see
      * {@link FabroliaStatusTransitions#drainAtTickHead}). */
     @Inject(method = "tick", at = @At("HEAD"), require = 1)
     private void fabrolia$applyPendingStatusTransitions(CallbackInfo ci) {
+        fabrolia$drainStatusTransitionsAtTickHead();
+    }
+
+    /** Vanilla's login wait calls processPendingLoads while the world tick is
+     * suspended. A deferred FRESH-to-load promotion must progress in that
+     * loop too, or areEntitiesLoaded can never become true. Keep the existing
+     * non-blocking, per-chunk owner transactions and skip-past fairness; this
+     * poll does not tick entities or advance the world/island clock. */
+    @Inject(method = "processPendingLoads", at = @At("HEAD"), require = 1)
+    private void fabrolia$applyStatusesBeforePendingLoads(CallbackInfo ci) {
         fabrolia$drainStatusTransitionsAtTickHead();
     }
 
@@ -248,7 +258,7 @@ public abstract class PersistentEntityUnloadRetryMixin
      * wait. Reentrant chunk services append behind the exact active body.
      *
      * <p>Order is a per-chunk contract, not a global one: two islands are
-     * independent timelines, so the once-per-tick pass ({@link Pass#TICK_HEAD})
+     * independent timelines, so the progress pass ({@link Pass#TICK_HEAD})
      * defers an entry whose owner claim is unavailable (kept, in place) together
      * with every later entry of the same chunk, while other chunks keep
      * draining. Stopping at the queue head instead let one persistently claimed
@@ -282,12 +292,10 @@ public abstract class PersistentEntityUnloadRetryMixin
             boolean run(long chunkPos, Runnable body);
         }
 
-        /** Consecutive tick-head passes ({@link #drainAtTickHead}, one per
-         * level tick = 50 ms at 20 TPS) a chunk's head entry may be deferred
-         * before Main announces claim interest on its owner. Units are 50 ms
-         * periodic like the pass, so a deferral is a phase collision, not a
-         * transient: 3 passes rule out a single collision and still end the
-         * starvation within ~150 ms. */
+        /** Consecutive progress passes ({@link #drainAtTickHead}) before Main
+         * announces claim interest. Normal ticks and managed entity-load waits
+         * both poll the queue; an unavailable owner is still never mutated.
+         * Three deferrals make its next admission yield to the waiting Main. */
         static final int ESCALATE_AFTER_PASSES = 3;
         /** Escalations are logged at most once per 10 s, aggregated. */
         private static final long ESCALATION_LOG_INTERVAL_NANOS = 10_000_000_000L;
@@ -442,7 +450,7 @@ public abstract class PersistentEntityUnloadRetryMixin
              * it at the head. Runs once per {@code updateChunkStatus}, so it
              * must cost O(applied), never O(queue). */
             CALLBACK,
-            /** Once-per-tick pass: skip past deferred chunks so one claimed
+            /** Progress poll: skip past deferred chunks so one claimed
              * island cannot block every other island's status changes. */
             TICK_HEAD,
             /** Blocking claim per entry; an unentered topology change is

@@ -7,10 +7,6 @@
   "authors": [
     "${mod_author}"
   ],
-  "contact": {
-    "homepage": "https://fabricmc.net/",
-    "sources": "https://github.com/FabricMC/fabric-example-mod"
-  },
   "license": "GPL-3.0",
   "icon": "fabrolia/icon.png",
   "environment": "*",

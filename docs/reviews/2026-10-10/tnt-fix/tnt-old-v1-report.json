@@ -1,0 +1,384 @@
+{
+  "async_islands": true,
+  "candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+  "cases": {
+    "step_older_blast_before_younger_move": {
+      "advances": [
+        {
+          "physical_entity_ticks": 1,
+          "requested": 1
+        }
+      ],
+      "case": "older_blast_before_younger_move",
+      "mode": "step",
+      "observed": {
+        "fuse": 79,
+        "motion": [
+          -0.8731294800642211,
+          -0.053479181694784994,
+          0.0
+        ],
+        "pos": [
+          127.5,
+          64.0,
+          0.5
+        ]
+      }
+    }
+  },
+  "cell_boundary_x": 128,
+  "checks": [
+    {
+      "name": "fixture_coherence_pin_accepted",
+      "pass": true
+    },
+    {
+      "name": "step_older_blast_before_younger_move_exact_clock_19999",
+      "pass": true
+    },
+    {
+      "name": "step_older_blast_before_younger_move_fuse",
+      "pass": true
+    },
+    {
+      "name": "step_older_blast_before_younger_move_impulse_moved_in_same_phase",
+      "pass": false
+    }
+  ],
+  "cleanup": {
+    "method": "native-stop",
+    "output_reader_finished": true,
+    "returncode": 0
+  },
+  "clock": "actual PrimedTnt.fuse NBT",
+  "commands": [
+    {
+      "command": "carpet commandPlayer true",
+      "out": [
+        "[19:33:47] [Server thread/INFO]: Thread RCON Listener started",
+        "[19:33:47] [Server thread/INFO]: RCON running on 127.0.0.1:25975",
+        "[19:33:47] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world-native-burst]'/minecraft:overworld",
+        "[19:33:47] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world-native-burst]'/minecraft:the_end",
+        "[19:33:47] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world-native-burst]'/minecraft:the_nether",
+        "[19:33:47] [BlueMap-Plugin-Loading/INFO]: Loading BlueMap...",
+        "[19:33:47] [Server thread/WARN]: [voicechat] Running in offline mode - Voice chat encryption is not secure!",
+        "[19:33:47] [VoiceChatServerThread/INFO]: [voicechat] Voice chat server started at port 24454",
+        "[19:33:47] [Server thread/INFO]: [async-islands] ENABLED for minecraft:overworld (applies this tick)",
+        "[19:33:47] [Server thread/INFO]: [async-islands] compatibility envelope: vanilla mechanics island-isolated by construction; A5 exact real players and audited Carpet fakes use their autonomous island owner when /fabrolia regions playerticks is enabled; unsupported player states fail per-player to Main; commands exactly-once (local=island cadence, global=fenced); mods writing across islands are detected (crossDOMAIN counter) and fail-closed (auto-disable); command-block minecarts + posless custom tickers run at world cadence.",
+        "[19:33:48] [Server thread/INFO]: Rewrote 1 fastutil instantiation(s) -> Reference2ReferenceConcurrentHashMap in net.minecraft.world.level.LocalMobCapCalculator",
+        "[19:33:48] [Server thread/INFO]: POI storage concurrency structures live: storage=LockedLong2ObjectMap(net.caffeinemc.mods.lithium.common.util.collections.ListeningLong2ObjectOpenHashMap), dirtyChunks=ConcurrentLongLinkedOpenHashSet, pendingLoads=Long2ObjectConcurrentHashMap, loadedChunks=ConcurrentLongLinkedOpenHashSet",
+        "[19:33:48] [BlueMap-Plugin-Loading/WARN]: BlueMap is missing important resources!",
+        "[19:33:48] [BlueMap-Plugin-Loading/WARN]: You must accept the required file download in order for BlueMap to work!",
+        "[19:33:48] [BlueMap-Plugin-Loading/WARN]: Please check: /Users/noahwill/Documents/Furrys Mods/Fabrolia/stand/runs/tnt-old-v1/server/config/bluemap/core.conf",
+        "[19:33:48] [BlueMap-Plugin-Loading/INFO]: If you have changed the config you can simply reload the plugin using: /bluemap reload",
+        "[19:33:48] [Server thread/INFO]: [async-islands] ENABLED for minecraft:the_end (applies this tick)",
+        "[19:33:48] [Server thread/INFO]: [async-islands] compatibility envelope: vanilla mechanics island-isolated by construction; A5 exact real players and audited Carpet fakes use their autonomous island owner when /fabrolia regions playerticks is enabled; unsupported player states fail per-player to Main; commands exactly-once (local=island cadence, global=fenced); mods writing across islands are detected (crossDOMAIN counter) and fail-closed (auto-disable); command-block minecarts + posless custom tickers run at world cadence.",
+        "[19:33:48] [Server thread/INFO]: [async-islands] ENABLED for minecraft:the_nether (applies this tick)",
+        "[19:33:48] [Server thread/INFO]: [async-islands] compatibility envelope: vanilla mechanics island-isolated by construction; A5 exact real players and audited Carpet fakes use their autonomous island owner when /fabrolia regions playerticks is enabled; unsupported player states fail per-player to Main; commands exactly-once (local=island cadence, global=fenced); mods writing across islands are detected (crossDOMAIN counter) and fail-closed (auto-disable); command-block minecarts + posless custom tickers run at world cadence.",
+        "[19:33:48] [Server thread/INFO]: System chat: commandPlayer: true, [Change permanently?]",
+        "[19:33:48] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000001"
+      ]
+    },
+    {
+      "command": "carpet allowSpawningOfflinePlayers true",
+      "out": [
+        "[19:33:48] [Server thread/INFO]: System chat: allowSpawningOfflinePlayers: true, [Change permanently?]",
+        "[19:33:48] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000002"
+      ]
+    },
+    {
+      "command": "gamerule minecraft:spawn_mobs false",
+      "out": [
+        "[19:33:48] [Server thread/WARN]: Cancelled mixin net.caffeinemc.mods.lithium.mixin.util.entity_movement_tracking.EntitySectionMixin. Check debug logs for more information.",
+        "[19:33:48] [Server thread/INFO]: System chat: Game rule spawn_mobs is now set to false",
+        "[19:33:48] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000003"
+      ]
+    },
+    {
+      "command": "gamerule minecraft:advance_time false",
+      "out": [
+        "[19:33:48] [Server thread/INFO]: System chat: Game rule advance_time is now set to false",
+        "[19:33:48] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000004"
+      ]
+    },
+    {
+      "command": "time set 6000",
+      "out": [
+        "[19:33:48] [Server thread/INFO]: System chat: Set minecraft:overworld to 6000 tick(s)",
+        "[19:33:48] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000005"
+      ]
+    },
+    {
+      "command": "fabrolia regions async on",
+      "out": [
+        "[19:33:48] [Server thread/INFO]: Configuration saved.",
+        "[19:33:48] [Server thread/INFO]: System chat: \u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 async islands: ON (applies at next tick; saved as the boot default)",
+        "[19:33:48] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000006"
+      ]
+    },
+    {
+      "command": "player TNTProbe spawn at 128.5 64 64.5 facing 0 0 in minecraft:overworld in creative",
+      "out": [
+        "[19:33:48] [Function Compiler/INFO]: Saved 5548 compiled functions across 29 batch class(es) to cache (2 vanilla-fallback)",
+        "[19:33:48] [Function Compiler/INFO]: Compiled functions loaded, switching over once published",
+        "[19:33:48] [Server thread/WARN]: Couldn't find profile with name: tntprobe",
+        "MinecraftClientHttpException[type=HTTP_ERROR, status=404, response=ErrorResponse[path=/users/profiles/minecraft/tntprobe, error=null, errorMessage=Couldn't find any profile with name tntprobe, details=null]]",
+        "\tat knot//com.mojang.authlib.minecraft.client.MinecraftClient.buildHttpException(MinecraftClient.java:170)",
+        "\tat knot//com.mojang.authlib.minecraft.client.MinecraftClient.readServiceResponse(MinecraftClient.java:147)",
+        "\tat knot//com.mojang.authlib.minecraft.client.MinecraftClient.getWithEtag(MinecraftClient.java:81)",
+        "\tat knot//com.mojang.authlib.minecraft.client.MinecraftClient.get(MinecraftClient.java:65)",
+        "\tat knot//com.mojang.authlib.services.MinecraftServicesProfileRepository.findProfileByName(MinecraftServicesProfileRepository.java:103)",
+        "\tat knot//net.minecraft.server.players.CachedUserNameToIdResolver.lookupGameProfile(CachedUserNameToIdResolver.java:73)",
+        "\tat knot//net.minecraft.server.players.CachedUserNameToIdResolver.get(CachedUserNameToIdResolver.java:134)",
+        "\tat knot//net.minecraft.server.players.OldUsersConverter.convertMobOwnerIfNecessary(OldUsersConverter.java:246)",
+        "\tat knot//carpet.commands.PlayerCommand.cantSpawn(PlayerCommand.java:204)",
+        "\tat knot//carpet.commands.PlayerCommand.spawn(PlayerCommand.java:270)",
+        "\tat knot//com.mojang.brigadier.context.ContextChain.runExecutable$mixinextras$wrapped$10(ContextChain.java:73)",
+        "\tat knot//com.mojang.brigadier.context.ContextChain.mixinextras$bridge$runExecutable$mixinextras$wrapped$10$11(ContextChain.java)",
+        "\tat knot//com.mojang.brigadier.context.ContextChain.wrapMethod$bck000$fabric-entity-events-v1$onRunExecutable(ContextChain.java:1057)",
+        "\tat knot//com.mojang.brigadier.context.ContextChain.runExecutable(ContextChain.java)",
+        "\tat knot//net.minecraft.commands.execution.tasks.ExecuteCommand.execute(ExecuteCommand.java:29)",
+        "\tat knot//net.minecraft.commands.execution.tasks.ExecuteCommand.execute(ExecuteCommand.java:13)",
+        "\tat knot//net.minecraft.commands.execution.UnboundEntryAction.lambda$bind$0(UnboundEntryAction.java:8)",
+        "\tat knot//net.minecraft.commands.execution.CommandQueueEntry.execute$mixinextras$wrapped$8(CommandQueueEntry.java:8)",
+        "\tat knot//net.minecraft.commands.execution.CommandQueueEntry.mixinextras$bridge$execute$mixinextras$wrapped$8$9(CommandQueueEntry.java)",
+        "\tat knot//net.minecraft.commands.execution.CommandQueueEntry.wrapMethod$bcj000$fabric-entity-events-v1$onExecute(CommandQueueEntry.java:549)",
+        "\tat knot//net.minecraft.commands.execution.CommandQueueEntry.execute(CommandQueueEntry.java)",
+        "\tat knot//net.minecraft.commands.execution.ExecutionContext.runCommandQueue(ExecutionContext.java:106)",
+        "\tat knot//net.minecraft.commands.Commands.executeCommandInContext(Commands.java:438)",
+        "\tat knot//net.minecraft.commands.Commands.performCommand$mixinextras$wrapped$59(Commands.java:370)",
+        "\tat knot//net.minecraft.commands.Commands.mixinextras$bridge$performCommand$mixinextras$wrapped$59$60(Commands.java)",
+        "\tat knot//net.minecraft.commands.Commands.md4106a5$fabrolia$lambda$fabrolia$fenceParsedMainCommands$2$3(Commands.java:2776)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedCausalBody(RegionWorkerPool.java:272)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RegionWorkerPool.runSuccessBodyIfHealthy(RegionWorkerPool.java:211)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RegionScheduler.runSuccessBodyIfHealthy(RegionScheduler.java:3546)",
+        "\tat knot//net.minecraft.commands.Commands.wrapMethod$bmh000$fabrolia$fenceParsedMainCommands(Commands.java:2775)",
+        "\tat knot//net.minecraft.commands.Commands.performCommand(Commands.java)",
+        "\tat knot//net.minecraft.commands.Commands.performPrefixedCommand$mixinextras$wrapped$57(Commands.java:356)",
+        "\tat knot//net.minecraft.commands.Commands.mixinextras$bridge$performPrefixedCommand$mixinextras$wrapped$57$58(Commands.java)",
+        "\tat knot//net.minecraft.commands.Commands.md4106a5$fabrolia$lambda$fabrolia$fenceMainCommands$3$6(Commands.java:2735)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedCausalBody(RegionWorkerPool.java:272)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RegionWorkerPool.runSuccessBodyIfHealthy(RegionWorkerPool.java:211)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RegionScheduler.runSuccessBodyIfHealthy(RegionScheduler.java:3546)",
+        "\tat knot//net.minecraft.commands.Commands.wrapMethod$bmh000$fabrolia$fenceMainCommands(Commands.java:2734)",
+        "\tat knot//net.minecraft.commands.Commands.performPrefixedCommand(Commands.java)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.mixinextras$bridge$performPrefixedCommand$144(DedicatedServer.java)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.md4106a5$fabrolia$lambda$fabrolia$markExactConsoleCommand$0$0(DedicatedServer.java:2003)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.ConsoleCommandFenceScope.runDedicatedConsolePrefixedCommand(ConsoleCommandFenceScope.java:187)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.wrapOperation$bmi000$fabrolia$markExactConsoleCommand(DedicatedServer.java:2001)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.handleConsoleInputs$mixinextras$wrapped$151(DedicatedServer.java:412)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.mixinextras$bridge$handleConsoleInputs$mixinextras$wrapped$151$152(DedicatedServer.java)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.md4106a5$fabrolia$lambda$fabrolia$frameExactConsoleInputEntry$0$1(DedicatedServer.java:1986)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.ConsoleCommandFenceScope.runDedicatedConsoleInputsEntry(ConsoleCommandFenceScope.java:155)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.wrapMethod$bmi000$fabrolia$frameExactConsoleInputEntry(DedicatedServer.java:1985)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.handleConsoleInputs(DedicatedServer.java)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.mixinextras$bridge$handleConsoleInputs$143(DedicatedServer.java)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.md4106a5$fabrolia$lambda$fabrolia$markExactConsoleInputDrain$0$2(DedicatedServer.java:1979)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.ConsoleCommandFenceScope.runDedicatedConsoleInputs(ConsoleCommandFenceScope.java:127)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.wrapOperation$bmi000$fabrolia$markExactConsoleInputDrain(DedicatedServer.java:1978)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.tickConnection$mixinextras$wrapped$149(DedicatedServer.java:402)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.mixinextras$bridge$tickConnection$mixinextras$wrapped$149$150(DedicatedServer.java)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.md4106a5$fabrolia$lambda$fabrolia$frameExactTickConnectionEntry$0$3(DedicatedServer.java:1966)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.ConsoleCommandFenceScope.runDedicatedTickConnectionEntry(ConsoleCommandFenceScope.java:97)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.wrapMethod$bmi000$fabrolia$frameExactTickConnectionEntry(DedicatedServer.java:1965)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.tickConnection(DedicatedServer.java)",
+        "\tat knot//net.minecraft.server.MinecraftServer.mixinextras$bridge$tickConnection$427(MinecraftServer.java)",
+        "\tat knot//net.minecraft.server.MinecraftServer.md4106a5$fabrolia$lambda$fabrolia$assertPlayerBarrierBeforeConnections$0$12(MinecraftServer.java:8619)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.ConsoleCommandFenceScope.runDedicatedTickConnection(ConsoleCommandFenceScope.java:69)",
+        "\tat knot//net.minecraft.server.MinecraftServer.md4106a5$fabrolia$lambda$fabrolia$assertPlayerBarrierBeforeConnections$1$11(MinecraftServer.java:8623)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RegionWorkerPool.runAcceptedExternalBody(RegionWorkerPool.java:296)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RegionWorkerPool.runSuccessBodyIfHealthy(RegionWorkerPool.java:216)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RegionScheduler.runSuccessBodyIfHealthy(RegionScheduler.java:3551)",
+        "\tat knot//net.minecraft.server.MinecraftServer.wrapOperation$cdh000$fabrolia$assertPlayerBarrierBeforeConnections(MinecraftServer.java:8620)",
+        "\tat knot//net.minecraft.server.MinecraftServer.tickChildren$mixinextras$wrapped$440(MinecraftServer.java:1127)",
+        "\tat knot//net.minecraft.server.MinecraftServer.mixinextras$bridge$tickChildren$mixinextras$wrapped$440$441(MinecraftServer.java)",
+        "\tat knot//net.minecraft.server.MinecraftServer.wrapMethod$cdh000$fabrolia$regionalPlayerServerPhase(MinecraftServer.java:8485)",
+        "\tat knot//net.minecraft.server.MinecraftServer.tickChildren(MinecraftServer.java)",
+        "\tat knot//net.minecraft.server.MinecraftServer.tickServer(MinecraftServer.java:980)",
+        "\tat knot//net.minecraft.server.dedicated.DedicatedServer.tickServer(DedicatedServer.java:278)",
+        "\tat knot//net.minecraft.server.MinecraftServer.mixinextras$bridge$tickServer$422(MinecraftServer.java)",
+        "\tat knot//net.minecraft.server.MinecraftServer.wrapOperation$cdh000$fabrolia$drainDeferredLifecycleAfterTickServer(MinecraftServer.java:8440)",
+        "\tat knot//net.minecraft.server.MinecraftServer.processPacketsAndTick(MinecraftServer.java:1013)",
+        "\tat knot//net.minecraft.server.MinecraftServer.runServer$mixinextras$wrapped$436(MinecraftServer.java:752)",
+        "\tat knot//net.minecraft.server.MinecraftServer.mixinextras$bridge$runServer$mixinextras$wrapped$436$437(MinecraftServer.java)",
+        "\tat knot//net.minecraft.server.MinecraftServer.md4106a5$fabrolia$lambda$fabrolia$frameExactServerLoopEntry$0$21(MinecraftServer.java:8379)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RconCommandFenceScope.runServerEntry(RconCommandFenceScope.java:198)",
+        "\tat knot//net.minecraft.server.MinecraftServer.wrapMethod$cdh000$fabrolia$frameExactServerLoopEntry(MinecraftServer.java:8379)",
+        "\tat knot//net.minecraft.server.MinecraftServer.runServer(MinecraftServer.java)",
+        "\tat knot//net.minecraft.server.MinecraftServer.mixinextras$bridge$runServer$418(MinecraftServer.java)",
+        "\tat knot//net.minecraft.server.MinecraftServer.md4106a5$fabrolia$lambda$fabrolia$markExactServerLoopRoot$0$22(MinecraftServer.java:8373)",
+        "\tat knot//com.axalotl.fabrolia.common.regions.RconCommandFenceScope.runServerLoopRoot(RconCommandFenceScope.java:157)",
+        "\tat knot//net.minecraft.server.MinecraftServer.wrapOperation$cdh000$fabrolia$markExactServerLoopRoot(MinecraftServer.java:8372)",
+        "\tat knot//net.minecraft.server.MinecraftServer.lambda$spin$0(MinecraftServer.java:310)",
+        "\tat java.base/java.lang.Thread.run(Thread.java:1474)",
+        "[19:33:49] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000007"
+      ]
+    },
+    {
+      "command": "forceload add 80 -32 175 79",
+      "out": [
+        "[19:33:50] [c2me-worker-6/WARN]: Cancelled mixin net.caffeinemc.mods.lithium.mixin.collections.attributes.AttributeMapMixin. Check debug logs for more information.",
+        "[19:33:50] [Server thread/WARN]: Cancelled mixin net.caffeinemc.mods.lithium.mixin.collections.entity_filtering.ClassInstanceMultiMapMixin. Check debug logs for more information.",
+        "[19:33:50] [Server thread/WARN]: Cancelled mixin com.ishland.vmp.mixins.general.collections.MixinTypeFilterableList. Check debug logs for more information.",
+        "[19:33:50] [Server thread/INFO]: Rewrote 1 fastutil instantiation(s) -> Reference2ReferenceConcurrentHashMap in net.minecraft.util.ClassInstanceMultiMap",
+        "[19:33:50] [Server thread/INFO]: System chat: Marked 42 chunks in minecraft:overworld from [5, -2] to [10, 4] to be force loaded",
+        "[19:33:50] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000008"
+      ]
+    },
+    {
+      "command": "execute if loaded 96 64 20 run say TNT_PARITY_PROBE",
+      "out": [
+        "[19:33:50] [Server thread/INFO]: TNTProbe[local] logged in with entity id 17 at (128.5, 64.0, 64.5)",
+        "[19:33:50] [Server thread/WARN]: User 0b75e362-c84f-30b4-9d70-2457313dd431 - 0b75e362-c84f-30b4-9d70-2457313dd431 doesn't currently have data pre-loaded - denying login.",
+        "[19:33:50] [Server thread/INFO]: System chat: TNTProbe joined the game",
+        "[19:33:50] [Server thread/WARN]: Can't keep up! Is the server overloaded? Running 2558ms or 51 ticks behind",
+        "[19:33:50] [Server thread/INFO]: [Not Secure] [Server] TNT_PARITY_PROBE",
+        "[19:33:50] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000009"
+      ]
+    },
+    {
+      "command": "execute if loaded 127 64 0 run say TNT_PARITY_PROBE",
+      "out": [
+        "[19:33:50] [Server thread/INFO]: [Not Secure] [Server] TNT_PARITY_PROBE",
+        "[19:33:50] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000010"
+      ]
+    },
+    {
+      "command": "execute if loaded 128 64 0 run say TNT_PARITY_PROBE",
+      "out": [
+        "[19:33:50] [Server thread/INFO]: [entity-status] escalated claim interest for 1 chunk(s) since last report (total=1); latest island#1/gen1 chunk [10,5] after 3 passes",
+        "[19:33:50] [Server thread/INFO]: [Not Secure] [Server] TNT_PARITY_PROBE",
+        "[19:33:50] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000011"
+      ]
+    },
+    {
+      "command": "execute if loaded 160 64 0 run say TNT_PARITY_PROBE",
+      "out": [
+        "[19:33:50] [Server thread/INFO]: [Not Secure] [Server] TNT_PARITY_PROBE",
+        "[19:33:50] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000012"
+      ]
+    },
+    {
+      "command": "scoreboard objectives add tntParity dummy",
+      "out": [
+        "[19:33:51] [Server thread/WARN]: [async-islands] save/topology quiesce took 124 ms on minecraft:overworld \u2014 an island's units are long; check /fabrolia regions islands for the overloaded island",
+        "[19:33:51] [Server thread/INFO]: System chat: Created new objective [tntParity]",
+        "[19:33:51] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000013"
+      ]
+    },
+    {
+      "command": "execute positioned 128 64 0 run fabrolia regions coherence add",
+      "out": [
+        "[19:33:51] [Server thread/INFO]: System chat: island#1 pinned to the global tick phase (rate/sprint inert here)",
+        "[19:33:51] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000014"
+      ]
+    },
+    {
+      "command": "tick freeze",
+      "out": "The game is frozen",
+      "venue": "rcon"
+    },
+    {
+      "command": "fabrolia regions top verbose 100",
+      "out": [
+        "[19:33:52] [RCON Client /127.0.0.1 #2/INFO]: Thread RCON Client /127.0.0.1 shutting down",
+        "[19:33:52] [Server thread/INFO]: System chat: #1 TNTProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=12+18h L=44 gt=45 ev=0/0 tps=0.0/20.0 mspt=14.19 max=95.24 lag=1303ms missed=8",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000015"
+      ]
+    },
+    {
+      "command": "execute positioned 128 64 0 run kill @e[type=minecraft:tnt,distance=..128]",
+      "out": [
+        "[19:33:52] [Server thread/INFO]: System chat: No entity was found",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000016"
+      ]
+    },
+    {
+      "command": "kill @e[type=minecraft:armor_stand,tag=tnt_parity_target]",
+      "out": [
+        "[19:33:52] [Server thread/INFO]: System chat: No entity was found",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000017"
+      ]
+    },
+    {
+      "command": "fill 120 60 -8 136 70 8 minecraft:air",
+      "out": [
+        "[19:33:52] [Server thread/INFO]: System chat: No blocks were filled",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000018"
+      ]
+    },
+    {
+      "command": "summon minecraft:tnt 96.5 100 20.5 {fuse:20000s,NoGravity:1b,Motion:[0d,0d,0d],Tags:[\"tnt_parity_pulse\"]}",
+      "out": [
+        "[19:33:52] [Server thread/INFO]: System chat: Summoned new Primed TNT",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000019"
+      ]
+    },
+    {
+      "command": "summon minecraft:tnt 128.5 64 0.5 {fuse:1s,NoGravity:1b,Motion:[0d,0d,0d],Tags:[\"tnt_parity_a\"]}",
+      "out": [
+        "[19:33:52] [Server thread/INFO]: System chat: Summoned new Primed TNT",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000020"
+      ]
+    },
+    {
+      "command": "summon minecraft:tnt 127.5 64 0.5 {fuse:80s,NoGravity:1b,Motion:[0d,0d,0d],Tags:[\"tnt_parity_b\"]}",
+      "out": [
+        "[19:33:52] [Server thread/INFO]: System chat: Summoned new Primed TNT",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000021"
+      ]
+    },
+    {
+      "command": "tick step 1t",
+      "out": "Stepping 1 tick(s)",
+      "venue": "rcon"
+    },
+    {
+      "command": "execute positioned 128 64 0 run data get entity @e[type=minecraft:tnt,tag=tnt_parity_pulse,distance=..96,limit=1] fuse",
+      "out": [
+        "[19:33:52] [RCON Client /127.0.0.1 #3/INFO]: Thread RCON Client /127.0.0.1 shutting down",
+        "[19:33:52] [Server thread/INFO]: System chat: Primed TNT has the following entity data: 19999s",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000022"
+      ]
+    },
+    {
+      "command": "execute positioned 128 64 0 run data get entity @e[type=minecraft:tnt,tag=tnt_parity_pulse,distance=..96,limit=1] fuse",
+      "out": [
+        "[19:33:52] [Server thread/INFO]: System chat: Primed TNT has the following entity data: 19999s",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000023"
+      ]
+    },
+    {
+      "command": "execute positioned 128 64 0 run data get entity @e[type=minecraft:tnt,tag=tnt_parity_b,distance=..96,limit=1] Pos",
+      "out": [
+        "[19:33:52] [Server thread/INFO]: System chat: Primed TNT has the following entity data: [127.5d, 64.0d, 0.5d]",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000024"
+      ]
+    },
+    {
+      "command": "execute positioned 128 64 0 run data get entity @e[type=minecraft:tnt,tag=tnt_parity_b,distance=..96,limit=1] Motion",
+      "out": [
+        "[19:33:52] [Server thread/INFO]: System chat: Primed TNT has the following entity data: [-0.8731294800642211d, -0.053479181694784994d, 0.0d]",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000025"
+      ]
+    },
+    {
+      "command": "execute positioned 128 64 0 run data get entity @e[type=minecraft:tnt,tag=tnt_parity_b,distance=..96,limit=1] fuse",
+      "out": [
+        "[19:33:52] [Server thread/INFO]: System chat: Primed TNT has the following entity data: 79s",
+        "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000026"
+      ]
+    }
+  ],
+  "comparison_report": null,
+  "error": "AssertionError('step_older_blast_before_younger_move_impulse_moved_in_same_phase')",
+  "islands_before": [
+    "[19:33:52] [RCON Client /127.0.0.1 #2/INFO]: Thread RCON Client /127.0.0.1 shutting down",
+    "[19:33:52] [Server thread/INFO]: System chat: #1 TNTProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=12+18h L=44 gt=45 ev=0/0 tps=0.0/20.0 mspt=14.19 max=95.24 lag=1303ms missed=8",
+    "[19:33:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000015"
+  ],
+  "status": "FAIL",
+  "step_fixture_cadence": "explicit coherence pin; independent worker ownership retained",
+  "traceback": "Traceback (most recent call last):\n  File \"/Users/noahwill/Documents/Furrys Mods/Fabrolia/stand/runs/tnt-old-v1/tnt-parity-driver.py\", line 334, in <module>\n    case(mode)\n    ~~~~^^^^^^\n  File \"/Users/noahwill/Documents/Furrys Mods/Fabrolia/stand/runs/tnt-old-v1/tnt-parity-driver.py\", line 243, in impulse_case\n    check(name + '_impulse_moved_in_same_phase', observed['pos'][0] < 127.49)\n    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/noahwill/Documents/Furrys Mods/Fabrolia/stand/runs/tnt-old-v1/tnt-parity-driver.py\", line 109, in check\n    raise AssertionError(name)\nAssertionError: step_older_blast_before_younger_move_impulse_moved_in_same_phase\n",
+  "vanilla_reference": false
+}

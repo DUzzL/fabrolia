@@ -8,6 +8,8 @@ import net.minecraft.world.level.BlockEventData;
 import net.minecraft.world.level.ChunkPos;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.function.Predicate;
 
 /**
  * A2 increment 3 — island-partitioned block events (docs/ASYNC-ISLANDS.md).
@@ -40,8 +42,6 @@ public final class IslandBlockEvents {
      *  them up to a tick early (production: two piston banks collapsed
      *  into one apparent motion → geometric portal miss). Posts from other
      *  threads/segments take the vanilla shared-set path → next partition. */
-    static final ThreadLocal<ObjectLinkedOpenHashSet<BlockEventData>> UNIT_LOCAL =
-            ThreadLocal.withInitial(ObjectLinkedOpenHashSet::new);
     static final ThreadLocal<Boolean> CAPTURING = ThreadLocal.withInitial(() -> false);
     /** The island whose unit is capturing on this thread — ownership gate:
      *  vanilla partitions BY POSITION, so only posts for THIS island's own
@@ -49,19 +49,20 @@ public final class IslandBlockEvents {
      *  must take the shared set → partition → the true owner's stash). */
     static final ThreadLocal<IslandRegistry.PIsland> CAPTURING_ISLAND = new ThreadLocal<>();
 
-    private static ArrayList<BlockEventData> drainUnitLocalEntered(
-            ObjectLinkedOpenHashSet<BlockEventData> local) {
-        if (local.isEmpty()) return null;
-        ArrayList<BlockEventData> drained = new ArrayList<>(local);
-        local.clear();
-        return drained;
+    /** Vanilla's pending identity remains admitted across queue transfers,
+     * island stashes and capture, until its single-event dequeue. Keeping
+     * identities merely in a detached wave allowed A to repost still-pending B. */
+    public static boolean enqueue(ServerLevel level, BlockEventData ev) {
+        BlockEventQueueAccess acc = (BlockEventQueueAccess) level;
+        synchronized (acc.fabrolia$blockEventLock()) {
+            if (!acc.fabrolia$pendingBlockEventIdentities().add(ev)) return false;
+            if (!captureLocalEntered(level, ev)) acc.fabrolia$blockEvents().add(ev);
+            return true;
+        }
     }
 
-    /** blockEvent add hook: true = captured (either unit-locally for the
-     *  coordinator's scheduled/event window = same-drain vanilla recursion,
-     *  or island next-unit for the island's own later-phase posts = vanilla
-     *  next-tick in ISLAND time, never via main's partition/stamp). */
-    public static boolean captureLocal(ServerLevel level, BlockEventData ev) {
+    /** The level lock is held; queue transfer never executes a callback. */
+    private static boolean captureLocalEntered(ServerLevel level, BlockEventData ev) {
         Thread t = Thread.currentThread();
         IslandRegistry.PIsland ctx = null;
         if (CAPTURING.get()) {
@@ -84,7 +85,7 @@ public final class IslandBlockEvents {
             return false;
         }
         if (CAPTURING.get()) {
-            UNIT_LOCAL.get().add(ev);
+            ctx.captureUnitBlockEvent(ev);
         } else {
             ctx.stashNextUnitEvent(ev);
         }
@@ -100,15 +101,78 @@ public final class IslandBlockEvents {
      *  flush to the shared set so a reused coordinator thread can never
      *  leak one island's events into another island's drain. */
     public static void endUnitCapture(ServerLevel level) {
+        IslandRegistry.PIsland island = CAPTURING_ISLAND.get();
         CAPTURING.set(Boolean.FALSE);
         CAPTURING_ISLAND.remove();
-        var local = UNIT_LOCAL.get();
-        if (local.isEmpty()) return;
+        if (island == null) return;
         BlockEventQueueAccess acc = (BlockEventQueueAccess) level;
         synchronized (acc.fabrolia$blockEventLock()) {
-            acc.fabrolia$blockEvents().addAll(local);
+            ArrayList<BlockEventData> leftovers = island.takeCapturedBlockEvents();
+            if (leftovers != null) {
+                for (BlockEventData ev : leftovers) {
+                    if (acc.fabrolia$pendingBlockEventIdentities().contains(ev)) {
+                        acc.fabrolia$blockEvents().add(ev);
+                    }
+                }
+            }
         }
-        local.clear();
+    }
+
+    /** Native single-event dequeue, also used by the synchronous fallback. */
+    public static BlockEventData pollShared(ServerLevel level) {
+        BlockEventQueueAccess acc = (BlockEventQueueAccess) level;
+        synchronized (acc.fabrolia$blockEventLock()) {
+            if (acc.fabrolia$blockEvents().isEmpty()) return null;
+            BlockEventData ev = acc.fabrolia$blockEvents().removeFirst();
+            acc.fabrolia$pendingBlockEventIdentities().remove(ev);
+            return ev;
+        }
+    }
+
+    /** Non-tickable events are newly admitted only at the native retry slot. */
+    public static boolean requeueShared(ServerLevel level, Collection<? extends BlockEventData> events) {
+        BlockEventQueueAccess acc = (BlockEventQueueAccess) level;
+        boolean changed = false;
+        synchronized (acc.fabrolia$blockEventLock()) {
+            for (BlockEventData ev : events) {
+                if (acc.fabrolia$pendingBlockEventIdentities().add(ev)) {
+                    changed |= acc.fabrolia$blockEvents().add(ev);
+                }
+            }
+        }
+        return changed;
+    }
+
+    /** A topology transfer retains the existing admission; an event cancelled
+     * while it was being carried must never be resurrected by its new owner. */
+    public static void carryPendingEvent(ServerLevel level, IslandRegistry.PIsland owner,
+                                         IslandRegistry.PIsland.StampedEvent event) {
+        BlockEventQueueAccess acc = (BlockEventQueueAccess) level;
+        synchronized (acc.fabrolia$blockEventLock()) {
+            // blockEvent constructs a fresh record for every post. Equality
+            // dedups pending posts; object identity distinguishes a cancelled
+            // admission from an equal event newly posted during this carry.
+            if (acc.fabrolia$pendingBlockEventIdentities().get(event.ev()) != event.ev()) return;
+            if (owner == null) acc.fabrolia$blockEvents().add(event.ev());
+            else owner.stashStamped(event);
+        }
+    }
+
+    /** Cancel the unconsumed suffix in every queue category. A dequeued event
+     * is already executing, exactly as in vanilla; callbacks hold no queue lock. */
+    public static boolean clearBlockEvents(ServerLevel level, Predicate<BlockEventData> filter) {
+        RegionizedServer rs = RegionScheduler.forLevel(level);
+        BlockEventQueueAccess acc = (BlockEventQueueAccess) level;
+        synchronized (acc.fabrolia$blockEventLock()) {
+            boolean changed = acc.fabrolia$pendingBlockEventIdentities().removeIf(filter);
+            changed |= acc.fabrolia$blockEvents().removeIf(filter);
+            if (rs != null) {
+                for (IslandRegistry.PIsland island : rs.islandRegistry.identitySnapshot()) {
+                    changed |= island.clearBlockEvents(filter);
+                }
+            }
+            return changed;
+        }
     }
 
     /**
@@ -130,46 +194,27 @@ public final class IslandBlockEvents {
         Object lock = acc.fabrolia$blockEventLock();
         ObjectLinkedOpenHashSet<BlockEventData> set = acc.fabrolia$blockEvents();
         ArrayList<BlockEventData> resched = new ArrayList<>();
-        boolean ranAny;
-        do {
-            ArrayList<BlockEventData> wave;
+        while (true) {
+            BlockEventData ev;
+            IslandRegistry.PIsland owner;
             synchronized (lock) {
-                if (set.isEmpty()) {
-                    wave = null;
-                } else {
-                    wave = new ArrayList<>(set);
-                    set.clear();
-                }
-            }
-            if (wave == null) break;
-            ArrayList<BlockEventData> globals = new ArrayList<>();
-            for (int i = 0, n = wave.size(); i < n; i++) {
-                BlockEventData ev = wave.get(i);
-                IslandRegistry.PIsland owner = ownerIsland(rs, ev);
+                if (set.isEmpty()) break;
+                ev = set.removeFirst();
+                owner = ownerIsland(rs, ev);
                 if (owner != null) {
                     owner.stashBlockEvent(ev, level.getGameTime());
                 } else {
-                    globals.add(ev);
+                    acc.fabrolia$pendingBlockEventIdentities().remove(ev);
                 }
             }
-            if (globals.isEmpty()) break;
-            ranAny = false;
-            for (int i = 0, n = globals.size(); i < n; i++) {
-                BlockEventData ev = globals.get(i);
-                if (level.shouldTickBlocksAt(ev.pos())) {
-                    ranAny = true;
-                    if (level.doBlockEvent(ev)) broadcast(level, ev);
-                } else {
-                    resched.add(ev);
-                }
-            }
-        } while (ranAny);
-        for (int i = 0, n = resched.size(); i < n; i++) {
-            BlockEventData ev = resched.get(i);
-            synchronized (lock) {
-                set.add(ev);
+            if (owner != null) continue; // transfer preserves the admitted identity
+            if (level.shouldTickBlocksAt(ev.pos())) {
+                if (level.doBlockEvent(ev)) broadcast(level, ev);
+            } else {
+                resched.add(ev);
             }
         }
+        requeueShared(level, resched);
     }
 
     static void runIslandEvents(RegionizedServer rs, IslandRegistry.PIsland island, EpochDomain d) {
@@ -179,54 +224,43 @@ public final class IslandBlockEvents {
     private static void runIslandEventsEntered(
             RegionizedServer rs, IslandRegistry.PIsland island, EpochDomain d) {
         ServerLevel level = rs.level;
-        ArrayList<IslandRegistry.PIsland.StampedEvent> stamped = island.drainDueEventsEntered(d.unitGameTime);
-        ObjectLinkedOpenHashSet<BlockEventData> merged = new ObjectLinkedOpenHashSet<>();
-        if (stamped != null) {
-            for (int i = 0; i < stamped.size(); i++) {
-                merged.add(stamped.get(i).ev());
-            }
+        BlockEventQueueAccess acc = (BlockEventQueueAccess) level;
+        synchronized (acc.fabrolia$blockEventLock()) {
+            island.prepareUnitBlockEvents();
         }
-        ArrayList<BlockEventData> nextUnit = island.drainNextUnitEventsEntered();
-        if (nextUnit != null) {
-            for (int i = 0; i < nextUnit.size(); i++) {
-                merged.add(nextUnit.get(i));
-            }
-        }
-        var local = UNIT_LOCAL.get();
-        ArrayList<BlockEventData> captured = drainUnitLocalEntered(local);
-        if (captured != null) {
-            for (int i = 0; i < captured.size(); i++) {
-                merged.add(captured.get(i));
-            }
-        }
-        ArrayList<BlockEventData> mine = merged.isEmpty() ? null : new ArrayList<>(merged);
         Long2ByteOpenHashMap tickable = new Long2ByteOpenHashMap(16);
         ArrayList<BlockEventData> resched = new ArrayList<>();
         int executed = 0;
-        while (mine != null && !mine.isEmpty()) {
-            for (int i = 0, n = mine.size(); i < n; i++) {
-                BlockEventData ev = mine.get(i);
-                long chunkKey = ChunkPos.pack(ev.pos());
-                byte gate = tickable.get(chunkKey);
-                if (gate == 0) {
-                    gate = level.shouldTickBlocksAt(ev.pos()) ? (byte) 1 : (byte) 2;
-                    tickable.put(chunkKey, gate);
-                }
-                if (gate == 1) {
-                    boolean shouldBroadcast = level.doBlockEvent(ev);
-                    executed++;
-                    if (shouldBroadcast) broadcast(level, ev);
-                } else {
-                    resched.add(ev);
-                }
+        while (true) {
+            BlockEventData ev;
+            synchronized (acc.fabrolia$blockEventLock()) {
+                ev = island.pollUnitBlockEvent();
+                if (ev == null) break;
+                acc.fabrolia$pendingBlockEventIdentities().remove(ev);
             }
-            mine = drainUnitLocalEntered(local);
+            long chunkKey = ChunkPos.pack(ev.pos());
+            byte gate = tickable.get(chunkKey);
+            if (gate == 0) {
+                gate = level.shouldTickBlocksAt(ev.pos()) ? (byte) 1 : (byte) 2;
+                tickable.put(chunkKey, gate);
+            }
+            if (gate == 1) {
+                boolean shouldBroadcast = level.doBlockEvent(ev);
+                executed++;
+                if (shouldBroadcast) broadcast(level, ev);
+            } else {
+                resched.add(ev);
+            }
         }
         if (!resched.isEmpty()) {
             long retryGen = island.genForNextUnit(d.unitGameTime);
             for (int i = 0; i < resched.size(); i++) {
                 BlockEventData ev = resched.get(i);
-                island.restashBlockEvent(ev, retryGen);
+                synchronized (acc.fabrolia$blockEventLock()) {
+                    if (acc.fabrolia$pendingBlockEventIdentities().add(ev)) {
+                        island.restashBlockEvent(ev, retryGen);
+                    }
+                }
             }
         }
         // DIAGNOSTIC (debug-gated): an abnormal pile of block events in one

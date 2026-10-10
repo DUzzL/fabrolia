@@ -167,7 +167,10 @@ public final class NetherPortalPreparation {
         while ((released = RELEASE.poll()) != null) released.releaseTickets();
         boolean cold = false;
         for (Request request : ACTIVE) {
-            if (!request.closed && request.needsMain) { cold = true; break; }
+            // The pool pause is the expensive part; prepareMain itself is cheap.
+            // A request that only waits for loads Main already requested pauses
+            // once one of them completes, not on every tick of the load.
+            if (request.wantsMainTurn()) { cold = true; break; }
         }
         if (!cold) return;
         if (!RegionScheduler.pauseMainPreparationTurn()) return;
@@ -371,6 +374,11 @@ public final class NetherPortalPreparation {
         private BlockPos center;
         private int radius;
         private volatile boolean needsMain;
+        /** The last Main turn ended waiting only for {@link #awaitedLoads}. */
+        private volatile boolean waitingOnlyForLoads;
+        /** Loads Main already requested; Main reads these without the request lock. */
+        private final Set<CompletableFuture<?>> awaitedLoads =
+                java.util.concurrent.ConcurrentHashMap.newKeySet();
         private boolean generate;
         private boolean denied;
         private volatile boolean closed;
@@ -398,10 +406,21 @@ public final class NetherPortalPreparation {
         public synchronized List<ChunkRef> footprint() {
             refreshBorder();
             // Only async cells can gain island ownership through normal topology rebuilds.
+            // Ownership is per grid cell, and promote() of a second chunk in an already
+            // promoted cell is a no-op, so resolve each cell once: the destination square
+            // alone spans up to 17x17 chunks and workers repeat this every attempt.
+            ServerLevel lastLevel = null;
+            RegionizedServer runtime = null;
+            it.unimi.dsi.fastutil.longs.LongOpenHashSet checkedCells = null;
             for (ChunkRef ref : List.copyOf(chunks)) {
-                RegionizedServer runtime = RegionScheduler.forLevel(ref.level());
-                if (runtime != null && runtime.asyncActive
-                        && runtime.islandOwnerOfChunk(ref.chunkKey()) == null) promote(ref);
+                if (ref.level() != lastLevel) {
+                    lastLevel = ref.level();
+                    runtime = RegionScheduler.forLevel(lastLevel);
+                    checkedCells = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+                }
+                if (runtime == null || !runtime.asyncActive) continue;
+                long cell = runtime.regionizer().grid.keyFor(ref.chunkKey());
+                if (checkedCells.add(cell) && runtime.islandOwnerOfCell(cell) == null) promote(ref);
             }
             return List.copyOf(chunks);
         }
@@ -553,19 +572,53 @@ public final class NetherPortalPreparation {
             if (old == null || status.isAfter(old)) {
                 required.put(ref, status);
                 loading.remove(ref);
+                requestMain();
+                return;
             }
-            requestMain();
+            // An unchanged demand whose load is still running is no new Main work:
+            // its ticket and future already exist. Worker footprint checks repeat
+            // this for every attempt, and re-arming a Main turn for it paused the
+            // whole worker pool each tick until the chunk had loaded.
+            CompletableFuture<ChunkResult<ChunkAccess>> pending = loading.get(ref);
+            if (pending != null && !pending.isDone()) awaitLoad(pending);
+            else requestMain();
         }
 
+        /** New Main work: a demand, ticket, publication, border or generation step. */
         private void requestMain() {
+            waitingOnlyForLoads = false;
             needsMain = true;
+        }
+
+        /** Main already requested this load; only its completion enables progress. */
+        private void awaitLoad(CompletableFuture<?> load) {
+            awaitedLoads.add(load);
+            needsMain = true;
+        }
+
+        /**
+         * Whether a Main turn can progress this request now. A request that waits
+         * only for loads Main already requested would repeat the same prepareMain
+         * result, so it does not pause the worker pool until one of them completes.
+         */
+        boolean wantsMainTurn() {
+            if (closed || !needsMain) return false;
+            if (!waitingOnlyForLoads) return true;
+            if (destination != null && BORDERS.get(destination) != border) return true;
+            for (CompletableFuture<?> load : awaitedLoads) {
+                if (load.isDone()) return true;
+            }
+            return false;
         }
 
         private void refreshBorder() {
             if (destination == null) return;
             PortalBorderSnapshot current = BORDERS.get(destination);
-            if (current == null) { needsMain = true; return; }
+            if (current == null) { requestMain(); return; }
             if (current == border) return;
+            // A changed border moves the search square; a pending wait no longer
+            // describes the whole remaining Main work.
+            if (border != null) waitingOnlyForLoads = false;
             border = current;
             double scale = DimensionType.getTeleportationScale(source.dimensionType(), destination.dimensionType());
             center = border.clampToBounds(sourcePosition.x * scale, sourcePosition.y, sourcePosition.z * scale);
@@ -576,11 +629,22 @@ public final class NetherPortalPreparation {
 
 
         private void prepareMain() {
+            awaitedLoads.clear();
+            waitingOnlyForLoads = true;
+            try {
+                prepareMainTurn();
+            } finally {
+                // Every other reason went through requestMain(), which already cleared it.
+                if (!needsMain || awaitedLoads.isEmpty()) waitingOnlyForLoads = false;
+            }
+        }
+
+        private void prepareMainTurn() {
             if (destination == null) { needsMain = false; return; }
             refreshBorder();
             if (border == null) return;
             needsMain = false;
-            if (!published(source) || !published(destination)) { needsMain = true; return; }
+            if (!published(source) || !published(destination)) { requestMain(); return; }
             List<BlockPos> positions = snapshotPositions(true);
             for (Map.Entry<ChunkRef, ChunkStatus> demand : required.entrySet()) {
                 ChunkRef ref = demand.getKey();
@@ -596,12 +660,14 @@ public final class NetherPortalPreparation {
                         ignored -> ((ChunkAccessBridge) ref.level().getChunkSource()).fabrolia$portalChunkFuture(
                                 ChunkPos.getX(ref.chunkKey()), ChunkPos.getZ(ref.chunkKey()), demand.getValue(), true));
                 if (QUIESCENT.get()) ref.level().getChunkSource().mainThreadProcessor.managedBlock(future::isDone);
-                if (!future.isDone()) { needsMain = true; continue; }
+                if (!future.isDone()) { awaitLoad(future); continue; }
                 if (future.join().orElse(null) == null) throw new IllegalStateException("portal chunk preparation returned unloaded chunk");
             }
             if (positions == null || needsMain || !generate || root.isSpectator()) return;
             positions = snapshotPositions(true);
-            if (positions == null || needsMain || !published(destination)) { needsMain = true; return; }
+            // A null snapshot has already recorded its own reason.
+            if (positions == null || needsMain) { needsMain = true; return; }
+            if (!published(destination)) { requestMain(); return; }
             List<BlockPos> freshPositions = positions;
             openScope(GENERATING, this);
             try {
@@ -614,7 +680,8 @@ public final class NetherPortalPreparation {
                             denied = created == null;
                         });
                 generate = !decided;
-                needsMain = !decided || !published(source) || !published(destination);
+                if (!decided || !published(source) || !published(destination)) requestMain();
+                else needsMain = false;
             } finally {
                 closeScope(GENERATING);
             }
@@ -628,6 +695,8 @@ public final class NetherPortalPreparation {
             int minZ = (center.getZ() - radius) >> 4;
             int maxZ = (center.getZ() + radius) >> 4;
             boolean ready = true;
+            // Whether every miss is a load Main already requested (see awaitLoad).
+            boolean loadsOnly = true;
             // Columns outside these bounds contribute no square-filtered record. Detached
             // snapshots never query that disposable outer ring or call live getOrLoad.
             for (int z = minZ; z <= maxZ; z++) {
@@ -636,14 +705,14 @@ public final class NetherPortalPreparation {
                     if (main) {
                         CompletableFuture<?> prefetched = destination.getPoiManager().prefetch(chunk);
                         if (QUIESCENT.get()) destination.getServer().managedBlock(prefetched::isDone);
-                        if (!prefetched.isDone()) { ready = false; continue; }
+                        if (!prefetched.isDone()) { awaitLoad(prefetched); ready = false; continue; }
                         prefetched.join();
                         storage.fabrolia$materializePortalColumn(chunk, destination.getMinSectionY());
                     }
                     boolean valid = true;
                     for (int y = destination.getMinSectionY(); y <= destination.getMaxSectionY(); y++) {
                         Optional<PoiSectionReadSnapshot> section = storage.fabrolia$portalSectionSnapshot(SectionPos.of(chunk, y).asLong());
-                        if (section == null) { ready = false; continue; }
+                        if (section == null) { loadsOnly = false; ready = false; continue; }
                         if (section.isEmpty() || !section.get().isValid()) valid = false;
                         section.ifPresent(snapshot -> snapshot.groupedRecords().stream(type -> type.is(PoiTypes.NETHER_PORTAL), record -> true)
                                 .forEach(record -> positions.add(record.getPos().immutable())));
@@ -655,11 +724,15 @@ public final class NetherPortalPreparation {
                         ChunkRef ref = new ChunkRef(destination, chunk.pack());
                         if (!required.containsKey(ref)) require(ref, ChunkStatus.EMPTY);
                         CompletableFuture<ChunkResult<ChunkAccess>> loaded = loading.get(ref);
-                        if (loaded == null || !loaded.isDone()) ready = false;
+                        if (loaded == null) { loadsOnly = false; ready = false; }
+                        else if (!loaded.isDone()) { awaitLoad(loaded); ready = false; }
                     }
                 }
             }
-            if (!ready) { requestMain(); return null; }
+            if (!ready) {
+                if (!loadsOnly || !needsMain) requestMain();
+                return null;
+            }
             for (BlockPos pos : positions) {
                 if (Math.abs((long) pos.getX() - center.getX()) <= radius && Math.abs((long) pos.getZ() - center.getZ()) <= radius
                         && border.isWithinBounds(pos) && destination.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4) == null) {

@@ -106,12 +106,6 @@ public class FabroliaConfig {
     // spawncap); Fabrolia only exposes the seam. No provider → Java LocalMobCapCalculator (correct
     // via the Long2ObjectConcurrentHashMap computeIfAbsent overload fix). Global cap stays Java.
 
-    /** Task #35 legacy toggle ({@code /fabrolia regions chunkheal}). The c2me
-     *  FLAG_BROKEN heal it used to gate (clear the latch, re-mark the holder
-     *  dirty) was replaced by the fail-stop forensic probe in C2meStrandHeal;
-     *  nothing reads this flag any more. Kept only so the command keeps its
-     *  current surface. */
-    public static volatile boolean chunkBridgeHealBroken = true;
     // Let the parallel-spawn future ride to the entity-phase barrier instead of being
     // awaited at the end of tickChunks — one park covers max(spawn, entities). Random/
     // fluid ticks are still awaited before the chunk phase ends (vanilla order). A mob

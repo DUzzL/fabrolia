@@ -101,6 +101,14 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     @Unique
     private final Object fabrolia$explosionLock = new Object();
 
+    @Inject(method = "tick(Ljava/util/function/BooleanSupplier;)V", at = @At("HEAD"))
+    private void fabrolia$continueSavedEndArrivals(java.util.function.BooleanSupplier hasTime, CallbackInfo ci) {
+        if (RegionScheduler.forLevel(this.getLevel()) == null) {
+            RegionScheduler.runSuccessBodyIfHealthy(() ->
+                    com.axalotl.fabrolia.common.regions.EndArrivalSavedData.tickFallback(this.getLevel()));
+        }
+    }
+
     /** Guards the vanilla {@code blockEvents} ObjectLinkedOpenHashSet so region workers can queue
      *  block events concurrently with each other and the main drain. Vanilla's SET semantics
      *  (dedup — a piston re-triggered several times in a tick queues ONE event — AND insertion
@@ -108,6 +116,11 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
      *  duplicate block event fired the piston twice → flying machines broke on themselves. */
     @Unique
     final Object fabrolia$blockEventLock = new Object();
+    /** Canonical dedup spans shared, stashed and captured queues until an
+     * event is individually dequeued, as vanilla's single ordered set does. */
+    @Unique
+    final ObjectLinkedOpenHashSet<BlockEventData> fabrolia$pendingBlockEventIdentities =
+            new ObjectLinkedOpenHashSet<>();
     @Unique
     private int fabrolia$lastBatchSize = 256;
     @Unique
@@ -709,14 +722,10 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         long batchStart = System.nanoTime();
 
 
-        // Region-owned path: regions iterate their OWN entity sets and run the full
-        // vanilla per-entity sequence (frozen/range/holder/vehicle gates, per-entity
-        // checkDespawn-then-tick — vanilla interleaving) on region workers. Main does
-        // NO list walk, NO classify loop, NO sync-entity loop here — it dispatches,
-        // adopts the in-flight spawn future, and pumps one barrier (during which it
-        // ticks main-required entities from the region tasks' sync queue and drains
-        // chunk-system tasks). enableFabroliaDespawn is irrelevant on this path — despawn
-        // runs per-entity inside the region task, which is what vanilla does anyway.
+        // Join deferred global chunk work before the canonical Main entity
+        // snapshot. Island coordinators perform their own queue join and
+        // finite linked-list entity pass. The existing per-entity worker gates
+        // and Main compatibility lane remain part of each island pass.
         if (!FabroliaConfig.disabled && FabroliaConfig.enableRegionThreading && RegionScheduler.isActive()) {
             // Entity tasks land in each region's queue AFTER its spawn and random-tick
             // tasks (chunk phase submitted them first) — per-region FIFO gives every
@@ -740,9 +749,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             java.util.concurrent.atomic.AtomicReference<CompletableFuture<Void>> regionAllRef =
                     new java.util.concurrent.atomic.AtomicReference<>();
             RegionScheduler.runSuccessBodyIfHealthy(() -> regionAllRef.set(
-                    exactPlayerOrder
-                            ? RegionScheduler.dispatchPreEntityWork(self)
-                            : RegionScheduler.dispatchOwnedEntityTicks(self)));
+                    RegionScheduler.dispatchPreEntityWork(self)));
             CompletableFuture<Void> regionAll = java.util.Objects.requireNonNull(
                     regionAllRef.get(), "region dispatch did not publish its barrier");
             if (((Object) this.chunkSource) instanceof SpawnFutureTaker t) {
@@ -765,6 +772,11 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             // complete lane.
             if (exactPlayerOrder) RegionScheduler.drainMainSyncTicks();
             else RegionScheduler.drainReadyMainSyncTicks();
+            if (!exactPlayerOrder) {
+                // Older accepted Main bodies have settled before this finite
+                // Vanilla snapshot; island coordinators consume their own cuts.
+                rsLease.tickGlobalEntitiesInVanillaOrder(consumer);
+            }
             if (exactPlayerOrder) {
                 Throwable exactFailure = null;
                 boolean opened = false;
@@ -1061,6 +1073,11 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         return blockEvents;
     }
 
+    @Override
+    public ObjectLinkedOpenHashSet<BlockEventData> fabrolia$pendingBlockEventIdentities() {
+        return fabrolia$pendingBlockEventIdentities;
+    }
+
     /**
      * A2 increment 3 — with async islands live, the block-event slot processes
      * only GLOBAL-domain events here; island-owned events are stashed (in
@@ -1102,6 +1119,8 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                         (com.axalotl.fabrolia.common.regions.RegionTickingAccess)
                                 (Object) this.chunkSource.chunkMap;
                 chunkMap.fabrolia$flushDeferredOwnerUnloads();
+                if (!skipSave) com.axalotl.fabrolia.common.regions.EndArrivalSavedData
+                        .beforeLevelSave(this.getLevel());
                 original.call(listener, flush, skipSave);
                 chunkMap.fabrolia$flushDeferredOwnerUnloads();
             });
@@ -1118,6 +1137,8 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                         (com.axalotl.fabrolia.common.regions.RegionTickingAccess)
                                 (Object) this.chunkSource.chunkMap;
                 chunkMap.fabrolia$flushDeferredOwnerUnloads();
+                if (!skipSave) com.axalotl.fabrolia.common.regions.EndArrivalSavedData
+                        .beforeLevelSave(this.getLevel());
                 original.call(listener, flush, skipSave);
                 chunkMap.fabrolia$flushDeferredOwnerUnloads();
             });
@@ -1144,28 +1165,19 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         }
     }
 
-    // All five redirects now operate on the REAL vanilla blockEvents set (insertion-ordered SET
-    // → dedup + FIFO exactly as vanilla), just serialized by fabrolia$blockEventLock so region
-    // workers may queue events concurrently with the main drain. Restores the dedup the
-    // ConcurrentLinkedQueue lost (double-fired pistons → flying-machine self-break).
+    // Native and island drains share one admitted-identity set. A queue
+    // transfer retains identity; only one-event dequeue releases it. Callback
+    // bodies run outside the short queue lock, preserving vanilla recursion.
     @Redirect(method = "blockEvent", at = @At(value = "INVOKE", target = "Lit/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet;add(Ljava/lang/Object;)Z", remap = false))
     private boolean overwriteQueueAdd(ObjectLinkedOpenHashSet<BlockEventData> set, Object object) {
-        // Unit-local capture: the coordinator's own posts during its
-        // scheduled+event segments run in THIS unit's drain (vanilla
-        // same-tick recursion); everything else takes the shared set.
-        if (com.axalotl.fabrolia.common.regions.IslandBlockEvents.captureLocal((ServerLevel) (Object) this, (BlockEventData) object)) {
-            return true;
-        }
-        synchronized (fabrolia$blockEventLock) {
-            return set.add((BlockEventData) object);
-        }
+        return com.axalotl.fabrolia.common.regions.IslandBlockEvents.enqueue(
+                this.getLevel(), (BlockEventData) object);
     }
 
     @Redirect(method = "clearBlockEvents", at = @At(value = "INVOKE", target = "Lit/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet;removeIf(Ljava/util/function/Predicate;)Z", remap = false))
     private boolean overwriteQueueRemoveIf(ObjectLinkedOpenHashSet<BlockEventData> set, Predicate<BlockEventData> filter) {
-        synchronized (fabrolia$blockEventLock) {
-            return set.removeIf(filter);
-        }
+        return com.axalotl.fabrolia.common.regions.IslandBlockEvents.clearBlockEvents(
+                this.getLevel(), filter);
     }
 
     @Redirect(method = "runBlockEvents", at = @At(value = "INVOKE", target = "Lit/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet;isEmpty()Z", remap = false))
@@ -1177,19 +1189,13 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
 
     @Redirect(method = "runBlockEvents", at = @At(value = "INVOKE", target = "Lit/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet;removeFirst()Ljava/lang/Object;", remap = false))
     private Object overwriteQueueRemoveFirst(ObjectLinkedOpenHashSet<BlockEventData> set) {
-        synchronized (fabrolia$blockEventLock) {
-            // The runBlockEvents loop only calls this after its own isEmpty() check; main is the
-            // sole drainer (workers only add), so the set is non-empty here. Guard defensively.
-            if (set.isEmpty()) return null;
-            return set.removeFirst();
-        }
+        return com.axalotl.fabrolia.common.regions.IslandBlockEvents.pollShared(this.getLevel());
     }
 
     @Redirect(method = "runBlockEvents", at = @At(value = "INVOKE", target = "Lit/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet;addAll(Ljava/util/Collection;)Z", remap = false))
     private boolean overwriteQueueAddAll(ObjectLinkedOpenHashSet<BlockEventData> set, Collection<? extends BlockEventData> c) {
-        synchronized (fabrolia$blockEventLock) {
-            return set.addAll(c);
-        }
+        return com.axalotl.fabrolia.common.regions.IslandBlockEvents.requeueShared(
+                this.getLevel(), c);
     }
 
     @Redirect(method = "sendBlockUpdated", at = @At(value = "FIELD", target = "Lnet/minecraft/server/level/ServerLevel;isUpdatingNavigations:Z", opcode = Opcodes.PUTFIELD))

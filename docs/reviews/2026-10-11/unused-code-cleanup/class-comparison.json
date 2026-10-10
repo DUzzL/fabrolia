@@ -1,0 +1,19 @@
+{
+  "added": [],
+  "removed": [],
+  "changed": [
+    "com/axalotl/fabrolia/common/commands/RegionCommand.class",
+    "com/axalotl/fabrolia/common/config/FabroliaConfig$SynchronizationPolicy.class",
+    "com/axalotl/fabrolia/common/config/FabroliaConfig.class",
+    "com/axalotl/fabrolia/common/regions/RegionWorkerPool$1ExecutorPublication.class",
+    "com/axalotl/fabrolia/common/regions/RegionWorkerPool$DeferredRoot.class",
+    "com/axalotl/fabrolia/common/regions/RegionWorkerPool$EntityReadyReceipt.class",
+    "com/axalotl/fabrolia/common/regions/RegionWorkerPool$ExternalPermit.class",
+    "com/axalotl/fabrolia/common/regions/RegionWorkerPool$ExternalTask.class",
+    "com/axalotl/fabrolia/common/regions/RegionWorkerPool$PublicationGate.class",
+    "com/axalotl/fabrolia/common/regions/RegionWorkerPool$QueuedRootTask.class",
+    "com/axalotl/fabrolia/common/regions/RegionWorkerPool$ReadyEntry.class",
+    "com/axalotl/fabrolia/common/regions/RegionWorkerPool$StepToken.class",
+    "com/axalotl/fabrolia/common/regions/RegionWorkerPool.class"
+  ]
+}

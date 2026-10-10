@@ -386,6 +386,11 @@ public class MinecraftServerMixin {
         boolean result = false;
         Throwable failure = null;
         try {
+            // Seal every source BEFORE the first destination snapshot. The
+            // all-level cut makes this safe and avoids save-order omissions.
+            RegionScheduler.runSuccessBodyIfHealthy(() ->
+                    com.axalotl.fabrolia.common.regions.CrossDimArrivals
+                            .flushForServerSave());
             result = RegionScheduler.callSuccessBooleanIfHealthy(
                     () -> com.axalotl.fabrolia.common.save.SaveDurability.callDeferred(
                             () -> original.call(silent, flush, force)));

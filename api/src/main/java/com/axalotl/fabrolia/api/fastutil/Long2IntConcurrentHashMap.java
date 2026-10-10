@@ -1,9 +1,7 @@
 package com.axalotl.fabrolia.api.fastutil;
 
-import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntCollection;
 import it.unimi.dsi.fastutil.longs.AbstractLong2IntMap;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 
@@ -36,6 +34,7 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
         SEGMASK = p - 1;
     }
 
+    private static final VarHandle VERSIONS_VH = MethodHandles.arrayElementVarHandle(long[].class);
     private static final VarHandle KEYS_VH = MethodHandles.arrayElementVarHandle(long[].class);
     private static final VarHandle VALS_VH = MethodHandles.arrayElementVarHandle(int[].class);
 
@@ -46,10 +45,12 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
 
     private static final class State {
         final long[] keys;
+        final long[] versions;
         final int[]  vals;
         final int    mask;
         State(int capPow2) {
             keys = new long[capPow2];
+            versions = new long[capPow2];
             vals = new int[capPow2];
             mask = capPow2 - 1;
             Arrays.fill(keys, EMPTY);
@@ -82,37 +83,7 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
     }
 
     @Override public int get(long key) {
-        if (key == EMPTY || key == TOMBSTONE) return defRetValue;
-        Segment seg = segmentFor(key);
-        restart:
-        while (true) {
-            State s = seg.state;
-            long[] k = s.keys;
-            int[]  v = s.vals;
-            int mask = s.mask;
-            int idx = hash(key) & mask;
-            while (true) {
-                long kk = (long) KEYS_VH.getAcquire(k, idx);
-                if (kk == EMPTY) return defRetValue;
-                if (kk == key) {
-                    int val = (int) VALS_VH.getAcquire(v, idx);
-                    // Slot-recycle guard (found by the publication stress test,
-                    // 2026-07-06): between the key match and the value read the
-                    // slot can be recycled — remove(key) tombstones it and a
-                    // colliding put reuses it for ANOTHER key, so the value read
-                    // could belong to the new tenant. Re-reading the key closes
-                    // it: unchanged ⇒ the value was current for THIS key at some
-                    // instant inside the call (remove leaves the value in place
-                    // and reinserts publish value-first, so any same-key state
-                    // we can observe is linearizable); changed ⇒ re-probe from
-                    // the home slot, the chain may have shifted. One extra
-                    // acquire-load per hit — free on x86/ARM's common paths.
-                    if ((long) KEYS_VH.getAcquire(k, idx) == key) return val;
-                    continue restart;
-                }
-                idx = (idx + 1) & mask;
-            }
-        }
+        return getOrDefault(key, defRetValue);
     }
 
     @Override public int put(long key, int value) {
@@ -147,7 +118,11 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
         if (key == EMPTY || key == TOMBSTONE) return false;
         Segment seg = segmentFor(key);
         synchronized (seg) {
-            return removeLocked(seg, seg.state, key, true, value) != defRetValue;
+            State state = seg.state;
+            int index = findKey(state, key);
+            if (index < 0 || state.vals[index] != value) return false;
+            removeLocked(seg, state, key, false, value);
+            return true;
         }
     }
 
@@ -159,7 +134,7 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
             int idx = findKey(s, key);
             if (idx < 0) return false;
             if (s.vals[idx] != oldValue) return false;
-            VALS_VH.setRelease(s.vals, idx, newValue);
+            writeSlot(s, idx, s.keys[idx], newValue);
             return true;
         }
     }
@@ -172,7 +147,7 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
             int idx = findKey(s, key);
             if (idx < 0) return defRetValue;
             int prev = s.vals[idx];
-            VALS_VH.setRelease(s.vals, idx, value);
+            writeSlot(s, idx, s.keys[idx], value);
             return prev;
         }
     }
@@ -193,11 +168,11 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
     }
 
     @Override public boolean containsValue(int value) {
-        for (Segment seg : segments) {
-            State s = seg.state;
-            for (int i = 0; i <= s.mask; i++) {
-                long k = s.keys[i];
-                if (k != EMPTY && k != TOMBSTONE && s.vals[i] == value) return true;
+        for (Segment segment : segments) {
+            State state = segment.state;
+            for (int i = 0; i <= state.mask; i++) {
+                Entry entry = snapshotEntry(state, i);
+                if (entry != null && entry.getIntValue() == value) return true;
             }
         }
         return false;
@@ -209,18 +184,22 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
         restart:
         while (true) {
             State s = seg.state;
-            long[] k = s.keys; int[] v = s.vals; int mask = s.mask;
-            int idx = hash(key) & mask;
+            int idx = hash(key) & s.mask;
             while (true) {
-                long kk = (long) KEYS_VH.getAcquire(k, idx);
-                if (kk == EMPTY) return defaultValue;
-                if (kk == key) {
-                    int val = (int) VALS_VH.getAcquire(v, idx);
-                    // Slot-recycle guard — see get(long).
-                    if ((long) KEYS_VH.getAcquire(k, idx) == key) return val;
+                long version = (long) VERSIONS_VH.getVolatile(s.versions, idx);
+                long found = (long) KEYS_VH.getAcquire(s.keys, idx);
+                if (found == EMPTY) return defaultValue;
+                if (found == key) {
+                    if ((version & 1L) != 0) continue restart;
+                    int value = (int) VALS_VH.getAcquire(s.vals, idx);
+                    // Validate the slot generation, not just its key: A -> B -> A
+                    // can otherwise pair A with B's value. Every mutation of this
+                    // slot is bracketed by writeSlot; callbacks run outside it.
+                    VarHandle.acquireFence();
+                    if ((long) VERSIONS_VH.getVolatile(s.versions, idx) == version) return value;
                     continue restart;
                 }
-                idx = (idx + 1) & mask;
+                idx = (idx + 1) & s.mask;
             }
         }
     }
@@ -235,14 +214,14 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
             Integer nv = remappingFunction.apply(key, oldVal);
             if (nv == null) {
                 if (idx >= 0) {
-                    KEYS_VH.setRelease(s.keys, idx, TOMBSTONE);
+                    writeSlot(s, idx, TOMBSTONE, s.vals[idx]);
                     seg.size--;
                     seg.tombstones++;
                 }
                 return defRetValue;
             }
             if (idx >= 0) {
-                VALS_VH.setRelease(s.vals, idx, nv);
+                writeSlot(s, idx, s.keys[idx], nv);
             } else {
                 if (needsResize(seg, s)) s = resizeLocked(seg);
                 putLocked(seg, s, key, nv, false);
@@ -260,12 +239,12 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
             if (idx < 0) return defRetValue;
             Integer nv = remappingFunction.apply(key, s.vals[idx]);
             if (nv == null) {
-                KEYS_VH.setRelease(s.keys, idx, TOMBSTONE);
+                writeSlot(s, idx, TOMBSTONE, s.vals[idx]);
                 seg.size--;
                 seg.tombstones++;
                 return defRetValue;
             }
-            VALS_VH.setRelease(s.vals, idx, nv);
+            writeSlot(s, idx, s.keys[idx], nv);
             return nv;
         }
     }
@@ -297,13 +276,13 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
             if (idx >= 0) {
                 Integer res = remappingFunction.apply(s.vals[idx], value);
                 if (res == null) {
-                    KEYS_VH.setRelease(s.keys, idx, TOMBSTONE);
+                    writeSlot(s, idx, TOMBSTONE, s.vals[idx]);
                     seg.size--;
                     seg.tombstones++;
                     return defRetValue;
                 }
                 nv = res;
-                VALS_VH.setRelease(s.vals, idx, nv);
+                writeSlot(s, idx, s.keys[idx], nv);
             } else {
                 nv = value;
                 if (needsResize(seg, s)) s = resizeLocked(seg);
@@ -321,7 +300,7 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
             int idx = findKey(s, key);
             if (idx >= 0) {
                 int newVal = s.vals[idx] + increment;
-                VALS_VH.setRelease(s.vals, idx, newVal);
+                writeSlot(s, idx, s.keys[idx], newVal);
                 return newVal;
             }
             if (needsResize(seg, s)) s = resizeLocked(seg);
@@ -339,7 +318,7 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
         for (Segment seg : segments) {
             synchronized (seg) {
                 State s = seg.state;
-                Arrays.fill(s.keys, EMPTY);
+                for (int i = 0; i <= s.mask; i++) writeSlot(s, i, EMPTY, s.vals[i]);
                 seg.size = 0;
                 seg.tombstones = 0;
             }
@@ -353,6 +332,27 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
     }
 
     @Override public boolean isEmpty() { return size() == 0; }
+
+    /** Caller owns the segment; the odd/even stamp covers only bounded array
+     * writes, never a user callback or another lock. */
+    private static void writeSlot(State state, int index, long key, int value) {
+        long version = state.versions[index];
+        VERSIONS_VH.setVolatile(state.versions, index, version + 1);
+        VALS_VH.setRelease(state.vals, index, value);
+        KEYS_VH.setRelease(state.keys, index, key);
+        VERSIONS_VH.setVolatile(state.versions, index, version + 2);
+    }
+
+    private boolean removeExistingKey(long key) {
+        if (key == EMPTY || key == TOMBSTONE) return false;
+        Segment seg = segmentFor(key);
+        synchronized (seg) {
+            State state = seg.state;
+            if (findKey(state, key) < 0) return false;
+            removeLocked(seg, state, key, false, 0);
+            return true;
+        }
+    }
 
     private static int findKey(State s, long key) {
         long[] k = s.keys;
@@ -377,17 +377,10 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
             if (kk == EMPTY) {
                 int writeIdx = firstTomb >= 0 ? firstTomb : idx;
                 if (firstTomb >= 0) seg.tombstones--;
-                // VALUE FIRST, key second. Publishing the key first let a lock-free
-                // reader observe the fresh key paired with the slot's PREVIOUS value —
-                // 0 on a virgin slot, or a dead entry's value on tombstone reuse
-                // (removeLocked tombstones the key but leaves the value in place).
-                // SimulationChunkTracker.chunks rides this map: a worker evaluating
-                // shouldTickBlocksAt mid-insert could read another chunk's old level
-                // and skip/run ticks a coherent read never would (flying-machine
-                // chunk-boundary breaks, 2026-07-06). Value-first + acquire-on-key
-                // guarantees a visible key always pairs with its own (or a newer) value.
-                VALS_VH.setRelease(v, writeIdx, value);
-                KEYS_VH.setRelease(k, writeIdx, key);
+                // Publish the value before its key and bracket both by the slot
+                // generation. Checking only the key cannot detect A -> B -> A
+                // reuse, which can return another chunk's simulation level.
+                writeSlot(s, writeIdx, key, value);
                 seg.size++;
                 return defRetValue;
             }
@@ -396,7 +389,7 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
             } else if (kk == key) {
                 int prev = v[idx];
                 if (!ifAbsent) {
-                    VALS_VH.setRelease(v, idx, value);
+                    writeSlot(s, idx, key, value);
                 }
                 return prev;
             }
@@ -415,7 +408,7 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
             if (kk == key) {
                 int prev = v[idx];
                 if (checkValue && prev != expVal) return defRetValue;
-                KEYS_VH.setRelease(k, idx, TOMBSTONE);
+                writeSlot(s, idx, TOMBSTONE, v[idx]);
                 seg.size--;
                 seg.tombstones++;
                 return prev;
@@ -451,27 +444,48 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
     }
 
     @Override public LongSet keySet() {
-        LongOpenHashSet set = new LongOpenHashSet(size());
-        for (Segment seg : segments) {
-            State s = seg.state;
-            for (int i = 0; i <= s.mask; i++) {
-                long k = s.keys[i];
-                if (k != EMPTY && k != TOMBSTONE) set.add(k);
+        return new it.unimi.dsi.fastutil.longs.AbstractLongSet() {
+            @Override public int size() { return Long2IntConcurrentHashMap.this.size(); }
+            @Override public boolean contains(long key) { return containsKey(key); }
+            @Override public boolean remove(long key) { return removeExistingKey(key); }
+            @Override public void clear() { Long2IntConcurrentHashMap.this.clear(); }
+            @Override public it.unimi.dsi.fastutil.longs.LongIterator iterator() {
+                ObjectIterator<Entry> entries = long2IntEntrySet().iterator();
+                return new it.unimi.dsi.fastutil.longs.LongIterator() {
+                    @Override public boolean hasNext() { return entries.hasNext(); }
+                    @Override public long nextLong() { return entries.next().getLongKey(); }
+                    @Override public void remove() { entries.remove(); }
+                };
             }
-        }
-        return set;
+        };
     }
 
     @Override public IntCollection values() {
-        IntArrayList list = new IntArrayList(size());
-        for (Segment seg : segments) {
-            State s = seg.state;
-            for (int i = 0; i <= s.mask; i++) {
-                long k = s.keys[i];
-                if (k != EMPTY && k != TOMBSTONE) list.add(s.vals[i]);
+        return new it.unimi.dsi.fastutil.ints.AbstractIntCollection() {
+            @Override public int size() { return Long2IntConcurrentHashMap.this.size(); }
+            @Override public boolean contains(int value) { return containsValue(value); }
+            @Override public void clear() { Long2IntConcurrentHashMap.this.clear(); }
+            @Override public it.unimi.dsi.fastutil.ints.IntIterator iterator() {
+                ObjectIterator<Entry> entries = long2IntEntrySet().iterator();
+                return new it.unimi.dsi.fastutil.ints.IntIterator() {
+                    @Override public boolean hasNext() { return entries.hasNext(); }
+                    @Override public int nextInt() { return entries.next().getIntValue(); }
+                    @Override public void remove() { entries.remove(); }
+                };
             }
+        };
+    }
+
+    private Entry snapshotEntry(State state, int index) {
+        for (;;) {
+            long version = (long) VERSIONS_VH.getVolatile(state.versions, index);
+            if ((version & 1L) != 0) { Thread.onSpinWait(); continue; }
+            long key = (long) KEYS_VH.getAcquire(state.keys, index);
+            int value = (int) VALS_VH.getAcquire(state.vals, index);
+            VarHandle.acquireFence();
+            if ((long) VERSIONS_VH.getVolatile(state.versions, index) != version) continue;
+            return key == EMPTY || key == TOMBSTONE ? null : new WriteThroughEntry(key, value);
         }
-        return list;
     }
 
     @Override public FastEntrySet long2IntEntrySet() { return new SnapshotFastEntrySet(); }
@@ -481,14 +495,14 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
         for (Segment seg : segments) {
             State s = seg.state;
             for (int i = 0; i <= s.mask; i++) {
-                long k = s.keys[i];
-                if (k != EMPTY && k != TOMBSTONE) snap.add(new ImmutableEntry(k, s.vals[i]));
+                Entry entry = snapshotEntry(s, i);
+                if (entry != null) snap.add(entry);
             }
         }
         return snap;
     }
 
-    private final class SnapshotFastEntrySet implements FastEntrySet {
+    private final class SnapshotFastEntrySet extends it.unimi.dsi.fastutil.objects.AbstractObjectSet<Entry> implements FastEntrySet {
         @Override public ObjectIterator<Entry> iterator() {
             List<Entry> snap = snapshotEntries();
             return new ObjectIterator<>() {
@@ -513,7 +527,7 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
         @Override public boolean contains(Object o) {
             if (!(o instanceof Entry en)) return false;
             int v = get(en.getLongKey());
-            return v != defRetValue && v == en.getIntValue();
+            return containsKey(en.getLongKey()) && v == en.getIntValue();
         }
         @Override public boolean remove(Object o) {
             if (!(o instanceof Entry en)) return false;
@@ -531,15 +545,13 @@ public final class Long2IntConcurrentHashMap extends AbstractLong2IntMap {
         @Override public boolean retainAll(Collection<?> c) { throw new UnsupportedOperationException(); }
     }
 
-    private record ImmutableEntry(long key, int value) implements Entry {
-        @Override public long getLongKey() { return key; }
-        @Override public int getIntValue() { return value; }
-        @Override public int setValue(int value) { throw new UnsupportedOperationException(); }
-        @Override public boolean equals(Object o) {
-            if (!(o instanceof Entry e)) return false;
-            return key == e.getLongKey() && value == e.getIntValue();
+    private final class WriteThroughEntry extends AbstractLong2IntMap.BasicEntry {
+        WriteThroughEntry(long key, int value) { super(key, value); }
+        @Override public int setValue(int next) {
+            int old = value;
+            if (replace(key, old, next)) value = next;
+            return old;
         }
-        @Override public int hashCode() { return Long.hashCode(key) ^ Integer.hashCode(value); }
     }
 
     @Override public boolean equals(Object o) {

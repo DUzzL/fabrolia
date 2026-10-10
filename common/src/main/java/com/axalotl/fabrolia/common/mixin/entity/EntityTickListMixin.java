@@ -11,13 +11,25 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 
 import java.util.function.Consumer;
+import java.util.List;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
+import com.axalotl.fabrolia.common.regions.EntityTickListSnapshotAccess;
 
 @Mixin(EntityTickList.class)
-public class EntityTickListMixin {
+public class EntityTickListMixin implements EntityTickListSnapshotAccess {
     @Shadow private Int2ObjectMap<Entity> active;
     @Shadow private Int2ObjectMap<Entity> passive;
     @Shadow private Int2ObjectMap<Entity> iterated;
+
+    @Override
+    public List<Entity> fabrolia$snapshotEntities() {
+        synchronized (this) {
+            // Independent island cuts must not enter vanilla's single-iterator
+            // slot. Copy under the same monitor used by add/remove so births
+            // after this cut cannot enter its finite pass.
+            return List.copyOf(this.active.values());
+        }
+    }
 
     /**
      * Preserve Mojang's exact active/passive linked-map semantics while making the

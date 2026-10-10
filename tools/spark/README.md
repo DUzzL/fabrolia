@@ -74,6 +74,9 @@ python3 spark2md.py *.sparkprofile --only summary          # just the compact re
   attribution, per-tick normalisation, recursion-safe inclusive totals, window/metric/world helpers.
   `python3 core.py FILE` prints a quick sanity dump.
 - `spark2md.py` — CLI + Markdown renderers (summary / ai / human), text icicle, hot tree.
+- `frames.py` — compare selected frames per thread group. Its ms/s denominator
+  is the retained window span inside the actual capture; partial minutes count
+  only their captured duration. Missing tick counts are reported as unavailable.
 - `xlsx_pyramid.py` — zero-dependency `.xlsx` writer for the merged-cell pyramid.
 - `proto/`, `gen/` — spark `.proto` sources and compiled Python bindings.
 

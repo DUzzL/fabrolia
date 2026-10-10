@@ -81,15 +81,24 @@ public final class Long2ByteConcurrentHashMap extends AbstractLong2ByteMap {
     @Override public LongSet keySet() { return delegate.keySet(); }
 
     @Override public ByteCollection values() {
-        it.unimi.dsi.fastutil.bytes.ByteArrayList list = new it.unimi.dsi.fastutil.bytes.ByteArrayList(size());
-        for (it.unimi.dsi.fastutil.ints.IntIterator it = delegate.values().iterator(); it.hasNext(); )
-            list.add((byte) it.nextInt());
-        return list;
+        return new it.unimi.dsi.fastutil.bytes.AbstractByteCollection() {
+            @Override public int size() { return delegate.size(); }
+            @Override public boolean contains(byte value) { return delegate.containsValue(value); }
+            @Override public void clear() { delegate.clear(); }
+            @Override public it.unimi.dsi.fastutil.bytes.ByteIterator iterator() {
+                var entries = long2ByteEntrySet().iterator();
+                return new it.unimi.dsi.fastutil.bytes.ByteIterator() {
+                    @Override public boolean hasNext() { return entries.hasNext(); }
+                    @Override public byte nextByte() { return entries.next().getByteValue(); }
+                    @Override public void remove() { entries.remove(); }
+                };
+            }
+        };
     }
 
     @Override public ObjectSet<Entry> long2ByteEntrySet() { return new EntrySetView(); }
 
-    private final class EntrySetView implements ObjectSet<Entry> {
+    private final class EntrySetView extends it.unimi.dsi.fastutil.objects.AbstractObjectSet<Entry> {
         @Override public ObjectIterator<Entry> iterator() {
             ObjectIterator<Long2IntMap.Entry> it = delegate.long2IntEntrySet().iterator();
             return new ObjectIterator<>() {
@@ -127,13 +136,13 @@ public final class Long2ByteConcurrentHashMap extends AbstractLong2ByteMap {
         @Override public boolean retainAll(java.util.Collection<?> c) { boolean m = false; for (Entry e : this) if (!c.contains(e)) m |= remove(e); return m; }
     }
 
-    private static final class BasicEntry implements Entry {
-        private final long key;
-        private byte value;
-        BasicEntry(long key, byte value) { this.key = key; this.value = value; }
-        @Override public long getLongKey() { return key; }
-        @Override public byte getByteValue() { return value; }
-        @Override public byte setValue(byte value) { byte old = this.value; this.value = value; return old; }
+    private final class BasicEntry extends AbstractLong2ByteMap.BasicEntry {
+        BasicEntry(long key, byte value) { super(key, value); }
+        @Override public byte setValue(byte next) {
+            byte old = value;
+            if (replace(key, old, next)) value = next;
+            return old;
+        }
     }
 
     @Override public boolean equals(Object o) {

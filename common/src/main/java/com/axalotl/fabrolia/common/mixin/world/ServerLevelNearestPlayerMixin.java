@@ -51,6 +51,10 @@ public abstract class ServerLevelNearestPlayerMixin implements HardColliderIndex
             com.axalotl.fabrolia.common.regions.VmpTrackerIndexApply.scheduleFor(level);
             RegionizedServer rs = RegionScheduler.forLevel(level);
             if (rs != null) {
+                // Startup can create the scheduler before dimensions exist;
+                // forLevel then constructs this runtime lazily. Storage is
+                // ready here, before any island unit or destination release.
+                com.axalotl.fabrolia.common.regions.EndArrivalSavedData.restoreInto(rs);
                 rs.onLevelTickStart();
                 rs.evictIdleRegions();
                 rs.rebuildIslandsIfDirty();

@@ -1,0 +1,73 @@
+{
+  "advstats": [
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1] TPS from last 5s, 10s, 1m, 5m, 15m:",
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1]  *20.0, 19.14, 19.94, 16.72, 18.77",
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1]",
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1] Tick durations (min/med/95%ile/max ms) from last 10s, 1m:",
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1]  1.0/11.7/109.1/616.6;  0.5/12.0/88.5/616.6",
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1]",
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1] CPU usage from last 10s, 1m, 15m:",
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1]  92%, 95%, 95%  (system)",
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1]  38%, 38%, 37%  (process)",
+    "[19:39:33] [Server thread/INFO]: System chat: \u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 advstats tick=5041 triggersOwner=59105 triggersQuiescent=77971 inspected=84520222 matches=79622 awardsInline=791 rewardFnsOwner=30 rewardFnsFenced=270 routedApplied=233 headWindows=5041 headWindowsRouted=48 quiesceTakes=48 barrierMs=3374 routed[ OFF_OWNER_TRIGGER=0 BACKLOG_TRIGGER=9 FOREIGN_READ_TRIGGER=0 FOREIGN_READ_MATCHER=0 AWARD_GLOBAL_REWARD=50 AWARD_BACKLOG=172 REWARD_FUNCTION=2 REWARD_GRANT=0 ANNOUNCEMENT=0 ] quiesce[ HEAD_ROUTED=48/2055ms HEAD_TICK_FUNCTIONS=0/0ms BATCH_END=0/0ms REMOVE=0/0ms SHUTDOWN=0/0ms ]",
+    "[19:39:33] [Server thread/INFO]: advstats tick=5041 triggersOwner=59105 triggersQuiescent=77971 inspected=84520222 matches=79622 awardsInline=791 rewardFnsOwner=30 rewardFnsFenced=270 routedApplied=233 headWindows=5041 headWindowsRouted=48 quiesceTakes=48 barrierMs=3374 routed[ OFF_OWNER_TRIGGER=0 BACKLOG_TRIGGER=9 FOREIGN_READ_TRIGGER=0 FOREIGN_READ_MATCHER=0 AWARD_GLOBAL_REWARD=50 AWARD_BACKLOG=172 REWARD_FUNCTION=2 REWARD_GRANT=0 ANNOUNCEMENT=0 ] quiesce[ HEAD_ROUTED=48/2055ms HEAD_TICK_FUNCTIONS=0/0ms BATCH_END=0/0ms REMOVE=0/0ms SHUTDOWN=0/0ms ]"
+  ],
+  "after": {
+    "regions": [
+      "[19:39:33] [Server thread/INFO]: System chat: \u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Region scheduler ACTIVE  6 workers \u00b7 grid 8\u00d78 chunks \u00b7 serial entities per region",
+      "  minecraft:overworld: 356 regions \u00b7 96 non-empty \u00b7 11323 entities",
+      "Total: 356 regions \u00b7 11323 entities"
+    ],
+    "top": [
+      "[19:39:34] [Server thread/INFO]: System chat: #1 Far05+Far06+Far07+12 more [ow-3g3] minecraft:overworld island#3/gen3 cells=240+140h L=1447 gt=5043 ev=0/0 tps=3.1/20.0 mspt=491.68 max=699.51 lag=237271ms missed=783",
+      "[19:39:34] [Server thread/INFO]: System chat: #2 Town00+Town01+Town02+17 more [ow-2g2] minecraft:overworld island#2/gen2 cells=36+28h L=2264 gt=5043 ev=0/0 tps=7.3/20.0 mspt=228.72 max=337.57 lag=191824ms missed=1085"
+    ]
+  },
+  "before": {
+    "regions": [
+      "[19:37:31] [Server thread/INFO]: System chat: \u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Region scheduler ACTIVE  6 workers \u00b7 grid 8\u00d78 chunks \u00b7 serial entities per region",
+      "  minecraft:overworld: 356 regions \u00b7 83 non-empty \u00b7 11372 entities",
+      "Total: 356 regions \u00b7 11372 entities"
+    ],
+    "top": [
+      "[19:37:31] [Fabrolia-Region-Worker-2/INFO]: Villager Villager['Villager'/218, l='ServerLevel[world-native-burst]', x=177.46, y=-56.00, z=77.29] died, message: 'Villager was slain by Zombie'",
+      "[19:37:31] [Server thread/INFO]: System chat: #1 Far05+Far06+Far07+12 more [ow-3g3] minecraft:overworld island#3/gen3 cells=240+140h L=1066 gt=2621 ev=0/0 tps=0.0/20.0 mspt=281.76 max=445.96 lag=133579ms missed=402",
+      "[19:37:31] [Server thread/INFO]: System chat: #2 Town00+Town01+Town02+17 more [ow-2g2] minecraft:overworld island#2/gen2 cells=36+28h L=1372 gt=2621 ev=0/0 tps=0.0/20.0 mspt=121.02 max=212.04 lag=114015ms missed=567"
+    ]
+  },
+  "cleanup": {
+    "method": "native-stop",
+    "output_reader_finished": true,
+    "returncode": 0
+  },
+  "list": [
+    "[19:39:34] [Server thread/WARN]: Can't keep up! Is the server overloaded? Running 2434ms or 48 ticks behind",
+    "[19:39:34] [Server thread/INFO]: System chat: There are 35 of a max of 200 players online: Town00, Town01, Town02, Town03, Town04, Town05, Town06, Town07, Town08, Town09, Town10, Town11, Town12, Town13, Town14, Town15, Town16, Town17, Town18, Town19, Far05, Far06, Far07, Far08, Far09, Far10, Far11, Far12, Far13, Far14, Far15, Far16, Far17, Far18, Far19"
+  ],
+  "phases": {
+    "booted": 1791653661.137312,
+    "joined": 1791653729.7515562,
+    "loaded": 1791653735.7414458,
+    "populated": 1791653761.0279171,
+    "profiled": 1791653980.520223,
+    "warm": 1791653851.0302238
+  },
+  "scenarios": {
+    "perfstand:items": [
+      "[19:35:59] [Server thread/INFO]: System chat: Running function perfstand:items"
+    ],
+    "perfstand:pistons": [
+      "[19:36:00] [Server thread/INFO]: System chat: Running function perfstand:pistons"
+    ]
+  },
+  "spark_files": [
+    "[19:39:40] [spark-worker-pool-1-thread-2/INFO]: System chat: [\u26a1] Data has been written to: ./config/spark/profile-2026-10-10_19.39.39.sparkprofile"
+  ],
+  "spark_stop": [],
+  "status": "DONE",
+  "tps": [],
+  "tps_lines": [
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1] TPS from last 5s, 10s, 1m, 5m, 15m:",
+    "[19:39:32] [spark-worker-pool-1-thread-3/INFO]: System chat: [\u26a1]  *20.0, 19.14, 19.94, 16.72, 18.77"
+  ]
+}

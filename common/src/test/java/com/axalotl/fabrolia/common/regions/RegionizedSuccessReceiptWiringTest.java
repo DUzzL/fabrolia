@@ -31,7 +31,7 @@ final class RegionizedSuccessReceiptWiringTest {
     void dispatchPreparesVariableStateBeforeAcceptingOneFixedReceipt() throws Exception {
         String all = source();
         String dispatch = section(all,
-                "private CompletableFuture<Void> dispatchEntityPhase(",
+                "CompletableFuture<Void> dispatchEntityPhase(",
                 "/**\n     * Gated group processing");
         int prepare = dispatch.indexOf("RegionScheduler.runSuccessBodyIfHealthy");
         int prepareCall = dispatch.indexOf("prepareEntityDispatchPlan(", prepare);
@@ -77,7 +77,7 @@ final class RegionizedSuccessReceiptWiringTest {
                 "sprint, async-global and sync-global dispatches each need one map cut");
 
         String dispatch = section(server,
-                "private CompletableFuture<Void> dispatchEntityPhase(",
+                "CompletableFuture<Void> dispatchEntityPhase(",
                 "/**\n     * Gated group processing");
         assertTrue(dispatch.contains(
                         "d.entityDispatchCutEpoch != d.epoch"),

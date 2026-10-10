@@ -820,9 +820,7 @@ class RegionPreparationRoutedCommandTest {
     }
 
     private static Runnable regionalTask(RegionWorkerPool pool, Runnable body) throws Exception {
-        Method reserve = RegionWorkerPool.class.getDeclaredMethod("reserveExternalTask", Runnable.class);
-        reserve.setAccessible(true);
-        return (Runnable) reserve.invoke(pool, body);
+        return RegionWorkerPoolTestAccess.reserveExternalTask(pool, body);
     }
 
     private static void await(CountDownLatch latch, String message) {

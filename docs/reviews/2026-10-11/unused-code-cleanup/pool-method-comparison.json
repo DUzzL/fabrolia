@@ -1,0 +1,9 @@
+{
+  "removed": [
+    "  private com.axalotl.fabrolia.common.regions.RegionWorkerPool$ExternalTask reserveExternalTask(java.lang.Runnable);",
+    "  private void leaveRootAdmission();"
+  ],
+  "added": [],
+  "changed_remaining_methods": [],
+  "unchanged_remaining_methods": 136
+}

@@ -1,0 +1,697 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-08",
+  "version": "0.2.38+alpha-26.3",
+  "base_commit": "8f57123d7b11594d377994aefcccbe900e64d2de",
+  "artifacts": {
+    "fabric/build/libs/fabrolia-fabric-0.2.38+alpha-26.3.jar": "643af1157e22d6e69b1fd7b62585c2012f45a999981c5d8d03a28037c969465a",
+    "neoforge/build/libs/fabrolia-neoforge-0.2.38+alpha-26.3.jar": "dee1d34250186ccd902f288f6b7f6bd168f875e4d255af037e64b60e4b5b53a7"
+  },
+  "common_tests": {
+    "tests": 1399,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 8,
+    "passed": 1391
+  },
+  "build_command": "bash gradlew :common:test :fabric:build :neoforge:build",
+  "build_log": "/tmp/fabrolia-critical-fixes/build-v4.log",
+  "build_log_sha256": "ea84f25b574b855c4be541548d68199b3869488e2c9e9a71093ec9ea8e68c99d",
+  "map_negative_control": {
+    "baseline_api_jar_sha256": "fc187a3158f1313fa43e78cad11928f0b1b5e43cb995f28cfae77b8a88e9fcfd",
+    "expected_value": 11,
+    "observed_old_value": 22,
+    "new_get_and_getOrDefault_variants": 6,
+    "collection_contract_differences_old": 7,
+    "collection_contract_differences_new": 0
+  },
+  "general_live_stand": {
+    "run": "critical-fixes-verify-v3",
+    "report": "stand/runs/critical-fixes-verify-v3/verify-report.json",
+    "report_sha256": "3a3095fea4fe9b3ae52b23a96b74d7c02545438e9b610ff7e6892fdaf53001e6",
+    "fabrolia_sha256": "643af1157e22d6e69b1fd7b62585c2012f45a999981c5d8d03a28037c969465a",
+    "status": "DONE",
+    "cleanup": {
+      "method": "native-stop",
+      "output_reader_finished": true,
+      "returncode": 0
+    },
+    "checks": {
+      "0_carpet_spawn_tracking_guard": "PASS",
+      "1_function_plan_fences": "PASS",
+      "2a_grant_story_root_Town00": "PASS",
+      "2b_inventory_changed_Town01": "PASS",
+      "2c_bacap_reward_Town02": "PASS",
+      "2d_file_Town03_complete": "PASS",
+      "2d_grant_everything_Town03": "PASS",
+      "3_disconnect_durability": "PASS",
+      "4_nether_portals": "PASS",
+      "5_saves_and_files": "PASS",
+      "6_log_and_crash": "PASS"
+    },
+    "client_count": 40
+  },
+  "end_live_stand": {
+    "run": "critical-fixes-end-new-v6",
+    "report": "stand/runs/critical-fixes-end-new-v6/end-handoff-report.json",
+    "report_sha256": "4e8f74b4faf34de464d1a1b68c22deb2ba03428b7350b8938ed80fa9933ea302",
+    "fabrolia_sha256": "643af1157e22d6e69b1fd7b62585c2012f45a999981c5d8d03a28037c969465a",
+    "status": "PASS",
+    "cleanup": [
+      {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      },
+      {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      },
+      {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      }
+    ],
+    "checks": [
+      {
+        "name": "unequal_clocks_end-1g3",
+        "pass": true
+      },
+      {
+        "name": "predecessor_airborne",
+        "pass": true
+      },
+      {
+        "name": "successor_held_before_save",
+        "pass": true
+      },
+      {
+        "name": "platform_unchanged_before_save",
+        "pass": true
+      },
+      {
+        "name": "save_keeps_predecessor",
+        "pass": true
+      },
+      {
+        "name": "save_keeps_successor_held",
+        "pass": true
+      },
+      {
+        "name": "save_does_not_regenerate_platform",
+        "pass": true
+      },
+      {
+        "name": "held_ops_and_predecessor_are_saved",
+        "pass": true
+      },
+      {
+        "name": "queued_gravel_state_is_saved",
+        "pass": true
+      },
+      {
+        "name": "platform_floor_matches_saved_regen",
+        "pass": true
+      },
+      {
+        "name": "End_has_no_forceloads",
+        "pass": true
+      },
+      {
+        "name": "first-stop_clean_shutdown",
+        "pass": true
+      },
+      {
+        "name": "clean_stop_keeps_snapshot",
+        "pass": true
+      },
+      {
+        "name": "restart_keeps_successor_held",
+        "pass": true
+      },
+      {
+        "name": "restart_does_not_regenerate_platform",
+        "pass": true
+      },
+      {
+        "name": "restored_queue_can_be_saved_again",
+        "pass": true
+      },
+      {
+        "name": "sync_keeps_successor_held",
+        "pass": true
+      },
+      {
+        "name": "sync_queue_can_be_saved_again",
+        "pass": true
+      },
+      {
+        "name": "scheduler_actually_stopped",
+        "pass": true
+      },
+      {
+        "name": "scheduler_stop_keeps_successor_held",
+        "pass": true
+      },
+      {
+        "name": "fallback_snapshot_survives_save",
+        "pass": true
+      },
+      {
+        "name": "regeneration_follows_predecessor_removal",
+        "pass": true
+      },
+      {
+        "name": "new_fallback_arrival_is_held",
+        "pass": true
+      },
+      {
+        "name": "new_fallback_arrival_is_saved",
+        "pass": true
+      },
+      {
+        "name": "scheduler_actually_started",
+        "pass": true
+      },
+      {
+        "name": "scheduler_restart_keeps_published_successor",
+        "pass": true
+      },
+      {
+        "name": "scheduler_restart_keeps_new_successor_held",
+        "pass": true
+      },
+      {
+        "name": "fallback_cohort_regenerates_after_landing",
+        "pass": true
+      },
+      {
+        "name": "published_ops_retired_from_snapshot",
+        "pass": true
+      },
+      {
+        "name": "second-stop_clean_shutdown",
+        "pass": true
+      },
+      {
+        "name": "successor_not_requeued_after_restart",
+        "pass": true
+      },
+      {
+        "name": "exactly_one_successor_after_restart",
+        "pass": true
+      },
+      {
+        "name": "recovered_block_places_normally",
+        "pass": true
+      },
+      {
+        "name": "next_regeneration_removes_placed_sand",
+        "pass": true
+      },
+      {
+        "name": "next_regeneration_drops_sand_item",
+        "pass": true
+      },
+      {
+        "name": "final_clean_shutdown",
+        "pass": true
+      },
+      {
+        "name": "no_crash_reports",
+        "pass": true
+      }
+    ],
+    "platform_y": 49
+  },
+  "end_negative_control": {
+    "run": "critical-fixes-end-old-v2",
+    "report": "stand/runs/critical-fixes-end-old-v2/end-handoff-report.json",
+    "report_sha256": "131ff8516d867ce9875ba6396cf72be2cb2897d55a5e39f287cb5f7d79e6fa1f",
+    "fabrolia_sha256": "b70725079ea7a6e04efc51400fa989804b87157e3fa6027ed213ea9c2742696e",
+    "status": "BUG_REPRODUCED",
+    "cleanup": [
+      {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      }
+    ],
+    "checks": [
+      {
+        "name": "predecessor_airborne",
+        "pass": true
+      },
+      {
+        "name": "successor_held_before_save",
+        "pass": true
+      },
+      {
+        "name": "platform_unchanged_before_save",
+        "pass": true
+      },
+      {
+        "name": "old_save_bypass_reproduced",
+        "pass": true
+      }
+    ],
+    "note": "Old control reproduced the save bypass at normal 20 TPS; final recovery fixture explicitly sets destination 5 TPS."
+  },
+  "performance": [
+    {
+      "run": "critical-fixes-old-v1",
+      "report": "stand/runs/critical-fixes-old-v1/perf-report.json",
+      "report_sha256": "09151328015f9d32b9aad83b7fd18eb50cf424e44a2218d112694c1f02a53803",
+      "fabrolia_sha256": "b70725079ea7a6e04efc51400fa989804b87157e3fa6027ed213ea9c2742696e",
+      "status": "DONE",
+      "cleanup": {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      },
+      "before": {
+        "regions": [
+          "[21:07:21] [Server thread/INFO]: System chat: §8[§f🌀§8]§7 Region scheduler ACTIVE  6 workers · grid 8×8 chunks · serial entities per region",
+          "  minecraft:overworld: 356 regions · 81 non-empty · 11384 entities",
+          "Total: 356 regions · 11384 entities"
+        ],
+        "top": [
+          "[21:07:22] [Server thread/INFO]: System chat: #1 Far05+Far06+Far07+12 more [ow-3g3] minecraft:overworld island#3/gen3 cells=240+140h L=1131 gt=2437 ev=0/0 tps=0.0/20.0 mspt=269.54 max=434.89 lag=124971ms missed=369",
+          "[21:07:22] [Server thread/INFO]: System chat: #2 Town00+Town01+Town02+17 more [ow-2g2] minecraft:overworld island#2/gen2 cells=36+28h L=1323 gt=2437 ev=0/0 tps=0.0/20.0 mspt=105.58 max=265.31 lag=112918ms missed=520"
+        ]
+      },
+      "after": {
+        "regions": [
+          "[21:09:23] [Fabrolia-Region-Worker-2/INFO]: Villager Villager['Villager'/2749, l='ServerLevel[world-native-burst]', x=170.08, y=-60.00, z=-17.90] died, message: 'Villager was slain by Zombie'",
+          "[21:09:23] [Server thread/INFO]: System chat: §8[§f🌀§8]§7 Region scheduler ACTIVE  6 workers · grid 8×8 chunks · serial entities per region",
+          "  minecraft:overworld: 356 regions · 89 non-empty · 11306 entities",
+          "Total: 356 regions · 11306 entities"
+        ],
+        "top": [
+          "[21:09:24] [Server thread/INFO]: System chat: #1 Far05+Far06+Far07+12 more [ow-3g3] minecraft:overworld island#3/gen3 cells=240+140h L=1573 gt=4843 ev=0/0 tps=3.6/20.0 mspt=518.61 max=648.41 lag=225371ms missed=806",
+          "[21:09:24] [Server thread/INFO]: System chat: #2 Town00+Town01+Town02+17 more [ow-2g2] minecraft:overworld island#2/gen2 cells=36+28h L=2270 gt=4843 ev=0/0 tps=7.7/20.0 mspt=244.77 max=344.17 lag=187794ms missed=1064"
+        ]
+      },
+      "online_players": [
+        "[21:09:25] [Server thread/WARN]: Can't keep up! Is the server overloaded? Running 2927ms or 58 ticks behind",
+        "[21:09:25] [Server thread/INFO]: System chat: There are 35 of a max of 200 players online: Town00, Town01, Town02, Town03, Town04, Town05, Town06, Town07, Town08, Town09, Town10, Town11, Town12, Town13, Town14, Town15, Town16, Town17, Town18, Town19, Far05, Far06, Far07, Far08, Far09, Far10, Far11, Far12, Far13, Far14, Far15, Far16, Far17, Far18, Far19"
+      ],
+      "profile_analysis": {
+        "profile": "stand/runs/critical-fixes-old-v1/server/config/spark/profile-2026-10-08_21.09.29.sparkprofile",
+        "duration_seconds": 124.106,
+        "norm_main_ticks": 2417,
+        "groups": {
+          "Main": {
+            "running_ms_per_wall_second": 263.6133627705349,
+            "affected_running_self_ms_per_wall_second": 0.6768407651523698,
+            "inclusive_frames_ms_per_wall_second": {
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.keySet": 0.6446102525260664,
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.size": 0.22561358838412326,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.get": 0.06446102525260665,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.keySet": 0.6446102525260664,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.size": 0.22561358838412326,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.isEmpty": 0.09669153787890997,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.size": 0.09669153787890997,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x000007e002d1c800.run": 0.1289220505052133,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x000007e002d1ca30.<init>": 0.06446102525260665,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x000007e002d1d848.run": 0.7735323030312797,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x000007e002d1da78.run": 0.06446102525260665,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x000007e002d20690.run": 0.1289220505052133,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.commitPreparedSeal": 0.1289220505052133,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.fabrolia$rearmPendingLeasesEntered": 0.7413017904049765,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$fabrolia$rearmPendingLeasesEntered$2": 0.06446102525260665,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$fabrolia$rearmPendingLeasesEntered$5": 0.1289220505052133,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$publishGlobal$0": 0.09669153787890997,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$rearmPendingLeases$0": 0.7735323030312797,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.prepareSeal": 0.032230512626303325,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishEntered": 0.032230512626303325,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishGlobal": 0.1611525631315166,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.rearmPendingLeases": 0.8057628156575831,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.seal": 0.1611525631315166,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.takeGlobalBatch": 0.06446102525260665,
+              "com.axalotl.fabrolia.common.regions.EndPlatformHandoff$Tracker.sweep": 0.06446102525260665
+            },
+            "affected_running_self_ms_per_main_tick": 0.03475382705833678
+          },
+          "Workers": {
+            "running_ms_per_wall_second": 2470.4365622935234,
+            "affected_running_self_ms_per_wall_second": 3.190820750004029,
+            "inclusive_frames_ms_per_wall_second": {
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.get": 0.5156882020208532,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.get": 3.706508952024882,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.segmentFor": 0.032230512626303325,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.get": 1.3536815303047396,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.hash": 0.06446102525260665,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.put": 0.19338307575781993,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.putLocked": 0.09669153787890997,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.segmentFor": 0.2900746136367299,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x000007e002d4bcc0.run": 0.1611525631315166,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.firstOffering": 0.1289220505052133,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$publishIsland$0": 0.1611525631315166,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.prepareSeal": 0.032230512626303325,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishIsland": 0.19338307575781993
+            },
+            "affected_running_self_ms_per_main_tick": 0.1638394704178734
+          }
+        },
+        "profile_sha256": "b1c59175f4a059d63b89b45e81691c959b5e35adb99a12d22c77807cb530815b"
+      }
+    },
+    {
+      "run": "critical-fixes-new-v1",
+      "report": "stand/runs/critical-fixes-new-v1/perf-report.json",
+      "report_sha256": "2d730c297c1f910e09c667c941725e1e403d159dd238e21d99706dd772158a4a",
+      "fabrolia_sha256": "643af1157e22d6e69b1fd7b62585c2012f45a999981c5d8d03a28037c969465a",
+      "status": "DONE",
+      "cleanup": {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      },
+      "before": {
+        "regions": [
+          "[22:35:17] [Server thread/INFO]: System chat: §8[§f🌀§8]§7 Region scheduler ACTIVE  6 workers · grid 8×8 chunks · serial entities per region",
+          "  minecraft:overworld: 356 regions · 101 non-empty · 11213 entities",
+          "Total: 356 regions · 11213 entities"
+        ],
+        "top": [
+          "[22:35:18] [Server thread/INFO]: System chat: #1 Far05+Far06+Far07+12 more [ow-2g2] minecraft:overworld island#2/gen2 cells=240+140h L=958 gt=2676 ev=0/0 tps=0.0/20.0 mspt=552.59 max=889.40 lag=137265ms missed=399",
+          "[22:35:18] [Server thread/INFO]: System chat: #2 Town00+Town01+Town02+17 more [ow-1g1] minecraft:overworld island#1/gen1 cells=36+28h L=1274 gt=2676 ev=0/0 tps=0.0/20.0 mspt=274.44 max=482.36 lag=117122ms missed=560"
+        ]
+      },
+      "after": {
+        "regions": [
+          "[22:37:19] [Server thread/INFO]: System chat: §8[§f🌀§8]§7 Region scheduler ACTIVE  6 workers · grid 8×8 chunks · serial entities per region",
+          "  minecraft:overworld: 356 regions · 106 non-empty · 11192 entities",
+          "Total: 356 regions · 11192 entities"
+        ],
+        "top": [
+          "[22:37:19] [Server thread/INFO]: System chat: #1 Far05+Far06+Far07+12 more [ow-2g2] minecraft:overworld island#2/gen2 cells=240+140h L=1344 gt=5113 ev=0/0 tps=3.2/20.0 mspt=217.87 max=412.49 lag=239462ms missed=785",
+          "[22:37:19] [Server thread/INFO]: System chat: #2 Town00+Town01+Town02+17 more [ow-1g1] minecraft:overworld island#1/gen1 cells=36+28h L=2054 gt=5113 ev=0/0 tps=6.4/20.0 mspt=98.57 max=204.36 lag=199770ms missed=1100"
+        ]
+      },
+      "online_players": [
+        "[22:37:19] [Server thread/INFO]: System chat: There are 35 of a max of 200 players online: Town00, Town01, Town02, Town03, Town04, Town05, Town06, Town07, Town08, Town09, Town10, Town11, Town12, Town13, Town14, Town15, Town16, Town17, Town18, Town19, Far05, Far06, Far07, Far08, Far09, Far10, Far11, Far12, Far13, Far14, Far15, Far16, Far17, Far18, Far19"
+      ],
+      "profile_analysis": {
+        "profile": "stand/runs/critical-fixes-new-v1/server/config/spark/profile-2026-10-08_22.37.26.sparkprofile",
+        "duration_seconds": 123.482,
+        "norm_main_ticks": 2460,
+        "groups": {
+          "Main": {
+            "running_ms_per_wall_second": 282.3407460196628,
+            "affected_running_self_ms_per_wall_second": 1.1661618697461977,
+            "inclusive_frames_ms_per_wall_second": {
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.keySet": 0.032393385270727715,
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.size": 0.29154046743654943,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap$1$1.hasNext": 0.032393385270727715,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap$1$1.nextLong": 0.032393385270727715,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap$1.iterator": 0.38872062324873263,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap$SnapshotFastEntrySet$1.hasNext": 0.032393385270727715,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap$SnapshotFastEntrySet.iterator": 0.3563272379780049,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.get": 0.09718015581218316,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.getOrDefault": 0.09718015581218316,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.size": 0.2591470821658217,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.snapshotEntries": 0.3239338527072772,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.snapshotEntry": 0.29154046743654943,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00000fff02d0cc60.run": 0.19436031162436632,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00000fff02d0d000.run": 0.09718015581218316,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00000fff02d0d470.run": 0.1619669263536386,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00000fff02d0fdc8.run": 0.5830809348730989,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.commitPreparedSeal": 0.032393385270727715,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.fabrolia$rearmPendingLeasesEntered": 0.5506875496023712,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$fabrolia$rearmPendingLeasesEntered$2": 0.09718015581218316,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$fabrolia$rearmPendingLeasesEntered$5": 0.12957354108291086,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$publishGlobal$0": 0.12957354108291086,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$rearmPendingLeases$0": 0.5506875496023712,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishEntered": 0.032393385270727715,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishGlobal": 0.2591470821658217,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.rearmPendingLeases": 0.8098346317681929,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.seal": 0.06478677054145543,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.takeGlobalBatch": 0.06478677054145543,
+              "com.axalotl.fabrolia.common.regions.EndArrivalSavedData.rearmRestoredLeases": 0.22675369689509403,
+              "com.axalotl.fabrolia.common.regions.EndPlatformHandoff$Tracker.snapshot": 0.22675369689509403,
+              "com.axalotl.fabrolia.common.regions.EndPlatformHandoff$Tracker.sweep": 0.09718015581218316
+            },
+            "affected_running_self_ms_per_main_tick": 0.05853658536585366
+          },
+          "Workers": {
+            "running_ms_per_wall_second": 2314.1834437407883,
+            "affected_running_self_ms_per_wall_second": 5.280121799128618,
+            "inclusive_frames_ms_per_wall_second": {
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.get": 0.9070147875803761,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.get": 7.418085226996648,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.getOrDefault": 7.223724915372281,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.hash": 0.032393385270727715,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.segmentFor": 0.12957354108291086,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.get": 1.1013750992047424,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.getOrDefault": 1.0689817139340148,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.put": 0.09718015581218316,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.putLocked": 0.09718015581218316,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.segmentFor": 0.22675369689509403,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.writeSlot": 0.06478677054145543,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00000fff02d3b708.run": 0.45350739379018806,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.discardCancelledRoutes": 0.12957354108291086,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.firstOffering": 0.09718015581218316,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$publishIsland$0": 0.38872062324873263,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.prepareSeal": 0.06478677054145543,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishEntered": 0.032393385270727715,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishIsland": 0.4859007790609158
+            },
+            "affected_running_self_ms_per_main_tick": 0.26504065040650404
+          }
+        },
+        "profile_sha256": "2d7dfaed6daab7bd227e74fcf54990ea8510a993d934520bf28f160f8e881ed9"
+      }
+    },
+    {
+      "run": "critical-fixes-old-control-v1",
+      "report": "stand/runs/critical-fixes-old-control-v1/perf-report.json",
+      "report_sha256": "c281189eb5680c49f800881327a238bdf65818f651140c01de3d97a00dd260cb",
+      "fabrolia_sha256": "b70725079ea7a6e04efc51400fa989804b87157e3fa6027ed213ea9c2742696e",
+      "status": "DONE",
+      "cleanup": {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      },
+      "before": {
+        "regions": [
+          "[22:52:06] [Server thread/INFO]: System chat: §8[§f🌀§8]§7 Region scheduler ACTIVE  6 workers · grid 8×8 chunks · serial entities per region",
+          "  minecraft:overworld: 356 regions · 80 non-empty · 11291 entities",
+          "Total: 356 regions · 11291 entities"
+        ],
+        "top": [
+          "[22:52:07] [Server thread/INFO]: System chat: #1 Far05+Far06+Far07+12 more [ow-3g3] minecraft:overworld island#3/gen3 cells=240+140h L=1058 gt=2539 ev=0/0 tps=0.0/20.0 mspt=327.15 max=524.22 lag=120032ms missed=436",
+          "[22:52:07] [Server thread/INFO]: System chat: #2 Town00+Town01+Town02+17 more [ow-2g2] minecraft:overworld island#2/gen2 cells=36+28h L=1371 gt=2539 ev=0/0 tps=0.0/20.0 mspt=170.97 max=253.25 lag=102959ms missed=582"
+        ]
+      },
+      "after": {
+        "regions": [
+          "[22:53:09] [Server thread/INFO]: System chat: §8[§f🌀§8]§7 Region scheduler ACTIVE  6 workers · grid 8×8 chunks · serial entities per region",
+          "  minecraft:overworld: 356 regions · 84 non-empty · 11265 entities",
+          "Total: 356 regions · 11265 entities"
+        ],
+        "top": [
+          "[22:53:10] [Server thread/INFO]: System chat: #1 Far05+Far06+Far07+12 more [ow-3g3] minecraft:overworld island#3/gen3 cells=240+140h L=1263 gt=3743 ev=0/0 tps=3.3/20.0 mspt=324.95 max=575.10 lag=172689ms missed=641",
+          "[22:53:10] [Server thread/INFO]: System chat: #2 Town00+Town01+Town02+17 more [ow-2g2] minecraft:overworld island#2/gen2 cells=36+28h L=1790 gt=3743 ev=0/0 tps=6.7/20.0 mspt=192.01 max=337.17 lag=144943ms missed=860"
+        ]
+      },
+      "online_players": [
+        "[22:53:10] [Server thread/INFO]: System chat: There are 35 of a max of 200 players online: Town00, Town01, Town02, Town03, Town04, Town05, Town06, Town07, Town08, Town09, Town10, Town11, Town12, Town13, Town14, Town15, Town16, Town17, Town18, Town19, Far05, Far06, Far07, Far08, Far09, Far10, Far11, Far12, Far13, Far14, Far15, Far16, Far17, Far18, Far19"
+      ],
+      "profile_analysis": {
+        "profile": "stand/runs/critical-fixes-old-control-v1/server/config/spark/profile-2026-10-08_22.53.14.sparkprofile",
+        "duration_seconds": 62.458,
+        "norm_main_ticks": 1204,
+        "groups": {
+          "Main": {
+            "running_ms_per_wall_second": 271.54247654423773,
+            "affected_running_self_ms_per_wall_second": 1.4729898491786482,
+            "inclusive_frames_ms_per_wall_second": {
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.keySet": 0.5123442953664863,
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.size": 0.5763873322872971,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.get": 0.06404303692081079,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.keySet": 0.44830125844567553,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.size": 0.5763873322872971,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.isEmpty": 0.12808607384162157,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.size": 0.12808607384162157,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00000fff02d05690.run": 0.19212911076243236,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00000fff02d06ee0.run": 0.6404303692081079,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00000fff02d07110.run": 0.06404303692081079,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00000fff02d07580.run": 0.19212911076243236,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.commitPreparedSeal": 0.06404303692081079,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.fabrolia$rearmPendingLeasesEntered": 0.5763873322872971,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$fabrolia$rearmPendingLeasesEntered$5": 0.12808607384162157,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$publishGlobal$0": 0.19212911076243236,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$rearmPendingLeases$0": 0.5763873322872971,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.prepareSeal": 0.06404303692081079,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishGlobal": 0.19212911076243236,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.rearmPendingLeases": 0.8325594799705403,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.seal": 0.12808607384162157,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.takeGlobalBatch": 0.12808607384162157,
+              "com.axalotl.fabrolia.common.regions.EndPlatformHandoff$Tracker.sweep": 0.06404303692081079
+            },
+            "affected_running_self_ms_per_main_tick": 0.07641196013289037
+          },
+          "Workers": {
+            "running_ms_per_wall_second": 2150.8213519485093,
+            "affected_running_self_ms_per_wall_second": 2.4976784399116205,
+            "inclusive_frames_ms_per_wall_second": {
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.get": 0.44830125844567553,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.get": 3.650453104486215,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.get": 0.8325594799705403,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.hash": 0.06404303692081079,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.isEmpty": 0.06404303692081079,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.segmentFor": 0.12808607384162157,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00000fff02d35ce0.run": 0.19212911076243236,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.firstOffering": 0.06404303692081079,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$publishIsland$0": 0.19212911076243236,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishIsland": 0.19212911076243236
+            },
+            "affected_running_self_ms_per_main_tick": 0.12956810631229235
+          }
+        },
+        "profile_sha256": "f6d946db0edc9cea6ecfeb8bebbae710cfc0265d41e588ba9bd027c3203d29cb"
+      }
+    },
+    {
+      "run": "critical-fixes-new-control-v1",
+      "report": "stand/runs/critical-fixes-new-control-v1/perf-report.json",
+      "report_sha256": "183375afdd3b3fa47e395b3f2c0bba6fcd48a63db6b72b5314afa8beb7eba6e4",
+      "fabrolia_sha256": "643af1157e22d6e69b1fd7b62585c2012f45a999981c5d8d03a28037c969465a",
+      "status": "DONE",
+      "cleanup": {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      },
+      "before": {
+        "regions": [
+          "[22:58:45] [Server thread/INFO]: System chat: §8[§f🌀§8]§7 Region scheduler ACTIVE  6 workers · grid 8×8 chunks · serial entities per region",
+          "  minecraft:overworld: 356 regions · 105 non-empty · 11442 entities",
+          "Total: 356 regions · 11442 entities"
+        ],
+        "top": [
+          "[22:58:45] [Server thread/INFO]: System chat: #1 Far05+Far06+Far07+12 more [ow-3g3] minecraft:overworld island#3/gen3 cells=240+140h L=1073 gt=2749 ev=0/0 tps=0.0/20.0 mspt=229.95 max=469.84 lag=129021ms missed=443",
+          "[22:58:45] [Server thread/INFO]: System chat: #2 Town00+Town01+Town02+17 more [ow-2g2] minecraft:overworld island#2/gen2 cells=36+28h L=1420 gt=2749 ev=0/0 tps=0.0/20.0 mspt=116.08 max=283.88 lag=107276ms missed=559"
+        ]
+      },
+      "after": {
+        "regions": [
+          "[22:59:48] [Server thread/INFO]: System chat: §8[§f🌀§8]§7 Region scheduler ACTIVE  6 workers · grid 8×8 chunks · serial entities per region",
+          "  minecraft:overworld: 356 regions · 104 non-empty · 11398 entities",
+          "Total: 356 regions · 11398 entities"
+        ],
+        "top": [
+          "[22:59:48] [Server thread/WARN]: Can't keep up! Is the server overloaded? Running 2502ms or 50 ticks behind",
+          "[22:59:49] [Server thread/INFO]: System chat: #1 Far05+Far06+Far07+12 more [ow-3g3] minecraft:overworld island#3/gen3 cells=240+140h L=1270 gt=3961 ev=0/0 tps=3.1/20.0 mspt=624.10 max=735.95 lag=182538ms missed=640",
+          "[22:59:49] [Server thread/INFO]: System chat: #2 Town00+Town01+Town02+17 more [ow-2g2] minecraft:overworld island#2/gen2 cells=36+28h L=1816 gt=3961 ev=0/0 tps=6.3/20.0 mspt=305.69 max=451.80 lag=150541ms missed=828"
+        ]
+      },
+      "online_players": [
+        "[22:59:49] [Server thread/INFO]: System chat: There are 35 of a max of 200 players online: Town00, Town01, Town02, Town03, Town04, Town05, Town06, Town07, Town08, Town09, Town10, Town11, Town12, Town13, Town14, Town15, Town16, Town17, Town18, Town19, Far05, Far06, Far07, Far08, Far09, Far10, Far11, Far12, Far13, Far14, Far15, Far16, Far17, Far18, Far19"
+      ],
+      "profile_analysis": {
+        "profile": "stand/runs/critical-fixes-new-control-v1/server/config/spark/profile-2026-10-08_22.59.53.sparkprofile",
+        "duration_seconds": 64.12,
+        "norm_main_ticks": 1215,
+        "groups": {
+          "Main": {
+            "running_ms_per_wall_second": 267.2489082969432,
+            "affected_running_self_ms_per_wall_second": 1.6219588271990018,
+            "inclusive_frames_ms_per_wall_second": {
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.size": 0.43668122270742354,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap$1.iterator": 0.561447286338116,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap$SnapshotFastEntrySet.iterator": 0.43668122270742354,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.get": 0.12476606363069244,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.getOrDefault": 0.12476606363069244,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.size": 0.43668122270742354,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.snapshotEntries": 0.43668122270742354,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.snapshotEntry": 0.37429819089207733,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.isEmpty": 0.06238303181534622,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.size": 0.06238303181534622,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00007ff002d0ed98.run": 0.43668122270742354,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00007ff002d0efc8.run": 0.24953212726138488,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00007ff002d14460.run": 0.3119151590767311,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.commitPreparedSeal": 0.06238303181534622,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.commitPublishMetrics": 0.06238303181534622,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.fabrolia$rearmPendingLeasesEntered": 0.43668122270742354,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$fabrolia$rearmPendingLeasesEntered$2": 0.18714909544603867,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$publishGlobal$0": 0.3119151590767311,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$rearmPendingLeases$0": 0.43668122270742354,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.prepareSeal": 0.06238303181534622,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishEntered": 0.06238303181534622,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishGlobal": 0.37429819089207733,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.rearmPendingLeases": 0.8109794135995009,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.seal": 0.12476606363069244,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.takeGlobalBatch": 0.18714909544603867,
+              "com.axalotl.fabrolia.common.regions.EndArrivalSavedData.rearmRestoredLeases": 0.3119151590767311,
+              "com.axalotl.fabrolia.common.regions.EndPlatformHandoff$Tracker.snapshot": 0.24953212726138488,
+              "com.axalotl.fabrolia.common.regions.EndPlatformHandoff$Tracker.sweep": 0.18714909544603867
+            },
+            "affected_running_self_ms_per_main_tick": 0.08559670781893004
+          },
+          "Workers": {
+            "running_ms_per_wall_second": 2259.2014971927633,
+            "affected_running_self_ms_per_wall_second": 3.4934497816593884,
+            "inclusive_frames_ms_per_wall_second": {
+              "com.axalotl.fabrolia.api.fastutil.Long2ByteConcurrentHashMap.get": 0.49906425452276976,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.get": 5.7392389270118525,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.getOrDefault": 5.676855895196506,
+              "com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap.segmentFor": 0.12476606363069244,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.get": 0.9357454772301933,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.getOrDefault": 0.8109794135995009,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.put": 0.06238303181534622,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.putLocked": 0.06238303181534622,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.segmentFor": 0.06238303181534622,
+              "com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap.writeSlot": 0.06238303181534622,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals$$Lambda.0x00007ff002d3fc58.run": 0.06238303181534622,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.discardCancelledRoutes": 0.06238303181534622,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.lambda$publishIsland$0": 0.06238303181534622,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.prepareSeal": 0.06238303181534622,
+              "com.axalotl.fabrolia.common.regions.CrossDimArrivals.publishIsland": 0.06238303181534622
+            },
+            "affected_running_self_ms_per_main_tick": 0.18436213991769548
+          }
+        },
+        "profile_sha256": "d9730a719eecab5e0c2c334b366c9d0c962a3dfc818f7ff58c7d963e27c4fd73"
+      }
+    }
+  ],
+  "source_sha256": {
+    "api/src/main/java/com/axalotl/fabrolia/api/fastutil/Long2ByteConcurrentHashMap.java": "9b038af600698f21cc326700390adac6d7b3b06d68179eb1809df2eb3f1cedd0",
+    "api/src/main/java/com/axalotl/fabrolia/api/fastutil/Long2IntConcurrentHashMap.java": "52b370effdaa817fde51fec562cd6be3f4be6863f8f5826545f504cc70a84b39",
+    "api/src/main/java/com/axalotl/fabrolia/api/fastutil/Long2LongConcurrentHashMap.java": "5c6871151fe584fc94280600b770837ddb4f3e457140f768658c41e6913d02cb",
+    "common/src/main/java/com/axalotl/fabrolia/common/mixin/carpet/CarpetSpawnCommandTrackingMixin.java": "2e40a12609ffe155714f41af04678440f2d621d54b62b4fe8955e702ef67c629",
+    "common/src/main/java/com/axalotl/fabrolia/common/mixin/carpet/CarpetSpawnReporterTrackingMixin.java": "20b4b3e0d847d733cd1f06bf96271c0be01618ee639c93a8e9293b7bdd4b1fab",
+    "common/src/main/java/com/axalotl/fabrolia/common/mixin/server/MinecraftServerMixin.java": "1d2621de151c8ec00b675f3c50d6886b81b25f0a83cfe91689a854df54bf503f",
+    "common/src/main/java/com/axalotl/fabrolia/common/mixin/utils/PortalTicketMixin.java": "d64f02b60449f9296d9297e5361d6d9d2611acdadf1b42ba315806eef0221890",
+    "common/src/main/java/com/axalotl/fabrolia/common/mixin/world/CrossDimTeleportMixin.java": "ed4df7fb63ae73627d79450979f6358c681fedd718e07c25d6eea3ce5e3e8e08",
+    "common/src/main/java/com/axalotl/fabrolia/common/mixin/world/EndPortalBlockMixin.java": "88765d740e21bab27aba1deaa61470d3d1b673b7dcad5c2d78b2adce9d822c24",
+    "common/src/main/java/com/axalotl/fabrolia/common/mixin/world/ServerLevelMixin.java": "c39344bfbeab4663b8cc68f63026b1ce84981a8e24b1d55c1cf65785123fa6bd",
+    "common/src/main/java/com/axalotl/fabrolia/common/mixin/world/ServerLevelNearestPlayerMixin.java": "a96c550ec067927de76b980ac6867c806e68d5beb35a243a0c950caa4afa364f",
+    "common/src/main/java/com/axalotl/fabrolia/common/regions/CarpetSpawnTrackingGuard.java": "0ec4c7343c94037e048e742d741c2d0e664dbbc3d517ebdb88fbde910a039b35",
+    "common/src/main/java/com/axalotl/fabrolia/common/regions/CrossDimArrivals.java": "7a9b6bd3e46db8ebc42a2f970d30bf2b6d5493125d06c3e36003b2e1675cd1cc",
+    "common/src/main/java/com/axalotl/fabrolia/common/regions/EndArrivalSavedData.java": "c6f3d2bb16bd32c345a9217a8a4149f351443d1c53a6afd83d3c5d467a4bb5be",
+    "common/src/main/java/com/axalotl/fabrolia/common/regions/EndPlatformHandoff.java": "4e24fbbf507425272442a1eb3f805ed416ce1cd35665e365a430fc6db3652694",
+    "common/src/main/java/com/axalotl/fabrolia/common/regions/RegionScheduler.java": "c698820817c5b4018502a6161b84ad9f11ea9c8ebe2fc3a1d505070a6cb258f8",
+    "common/src/main/java/com/axalotl/fabrolia/common/regions/RegionizedServer.java": "a730e03b16e11d310fbc14ac619947c07702c471793682ac004fdeff58f9f580",
+    "common/src/main/java/com/axalotl/fabrolia/common/regions/StagedEntityArrival.java": "aa0e2dad517a5483e913697a6bc7b050660cb6aa124ba3ba489e6201960bf47d",
+    "common/src/main/resources/fabrolia.common.mixins.json": "63965847a916c88ff7263ada333445a748b57899234173490d5580fa64d7ff3e",
+    "common/src/test/java/com/axalotl/fabrolia/common/regions/CarpetSpawnTrackingGuardTest.java": "0236120a24390e3ef35237858ebe9cd3727ae4b02e23b914a03231572578425b",
+    "common/src/test/java/com/axalotl/fabrolia/common/regions/EndArrivalSaveRegressionTest.java": "f615e7a1ee8ef0cf9c63641d7ddf8bbb37817a2bdf3f7d7c3bd6b9ec87af828d",
+    "common/src/test/java/com/axalotl/fabrolia/common/regions/PortalTicketRequestRegressionTest.java": "5e91d08c2bdd9e28ac0d2832c2b17f4d3aa0413d2b2cd27e83f9f6d7dae1e3d6",
+    "common/src/test/java/com/axalotl/fabrolia/common/utils/PrimitiveMapRegressionTest.java": "4f73f238da0f10c1c4d96246fe6838e6fcbc3575654675c4dfcf1f5fb3887c98"
+  },
+  "limits": [
+    "Eight optional external tests are skipped.",
+    "Live server checks use Fabric; NeoForge is build-tested only.",
+    "The exact owner farm was not rebuilt; the End fixture exercises real portal transfers, recovery, placement and drops.",
+    "Completed saves and clean restarts are tested; arbitrary crash exactly-once delivery is not guaranteed across world files.",
+    "New island TPS were lower in both heavily loaded local comparisons; differing entity distribution limits causal interpretation.",
+    "Known stale ServerFunctionManager assertion prevents counting the full-modpack mixin export verifier as passed."
+  ]
+}

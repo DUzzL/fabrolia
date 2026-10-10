@@ -384,6 +384,7 @@ public final class RegionScheduler {
                 int bootstrapped = 0;
                 for (ServerLevel lvl : mcServer.getAllLevels()) {
                     RegionizedServer rs = new RegionizedServer(lvl, startedGrid);
+                    EndArrivalSavedData.restoreInto(rs);
                     startedLevels.put(lvl, rs);
                     final int[] count = {0};
                     lvl.entityTickList.forEach(e -> { rs.indexAdd(e); count[0]++; });
@@ -866,6 +867,7 @@ public final class RegionScheduler {
         }
         try {
             CrossDimArrivals.flushAll(levels);
+            for (RegionizedServer rs : levels) EndArrivalSavedData.detachToFallback(rs);
         } catch (Throwable cleanup) {
             failure = mergeFailure(failure, cleanup);
         }

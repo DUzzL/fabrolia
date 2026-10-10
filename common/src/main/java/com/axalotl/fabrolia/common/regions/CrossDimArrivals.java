@@ -64,9 +64,15 @@ public final class CrossDimArrivals {
      *  recognize falling-block cohorts; never mutated pre-publish. */
     public record StagedOp(ServerLevel dest, long chunkKey, Runnable op, String kind,
                            long sourceTick, long sourceDomain, Entity entity,
-                           RouteReceipt routeReceipt) {
+                           RouteReceipt routeReceipt, net.minecraft.core.BlockPos regenPos,
+                           boolean regenDrops) {
         public StagedOp {
             if (routeReceipt == null) routeReceipt = RouteReceipt.ACCEPTED_RECEIPT;
+        }
+
+        public StagedOp(ServerLevel dest, long chunkKey, Runnable op, String kind,
+                        long sourceTick, long sourceDomain, Entity entity, RouteReceipt receipt) {
+            this(dest, chunkKey, op, kind, sourceTick, sourceDomain, entity, receipt, null, false);
         }
 
         public StagedOp(ServerLevel dest, long chunkKey, Runnable op, String kind,
@@ -83,7 +89,7 @@ public final class CrossDimArrivals {
 
         StagedOp withRouteReceipt(RouteReceipt receipt) {
             return new StagedOp(dest, chunkKey, op, kind, sourceTick, sourceDomain,
-                    entity, receipt);
+                    entity, receipt, regenPos, regenDrops);
         }
     }
 
@@ -308,8 +314,24 @@ public final class CrossDimArrivals {
      *  recognize falling-block cohorts ({@link EndPlatformHandoff}). */
     public static void stage(ServerLevel dest, long chunkKey, Runnable op, String kind,
                              Entity entity) {
+        stage(dest, chunkKey, op, kind, entity, null, false);
+    }
+
+    public static void stagePlatform(ServerLevel dest, net.minecraft.core.BlockPos pos,
+                                     boolean dropResources) {
+        var immutable = pos.immutable();
+        long chunk = net.minecraft.world.level.ChunkPos.containing(immutable).pack();
+        stage(dest, chunk, () -> net.minecraft.world.level.levelgen.feature.EndPlatformFeature
+                .createEndPlatform(dest, immutable, dropResources), "regen", null,
+                immutable, dropResources);
+    }
+
+    private static void stage(ServerLevel dest, long chunkKey, Runnable op, String kind,
+                              Entity entity, net.minecraft.core.BlockPos regenPos, boolean regenDrops) {
         EpochDomain d = currentSourceDomain();
         if (d == null) {
+            if (EndArrivalSavedData.stageFallback(dest, chunkKey, op, kind, entity,
+                    regenPos, regenDrops)) return;
             // No scheduler context (boot, datagen, plugin thread): run the
             // vanilla path inline — nothing is concurrently ticking.
             runPublished(op);
@@ -334,7 +356,8 @@ public final class CrossDimArrivals {
                 srcDomain = 0;
             }
         }
-        d.crossDimStage.add(new StagedOp(dest, chunkKey, op, kind, srcTick, srcDomain, entity));
+        d.crossDimStage.add(new StagedOp(dest, chunkKey, op, kind, srcTick, srcDomain,
+                entity, RouteReceipt.ACCEPTED_RECEIPT, regenPos, regenDrops));
         if ("entity".equals(kind)) {
             STAGED_ENTITIES.incrementAndGet();
         } else {
@@ -703,6 +726,26 @@ public final class CrossDimArrivals {
         commitPublishMetrics(published[0]);
     }
 
+    static ArrayList<StagedOp> extractForSave(java.util.List<StagedOp> pending,
+                                            EndPlatformHandoff.Tracker tracker) {
+        return fabrolia$gatedExtract(pending, pending.size(), tracker);
+    }
+
+    static void publishRecovered(ArrayList<StagedOp> released) {
+        RegionScheduler.runSuccessBodyIfHealthy(() -> publishEntered(released));
+    }
+
+    /** Caller owns the destination's save cut; do not wait under queue locks. */
+    static ArrayList<StagedOp> snapshotPending(RegionizedServer rs) {
+        ArrayList<StagedOp> result = new ArrayList<>();
+        for (var island : rs.islandRegistry.islands()) {
+            synchronized (island.pendingArrivals) { result.addAll(island.pendingArrivals); }
+        }
+        synchronized (rs.globalArrivalsLock) { result.addAll(rs.globalArrivals); }
+        result.removeIf(op -> !op.routeReceipt().awaitAccepted());
+        return result;
+    }
+
     /** audit13 — atomic global-lane batch append (package-private for the unit
      *  test). Every producer of the lane MUST come through here: a bare
      *  {@code ConcurrentLinkedQueue.addAll} is per-element, so two concurrent
@@ -951,6 +994,7 @@ public final class CrossDimArrivals {
      * cadence coupling or cross-island stall. Main-only.
      */
     public static void rearmPendingLeases(RegionizedServer rs) {
+        EndArrivalSavedData.rearmRestoredLeases(rs.level, rs.platformHandoff);
         RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$rearmPendingLeasesEntered(rs));
     }
 
@@ -1035,8 +1079,9 @@ public final class CrossDimArrivals {
                         net.minecraft.world.level.ChunkPos.getZ(chunkKey)), radius);
     }
 
-    /** Save/stop/collapse flush: staged or queued entities exist in NO level
-     *  and are invisible to entity saving — publish everything synchronously.
+    /** Save/stop/collapse flush: seal all source domains and publish eligible
+     *  arrivals synchronously. End cohorts held by the landing gate stay queued;
+     *  EndArrivalSavedData captures them before save or scheduler teardown.
      *
      *  <p>PRECONDITION: the caller is the EXCLUSIVE owner of every level (all
      *  island claims held, or the worker pool stopped). Only the stop and
@@ -1051,7 +1096,7 @@ public final class CrossDimArrivals {
      *  the portal, where vanilla's cooldown re-arm traps it until the chunk
      *  reloads from NBT). */
     /**
-     * Publish every in-flight arrival across {@code levels}.
+     * Publish every releasable in-flight arrival across {@code levels}.
      *
      * <p>The level list is a REQUIRED PARAMETER, deliberately. This used to read
      * {@code RegionScheduler.allLevels()} itself, and both of its call sites are
@@ -1094,6 +1139,11 @@ public final class CrossDimArrivals {
         }
     }
 
+    /** The server save wrapper already holds the all-level quiesce. */
+    public static void flushForServerSave() {
+        flushAll(RegionScheduler.allLevels());
+    }
+
     /** Publish exactly ONE level's in-flight arrivals — used by the per-level
      *  save hook, which quiesces only that level. Seals only THIS level's own
      *  source-side staging (safe: this level is quiesced, no worker races the
@@ -1101,11 +1151,10 @@ public final class CrossDimArrivals {
      *  {@code addDuringTeleport} mutates only the quiesced level). Arrivals
      *  this level STAGED for other destinations route to those destinations'
      *  pending queues and are published under their own save/quiesce — never
-     *  cross-thread. Durability holds: every level materializes its own
-     *  destination arrivals during its own save pass of the same autosave
-     *  cycle; anything still staged elsewhere is rewind-safe (a crash reverts
-     *  to the pre-teleport source entity in the last save) and is delivered by
-     *  normal publication within a few ticks. */
+     *  cross-thread. A full server save seals all source domains before any
+     *  level saves, so iteration order cannot omit a later source's arrivals.
+     *  The level wrapper snapshots gate-held arrivals before SavedData is
+     *  collected; it does not insert them prematurely to make them saveable. */
     public static void flushLevel(RegionizedServer rs) {
         // Seal this level's own open stage (source-side) into its destinations'
         // pending queues. Concurrent-collection moves only — route() never
@@ -1120,36 +1169,22 @@ public final class CrossDimArrivals {
         publishLevelPending(rs);
     }
 
-    /** Publish (into their now-quiesced destination level) every arrival queued
+    /** Publish (into their now-quiesced destination level) releasable arrivals
      *  for {@code rs} — its islands' pending cohorts and its global lane. No
      *  sealing: callers seal first (per their ownership scope). */
     private static void publishLevelPending(RegionizedServer rs) {
         for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
             int[] published = new int[1];
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                ArrayList<StagedOp> ops = null;
+                ArrayList<StagedOp> ops;
                 synchronized (p.pendingArrivals) {
-                    if (!p.pendingArrivals.isEmpty()) {
-                        ops = new ArrayList<>(p.pendingArrivals);
-                        p.pendingArrivals.clear();
-                    }
+                    discardCancelledRoutes(p.pendingArrivals);
+                    // Save follows the normal landing rule. Held operations
+                    // stay queued and are captured by EndArrivalSavedData.
+                    ops = extractForSave(p.pendingArrivals, rs.platformHandoff);
+                    if (p.pendingArrivals.isEmpty()) p.arrivalChains.clear();
                 }
-                if (ops != null) {
-                    discardCancelledRoutes(ops);
-                    // audit13: a flush publishes gate-HELD machine cohorts by
-                    // design (delivery beats entity loss under a quiesced save) —
-                    // but their falling-block members must still be REGISTERED as
-                    // airborne, or the machine's NEXT cohort finds no record and
-                    // releases mid-fall (window ≈ one hold per save per level).
-                    if (!ops.isEmpty()) {
-                        EndPlatformHandoff.trackAll(fabrolia$gateView(ops, ops.size()),
-                                rs.platformHandoff);
-                        published[0] = publishEntered(ops);
-                    }
-                }
-                synchronized (p.pendingArrivals) {
-                    p.arrivalChains.clear();
-                }
+                published[0] = publishEntered(ops);
             });
             commitPublishMetrics(published[0]);
             if (published[0] != 0) {
@@ -1158,30 +1193,21 @@ public final class CrossDimArrivals {
                         () -> FLUSHED_AT_SAVE.addAndGet(committed));
             }
         }
-        // Global lane force-drain: the paced publishGlobal may hold a spacing
-        // tail — a flush must deliver EVERYTHING (entities queued here exist in
-        // no level and would be lost by a save). Drained under the lane's
-        // ordering monitor so a concurrent route() batch (another level's
-        // worker sealing into this level) is taken whole or left whole —
-        // never a fragment of a cohort.
+        // Ignore pacing at this exclusive save cut, while retaining the landing
+        // gate. Drain and restore the held prefix under the ordering monitor so
+        // a concurrent route() batch stays whole and cannot overtake it.
         int[] globalPublished = new int[1];
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            ArrayList<StagedOp> gops = new ArrayList<>(8);
+            ArrayList<StagedOp> released;
             synchronized (rs.globalArrivalsLock) {
-                StagedOp gop;
-                while ((gop = rs.globalArrivals.poll()) != null) {
-                    gops.add(gop);
-                }
-                rs.globalArrivalChains.clear();
+                ArrayList<StagedOp> pending = new ArrayList<>(rs.globalArrivals);
+                rs.globalArrivals.clear();
+                discardCancelledRoutes(pending);
+                released = extractForSave(pending, rs.platformHandoff);
+                rs.globalArrivals.addAll(pending);
+                if (rs.globalArrivals.isEmpty()) rs.globalArrivalChains.clear();
             }
-            if (!gops.isEmpty()) {
-                discardCancelledRoutes(gops);
-                if (!gops.isEmpty()) {
-                    EndPlatformHandoff.trackAll(fabrolia$gateView(gops, gops.size()),
-                            rs.platformHandoff);
-                    globalPublished[0] = publishEntered(gops);
-                }
-            }
+            globalPublished[0] = publishEntered(released);
         });
         commitPublishMetrics(globalPublished[0]);
         if (globalPublished[0] != 0) {

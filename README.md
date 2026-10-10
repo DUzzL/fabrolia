@@ -13,6 +13,8 @@ MCMTFabric / JMT-MCMT) and has been rewritten around async islands.
 - Code map: [`docs/CODEMAP.md`](docs/CODEMAP.md). Design: [`docs/ASYNC-ISLANDS.md`](docs/ASYNC-ISLANDS.md).
   Requirements: [`docs/USER-REQUIREMENTS.md`](docs/USER-REQUIREMENTS.md). Changes: [`CHANGELOG.md`](CHANGELOG.md).
 - Test stand: [`docs/STAND.md`](docs/STAND.md). Profile tools: [`tools/spark/README.md`](tools/spark/README.md).
+- Documentation index: [`docs/README.md`](docs/README.md). Releases and version bumps:
+  [`docs/RELEASES.md`](docs/RELEASES.md).
 
 ## Requirements
 
@@ -24,11 +26,15 @@ MCMTFabric / JMT-MCMT) and has been rewritten around async islands.
 ## Build and install
 
 ```bash
-./gradlew :common:test :fabric:build          # JAVA_HOME = JDK 25
-# jar: fabric/build/libs/fabrolia-fabric-0.2.38+alpha-26.3.jar
+bash gradlew :common:test :fabric:build          # JAVA_HOME = JDK 25
+python3 tools/release/check_jar.py fabric/build/libs/fabrolia-alpha_3.0.1.jar
 ```
 
-Stop the server, put the jar in `mods/`, start. The production jars (Fabrolia + MCFC) are
+Current release: **`fabrolia-alpha_3.0.1.jar`** (metadata `3.0.1-alpha`). Minor releases
+increment the middle number; bugfixes increment the last number. See the
+[release workflow](docs/RELEASES.md).
+
+Stop the server, replace the old Fabrolia jar in `mods/`, start. The production jars (Fabrolia + MCFC) are
 in `release/` next to this README (not in git).
 
 ## Configuration

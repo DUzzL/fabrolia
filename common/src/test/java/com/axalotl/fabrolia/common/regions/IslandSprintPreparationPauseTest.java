@@ -106,7 +106,6 @@ class IslandSprintPreparationPauseTest {
                 IslandRegistry.PIsland.class, long.class);
         final Method commit = method(prepare.getReturnType(), "commit");
         final Method chain = method(prepare.getReturnType(), "chain");
-        final Method reserve = method(RegionWorkerPool.class, "reserveExternalTask", Runnable.class);
         final Thread watchdog;
 
         @SuppressWarnings("unchecked")
@@ -152,7 +151,7 @@ class IslandSprintPreparationPauseTest {
         }
 
         void retainNextUnit(String effect) {
-            nextUnit.submit((Runnable) invoke(reserve, pool, (Runnable) () -> effects.add(effect)));
+            nextUnit.submit(RegionWorkerPoolTestAccess.reserveExternalTask(pool, () -> effects.add(effect)));
         }
 
         void runUnit() {

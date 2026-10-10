@@ -753,16 +753,6 @@ public final class RegionWorkerPool {
         if (interrupted) Thread.currentThread().interrupt();
     }
 
-    private void leaveRootAdmission() {
-        synchronized (lifecycleLock) {
-            if (exactRootAdmissions <= 0L) {
-                throw new IllegalStateException("exact root admission completed without entry");
-            }
-            exactRootAdmissions--;
-            signalLifecycleWaiters();
-        }
-    }
-
     /**
      * Close one root-publication admission without allowing a cleanup failure to
      * replace the Throwable which already closed the generation.  Callers select
@@ -2124,30 +2114,6 @@ public final class RegionWorkerPool {
         ExternalPermit permit = new ExternalPermit();
         externalObligations++;
         return permit;
-    }
-
-    private ExternalTask reserveExternalTask(Runnable body) {
-        enterRootAdmission();
-        ExternalTask task = null;
-        Throwable failure = null;
-        try {
-            synchronized (lifecycleLock) {
-                task = reserveExternalTaskLocked(body);
-            }
-        } catch (Throwable thrown) {
-            failure = publishAndSelectFatal(thrown);
-        }
-        if (failure != null && task != null) {
-            failure = task.cancelPublication(failure);
-        }
-        failure = closeRootAdmission(failure,
-                task == null ? null : task.permit.publication, null, null);
-        if (failure != null) {
-            if (task != null) failure = task.cancelPublication(failure);
-            RegionWorkerPool.<RuntimeException>rethrow(
-                    publishAndSelectFatal(failure));
-        }
-        return task;
     }
 
     private ExternalTask reserveExternalTaskLocked(Runnable body) {

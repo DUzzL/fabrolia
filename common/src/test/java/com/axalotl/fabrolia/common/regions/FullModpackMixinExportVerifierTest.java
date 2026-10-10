@@ -444,13 +444,14 @@ class FullModpackMixinExportVerifierTest {
                     .filter(Files::isRegularFile)
                     .filter(path -> {
                         String name = path.getFileName().toString();
-                        return name.startsWith("fabrolia-fabric-") && name.endsWith(".jar");
+                        return (name.startsWith("fabrolia-fabric-")
+                                || name.startsWith("fabrolia-alpha_")) && name.endsWith(".jar");
                     })
                     .sorted()
                     .toList();
         }
         assertEquals(1, candidates.size(),
-                "expected exactly one deployed fabrolia-fabric-*.jar in " + mods
+                "expected exactly one deployed Fabrolia Fabric jar in " + mods
                         + ", found " + candidates);
         return candidates.getFirst().toAbsolutePath().normalize();
     }

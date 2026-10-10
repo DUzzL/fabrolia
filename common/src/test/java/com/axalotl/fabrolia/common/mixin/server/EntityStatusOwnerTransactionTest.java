@@ -66,6 +66,71 @@ final class EntityStatusOwnerTransactionTest {
     }
 
     @Test
+    void managedEntityLoadPollPromotesTheChunkWithoutAnotherWorldTick() throws Exception {
+        var manager = new PersistentEntitySectionManager<>(
+                TestEntity.class, new Callbacks(), new Storage());
+        ChunkPos chunk = new ChunkPos(17, 5);
+        var statuses = new PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions();
+        statuses.offer(chunk.pack(), () -> manager.updateChunkStatus(chunk, Visibility.TICKING));
+
+        // The old wait loop drained only the IO inbox. The visibility promotion
+        // that requests this load was still queued for a suspended world tick.
+        manager.processPendingLoads();
+        assertFalse(manager.areEntitiesLoaded(chunk.pack()));
+        assertFalse(statuses.isEmpty());
+
+        StatusProbe probe = new StatusProbe();
+        var field = PersistentEntityUnloadRetryMixin.class.getDeclaredField("fabrolia$statusTransitions");
+        field.setAccessible(true);
+        field.set(probe, statuses);
+        var poll = PersistentEntityUnloadRetryMixin.class.getDeclaredMethod(
+                "fabrolia$applyStatusesBeforePendingLoads",
+                org.spongepowered.asm.mixin.injection.callback.CallbackInfo.class);
+        poll.setAccessible(true);
+        poll.invoke(probe, new org.spongepowered.asm.mixin.injection.callback.CallbackInfo(
+                "processPendingLoads", false));
+        manager.processPendingLoads();
+        assertTrue(manager.areEntitiesLoaded(chunk.pack()));
+        assertTrue(statuses.idle());
+        // A subsequent poll is harmless; the accepted promotion ran once.
+        poll.invoke(probe, new org.spongepowered.asm.mixin.injection.callback.CallbackInfo(
+                "processPendingLoads", false));
+        assertTrue(manager.areEntitiesLoaded(chunk.pack()));
+    }
+
+    @Test
+    void entityLoadProgressHookIsRequiredAtTheVanillaInboxHead() throws Exception {
+        var node = new org.objectweb.asm.tree.ClassNode();
+        new org.objectweb.asm.ClassReader(PersistentEntityUnloadRetryMixin.class.getName()).accept(node, 0);
+        var hook = node.methods.stream().filter(m ->
+                m.name.equals("fabrolia$applyStatusesBeforePendingLoads")).findFirst().orElseThrow();
+        List<org.objectweb.asm.tree.AnnotationNode> annotations = new ArrayList<>();
+        if (hook.visibleAnnotations != null) annotations.addAll(hook.visibleAnnotations);
+        if (hook.invisibleAnnotations != null) annotations.addAll(hook.invisibleAnnotations);
+        var inject = annotations.stream().filter(a -> a.desc.endsWith("/Inject;")).findFirst().orElseThrow();
+        var values = new java.util.HashMap<String, Object>();
+        for (int i = 0; i < inject.values.size(); i += 2)
+            values.put((String) inject.values.get(i), inject.values.get(i + 1));
+        assertEquals(List.of("processPendingLoads"), values.get("method"));
+        assertEquals(1, values.get("require"));
+        var at = (org.objectweb.asm.tree.AnnotationNode) ((List<?>) values.get("at")).getFirst();
+        assertEquals(List.of("value", "HEAD"), at.values);
+        var calls = new ArrayList<String>();
+        for (var instruction : hook.instructions)
+            if (instruction instanceof org.objectweb.asm.tree.MethodInsnNode call) calls.add(call.name);
+        assertEquals(List.of("fabrolia$drainStatusTransitionsAtTickHead"), calls);
+    }
+
+    private static final class StatusProbe extends PersistentEntityUnloadRetryMixin {
+        @Override public com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap fabrolia$tickingChunks() {
+            throw new AssertionError("the status poll must not tick chunks");
+        }
+        @Override public net.minecraft.world.level.entity.EntitySectionStorage<EntityAccess> fabrolia$sectionStorage() {
+            throw new AssertionError("the status poll must not tick entities");
+        }
+    }
+
+    @Test
     void enteredMoveFinishesBeforeAnySectionOfTheChunkIsDemoted() throws Exception {
         IslandRegistry.PIsland owner = owner(712L);
         CountDownLatch entered = new CountDownLatch(1);

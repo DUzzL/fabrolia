@@ -1,0 +1,56 @@
+== tnt-perf-old-v1 [Region-Worker] windows=3 seconds=123.328 running 2315.8 ms/s (118.61 ms/tick)
+     37.4 ms/s     1.92 ms/tick  net.minecraft.server.level.ServerChunkCache.getChunk
+     40.0 ms/s     2.05 ms/tick  net.minecraft.world.level.Level.getChunk
+     20.5 ms/s     1.05 ms/tick  shortcutGetChunk
+     12.5 ms/s     0.64 ms/tick  fabrolia$workerChunkCacheLookup
+    241.0 ms/s    12.34 ms/tick  net.minecraft.world.entity.item.ItemEntity.tick
+     41.2 ms/s     2.11 ms/tick  net.minecraft.world.level.Level.getBlockState
+   1576.6 ms/s    80.75 ms/tick  com.axalotl.fabrolia.common.regions.IslandTickUnit.runCoordinated
+    106.9 ms/s     5.48 ms/tick  com.axalotl.fabrolia.common.regions.IslandEntityTracking.flush
+     98.4 ms/s     5.04 ms/tick  com.axalotl.fabrolia.common.regions.IslandEntityTracking.publishCurrent
+   1226.6 ms/s    62.82 ms/tick  net.minecraft.server.level.ServerLevel.tickNonPassenger
+    699.9 ms/s    35.84 ms/tick  net.minecraft.server.level.ServerChunkCache.fabrolia$tickIslandChunks
+      0.0 ms/s     0.00 ms/tick  eventFdWrite
+      2.2 ms/s     0.11 ms/tick  net.minecraft.network.Connection.send
+     82.0 ms/s     4.20 ms/tick  com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap.get
+    612.7 ms/s    31.38 ms/tick  com.axalotl.fabrolia.common.regions.IslandTickUnit.awaitEntityBarrier
+   1319.4 ms/s    67.57 ms/tick  com.axalotl.fabrolia.common.regions.RegionizedServer.tickOwned
+      0.0 ms/s     0.00 ms/tick  com.axalotl.fabrolia.common.regions.RegionizedServer.tickIslandEntitiesInVanillaOrder
+      0.0 ms/s     0.00 ms/tick  net.minecraft.world.level.entity.EntityTickList.fabrolia$snapshotEntities
+     22.2 ms/s     1.14 ms/tick  com.axalotl.fabrolia.common.regions.IslandBlockEvents.runIslandEventsEntered
+== tnt-perf-old-v1 [Server thread] windows=3 seconds=123.328 running 289.6 ms/s (14.83 ms/tick)
+    475.0 ms/s    24.33 ms/tick  net.minecraft.server.MinecraftServer.tickServer
+      0.0 ms/s     0.00 ms/tick  net.minecraft.server.level.ServerChunkCache.trackerOnMain
+    163.4 ms/s     8.37 ms/tick  com.axalotl.fabrolia.common.regions.IslandCommands.quiesceAllExcept
+      0.0 ms/s     0.00 ms/tick  com.axalotl.fabrolia.common.regions.IslandCommands.mainClaim
+      0.0 ms/s     0.00 ms/tick  eventFdWrite
+      0.0 ms/s     0.00 ms/tick  com.axalotl.fabrolia.common.regions.RegionizedServer.tickGlobalEntitiesInVanillaOrder
+      0.0 ms/s     0.00 ms/tick  net.minecraft.world.level.entity.EntityTickList.fabrolia$snapshotEntities
+== tnt-perf-new-v1 [Region-Worker] windows=3 seconds=123.155 running 1692.4 ms/s (86.34 ms/tick)
+     38.0 ms/s     1.94 ms/tick  net.minecraft.server.level.ServerChunkCache.getChunk
+     39.2 ms/s     2.00 ms/tick  net.minecraft.world.level.Level.getChunk
+     19.6 ms/s     1.00 ms/tick  shortcutGetChunk
+     15.6 ms/s     0.80 ms/tick  fabrolia$workerChunkCacheLookup
+     87.5 ms/s     4.46 ms/tick  net.minecraft.world.entity.item.ItemEntity.tick
+     35.3 ms/s     1.80 ms/tick  net.minecraft.world.level.Level.getBlockState
+   1679.4 ms/s    85.68 ms/tick  com.axalotl.fabrolia.common.regions.IslandTickUnit.runCoordinated
+    101.0 ms/s     5.15 ms/tick  com.axalotl.fabrolia.common.regions.IslandEntityTracking.flush
+     94.7 ms/s     4.83 ms/tick  com.axalotl.fabrolia.common.regions.IslandEntityTracking.publishCurrent
+    751.1 ms/s    38.32 ms/tick  net.minecraft.server.level.ServerLevel.tickNonPassenger
+    584.3 ms/s    29.81 ms/tick  net.minecraft.server.level.ServerChunkCache.fabrolia$tickIslandChunks
+      0.0 ms/s     0.00 ms/tick  eventFdWrite
+      2.4 ms/s     0.12 ms/tick  net.minecraft.network.Connection.send
+     50.7 ms/s     2.59 ms/tick  com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap.get
+      0.2 ms/s     0.01 ms/tick  com.axalotl.fabrolia.common.regions.IslandTickUnit.awaitEntityBarrier
+      0.0 ms/s     0.00 ms/tick  com.axalotl.fabrolia.common.regions.RegionizedServer.tickOwned
+    852.4 ms/s    43.48 ms/tick  com.axalotl.fabrolia.common.regions.RegionizedServer.tickIslandEntitiesInVanillaOrder
+      6.2 ms/s     0.31 ms/tick  net.minecraft.world.level.entity.EntityTickList.fabrolia$snapshotEntities
+     15.8 ms/s     0.81 ms/tick  com.axalotl.fabrolia.common.regions.IslandBlockEvents.runIslandEventsEntered
+== tnt-perf-new-v1 [Server thread] windows=3 seconds=123.155 running 256.5 ms/s (13.09 ms/tick)
+    433.0 ms/s    22.09 ms/tick  net.minecraft.server.MinecraftServer.tickServer
+      0.0 ms/s     0.00 ms/tick  net.minecraft.server.level.ServerChunkCache.trackerOnMain
+    143.6 ms/s     7.33 ms/tick  com.axalotl.fabrolia.common.regions.IslandCommands.quiesceAllExcept
+      0.0 ms/s     0.00 ms/tick  com.axalotl.fabrolia.common.regions.IslandCommands.mainClaim
+      0.0 ms/s     0.00 ms/tick  eventFdWrite
+     35.6 ms/s     1.81 ms/tick  com.axalotl.fabrolia.common.regions.RegionizedServer.tickGlobalEntitiesInVanillaOrder
+     11.5 ms/s     0.59 ms/tick  net.minecraft.world.level.entity.EntityTickList.fabrolia$snapshotEntities

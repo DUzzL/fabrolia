@@ -1,0 +1,20 @@
+plugins {
+    id 'base'
+}
+
+// Loader metadata uses SemVer; release filenames use the owner's alpha_X.Y.Z form.
+def release = project.version.toString() =~ /^(\d+)\.(\d+)\.(\d+)-alpha$/
+if (!release.matches()) {
+    throw new GradleException("Expected version=X.Y.Z-alpha in gradle.properties, got ${project.version}")
+}
+def releaseLabel = "alpha_${release[0][1]}.${release[0][2]}.${release[0][3]}"
+
+base {
+    archivesName = project.name == 'fabric' ? mod_id : "${mod_id}-${project.name}"
+}
+
+tasks.withType(AbstractArchiveTask).configureEach {
+    archiveVersion.set(releaseLabel)
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}

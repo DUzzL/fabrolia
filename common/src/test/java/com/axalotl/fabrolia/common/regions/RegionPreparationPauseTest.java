@@ -184,7 +184,7 @@ class RegionPreparationPauseTest {
                         tailAdmissionEntered.countDown();
                         await(releaseTailAdmission);
                     } finally {
-                        invoke(pool, "leaveRootAdmission");
+                        RegionWorkerPoolTestAccess.leaveRootAdmission(pool);
                     }
                 }));
                 parentEntered.countDown();
@@ -217,7 +217,7 @@ class RegionPreparationPauseTest {
                             await(tailAdmissionEntered);
                         });
                     } finally {
-                        invoke(pool, "leaveRootAdmission");
+                        RegionWorkerPoolTestAccess.leaveRootAdmission(pool);
                     }
                 });
                 await(oldAdmissionEntered);
@@ -285,7 +285,7 @@ class RegionPreparationPauseTest {
                                     throw later;
                                 });
                             } finally {
-                                invoke(pool, "leaveRootAdmission");
+                                RegionWorkerPoolTestAccess.leaveRootAdmission(pool);
                                 accepted.countDown();
                             }
                         });
@@ -472,9 +472,7 @@ class RegionPreparationPauseTest {
     }
 
     private static Runnable regionalTask(RegionWorkerPool pool, Runnable body) throws Exception {
-        Method reserve = RegionWorkerPool.class.getDeclaredMethod("reserveExternalTask", Runnable.class);
-        reserve.setAccessible(true);
-        return (Runnable) reserve.invoke(pool, body);
+        return RegionWorkerPoolTestAccess.reserveExternalTask(pool, body);
     }
 
     private static void await(CountDownLatch latch) {

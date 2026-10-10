@@ -4,7 +4,8 @@ Status: root cause confirmed by adversarial code review of decompiled c2me
 sources (15 candidate mechanisms, 14 refuted, this one survived seven
 independent refutation attempts). Fabrolia-side containment: bounded
 chunk-bridge waits, and `C2meStrandHeal` as a fail-stop forensic probe (it no
-longer heals; the `/fabrolia regions chunkheal` switch currently has no reader).
+longer heals; the obsolete `/fabrolia regions chunkheal` switch was removed in
+`3.0.1-alpha`).
 Below is the upstream report, ready to post
 to RelativityMC/C2ME-fabric.
 

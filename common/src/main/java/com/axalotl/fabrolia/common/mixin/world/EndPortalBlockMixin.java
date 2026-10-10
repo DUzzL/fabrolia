@@ -63,13 +63,10 @@ public abstract class EndPortalBlockMixin {
     private void fabrolia$stageRegen(ServerLevelAccessor level, BlockPos pos, boolean dropResources,
                                      Operation<Void> original) {
         if (!CrossDimArrivals.PUBLISHING.get()
-                && RegionScheduler.isActive()
                 && level instanceof ServerLevel sl
-                && fabrolia$shouldStageRegen(sl, pos)) {
-            long chunkKey = ChunkPos.pack(pos.getX() >> 4, pos.getZ() >> 4);
-            CrossDimArrivals.stage(sl, chunkKey,
-                    () -> EndPlatformFeature.createEndPlatform(sl, pos, dropResources),
-                    "regen");
+                && ((RegionScheduler.isActive() && fabrolia$shouldStageRegen(sl, pos))
+                    || com.axalotl.fabrolia.common.regions.EndArrivalSavedData.hasFallback(sl))) {
+            CrossDimArrivals.stagePlatform(sl, pos, dropResources);
             return;
         }
         original.call(level, pos, dropResources);

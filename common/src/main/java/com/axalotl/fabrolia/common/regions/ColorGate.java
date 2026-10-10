@@ -276,9 +276,6 @@ public final class ColorGate {
         if (r.domain != expectedDomain || expectedDomain.epoch != epoch) {
             return false;
         }
-        if (exactQueueOnlyEntityEpoch && expectedDomain.owner != null) {
-            return false;
-        }
         // Pre-dispatch, completion is undecidable: grouping may still make
         // this region owe the current entity phase.
         boolean dispatched = expectedDomain.dispatchedEpoch == epoch;

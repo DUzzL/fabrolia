@@ -79,6 +79,11 @@ final class EpochDomain {
     /** Completed by the LAST owing region's barrier contribution (R5 event path). */
     volatile CompletableFuture<Void> entityBarrier;
 
+    /** Queue-only decision and exact join which admit an island's serial entity pass. */
+    volatile long queueOnlyEntityEpoch = Long.MIN_VALUE;
+    volatile long islandEntityQueueEpoch = Long.MIN_VALUE;
+    volatile CompletableFuture<Void> islandEntityQueueBarrier;
+
     /** Owing regions still to contribute this epoch. */
     final AtomicInteger entityPending = new AtomicInteger();
 

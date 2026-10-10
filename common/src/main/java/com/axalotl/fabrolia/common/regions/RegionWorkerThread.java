@@ -23,6 +23,9 @@ public final class RegionWorkerThread extends Thread {
      *  getGameTime redirect. */
     volatile EpochDomain currentDomain;
 
+    /** Exact post-queue, serial island entity phase; thread-confined and stacked. */
+    IslandEntityPhaseScope exclusiveEntityPhase;
+
     /** Ownership partition of the owner-local function body this thread is
      *  executing ({@link IslandFunctionScope}); thread-confined, null outside. */
     FunctionPartition functionScope;

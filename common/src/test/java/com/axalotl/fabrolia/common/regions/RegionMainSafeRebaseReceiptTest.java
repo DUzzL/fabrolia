@@ -162,21 +162,9 @@ class RegionMainSafeRebaseReceiptTest {
     }
 
     private static Runnable reserveExternalTask(RegionWorkerPool pool, Runnable body) {
-        try {
-            Method reserve = RegionWorkerPool.class.getDeclaredMethod(
-                    "reserveExternalTask", Runnable.class);
-            reserve.setAccessible(true);
-            Runnable task = (Runnable) reserve.invoke(pool, body);
-            if (task == null) throw new AssertionError("external reservation rejected");
-            return task;
-        } catch (InvocationTargetException invocationFailure) {
-            Throwable cause = invocationFailure.getCause();
-            if (cause instanceof RuntimeException runtime) throw runtime;
-            if (cause instanceof Error error) throw error;
-            throw new AssertionError(cause);
-        } catch (ReflectiveOperationException reflectionFailure) {
-            throw new AssertionError(reflectionFailure);
-        }
+        Runnable task = RegionWorkerPoolTestAccess.reserveExternalTask(pool, body);
+        if (task == null) throw new AssertionError("external reservation rejected");
+        return task;
     }
 
     private static void activateWithoutWorkers(RegionWorkerPool pool) {

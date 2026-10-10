@@ -1954,15 +1954,9 @@ class RegionWorkerPoolPlayerLaneTest {
     }
 
     private static Runnable reserveExternalTask(RegionWorkerPool pool, Runnable body) {
-        try {
-            var reserve = RegionWorkerPool.class.getDeclaredMethod("reserveExternalTask", Runnable.class);
-            reserve.setAccessible(true);
-            Runnable task = (Runnable) reserve.invoke(pool, body);
-            if (task == null) throw new AssertionError("running pool rejected an external task reservation");
-            return task;
-        } catch (ReflectiveOperationException reflectionFailure) {
-            throw new AssertionError(reflectionFailure);
-        }
+        Runnable task = RegionWorkerPoolTestAccess.reserveExternalTask(pool, body);
+        if (task == null) throw new AssertionError("external reservation rejected");
+        return task;
     }
 
     private static void drainOrphanHelp(RegionWorkerPool pool, Region region) {
@@ -2027,7 +2021,7 @@ class RegionWorkerPoolPlayerLaneTest {
     }
 
     private static void leaveRootAdmission(RegionWorkerPool pool) {
-        invokePrivate(pool, "leaveRootAdmission", new Class<?>[0]);
+        RegionWorkerPoolTestAccess.leaveRootAdmission(pool);
     }
 
     private static boolean deferExactRootLocked(RegionWorkerPool pool, Runnable root) {

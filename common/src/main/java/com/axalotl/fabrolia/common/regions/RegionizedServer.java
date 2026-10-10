@@ -25,20 +25,17 @@ import net.minecraft.server.level.ServerChunkCache;
 /**
  * Per-{@link ServerLevel} region container + region-owned entity index + tick dispatcher.
  *
- * <p>Region-owned ticking (B1/B2): every region owns the live entity set for its grid cell
- * ({@link Region#entities}), maintained incrementally from EntityTickList add/remove plus
- * lazy cross-cell re-routing inside the tick loop. Per tick, {@link #dispatchOwnedEntityTicks}
- * submits one task per non-empty region; the task runs the COMPLETE vanilla per-entity
- * sequence for its own entities — frozen check, ticking-range/holder gate, vehicle skip,
- * {@code checkDespawn()} immediately before the tick (vanilla interleaving, more faithful
- * than the old global despawn pre-pass), then the tick itself. Main thread does no global
- * list walk, no classify loop, no per-tick grouping, and no sync-entity loop: items,
- * minecarts, projectiles, falling blocks tick serially inside their region task — region
- * serialization provides the same local ordering the old sync-blacklist enforced globally.
+ * <p>The live region entity sets are ownership indexes maintained by
+ * EntityTickList add/remove and movement. They do not define Vanilla ordering.
+ * The server tick joins global queues and visits the global remainder on Main;
+ * each island joins its member queues and serially visits a finite snapshot of
+ * the actual linked EntityTickList, filtered to its domain. Independent island
+ * passes remain parallel. The existing per-entity admission retains the frozen,
+ * ticking-range, holder, vehicle, despawn and tick-token gates.
  *
- * <p>Entities that must still tick on the server thread (modded entities without
- * {@code @FabroliaCompatible} — API contract — and UUID-blacklisted ones) are queued to
- * {@link RegionScheduler#queueMainSyncTick} and drained by main inside the barrier pump.
+ * <p>Main-only compatibility ticks and nonlocal TNT explosion footprints use
+ * the existing fenced Main lane. Legacy region-dispatch callers retain their
+ * region-owned dispatch API, separate from the canonical server-tick passes.
  */
 public final class RegionizedServer {
 
@@ -59,6 +56,7 @@ public final class RegionizedServer {
         this.level = level;
         this.regionizer = new ThreadedRegionizer(level, grid);
         this.regionizer.owner = this;   // epoch source for fresh-region doneEpoch stamping
+        this.platformHandoff = new EndPlatformHandoff.Tracker(h -> EndArrivalSavedData.settled(level, h));
     }
 
     public ThreadedRegionizer regionizer() { return regionizer; }
@@ -113,8 +111,9 @@ public final class RegionizedServer {
      *  strikes. Level identity is stable across all of that. "Settled" =
      *  the vanilla removal event: a FallingBlockEntity is removed on the
      *  same entity tick it places its block, breaks, or drops as an item. */
-    final EndPlatformHandoff.Tracker platformHandoff = new EndPlatformHandoff.Tracker(
-            h -> ((net.minecraft.world.entity.Entity) h).isRemoved());
+    final EndPlatformHandoff.Tracker platformHandoff;
+    /** Main restores once, after the ServerLevel storage is fully initialized. */
+    boolean endArrivalsRestored;
 
     private static boolean failClosedMarkerChecked;
 
@@ -169,7 +168,7 @@ public final class RegionizedServer {
     /** Does {@code r} still owe its entity phase this epoch (of ITS domain)? */
     boolean owesEntityPhase(Region r) {
         long e = r.domain.epoch;
-        if (r.domain == globalDomain && queueOnlyEntityEpoch == e) return false;
+        if (isQueueOnlyEntityEpoch(r.domain, e)) return false;
         return r.groupedEpoch == e && r.entityEpoch < e;
     }
 
@@ -181,9 +180,13 @@ public final class RegionizedServer {
      * never borrow the level's exact-player dispatch decision.
      */
     boolean isQueueOnlyEntityEpoch(EpochDomain expectedDomain, long expectedEpoch) {
-        return expectedDomain == globalDomain
-                && expectedDomain.epoch == expectedEpoch
-                && queueOnlyEntityEpoch == expectedEpoch;
+        return expectedDomain != null && expectedDomain.epoch == expectedEpoch
+                && (expectedDomain == globalDomain
+                    ? queueOnlyEntityEpoch == expectedEpoch
+                    : expectedDomain.owner != null
+                        && expectedDomain.owner.domainLevel() == level
+                        && expectedDomain.owner.domain == expectedDomain
+                        && expectedDomain.queueOnlyEntityEpoch == expectedEpoch);
     }
 
     /**
@@ -2050,20 +2053,12 @@ public final class RegionizedServer {
         // ownerless ones are already covered by the vanilla list + index
         // dual-write.
         if (unstashedEvs != null) {
-            BlockEventQueueAccess acc = (BlockEventQueueAccess) level;
             for (int i = 0, n = unstashedEvs.size(); i < n; i++) {
                 IslandRegistry.PIsland.StampedEvent ev = unstashedEvs.get(i);
                 IslandRegistry.PIsland owner = asyncActive
                         ? islandOwnerOfChunk(net.minecraft.world.level.ChunkPos.pack(ev.ev().pos()))
                         : null;
-                if (owner != null) {
-                    // Carry keeps both the source stamp and canonical pending identity.
-                    owner.stashStamped(ev);
-                } else {
-                    synchronized (acc.fabrolia$blockEventLock()) {
-                        acc.fabrolia$blockEvents().add(ev.ev());
-                    }
-                }
+                IslandBlockEvents.carryPendingEvent(level, owner, ev);
             }
         }
         if (unstashedSnapshotKeys != null && asyncActive) {
@@ -2710,32 +2705,14 @@ public final class RegionizedServer {
         long key = regionizer.grid.keyFor(e.chunkPosition().pack());
         Region r = regionizer.admitEntity(key, e);
         ((RegionKeyed) e).fabrolia$setRegionKey(key);
-        // VANILLA ADD-DURING-ITERATION DEFERRAL (2026-07-22 duper lifecycle
-        // parity, pushtrace-proven): vanilla's EntityTickList never visits an
-        // entity added while the tick pass is iterating — its first tick is
-        // NEXT tick. The region drain iterated the live skip-list, so entities
-        // created mid-drain (falling-block → item conversions, mid-phase
-        // spawns) ticked the SAME tick: their squeeze-escape impulse fired one
-        // tick early (measured t=416 vs vanilla t=417 on the End duper) — the
-        // documented \"may tick this tick or next\" relaxation, now closed.
-        // Consuming the current epoch's tick token makes the in-flight drain
-        // skip the newcomer; it first-ticks next epoch, exactly vanilla.
-        // Phase-head arrivals (CrossDimArrivals) publish BEFORE regions are
-        // claimed — currentWorker is null there, so End-portal copies keep
-        // their vanilla same-server-tick first tick.
-        //
-        // HANDOFF-PHASE INVARIANT ENFORCEMENT (operator spec 2026-07-24): a
-        // cross-dimension PUBLISH must make the arrival eligible in exactly this
-        // (publication) epoch — never deferred to a later one. Normally the
-        // publish runs at the unit head with currentWorker null, so the deferral
-        // below is already skipped; this guard makes it robust against ANY path
-        // that publishes while a worker is recorded on the region (a partially
-        // claimed region mid-rebuild): a cross-dim arrival is never token-consumed
-        // out of its own publication epoch, so it ticks exactly once at the
-        // defined boundary and its arrival velocity is applied without an
-        // off-phase gap. Non-publish mid-iteration adds keep the vanilla
-        // "added-during-tick ⇒ ticks next tick" deferral.
+        // Canonical island/global passes use a finite EntityTickList snapshot:
+        // births after that cut first appear next phase, regardless of target
+        // region claims. Preserve token deferral for legacy live-set dispatches,
+        // but never consume a birth's token during the queue-only join. Scheduled
+        // and block-event births precede the snapshot and tick this phase.
+        // Cross-dimension publication keeps its explicit same-epoch admission.
         if (r.currentWorker() != null && r.domain != null
+                && !isQueueOnlyEntityEpoch(r.domain, r.domain.epoch)
                 && !CrossDimArrivals.PUBLISHING.get()) {
             ((RegionKeyed) e).fabrolia$tryMarkRegionTick(r.domain.tickToken());
         }
@@ -2910,11 +2887,66 @@ public final class RegionizedServer {
      * EntityTickList pass.  Exact player mode uses this as its quiescence boundary.
      */
     public CompletableFuture<Void> dispatchPreEntityWork() {
-        if (asyncActive) {
-            throw new IllegalStateException(
-                    "exact player ordinal mode cannot drain autonomous async islands");
-        }
         return dispatchOwnedEntityTicks(false);
+    }
+
+    /** Canonical Main pass over the global remainder after its queue-only join. */
+    public void tickGlobalEntitiesInVanillaOrder(java.util.function.Consumer<Entity> consumer) {
+        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())
+                || !isQueueOnlyEntityEpoch(globalDomain, globalDomain.epoch)
+                || !globalDomain.entityDispatchPublication.isAccepted()) {
+            throw new IllegalStateException("global ordered entity pass outside its Main queue boundary");
+        }
+        // An entity is visited only through its region key, and indexAdd/indexMove
+        // admit it to that region's set before publishing the key. With async
+        // islands every populated cell joined an island at this tick's head
+        // rebuild, so the global remainder is normally empty: skip copying the
+        // whole level list then (it cost Main a full-list walk every tick).
+        if (!hasGlobalDomainEntities()) return;
+        List<Entity> snapshot = ((EntityTickListSnapshotAccess) level.entityTickList)
+                .fabrolia$snapshotEntities();
+        // One region lookup per grid key instead of one per entity. Global
+        // regions are Main-owned during this pass; foreign ones stay foreign.
+        var regionsByKey = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<Region>();
+        var foreignKeys = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        for (Entity entity : snapshot) {
+            long key = ((RegionKeyed) entity).fabrolia$getRegionKey();
+            Region region = regionsByKey.get(key);
+            if (region == null) {
+                if (foreignKeys.contains(key)) continue;
+                region = regionizer.peekByGridKey(key);
+                if (region == null || region.domain != globalDomain
+                        || region.state() != RegionState.ACTIVE) {
+                    foreignKeys.add(key);
+                    continue;
+                }
+                regionsByKey.put(key, region);
+            }
+            Region owner = region;
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                // Lazy cross-cell re-routing, as the region tick body did for
+                // global entities: keep the ownership index on the entity's
+                // current cell so an island adopts it once it walks in.
+                if (!entity.isRemoved()) {
+                    long current = regionizer.grid.keyFor(entity.chunkPosition().pack());
+                    if (current != owner.gridKey) indexMove(entity, owner, current);
+                }
+                if (((RegionKeyed) entity).fabrolia$tryMarkRegionTick(globalDomain.tickToken())) {
+                    consumer.accept(entity);
+                }
+            });
+        }
+    }
+
+    /** Whether any active global-domain region indexes an entity (weakly consistent). */
+    private boolean hasGlobalDomainEntities() {
+        boolean[] found = new boolean[1];
+        regionizer.forEachRegion(region -> {
+            if (!found[0] && region.domain == globalDomain && region.entityCount.get() > 0L) {
+                found[0] = true;
+            }
+        });
+        return found[0];
     }
 
     /**
@@ -3434,7 +3466,7 @@ public final class RegionizedServer {
         return dispatchEntityPhase(d, regions, true);
     }
 
-    private CompletableFuture<Void> dispatchEntityPhase(EpochDomain d, List<Region> regions,
+    CompletableFuture<Void> dispatchEntityPhase(EpochDomain d, List<Region> regions,
                                                          boolean tickEntities) {
         AtomicReference<EntityDispatchPlan> planRef = new AtomicReference<>();
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
@@ -3481,7 +3513,14 @@ public final class RegionizedServer {
             // is fenced on OFFERING. This variable/fallible work runs outside
             // lifecycleLock; only the final receipt CAS is the success commit.
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                if (!tickEntities) queueOnlyEntityEpoch = epoch;
+                if (!tickEntities) {
+                    if (d == globalDomain) queueOnlyEntityEpoch = epoch;
+                    else {
+                        d.queueOnlyEntityEpoch = epoch;
+                        d.islandEntityQueueBarrier = result;
+                        d.islandEntityQueueEpoch = epoch;
+                    }
+                }
                 if (eventSched) {
                     d.entityPending.set(active.size());
                     d.entityBarrier = eventBarrier;
@@ -3575,9 +3614,9 @@ public final class RegionizedServer {
             }
         }
         final long epoch = d.epoch;
-        if (!tickEntities && d != globalDomain) {
+        if (!tickEntities && d != globalDomain && d.owner == null) {
             throw new IllegalStateException(
-                    "queue-only entity dispatch requires the global domain");
+                    "queue-only entity dispatch requires an owned domain");
         }
 
         // Build the complete dispatch plan before publishing a single epoch
@@ -3923,6 +3962,126 @@ public final class RegionizedServer {
     }
 
     /**
+     * Regions are an ownership index, not Vanilla's entity iteration order.
+     * After the queue-only join, this island visits one finite snapshot of the
+     * actual linked EntityTickList. Independent island coordinators remain
+     * parallel; interacting regions of this island share the same serial pass.
+     */
+    void tickIslandEntitiesInVanillaOrder(IslandRegistry.PIsland island) {
+        RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
+        EpochDomain domain = island.domain;
+        var phases = new java.util.LinkedHashMap<Region, IslandEntityRegionPhase>();
+        var visits = new ArrayList<IslandEntityVisit>();
+        Throwable failure = null;
+        try (IslandEntityPhaseScope ignored = IslandEntityPhaseScope.enter(this, island)) {
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                List<Entity> snapshot = ((EntityTickListSnapshotAccess) level.entityTickList)
+                        .fabrolia$snapshotEntities();
+                // The snapshot spans the whole level, so resolve each grid key once
+                // (a concurrent-map probe per entity dominated this cut). This unit
+                // owns its regions; a foreign key cannot become ours mid-unit.
+                var phaseByKey = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<IslandEntityRegionPhase>();
+                for (Entity entity : snapshot) {
+                    long key = ((RegionKeyed) entity).fabrolia$getRegionKey();
+                    IslandEntityRegionPhase phase = phaseByKey.get(key);
+                    if (phase == null) {
+                        Region region = regionizer.peekByGridKey(key);
+                        phase = region == null || region.domain != domain
+                                || region.state() != RegionState.ACTIVE
+                                ? IslandEntityRegionPhase.FOREIGN
+                                : phases.computeIfAbsent(region, IslandEntityRegionPhase::new);
+                        phaseByKey.put(key, phase);
+                    }
+                    if (phase != IslandEntityRegionPhase.FOREIGN) {
+                        visits.add(new IslandEntityVisit(entity, phase));
+                    }
+                }
+            });
+            try {
+                // Keep the mod-facing region hooks and spatial APIs under real
+                // region claims as well as the exclusive enclosing unit claim.
+                for (IslandEntityRegionPhase phase : phases.values()) {
+                    RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                        worker.currentRegion = phase.region;
+                        if (!phase.region.tryClaimIslandEntityPhase(worker, domain, domain.epoch)) {
+                            throw new IllegalStateException(
+                                    "joined island entity region still has a claimant");
+                        }
+                        phase.claimed = true;
+                        phase.region.stampAcquire("island-entities");
+                        phase.stamped = true;
+                        RegionTickHooks.firePre(phase.region);
+                    });
+                }
+                TickRateManager tickRate = level.tickRateManager();
+                DistanceManager distance = level.getChunkSource().chunkMap.getDistanceManager();
+                for (IslandEntityVisit visit : visits) {
+                    IslandEntityRegionPhase phase = visit.phase;
+                    worker.currentRegion = phase.region;
+                    long start = System.nanoTime();
+                    tickOne(phase.region, visit.entity, level, tickRate, distance, phase.gate);
+                    phase.nanos += System.nanoTime() - start;
+                }
+                for (IslandEntityRegionPhase phase : phases.values()) {
+                    worker.currentRegion = phase.region;
+                    RegionScheduler.runSuccessBodyIfHealthy(() -> RegionTickHooks.firePost(phase.region));
+                    RegionScheduler.commitSuccessIfHealthy(() -> {
+                        phase.region.stagedPhaseNanos = phase.nanos;
+                        commitEntityPhase(phase.region);
+                    });
+                }
+            } catch (Throwable thrown) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+            } finally {
+                for (IslandEntityRegionPhase phase : phases.values()) {
+                    if (!phase.claimed) continue;
+                    worker.currentRegion = phase.region;
+                    if (phase.stamped) {
+                        try {
+                            phase.region.stampRelease("island-entities");
+                        } catch (Throwable cleanup) {
+                            failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
+                        }
+                    }
+                    try {
+                        phase.region.release(worker);
+                    } catch (Throwable cleanup) {
+                        failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
+                    }
+                    try {
+                        phase.region.finishClaimTransaction();
+                    } catch (Throwable cleanup) {
+                        failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
+                    }
+                }
+                worker.currentRegion = null;
+            }
+        } catch (Throwable thrown) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, thrown));
+        }
+        if (failure != null) RegionizedServer.<RuntimeException>rethrow(failure);
+        RegionScheduler.throwWorkerFailureIfAny();
+    }
+
+    private record IslandEntityVisit(Entity entity, IslandEntityRegionPhase phase) {}
+
+    private static final class IslandEntityRegionPhase {
+        /** Cut-local marker for a grid key outside this island; never claimed. */
+        static final IslandEntityRegionPhase FOREIGN = new IslandEntityRegionPhase(null);
+
+        final Region region;
+        final it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap gate =
+                new it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap(16);
+        boolean claimed;
+        boolean stamped;
+        long nanos;
+
+        IslandEntityRegionPhase(Region region) {
+            this.region = region;
+        }
+    }
+
+    /**
      * The per-region tick body: vanilla's entity loop, serial on the claiming
      * worker in entity-ID order. Independently eligible regions remain parallel.
      */
@@ -4182,6 +4341,11 @@ public final class RegionizedServer {
         // remote bed. The plain MAIN_SYNC lane claims only THIS island; the write
         // needs the bed's owner quiescent too, so tick under the global fence.
         if (ParallelProcessor.sleepsOutsideIsland(e, this, region.domain.owner)) {
+            RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
+            return;
+        }
+        if (e instanceof net.minecraft.world.entity.item.PrimedTnt tnt
+                && TntExplosionFootprint.requiresGlobalFence(this, region, tnt)) {
             RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
             return;
         }

@@ -24,12 +24,12 @@ import java.util.concurrent.locks.LockSupport;
  *       ticks for its entity-ticking chunks, at the island's cadence on its
  *       L-clock ({@link IslandChunkPassAccess}). Main never arms island-owned
  *       regions; the global mob cap reads the summed {@link SpawnCapLanes}.</li>
- *   <li><b>entity phase</b> — member-region dispatch through the exact R5
- *       event-scheduler machinery (ColorGate eligibility, worker claims, owed
- *       phases, barrier contributions). The coordinator consumes its own
- *       accepted member-region obligations. Independent island roots run
- *       concurrently; a nonlocal producer retains its source claim while its
- *       exact Main fallback completes.</li>
+ *   <li><b>entity phase</b> — join member-region queues, then visit one
+ *       finite snapshot of Vanilla's linked EntityTickList in insertion order
+ *       under the exclusive unit claim. IslandEntityPhaseScope authenticates
+ *       the successful queue join and permits complete block callbacks inline
+ *       throughout the island and its halo. Independent islands stay parallel;
+ *       nonlocal compatibility ticks retain the fenced Main fallback.</li>
  *   <li><b>deferred cross-region replay</b> — effects that crossed member
  *       region borders during the phase, routed here by target; replayed
  *       single-threaded with every member region quiescent — the exact
@@ -1180,9 +1180,10 @@ public final class IslandTickUnit {
                         }
                     }
                     RegionScheduler.throwWorkerFailureIfAny();
-                    CompletableFuture<Void> barrier = rs.dispatchEntityPhase(d, members);
+                    CompletableFuture<Void> barrier = rs.dispatchEntityPhase(d, members, false);
 
                     awaitEntityBarrier(rs, island, d, members, barrier);
+                    rs.tickIslandEntitiesInVanillaOrder(island);
                     long debugCost = island.debugCostNanos;
                     if (debugCost > 0) {
                         // Diagnostics knob: park in a loop — pool wake permits

@@ -1,5 +1,5 @@
 plugins {
-    id 'java'
+    id 'fabrolia-java'
     id 'maven-publish'
     id 'com.gradleup.nmcp' version '1.4.4'
     id 'signing'
@@ -15,16 +15,8 @@ base {
 }
 
 java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(project.java_version)
-    }
-
     withSourcesJar()
     withJavadocJar()
-}
-
-tasks.withType(JavaCompile).configureEach {
-    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
 }
 
 repositories {

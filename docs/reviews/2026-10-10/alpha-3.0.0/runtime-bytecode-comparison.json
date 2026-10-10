@@ -1,0 +1,35 @@
+{
+  "baseline_sha256": "a500514f97a672547cbb9eb1dbe5364da5360a6b53104cb32047ad5c61cc86f0",
+  "candidate_sha256": "44f71921a1ccffb4b5ec60e705e881ba09f7c3a50e7b8dfdb4d03cd7730b276f",
+  "runtime_classes": 898,
+  "added_classes": [],
+  "removed_classes": [],
+  "changed_classes": [],
+  "nested_libraries": [
+    {
+      "entry": "META-INF/jars/core-3.8.1.jar",
+      "classes": 237,
+      "same_classes": true
+    },
+    {
+      "entry": "META-INF/jars/fabric-permissions-api-0.7.0.jar",
+      "classes": 7,
+      "same_classes": true
+    },
+    {
+      "entry": "META-INF/jars/fabrolia-api-1.0.4.jar",
+      "classes": 95,
+      "same_classes": true
+    },
+    {
+      "entry": "META-INF/jars/mixinsquared-fabric-0.3.3.jar",
+      "classes": 62,
+      "same_classes": true
+    },
+    {
+      "entry": "META-INF/jars/toml-3.8.1.jar",
+      "classes": 15,
+      "same_classes": true
+    }
+  ]
+}

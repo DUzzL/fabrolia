@@ -19,6 +19,8 @@ build
 .gradle
 
 # other
+.DS_Store
+._*
 eclipse
 run
 runs

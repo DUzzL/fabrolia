@@ -200,6 +200,23 @@ def check_functions():
           tick_head_fence=head_fence, per_function_fences=per_fn, fences=plain)
 
 
+def check_carpet_spawn_tracking():
+    raw('carpet_spawn_command', 'carpet commandSpawn true')
+    commands = ('spawn tracking start', 'spawn tracking start -64 -64 -64 64 128 64',
+                'spawn test', 'spawn test 10', 'spawn test 10 white')
+    refusals = {command: raw('carpet_spawn_tracking', command) for command in commands}
+    disabled = raw('carpet_spawn_tracking', 'spawn tracking')
+    mobcaps = raw('carpet_spawn_mobcaps', 'spawn mobcaps')
+    stopped = raw('carpet_spawn_stop', 'spawn tracking stop')
+    check('0_carpet_spawn_tracking_guard',
+          all(any('Carpet spawn tracking and /spawn test are disabled' in line for line in out)
+              for out in refusals.values())
+          and any('Spawn tracking is disabled' in line for line in disabled)
+          and not any('Unknown or incomplete command' in line for line in mobcaps)
+          and any('Spawning tracking stopped.' in line for line in stopped),
+          refusals=refusals, disabled=disabled, mobcaps=mobcaps, stopped=stopped)
+
+
 def check_advancements():
     raw('advstats_before', 'fabrolia regions debug advstats')
     # a) plain command grant
@@ -479,7 +496,10 @@ try:
         ex(f'tp {name} {x} {Y} {z}')
     phase('joined')
     deadline = time.time() + 900
-    need = [(0, 0), (-250, 0), (250, 0), (0, -92)] + SPREAD
+    # Protocol clients request view distance 2. Distant town-edge chunks are
+    # not requested by any client, so waiting for them always spent 900s here.
+    # Wait for the actual client locations before populating the fixture.
+    need = TOWN + SPREAD
     while time.time() < deadline and not all(any('Test passed' in l for l in ex(f'execute if loaded {x} {Y} {z}'))
                                              for x, z in need):
         time.sleep(2)
@@ -495,7 +515,8 @@ try:
     time.sleep(WARM_SECONDS)
     phase('warm')
     spark_tps('tps_warm')
-    for step, fn in (('functions', check_functions), ('advancements', check_advancements),
+    for step, fn in (('carpet_spawn_tracking', check_carpet_spawn_tracking),
+                     ('functions', check_functions), ('advancements', check_advancements),
                      ('disconnect', check_disconnect), ('nether', check_nether), ('saves', check_saves)):
         phase(step)
         try:

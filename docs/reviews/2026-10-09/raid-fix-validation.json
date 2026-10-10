@@ -1,0 +1,1103 @@
+{
+  "artifacts": {
+    "fabric": {
+      "path": "fabric/build/libs/fabrolia-fabric-0.2.38+alpha-26.3.jar",
+      "sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db"
+    },
+    "neoforge": {
+      "path": "neoforge/build/libs/fabrolia-neoforge-0.2.38+alpha-26.3.jar",
+      "sha256": "e2c4ec30fc4dabe7786010f54da3b0d85cc7a678ef90158ded8c02189615fdc4"
+    }
+  },
+  "build": {
+    "counts": {
+      "errors": 0,
+      "failures": 0,
+      "skipped": 8,
+      "tests": 1406
+    },
+    "different_nested_api_classes": [],
+    "different_shared_classes": [],
+    "fabric_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+    "identical_nested_api_classes": 95,
+    "identical_shared_classes": 881,
+    "neoforge_sha256": "e2c4ec30fc4dabe7786010f54da3b0d85cc7a678ef90158ded8c02189615fdc4",
+    "removed_classes_remaining": {
+      "RaidIslandMerge": [],
+      "RaidRelocationColumn": [],
+      "RaidVillageDebounce": [],
+      "SectionStorageGetOrLoadAccessor": []
+    }
+  },
+  "build_log": "/tmp/fabrolia-raid-fix/parity-poi-final-build-v2.log",
+  "changes": [
+    "Remove 100-local-tick village grace",
+    "Remove extended vertical village search",
+    "Remove automatic raid PORTAL tickets and dispatch hooks",
+    "Remove synchronous POI loading from village-distance queries while preserving same-query graph updates",
+    "Progress owner-safe entity status transactions before the vanilla managed load inbox poll"
+  ],
+  "compact_design": {
+    "final_mod": {
+      "candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+      "checks": [
+        {
+          "name": "actual_raid_created",
+          "pass": true
+        },
+        {
+          "name": "actual_wave_spawned",
+          "pass": true
+        },
+        {
+          "name": "native_bottle_effect",
+          "pass": true
+        },
+        {
+          "name": "new_raid_loot",
+          "pass": true
+        },
+        {
+          "name": "complete_raid_victory",
+          "pass": true
+        },
+        {
+          "name": "clean_shutdown",
+          "pass": true
+        },
+        {
+          "name": "no_crash_reports",
+          "pass": true
+        },
+        {
+          "name": "no_critical_log_lines",
+          "pass": true
+        }
+      ],
+      "cleanup": {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      },
+      "critical_log_lines": [],
+      "driver_sha256": "6a84c9b698a03514be056f090ac86129c093920f223965124236706a95af9e4a",
+      "final_loot": 134,
+      "final_raid_statuses": {
+        "next_id": 2,
+        "raids": [
+          {
+            "active": 1,
+            "center": [
+              -678,
+              85,
+              -66
+            ],
+            "cooldown_ticks": 0,
+            "group_count": 7,
+            "groups_spawned": 8,
+            "heroes_of_the_village": [
+              [
+                1277264861,
+                51001246,
+                -1426359361,
+                -1485703379
+              ]
+            ],
+            "id": 2,
+            "post_raid_ticks": 40,
+            "raid_omen_level": 3,
+            "started": 1,
+            "status": "victory",
+            "ticks_active": 7061,
+            "total_health": 538.0
+          }
+        ],
+        "tick": 9063
+      },
+      "initial_loot": 0,
+      "manifest_candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+      "max_groups_spawned": 8,
+      "native_bottle_effect": [
+        "[17:02:01] [Server thread/INFO]: System chat: FarmBot has the following entity data: [{amplifier: 2b, show_icon: 1b, id: \"minecraft:raid_omen\", duration: 573}]",
+        "[17:02:01] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000033"
+      ],
+      "new_raid_ids": 1,
+      "operator_before": [
+        "[17:02:01] [Server thread/INFO]: System chat:  = [[-676.5, 62.875, -69.5], crouching, 1.26999998093, true, [0, -0.207861676812, 0.97815823555], cobblestone_slab] (27ms)",
+        "[17:02:01] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000037"
+      ],
+      "report_path": "stand/runs/raid-compact-final-v4/raid-design-report.json",
+      "report_sha256": "080aed5fa8c2bfee538c3cb3860c3745ec6cb54bfa6ff0125ed087680959ae78",
+      "require_victory": true,
+      "run": "raid-compact-final-v4",
+      "selected_sha256": "09b49918d2f7fdc58a8835c7bfb139fc3ebc481bbe7133f6a7496423ff97ff12",
+      "status": "PASS",
+      "vanilla_reference": false,
+      "victory_elapsed_seconds": 397.67649191600503,
+      "world_input": {
+        "path": "/private/tmp/fabrolia-raid-fix/designs/easycompact.zip",
+        "prefix": "World map/Compact Raid farm/",
+        "sha256": "fcb8ad2ebaf2daffc4f0b01e5aeb9ac7fe7eb223edda4e9e4d9e3408fdd8e050"
+      }
+    },
+    "vanilla": {
+      "candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+      "checks": [
+        {
+          "name": "actual_raid_created",
+          "pass": true
+        },
+        {
+          "name": "actual_wave_spawned",
+          "pass": true
+        },
+        {
+          "name": "native_bottle_effect",
+          "pass": true
+        },
+        {
+          "name": "new_raid_loot",
+          "pass": true
+        },
+        {
+          "name": "complete_raid_victory",
+          "pass": true
+        },
+        {
+          "name": "clean_shutdown",
+          "pass": true
+        },
+        {
+          "name": "no_crash_reports",
+          "pass": true
+        },
+        {
+          "name": "no_critical_log_lines",
+          "pass": true
+        }
+      ],
+      "cleanup": {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      },
+      "critical_log_lines": [],
+      "driver_sha256": "6a84c9b698a03514be056f090ac86129c093920f223965124236706a95af9e4a",
+      "final_loot": 141,
+      "final_raid_statuses": {
+        "next_id": 2,
+        "raids": [
+          {
+            "active": 1,
+            "center": [
+              -678,
+              85,
+              -66
+            ],
+            "cooldown_ticks": 0,
+            "group_count": 7,
+            "groups_spawned": 8,
+            "heroes_of_the_village": [
+              [
+                1277264861,
+                51001246,
+                -1426359361,
+                -1485703379
+              ]
+            ],
+            "id": 2,
+            "post_raid_ticks": 40,
+            "raid_omen_level": 3,
+            "started": 1,
+            "status": "victory",
+            "ticks_active": 5440,
+            "total_health": 562.0
+          }
+        ],
+        "tick": 7041
+      },
+      "initial_loot": 0,
+      "manifest_candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+      "max_groups_spawned": 8,
+      "native_bottle_effect": [
+        "[16:45:47] [Server thread/INFO]: System chat: FarmBot has the following entity data: [{duration: 573, show_icon: 1b, amplifier: 2b, id: \"minecraft:raid_omen\"}]",
+        "[16:45:47] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000031"
+      ],
+      "new_raid_ids": 1,
+      "operator_before": [
+        "[16:45:47] [Server thread/INFO]: System chat:  = [[-676.5, 62.875, -69.5], crouching, 1.26999998093, true, [0, -0.207861676812, 0.97815823555], cobblestone_slab] (28ms)",
+        "[16:45:47] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000035"
+      ],
+      "report_path": "stand/runs/raid-compact-vanilla-v5/raid-design-report.json",
+      "report_sha256": "e863e65f6767aca566b6366db038a00e6b5f5a4fdf5eeafcce28418c71080c24",
+      "require_victory": true,
+      "run": "raid-compact-vanilla-v5",
+      "selected_sha256": "21fbaa6444e583bc61d28d0a59bb3ed664df188f105ae6ef633429a79c3ebe72",
+      "status": "PASS",
+      "vanilla_reference": true,
+      "victory_elapsed_seconds": 305.7699510829989,
+      "world_input": {
+        "path": "/private/tmp/fabrolia-raid-fix/designs/easycompact.zip",
+        "prefix": "World map/Compact Raid farm/",
+        "sha256": "fcb8ad2ebaf2daffc4f0b01e5aeb9ac7fe7eb223edda4e9e4d9e3408fdd8e050"
+      }
+    }
+  },
+  "contract": "Vanilla 26.3 mechanics; no revival of obsolete designs. Current-version designs are compared against actual 26.3 rather than tutorial titles.",
+  "date": "2026-10-09",
+  "earlier_login_hang": {
+    "candidate_sha256": "8d7514598c08eb539b49ba769fd43892678c10021206d5d7c752870cb78b4fc3",
+    "cause_confidence": "The captured wait and 26.3 bytecode expose a possible closed progress loop; the pending queue was not captured. The deterministic regression proves and repairs that loop, rather than proving every detail of the observed hang.",
+    "checks": [],
+    "classification": "preexisting managed entity-load wait hang before a farm ran; not a farm-mechanics result",
+    "cleanup": {
+      "method": "owned-child-sigkill",
+      "output_reader_finished": true,
+      "returncode": -9
+    },
+    "critical_log_lines": null,
+    "driver_sha256": "779782bb2c3042453a75c2f4e7bec0368c9224a5bc9dccf2e13506ed260da397",
+    "error": "TimeoutError('Native response deadline in boot')",
+    "final_raid_statuses": null,
+    "manifest_candidate_sha256": "8d7514598c08eb539b49ba769fd43892678c10021206d5d7c752870cb78b4fc3",
+    "native_bottle_effect": null,
+    "operator_before": null,
+    "report_path": "stand/runs/raid-compact-final-v2/raid-design-report.json",
+    "report_sha256": "9cb9e6f55857fa238ce712fbedc44d95b18446de2e65b555e416a7a47bad5047",
+    "run": "raid-compact-final-v2",
+    "selected_sha256": "dc22b0cb1e931621a2a0c72f355b6378ebdf82d43dc2b9b494341bd09ea45860",
+    "status": "FAIL",
+    "thread_dump": "stand/runs/raid-compact-final-v2/join-thread-dump.txt",
+    "vanilla_reference": false,
+    "world_input": {
+      "path": "/private/tmp/fabrolia-raid-fix/designs/easycompact.zip",
+      "prefix": "World map/Compact Raid farm/",
+      "sha256": "fcb8ad2ebaf2daffc4f0b01e5aeb9ac7fe7eb223edda4e9e4d9e3408fdd8e050"
+    }
+  },
+  "limits": [
+    "Runtime tests use the Fabric build. NeoForge is built and its common and embedded API classes are byte-identical, but has no separate live server run.",
+    "Eight optional dependency/export checks are skipped; the preexisting full-modpack export verifier issue remains documented in AGENTS.md.",
+    "No hourly-rate or all-design guarantee; per-island TPS remain relevant under load.",
+    "Vanilla references use Fabric API, Carpet and spark for transport and observability, with no other gameplay mods or production datapacks."
+  ],
+  "mechanism_comparisons": {
+    "loaded_outer_ring": {
+      "final_mod": {
+        "candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+        "checks": [
+          {
+            "name": "no_forceloads",
+            "pass": true
+          },
+          {
+            "name": "no_pillagers_before_raid",
+            "pass": true
+          },
+          {
+            "name": "raid_started",
+            "pass": true
+          },
+          {
+            "name": "outer_wave_spawned",
+            "pass": true
+          },
+          {
+            "name": "first_wave_recorded",
+            "pass": true
+          },
+          {
+            "name": "clean_shutdown",
+            "pass": true
+          },
+          {
+            "name": "no_crash_reports",
+            "pass": true
+          }
+        ],
+        "cleanup": {
+          "method": "native-stop",
+          "output_reader_finished": true,
+          "returncode": 0
+        },
+        "driver_sha256": "0bf5387440dce408478d59ea9ed52820d58b74747b682397f98e02970d1cc4bd",
+        "first_raid_elapsed_seconds": 35.20626141701359,
+        "manifest_candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+        "raid_snapshots": [
+          {
+            "next_id": 2,
+            "raids": [
+              {
+                "active": 1,
+                "center": [
+                  4111,
+                  64,
+                  4111
+                ],
+                "cooldown_ticks": 200,
+                "group_count": 7,
+                "groups_spawned": 0,
+                "heroes_of_the_village": [],
+                "id": 2,
+                "post_raid_ticks": 0,
+                "raid_omen_level": 1,
+                "started": 0,
+                "status": "ongoing",
+                "ticks_active": 100,
+                "total_health": 0.0
+              }
+            ],
+            "tick": 1162
+          },
+          {
+            "next_id": 2,
+            "raids": [
+              {
+                "active": 1,
+                "center": [
+                  4111,
+                  64,
+                  4111
+                ],
+                "cooldown_ticks": 0,
+                "group_count": 7,
+                "groups_spawned": 1,
+                "heroes_of_the_village": [],
+                "id": 2,
+                "post_raid_ticks": 0,
+                "raid_omen_level": 1,
+                "started": 1,
+                "status": "ongoing",
+                "ticks_active": 699,
+                "total_health": 168.0
+              }
+            ],
+            "tick": 1764
+          }
+        ],
+        "regions_after": [
+          "[17:22:52] [Server thread/INFO]: System chat: #1 RaidProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=16+20h L=1716 gt=1762 ev=0/0 tps=20.0/20.0 mspt=3.87 max=57.48 lag=0ms missed=9",
+          "[17:22:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000038"
+        ],
+        "remove_village": false,
+        "report_path": "stand/runs/raid-loaded-final-v2/raid-ticket-report.json",
+        "report_sha256": "716dbf142feea875050b5a94936b87143f10b2b6bd210a91427b13a274f8000b",
+        "run": "raid-loaded-final-v2",
+        "selected_sha256": "0144c82b4ef9e10f64cc4df26febf5ab6a3d5bce3cde6da25acff83f265bcada",
+        "simulation_distance": 10,
+        "status": "PASS",
+        "tps": [
+          "[17:22:52] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000039"
+        ],
+        "vanilla_reference": false,
+        "wave_present": true,
+        "world_input": null
+      },
+      "vanilla": {
+        "candidate_sha256": "8d7514598c08eb539b49ba769fd43892678c10021206d5d7c752870cb78b4fc3",
+        "checks": [
+          {
+            "name": "no_forceloads",
+            "pass": true
+          },
+          {
+            "name": "no_pillagers_before_raid",
+            "pass": true
+          },
+          {
+            "name": "raid_started",
+            "pass": true
+          },
+          {
+            "name": "outer_wave_spawned",
+            "pass": true
+          },
+          {
+            "name": "first_wave_recorded",
+            "pass": true
+          },
+          {
+            "name": "clean_shutdown",
+            "pass": true
+          },
+          {
+            "name": "no_crash_reports",
+            "pass": true
+          }
+        ],
+        "cleanup": {
+          "method": "native-stop",
+          "output_reader_finished": true,
+          "returncode": 0
+        },
+        "driver_sha256": "12becdf21c2380cf1bd21c9a87da86ebaaeb25cbbc156c5617165fdf9ae0a4a0",
+        "first_raid_elapsed_seconds": 35.147130457975436,
+        "manifest_candidate_sha256": "8d7514598c08eb539b49ba769fd43892678c10021206d5d7c752870cb78b4fc3",
+        "raid_snapshots": [
+          {
+            "next_id": 2,
+            "raids": [
+              {
+                "active": 1,
+                "center": [
+                  4111,
+                  64,
+                  4111
+                ],
+                "cooldown_ticks": 200,
+                "group_count": 7,
+                "groups_spawned": 0,
+                "heroes_of_the_village": [],
+                "id": 2,
+                "post_raid_ticks": 0,
+                "raid_omen_level": 1,
+                "started": 0,
+                "status": "ongoing",
+                "ticks_active": 100,
+                "total_health": 0.0
+              }
+            ],
+            "tick": 1131
+          },
+          {
+            "next_id": 2,
+            "raids": [
+              {
+                "active": 1,
+                "center": [
+                  4111,
+                  64,
+                  4111
+                ],
+                "cooldown_ticks": 0,
+                "group_count": 7,
+                "groups_spawned": 1,
+                "heroes_of_the_village": [],
+                "id": 2,
+                "post_raid_ticks": 0,
+                "raid_omen_level": 1,
+                "started": 1,
+                "status": "ongoing",
+                "ticks_active": 701,
+                "total_health": 96.0
+              }
+            ],
+            "tick": 1732
+          }
+        ],
+        "regions_after": null,
+        "remove_village": false,
+        "report_path": "stand/runs/raid-loaded-vanilla-v1/raid-ticket-report.json",
+        "report_sha256": "04c2ba1883ab7c2cacfb9af9af67641ad378d85253f9c45b7d763084eb663f7e",
+        "run": "raid-loaded-vanilla-v1",
+        "selected_sha256": "78abda02c916d1fc902ed29787a4a4adba3325340f08ef7a7e8269b925e048f2",
+        "simulation_distance": 10,
+        "status": "PASS",
+        "tps": [
+          "[15:27:14] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000036"
+        ],
+        "vanilla_reference": true,
+        "wave_present": true,
+        "world_input": null
+      }
+    },
+    "low_simulation_distance": {
+      "final_mod": {
+        "candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+        "checks": [
+          {
+            "name": "no_forceloads",
+            "pass": true
+          },
+          {
+            "name": "no_pillagers_before_raid",
+            "pass": true
+          },
+          {
+            "name": "raid_started",
+            "pass": true
+          },
+          {
+            "name": "no_outer_wave_without_admission",
+            "pass": true
+          },
+          {
+            "name": "raid_stopped",
+            "pass": true
+          },
+          {
+            "name": "clean_shutdown",
+            "pass": true
+          },
+          {
+            "name": "no_crash_reports",
+            "pass": true
+          }
+        ],
+        "cleanup": {
+          "method": "native-stop",
+          "output_reader_finished": true,
+          "returncode": 0
+        },
+        "driver_sha256": "0bf5387440dce408478d59ea9ed52820d58b74747b682397f98e02970d1cc4bd",
+        "first_raid_elapsed_seconds": 35.21904620801797,
+        "manifest_candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+        "raid_snapshots": [
+          {
+            "next_id": 2,
+            "raids": [
+              {
+                "active": 1,
+                "center": [
+                  4111,
+                  64,
+                  4111
+                ],
+                "cooldown_ticks": 200,
+                "group_count": 7,
+                "groups_spawned": 0,
+                "heroes_of_the_village": [],
+                "id": 2,
+                "post_raid_ticks": 0,
+                "raid_omen_level": 1,
+                "started": 0,
+                "status": "ongoing",
+                "ticks_active": 100,
+                "total_health": 0.0
+              }
+            ],
+            "tick": 1238
+          },
+          {
+            "next_id": 2,
+            "tick": 1840
+          }
+        ],
+        "regions_after": [
+          "[17:24:56] [Server thread/INFO]: System chat: #1 RaidProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=16+20h L=1776 gt=1838 ev=0/0 tps=20.0/20.0 mspt=2.07 max=7.09 lag=0ms missed=6",
+          "[17:24:56] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000044"
+        ],
+        "remove_village": false,
+        "report_path": "stand/runs/raid-low-final-v2/raid-ticket-report.json",
+        "report_sha256": "9d49d8615be3aedacac8bba99abb009245ec3bd30a0a9a512425c5475ebe9995",
+        "run": "raid-low-final-v2",
+        "selected_sha256": "07b0b89cb76500f5a5e886a4f60575c1543313231210adef2d09d9de2e4c8e1e",
+        "simulation_distance": 2,
+        "status": "PASS",
+        "tps": [
+          "[17:24:56] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000045"
+        ],
+        "vanilla_reference": false,
+        "wave_present": false,
+        "world_input": null
+      },
+      "vanilla": {
+        "candidate_sha256": "8d7514598c08eb539b49ba769fd43892678c10021206d5d7c752870cb78b4fc3",
+        "checks": [
+          {
+            "name": "no_forceloads",
+            "pass": true
+          },
+          {
+            "name": "no_pillagers_before_raid",
+            "pass": true
+          },
+          {
+            "name": "raid_started",
+            "pass": true
+          },
+          {
+            "name": "no_outer_wave_without_admission",
+            "pass": true
+          },
+          {
+            "name": "raid_stopped",
+            "pass": true
+          },
+          {
+            "name": "clean_shutdown",
+            "pass": true
+          },
+          {
+            "name": "no_crash_reports",
+            "pass": true
+          }
+        ],
+        "cleanup": {
+          "method": "native-stop",
+          "output_reader_finished": true,
+          "returncode": 0
+        },
+        "driver_sha256": "0bf5387440dce408478d59ea9ed52820d58b74747b682397f98e02970d1cc4bd",
+        "first_raid_elapsed_seconds": 35.179363499977626,
+        "manifest_candidate_sha256": "8d7514598c08eb539b49ba769fd43892678c10021206d5d7c752870cb78b4fc3",
+        "raid_snapshots": [
+          {
+            "next_id": 2,
+            "raids": [
+              {
+                "active": 1,
+                "center": [
+                  4111,
+                  64,
+                  4111
+                ],
+                "cooldown_ticks": 201,
+                "group_count": 7,
+                "groups_spawned": 0,
+                "heroes_of_the_village": [],
+                "id": 2,
+                "post_raid_ticks": 0,
+                "raid_omen_level": 1,
+                "started": 0,
+                "status": "ongoing",
+                "ticks_active": 99,
+                "total_health": 0.0
+              }
+            ],
+            "tick": 1135
+          },
+          {
+            "next_id": 2,
+            "tick": 1736
+          }
+        ],
+        "regions_after": null,
+        "remove_village": false,
+        "report_path": "stand/runs/raid-low-vanilla-v1/raid-ticket-report.json",
+        "report_sha256": "b4e80f10fab73ccd9b88ab3676a6649bdbb00c2d54d4af8ffb2345d9aa023b8a",
+        "run": "raid-low-vanilla-v1",
+        "selected_sha256": "6f68ee54f52fb570c4c3e79ed0f5999c88758237e32d1030674dc4485a73a1d5",
+        "simulation_distance": 2,
+        "status": "PASS",
+        "tps": [
+          "[15:39:21] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000036"
+        ],
+        "vanilla_reference": true,
+        "wave_present": false,
+        "world_input": null
+      }
+    },
+    "village_loss": {
+      "final_mod": {
+        "candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+        "checks": [
+          {
+            "name": "no_forceloads",
+            "pass": true
+          },
+          {
+            "name": "no_pillagers_before_raid",
+            "pass": true
+          },
+          {
+            "name": "raid_started",
+            "pass": true
+          },
+          {
+            "name": "missing_village_stops_within_one_second",
+            "pass": true
+          },
+          {
+            "name": "no_outer_wave_without_admission",
+            "pass": true
+          },
+          {
+            "name": "raid_stopped",
+            "pass": true
+          },
+          {
+            "name": "clean_shutdown",
+            "pass": true
+          },
+          {
+            "name": "no_crash_reports",
+            "pass": true
+          }
+        ],
+        "cleanup": {
+          "method": "native-stop",
+          "output_reader_finished": true,
+          "returncode": 0
+        },
+        "driver_sha256": "0bf5387440dce408478d59ea9ed52820d58b74747b682397f98e02970d1cc4bd",
+        "first_raid_elapsed_seconds": 35.19424533395795,
+        "manifest_candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+        "raid_snapshots": [
+          {
+            "next_id": 2,
+            "raids": [
+              {
+                "active": 1,
+                "center": [
+                  4111,
+                  64,
+                  4111
+                ],
+                "cooldown_ticks": 203,
+                "group_count": 7,
+                "groups_spawned": 0,
+                "heroes_of_the_village": [],
+                "id": 2,
+                "post_raid_ticks": 0,
+                "raid_omen_level": 1,
+                "started": 0,
+                "status": "ongoing",
+                "ticks_active": 97,
+                "total_health": 0.0
+              }
+            ],
+            "tick": 1164
+          },
+          {
+            "next_id": 2,
+            "tick": 1187
+          },
+          {
+            "next_id": 2,
+            "tick": 1766
+          }
+        ],
+        "regions_after": [
+          "[17:38:16] [Server thread/INFO]: System chat: #1 RaidProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=16+20h L=1760 gt=1764 ev=0/0 tps=20.0/20.0 mspt=3.01 max=5.68 lag=0ms missed=7",
+          "[17:38:16] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000041"
+        ],
+        "remove_village": true,
+        "report_path": "stand/runs/raid-village-final-v3/raid-ticket-report.json",
+        "report_sha256": "938cedb6f15c655713233aef40a30dbba6ca32bd70e400fd120988c6baaf0c39",
+        "run": "raid-village-final-v3",
+        "selected_sha256": "0144c82b4ef9e10f64cc4df26febf5ab6a3d5bce3cde6da25acff83f265bcada",
+        "simulation_distance": 10,
+        "status": "PASS",
+        "tps": [
+          "[17:38:16] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000042"
+        ],
+        "vanilla_reference": false,
+        "wave_present": false,
+        "world_input": null
+      },
+      "vanilla": {
+        "candidate_sha256": "8d7514598c08eb539b49ba769fd43892678c10021206d5d7c752870cb78b4fc3",
+        "checks": [
+          {
+            "name": "no_forceloads",
+            "pass": true
+          },
+          {
+            "name": "no_pillagers_before_raid",
+            "pass": true
+          },
+          {
+            "name": "raid_started",
+            "pass": true
+          },
+          {
+            "name": "missing_village_stops_within_one_second",
+            "pass": true
+          },
+          {
+            "name": "no_outer_wave_without_admission",
+            "pass": true
+          },
+          {
+            "name": "raid_stopped",
+            "pass": true
+          },
+          {
+            "name": "clean_shutdown",
+            "pass": true
+          },
+          {
+            "name": "no_crash_reports",
+            "pass": true
+          }
+        ],
+        "cleanup": {
+          "method": "native-stop",
+          "output_reader_finished": true,
+          "returncode": 0
+        },
+        "driver_sha256": "0bf5387440dce408478d59ea9ed52820d58b74747b682397f98e02970d1cc4bd",
+        "first_raid_elapsed_seconds": 35.14335537503939,
+        "manifest_candidate_sha256": "8d7514598c08eb539b49ba769fd43892678c10021206d5d7c752870cb78b4fc3",
+        "raid_snapshots": [
+          {
+            "next_id": 2,
+            "raids": [
+              {
+                "active": 1,
+                "center": [
+                  4111,
+                  64,
+                  4111
+                ],
+                "cooldown_ticks": 201,
+                "group_count": 7,
+                "groups_spawned": 0,
+                "heroes_of_the_village": [],
+                "id": 2,
+                "post_raid_ticks": 0,
+                "raid_omen_level": 1,
+                "started": 0,
+                "status": "ongoing",
+                "ticks_active": 99,
+                "total_health": 0.0
+              }
+            ],
+            "tick": 1142
+          },
+          {
+            "next_id": 2,
+            "tick": 1165
+          },
+          {
+            "next_id": 2,
+            "tick": 1743
+          }
+        ],
+        "regions_after": null,
+        "remove_village": true,
+        "report_path": "stand/runs/raid-village-vanilla-v1/raid-ticket-report.json",
+        "report_sha256": "a23868f8f521ae009dee2f41790ad39e1e9b46db08d877d219a587631d75f755",
+        "run": "raid-village-vanilla-v1",
+        "selected_sha256": "78abda02c916d1fc902ed29787a4a4adba3325340f08ef7a7e8269b925e048f2",
+        "simulation_distance": 10,
+        "status": "PASS",
+        "tps": [
+          "[15:42:54] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000039"
+        ],
+        "vanilla_reference": true,
+        "wave_present": false,
+        "world_input": null
+      }
+    }
+  },
+  "nash_design_status": {
+    "diagnostic_runs": [
+      "raid-nash1-vanilla-v1",
+      "raid-nash1-vanilla-v2",
+      "raid-nash1-vanilla-v3",
+      "raid-nash1-vanilla-v4",
+      "raid-nash1-vanilla-v5",
+      "raid-nash1-vanilla-v6",
+      "raid-nash1-vanilla-v7"
+    ],
+    "reason": "Operator/setup trials did not establish a reliable matched vanilla reference. User clarified that common mechanics and code correctness, rather than individually testing every design, are the criterion. No inference that Nash is unsupported in 26.3.",
+    "result": "NOT_INDIVIDUALLY_CERTIFIED"
+  },
+  "performance_runs": [
+    {
+      "cleanup": {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      },
+      "crash_reports": [],
+      "critical_log_lines": [],
+      "driver_sha256": "1584c914246806bfb91612ec0a628590557cf9e87d63a9360719d570dc6c2983",
+      "early_client_disconnects": [
+        "[17:26:55] [Server thread/INFO]: Far00 lost connection: Invalid move player packet received",
+        "[17:26:56] [Server thread/INFO]: Far01 lost connection: Invalid move player packet received",
+        "[17:26:56] [Server thread/INFO]: Far02 lost connection: Invalid move player packet received",
+        "[17:26:56] [Server thread/INFO]: Far03 lost connection: Invalid move player packet received",
+        "[17:26:56] [Server thread/INFO]: Far04 lost connection: Invalid move player packet received"
+      ],
+      "initial_real_clients": 40,
+      "manifest_candidate_sha256": "8d7514598c08eb539b49ba769fd43892678c10021206d5d7c752870cb78b4fc3",
+      "online_at_capture_end": 35,
+      "report_path": "stand/runs/raid-parity-perf-before-v1/perf-report.json",
+      "report_sha256": "eab4a8857beaf9d796f8e1887877e0c6dfb5b52ddf8611a425b141c2b5831f4b",
+      "requested_profile_seconds": 120,
+      "run": "raid-parity-perf-before-v1",
+      "scenario": "pistons",
+      "selected_sha256": "3460d08e9e952a396819a6cb2dff7b4426ebf3ff2ef1d3701b0af359b895c069",
+      "skin_fetch_exceptions": 20,
+      "spark_profile_write_warnings": [
+        "[17:30:33] [spark-worker-pool-1-thread-4/WARN]: A command execution has not completed after 5 seconds, it *might* be stuck. Trace: "
+      ],
+      "status": "DONE",
+      "warmup_seconds": 90,
+      "world_input": null
+    },
+    {
+      "cleanup": {
+        "method": "native-stop",
+        "output_reader_finished": true,
+        "returncode": 0
+      },
+      "crash_reports": [],
+      "critical_log_lines": [],
+      "driver_sha256": "1584c914246806bfb91612ec0a628590557cf9e87d63a9360719d570dc6c2983",
+      "early_client_disconnects": [
+        "[17:32:41] [Server thread/INFO]: Far00 lost connection: Invalid move player packet received",
+        "[17:32:41] [Server thread/INFO]: Far01 lost connection: Invalid move player packet received",
+        "[17:32:41] [Server thread/INFO]: Far02 lost connection: Invalid move player packet received",
+        "[17:32:41] [Server thread/INFO]: Far03 lost connection: Invalid move player packet received",
+        "[17:32:41] [Server thread/INFO]: Far04 lost connection: Invalid move player packet received"
+      ],
+      "initial_real_clients": 40,
+      "manifest_candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+      "online_at_capture_end": 35,
+      "report_path": "stand/runs/raid-parity-perf-final-v1/perf-report.json",
+      "report_sha256": "00740530902818f0e600296c1a3fefaf6f5ea88bf9162287b3216f4d1c881acd",
+      "requested_profile_seconds": 120,
+      "run": "raid-parity-perf-final-v1",
+      "scenario": "pistons",
+      "selected_sha256": "f4f2c67e1f4473873ce90b9f2349d96a651cd8a53a74566821ed21041de81b76",
+      "skin_fetch_exceptions": 22,
+      "spark_profile_write_warnings": [],
+      "status": "DONE",
+      "warmup_seconds": 90,
+      "world_input": null
+    }
+  ],
+  "pre_poi_compact_positive_control": {
+    "candidate_sha256": "8632149ea3d911d0f74785fa55375168085ec07e3509db062f4b0d27d94ab468",
+    "checks": [
+      {
+        "name": "actual_raid_created",
+        "pass": true
+      },
+      {
+        "name": "actual_wave_spawned",
+        "pass": true
+      },
+      {
+        "name": "native_bottle_effect",
+        "pass": true
+      },
+      {
+        "name": "new_raid_loot",
+        "pass": true
+      },
+      {
+        "name": "complete_raid_victory",
+        "pass": true
+      },
+      {
+        "name": "clean_shutdown",
+        "pass": true
+      },
+      {
+        "name": "no_crash_reports",
+        "pass": true
+      },
+      {
+        "name": "no_critical_log_lines",
+        "pass": true
+      }
+    ],
+    "cleanup": {
+      "method": "native-stop",
+      "output_reader_finished": true,
+      "returncode": 0
+    },
+    "critical_log_lines": [],
+    "driver_sha256": "6a84c9b698a03514be056f090ac86129c093920f223965124236706a95af9e4a",
+    "final_loot": 154,
+    "final_raid_statuses": {
+      "next_id": 2,
+      "raids": [
+        {
+          "active": 1,
+          "center": [
+            -678,
+            85,
+            -66
+          ],
+          "cooldown_ticks": 0,
+          "group_count": 7,
+          "groups_spawned": 8,
+          "heroes_of_the_village": [
+            [
+              1277264861,
+              51001246,
+              -1426359361,
+              -1485703379
+            ]
+          ],
+          "id": 2,
+          "post_raid_ticks": 40,
+          "raid_omen_level": 3,
+          "started": 1,
+          "status": "victory",
+          "ticks_active": 5954,
+          "total_health": 538.0
+        }
+      ],
+      "tick": 7733
+    },
+    "initial_loot": 0,
+    "manifest_candidate_sha256": "8632149ea3d911d0f74785fa55375168085ec07e3509db062f4b0d27d94ab468",
+    "max_groups_spawned": 8,
+    "native_bottle_effect": [
+      "[16:27:34] [Server thread/INFO]: System chat: FarmBot has the following entity data: [{amplifier: 2b, show_icon: 1b, id: \"minecraft:raid_omen\", duration: 572}]",
+      "[16:27:34] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000032"
+    ],
+    "new_raid_ids": 1,
+    "operator_before": [
+      "[16:27:34] [Server thread/INFO]: System chat:  = [[-676.5, 62.875, -69.5], crouching, 1.26999998093, true, [0, -0.207861676812, 0.97815823555], cobblestone_slab] (23ms)",
+      "[16:27:34] [Server thread/INFO]: [Not Secure] [Server] NATIVE_BURST_ACK_000036"
+    ],
+    "report_path": "stand/runs/raid-compact-final-v3/raid-design-report.json",
+    "report_sha256": "1e1d549727e2446bda6cf498577abd78573775f9a7fa1641438bc0ea7048b042",
+    "require_victory": true,
+    "run": "raid-compact-final-v3",
+    "selected_sha256": "85d656958c356ef367f61e208c8a51646545313eeb5cd18d98bb5acc0344e5c8",
+    "status": "PASS",
+    "vanilla_reference": false,
+    "victory_elapsed_seconds": 336.782631708018,
+    "world_input": {
+      "path": "/private/tmp/fabrolia-raid-fix/designs/easycompact.zip",
+      "prefix": "World map/Compact Raid farm/",
+      "sha256": "fcb8ad2ebaf2daffc4f0b01e5aeb9ac7fe7eb223edda4e9e4d9e3408fdd8e050"
+    }
+  },
+  "preflight_errors": [
+    {
+      "classification": "INVALID_TEST_SETUP",
+      "corrected_run": "raid-village-final-v3",
+      "error": "The driver correctly rejected simulation distance 10 without --loaded-ring before launching the server.",
+      "run": "raid-village-final-v2"
+    }
+  ],
+  "profiles": "raid-parity-profiles.json",
+  "removed_production_classes": [
+    "RaidVillageDebounceMixin",
+    "RaidVillageDebounce",
+    "RaidRelocationColumnMixin",
+    "RaidIslandMerge",
+    "SectionStorageGetOrLoadAccessor"
+  ],
+  "status": "PASS",
+  "superseded_intermediate_evidence": "raid-ticket-intermediate-validation.json",
+  "verify": {
+    "checks": {
+      "0_carpet_spawn_tracking_guard": "PASS",
+      "1_function_plan_fences": "PASS",
+      "2a_grant_story_root_Town00": "PASS",
+      "2b_inventory_changed_Town01": "PASS",
+      "2c_bacap_reward_Town02": "PASS",
+      "2d_file_Town03_complete": "PASS",
+      "2d_grant_everything_Town03": "PASS",
+      "3_disconnect_durability": "PASS",
+      "4_nether_portals": "PASS",
+      "5_saves_and_files": "PASS",
+      "6_log_and_crash": "PASS"
+    },
+    "cleanup": {
+      "method": "native-stop",
+      "output_reader_finished": true,
+      "returncode": 0
+    },
+    "driver_sha256": "6000076121f33033e087bc191face473b7e7c2550b467753e91210fe069c03df",
+    "manifest_candidate_sha256": "fe0eada020517241a437f6fb36166fa32f7db7078ff532fedcaeb34e57df82db",
+    "report_path": "stand/runs/raid-parity-verify-v3/verify-report.json",
+    "report_sha256": "aa8c6c3ff68667a8daa347eb7d307a0857bf886bc30dafba8524961657d96a40",
+    "run": "raid-parity-verify-v3",
+    "selected_sha256": "0144c82b4ef9e10f64cc4df26febf5ab6a3d5bce3cde6da25acff83f265bcada",
+    "status": "DONE",
+    "world_input": null
+  },
+  "version": "26.3"
+}

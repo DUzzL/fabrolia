@@ -1,0 +1,12 @@
+plugins {
+    id 'java'
+}
+
+// Every loader and the shared API must run on the production Java version.
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(project.java_version)
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
+}

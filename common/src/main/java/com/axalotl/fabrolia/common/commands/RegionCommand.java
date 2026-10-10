@@ -210,25 +210,6 @@ public final class RegionCommand {
                             return 1;
                         })))));
 
-        regionsCmd.then(literal("chunkheal").requires(PlatformPermission.require("command.regions.toggle", 4))
-                .executes(ctx -> {
-                    send(ctx, "c2me broken-holder heal: ",
-                            com.axalotl.fabrolia.common.config.FabroliaConfig.chunkBridgeHealBroken
-                                    ? "ON (bridge timeouts probe FLAG_BROKEN and retry the abandoned upgrade)"
-                                    : "off (latch is logged only)", false);
-                    return 1;
-                })
-                .then(literal("on").executes(ctx -> {
-                    com.axalotl.fabrolia.common.config.FabroliaConfig.chunkBridgeHealBroken = true;
-                    send(ctx, "c2me broken-holder heal: ", "ON", false);
-                    return 1;
-                }))
-                .then(literal("off").executes(ctx -> {
-                    com.axalotl.fabrolia.common.config.FabroliaConfig.chunkBridgeHealBroken = false;
-                    send(ctx, "c2me broken-holder heal: ", "off", false);
-                    return 1;
-                })));
-
         // Task #43: cross-dimension link listing + coupling toggle (runtime
         // command + config persistence — never a JVM flag).
         regionsCmd.then(literal("crossdim").requires(PlatformPermission.require("command.regions.toggle", 4))

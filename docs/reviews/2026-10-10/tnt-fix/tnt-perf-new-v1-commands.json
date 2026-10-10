@@ -1,0 +1,762 @@
+{
+  "ack_template": "say NATIVE_BURST_ACK_{sequence:06d}",
+  "async_mode": "on",
+  "boot_timeout_seconds": 240,
+  "cadence_seconds": 0.1,
+  "command_timeout_seconds": 120,
+  "diagnostic_commands": [
+    "fabrolia regions",
+    "fabrolia regions top verbose 100",
+    "fabrolia regions ticks status 256 256"
+  ],
+  "gameplay": {
+    "client_join_timeout_seconds": 60,
+    "minimum_use_progress_ticks": 3,
+    "observation_timeout_seconds": 30,
+    "timeout_seconds": 900,
+    "wire_asset": "observers/native-wire-client.py"
+  },
+  "graceful_stop_seconds": 120,
+  "java_args": [
+    "-Drecovery.proof.fixture={run}/server",
+    "-Xlog:gc*:file={run}/gc.log:time,uptime,level,tags",
+    "-Xms1G",
+    "-Duser.language=en",
+    "-Duser.country=US",
+    "--add-modules=jdk.internal.vm.ci",
+    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    "--enable-native-access=ALL-UNNAMED",
+    "-XX:-UseCodeCacheFlushing",
+    "-XX:+UseG1GC",
+    "-XX:+DisableExplicitGC",
+    "-XX:+UseDynamicNumberOfGCThreads",
+    "-XX:ReservedCodeCacheSize=512M",
+    "-Duser.home={run}",
+    "-Xmx3G",
+    "-jar",
+    "fabric-server-launch.jar",
+    "nogui"
+  ],
+  "join_timeout_seconds": 240,
+  "list_command": "list",
+  "local_clock_command": "fabrolia regions top verbose 100",
+  "minimum_tick_delta": 100,
+  "native_parallel_probe": false,
+  "players": [
+    {
+      "name": "Burst000",
+      "x": 20000,
+      "y": 100,
+      "z": 20000
+    },
+    {
+      "name": "Burst001",
+      "x": 21024,
+      "y": 100,
+      "z": 20000
+    },
+    {
+      "name": "Burst002",
+      "x": 22048,
+      "y": 100,
+      "z": 20000
+    },
+    {
+      "name": "Burst003",
+      "x": 23072,
+      "y": 100,
+      "z": 20000
+    },
+    {
+      "name": "Burst004",
+      "x": 24096,
+      "y": 100,
+      "z": 20000
+    },
+    {
+      "name": "Burst005",
+      "x": 25120,
+      "y": 100,
+      "z": 20000
+    },
+    {
+      "name": "Burst006",
+      "x": 26144,
+      "y": 100,
+      "z": 20000
+    },
+    {
+      "name": "Burst007",
+      "x": 27168,
+      "y": 100,
+      "z": 20000
+    },
+    {
+      "name": "Burst008",
+      "x": 28192,
+      "y": 100,
+      "z": 20000
+    },
+    {
+      "name": "Burst009",
+      "x": 29216,
+      "y": 100,
+      "z": 20000
+    },
+    {
+      "name": "Burst010",
+      "x": 20000,
+      "y": 100,
+      "z": 21024
+    },
+    {
+      "name": "Burst011",
+      "x": 21024,
+      "y": 100,
+      "z": 21024
+    },
+    {
+      "name": "Burst012",
+      "x": 22048,
+      "y": 100,
+      "z": 21024
+    },
+    {
+      "name": "Burst013",
+      "x": 23072,
+      "y": 100,
+      "z": 21024
+    },
+    {
+      "name": "Burst014",
+      "x": 24096,
+      "y": 100,
+      "z": 21024
+    },
+    {
+      "name": "Burst015",
+      "x": 25120,
+      "y": 100,
+      "z": 21024
+    },
+    {
+      "name": "Burst016",
+      "x": 26144,
+      "y": 100,
+      "z": 21024
+    },
+    {
+      "name": "Burst017",
+      "x": 27168,
+      "y": 100,
+      "z": 21024
+    },
+    {
+      "name": "Burst018",
+      "x": 28192,
+      "y": 100,
+      "z": 21024
+    },
+    {
+      "name": "Burst019",
+      "x": 29216,
+      "y": 100,
+      "z": 21024
+    },
+    {
+      "name": "Burst020",
+      "x": 20000,
+      "y": 100,
+      "z": 22048
+    },
+    {
+      "name": "Burst021",
+      "x": 21024,
+      "y": 100,
+      "z": 22048
+    },
+    {
+      "name": "Burst022",
+      "x": 22048,
+      "y": 100,
+      "z": 22048
+    },
+    {
+      "name": "Burst023",
+      "x": 23072,
+      "y": 100,
+      "z": 22048
+    },
+    {
+      "name": "Burst024",
+      "x": 24096,
+      "y": 100,
+      "z": 22048
+    },
+    {
+      "name": "Burst025",
+      "x": 25120,
+      "y": 100,
+      "z": 22048
+    },
+    {
+      "name": "Burst026",
+      "x": 26144,
+      "y": 100,
+      "z": 22048
+    },
+    {
+      "name": "Burst027",
+      "x": 27168,
+      "y": 100,
+      "z": 22048
+    },
+    {
+      "name": "Burst028",
+      "x": 28192,
+      "y": 100,
+      "z": 22048
+    },
+    {
+      "name": "Burst029",
+      "x": 29216,
+      "y": 100,
+      "z": 22048
+    },
+    {
+      "name": "Burst030",
+      "x": 20000,
+      "y": 100,
+      "z": 23072
+    },
+    {
+      "name": "Burst031",
+      "x": 21024,
+      "y": 100,
+      "z": 23072
+    },
+    {
+      "name": "Burst032",
+      "x": 22048,
+      "y": 100,
+      "z": 23072
+    },
+    {
+      "name": "Burst033",
+      "x": 23072,
+      "y": 100,
+      "z": 23072
+    },
+    {
+      "name": "Burst034",
+      "x": 24096,
+      "y": 100,
+      "z": 23072
+    },
+    {
+      "name": "Burst035",
+      "x": 25120,
+      "y": 100,
+      "z": 23072
+    },
+    {
+      "name": "Burst036",
+      "x": 26144,
+      "y": 100,
+      "z": 23072
+    },
+    {
+      "name": "Burst037",
+      "x": 27168,
+      "y": 100,
+      "z": 23072
+    },
+    {
+      "name": "Burst038",
+      "x": 28192,
+      "y": 100,
+      "z": 23072
+    },
+    {
+      "name": "Burst039",
+      "x": 29216,
+      "y": 100,
+      "z": 23072
+    },
+    {
+      "name": "Burst040",
+      "x": 20000,
+      "y": 100,
+      "z": 24096
+    },
+    {
+      "name": "Burst041",
+      "x": 21024,
+      "y": 100,
+      "z": 24096
+    },
+    {
+      "name": "Burst042",
+      "x": 22048,
+      "y": 100,
+      "z": 24096
+    },
+    {
+      "name": "Burst043",
+      "x": 23072,
+      "y": 100,
+      "z": 24096
+    },
+    {
+      "name": "Burst044",
+      "x": 24096,
+      "y": 100,
+      "z": 24096
+    },
+    {
+      "name": "Burst045",
+      "x": 25120,
+      "y": 100,
+      "z": 24096
+    },
+    {
+      "name": "Burst046",
+      "x": 26144,
+      "y": 100,
+      "z": 24096
+    },
+    {
+      "name": "Burst047",
+      "x": 27168,
+      "y": 100,
+      "z": 24096
+    },
+    {
+      "name": "Burst048",
+      "x": 28192,
+      "y": 100,
+      "z": 24096
+    },
+    {
+      "name": "Burst049",
+      "x": 29216,
+      "y": 100,
+      "z": 24096
+    },
+    {
+      "name": "Burst050",
+      "x": 20000,
+      "y": 100,
+      "z": 25120
+    },
+    {
+      "name": "Burst051",
+      "x": 21024,
+      "y": 100,
+      "z": 25120
+    },
+    {
+      "name": "Burst052",
+      "x": 22048,
+      "y": 100,
+      "z": 25120
+    },
+    {
+      "name": "Burst053",
+      "x": 23072,
+      "y": 100,
+      "z": 25120
+    },
+    {
+      "name": "Burst054",
+      "x": 24096,
+      "y": 100,
+      "z": 25120
+    },
+    {
+      "name": "Burst055",
+      "x": 25120,
+      "y": 100,
+      "z": 25120
+    },
+    {
+      "name": "Burst056",
+      "x": 26144,
+      "y": 100,
+      "z": 25120
+    },
+    {
+      "name": "Burst057",
+      "x": 27168,
+      "y": 100,
+      "z": 25120
+    },
+    {
+      "name": "Burst058",
+      "x": 28192,
+      "y": 100,
+      "z": 25120
+    },
+    {
+      "name": "Burst059",
+      "x": 29216,
+      "y": 100,
+      "z": 25120
+    },
+    {
+      "name": "Burst060",
+      "x": 20000,
+      "y": 100,
+      "z": 26144
+    },
+    {
+      "name": "Burst061",
+      "x": 21024,
+      "y": 100,
+      "z": 26144
+    },
+    {
+      "name": "Burst062",
+      "x": 22048,
+      "y": 100,
+      "z": 26144
+    },
+    {
+      "name": "Burst063",
+      "x": 23072,
+      "y": 100,
+      "z": 26144
+    },
+    {
+      "name": "Burst064",
+      "x": 24096,
+      "y": 100,
+      "z": 26144
+    },
+    {
+      "name": "Burst065",
+      "x": 25120,
+      "y": 100,
+      "z": 26144
+    },
+    {
+      "name": "Burst066",
+      "x": 26144,
+      "y": 100,
+      "z": 26144
+    },
+    {
+      "name": "Burst067",
+      "x": 27168,
+      "y": 100,
+      "z": 26144
+    },
+    {
+      "name": "Burst068",
+      "x": 28192,
+      "y": 100,
+      "z": 26144
+    },
+    {
+      "name": "Burst069",
+      "x": 29216,
+      "y": 100,
+      "z": 26144
+    },
+    {
+      "name": "Burst070",
+      "x": 20000,
+      "y": 100,
+      "z": 27168
+    },
+    {
+      "name": "Burst071",
+      "x": 21024,
+      "y": 100,
+      "z": 27168
+    },
+    {
+      "name": "Burst072",
+      "x": 22048,
+      "y": 100,
+      "z": 27168
+    },
+    {
+      "name": "Burst073",
+      "x": 23072,
+      "y": 100,
+      "z": 27168
+    },
+    {
+      "name": "Burst074",
+      "x": 24096,
+      "y": 100,
+      "z": 27168
+    },
+    {
+      "name": "Burst075",
+      "x": 25120,
+      "y": 100,
+      "z": 27168
+    },
+    {
+      "name": "Burst076",
+      "x": 26144,
+      "y": 100,
+      "z": 27168
+    },
+    {
+      "name": "Burst077",
+      "x": 27168,
+      "y": 100,
+      "z": 27168
+    },
+    {
+      "name": "Burst078",
+      "x": 28192,
+      "y": 100,
+      "z": 27168
+    },
+    {
+      "name": "Burst079",
+      "x": 29216,
+      "y": 100,
+      "z": 27168
+    },
+    {
+      "name": "Burst080",
+      "x": 20000,
+      "y": 100,
+      "z": 28192
+    },
+    {
+      "name": "Burst081",
+      "x": 21024,
+      "y": 100,
+      "z": 28192
+    },
+    {
+      "name": "Burst082",
+      "x": 22048,
+      "y": 100,
+      "z": 28192
+    },
+    {
+      "name": "Burst083",
+      "x": 23072,
+      "y": 100,
+      "z": 28192
+    },
+    {
+      "name": "Burst084",
+      "x": 24096,
+      "y": 100,
+      "z": 28192
+    },
+    {
+      "name": "Burst085",
+      "x": 25120,
+      "y": 100,
+      "z": 28192
+    },
+    {
+      "name": "Burst086",
+      "x": 26144,
+      "y": 100,
+      "z": 28192
+    },
+    {
+      "name": "Burst087",
+      "x": 27168,
+      "y": 100,
+      "z": 28192
+    },
+    {
+      "name": "Burst088",
+      "x": 28192,
+      "y": 100,
+      "z": 28192
+    },
+    {
+      "name": "Burst089",
+      "x": 29216,
+      "y": 100,
+      "z": 28192
+    },
+    {
+      "name": "Burst090",
+      "x": 20000,
+      "y": 100,
+      "z": 29216
+    },
+    {
+      "name": "Burst091",
+      "x": 21024,
+      "y": 100,
+      "z": 29216
+    },
+    {
+      "name": "Burst092",
+      "x": 22048,
+      "y": 100,
+      "z": 29216
+    },
+    {
+      "name": "Burst093",
+      "x": 23072,
+      "y": 100,
+      "z": 29216
+    },
+    {
+      "name": "Burst094",
+      "x": 24096,
+      "y": 100,
+      "z": 29216
+    },
+    {
+      "name": "Burst095",
+      "x": 25120,
+      "y": 100,
+      "z": 29216
+    },
+    {
+      "name": "Burst096",
+      "x": 26144,
+      "y": 100,
+      "z": 29216
+    },
+    {
+      "name": "Burst097",
+      "x": 27168,
+      "y": 100,
+      "z": 29216
+    },
+    {
+      "name": "Burst098",
+      "x": 28192,
+      "y": 100,
+      "z": 29216
+    },
+    {
+      "name": "Burst099",
+      "x": 29216,
+      "y": 100,
+      "z": 29216
+    }
+  ],
+  "progress_intervals": 3,
+  "progress_timeout_seconds": 150,
+  "query_interval_seconds": 5,
+  "settled_observation_seconds": 30,
+  "setup_commands": [
+    "carpet commandPlayer true",
+    "carpet allowSpawningOfflinePlayers true",
+    "fabrolia regions playerticks on"
+  ],
+  "spawn_commands": [
+    "player Burst000 spawn at 20000 100 20000 facing 0 0 in minecraft:overworld in creative",
+    "player Burst001 spawn at 21024 100 20000 facing 0 0 in minecraft:overworld in creative",
+    "player Burst002 spawn at 22048 100 20000 facing 0 0 in minecraft:overworld in creative",
+    "player Burst003 spawn at 23072 100 20000 facing 0 0 in minecraft:overworld in creative",
+    "player Burst004 spawn at 24096 100 20000 facing 0 0 in minecraft:overworld in creative",
+    "player Burst005 spawn at 25120 100 20000 facing 0 0 in minecraft:overworld in creative",
+    "player Burst006 spawn at 26144 100 20000 facing 0 0 in minecraft:overworld in creative",
+    "player Burst007 spawn at 27168 100 20000 facing 0 0 in minecraft:overworld in creative",
+    "player Burst008 spawn at 28192 100 20000 facing 0 0 in minecraft:overworld in creative",
+    "player Burst009 spawn at 29216 100 20000 facing 0 0 in minecraft:overworld in creative",
+    "player Burst010 spawn at 20000 100 21024 facing 0 0 in minecraft:overworld in creative",
+    "player Burst011 spawn at 21024 100 21024 facing 0 0 in minecraft:overworld in creative",
+    "player Burst012 spawn at 22048 100 21024 facing 0 0 in minecraft:overworld in creative",
+    "player Burst013 spawn at 23072 100 21024 facing 0 0 in minecraft:overworld in creative",
+    "player Burst014 spawn at 24096 100 21024 facing 0 0 in minecraft:overworld in creative",
+    "player Burst015 spawn at 25120 100 21024 facing 0 0 in minecraft:overworld in creative",
+    "player Burst016 spawn at 26144 100 21024 facing 0 0 in minecraft:overworld in creative",
+    "player Burst017 spawn at 27168 100 21024 facing 0 0 in minecraft:overworld in creative",
+    "player Burst018 spawn at 28192 100 21024 facing 0 0 in minecraft:overworld in creative",
+    "player Burst019 spawn at 29216 100 21024 facing 0 0 in minecraft:overworld in creative",
+    "player Burst020 spawn at 20000 100 22048 facing 0 0 in minecraft:overworld in creative",
+    "player Burst021 spawn at 21024 100 22048 facing 0 0 in minecraft:overworld in creative",
+    "player Burst022 spawn at 22048 100 22048 facing 0 0 in minecraft:overworld in creative",
+    "player Burst023 spawn at 23072 100 22048 facing 0 0 in minecraft:overworld in creative",
+    "player Burst024 spawn at 24096 100 22048 facing 0 0 in minecraft:overworld in creative",
+    "player Burst025 spawn at 25120 100 22048 facing 0 0 in minecraft:overworld in creative",
+    "player Burst026 spawn at 26144 100 22048 facing 0 0 in minecraft:overworld in creative",
+    "player Burst027 spawn at 27168 100 22048 facing 0 0 in minecraft:overworld in creative",
+    "player Burst028 spawn at 28192 100 22048 facing 0 0 in minecraft:overworld in creative",
+    "player Burst029 spawn at 29216 100 22048 facing 0 0 in minecraft:overworld in creative",
+    "player Burst030 spawn at 20000 100 23072 facing 0 0 in minecraft:overworld in creative",
+    "player Burst031 spawn at 21024 100 23072 facing 0 0 in minecraft:overworld in creative",
+    "player Burst032 spawn at 22048 100 23072 facing 0 0 in minecraft:overworld in creative",
+    "player Burst033 spawn at 23072 100 23072 facing 0 0 in minecraft:overworld in creative",
+    "player Burst034 spawn at 24096 100 23072 facing 0 0 in minecraft:overworld in creative",
+    "player Burst035 spawn at 25120 100 23072 facing 0 0 in minecraft:overworld in creative",
+    "player Burst036 spawn at 26144 100 23072 facing 0 0 in minecraft:overworld in creative",
+    "player Burst037 spawn at 27168 100 23072 facing 0 0 in minecraft:overworld in creative",
+    "player Burst038 spawn at 28192 100 23072 facing 0 0 in minecraft:overworld in creative",
+    "player Burst039 spawn at 29216 100 23072 facing 0 0 in minecraft:overworld in creative",
+    "player Burst040 spawn at 20000 100 24096 facing 0 0 in minecraft:overworld in creative",
+    "player Burst041 spawn at 21024 100 24096 facing 0 0 in minecraft:overworld in creative",
+    "player Burst042 spawn at 22048 100 24096 facing 0 0 in minecraft:overworld in creative",
+    "player Burst043 spawn at 23072 100 24096 facing 0 0 in minecraft:overworld in creative",
+    "player Burst044 spawn at 24096 100 24096 facing 0 0 in minecraft:overworld in creative",
+    "player Burst045 spawn at 25120 100 24096 facing 0 0 in minecraft:overworld in creative",
+    "player Burst046 spawn at 26144 100 24096 facing 0 0 in minecraft:overworld in creative",
+    "player Burst047 spawn at 27168 100 24096 facing 0 0 in minecraft:overworld in creative",
+    "player Burst048 spawn at 28192 100 24096 facing 0 0 in minecraft:overworld in creative",
+    "player Burst049 spawn at 29216 100 24096 facing 0 0 in minecraft:overworld in creative",
+    "player Burst050 spawn at 20000 100 25120 facing 0 0 in minecraft:overworld in creative",
+    "player Burst051 spawn at 21024 100 25120 facing 0 0 in minecraft:overworld in creative",
+    "player Burst052 spawn at 22048 100 25120 facing 0 0 in minecraft:overworld in creative",
+    "player Burst053 spawn at 23072 100 25120 facing 0 0 in minecraft:overworld in creative",
+    "player Burst054 spawn at 24096 100 25120 facing 0 0 in minecraft:overworld in creative",
+    "player Burst055 spawn at 25120 100 25120 facing 0 0 in minecraft:overworld in creative",
+    "player Burst056 spawn at 26144 100 25120 facing 0 0 in minecraft:overworld in creative",
+    "player Burst057 spawn at 27168 100 25120 facing 0 0 in minecraft:overworld in creative",
+    "player Burst058 spawn at 28192 100 25120 facing 0 0 in minecraft:overworld in creative",
+    "player Burst059 spawn at 29216 100 25120 facing 0 0 in minecraft:overworld in creative",
+    "player Burst060 spawn at 20000 100 26144 facing 0 0 in minecraft:overworld in creative",
+    "player Burst061 spawn at 21024 100 26144 facing 0 0 in minecraft:overworld in creative",
+    "player Burst062 spawn at 22048 100 26144 facing 0 0 in minecraft:overworld in creative",
+    "player Burst063 spawn at 23072 100 26144 facing 0 0 in minecraft:overworld in creative",
+    "player Burst064 spawn at 24096 100 26144 facing 0 0 in minecraft:overworld in creative",
+    "player Burst065 spawn at 25120 100 26144 facing 0 0 in minecraft:overworld in creative",
+    "player Burst066 spawn at 26144 100 26144 facing 0 0 in minecraft:overworld in creative",
+    "player Burst067 spawn at 27168 100 26144 facing 0 0 in minecraft:overworld in creative",
+    "player Burst068 spawn at 28192 100 26144 facing 0 0 in minecraft:overworld in creative",
+    "player Burst069 spawn at 29216 100 26144 facing 0 0 in minecraft:overworld in creative",
+    "player Burst070 spawn at 20000 100 27168 facing 0 0 in minecraft:overworld in creative",
+    "player Burst071 spawn at 21024 100 27168 facing 0 0 in minecraft:overworld in creative",
+    "player Burst072 spawn at 22048 100 27168 facing 0 0 in minecraft:overworld in creative",
+    "player Burst073 spawn at 23072 100 27168 facing 0 0 in minecraft:overworld in creative",
+    "player Burst074 spawn at 24096 100 27168 facing 0 0 in minecraft:overworld in creative",
+    "player Burst075 spawn at 25120 100 27168 facing 0 0 in minecraft:overworld in creative",
+    "player Burst076 spawn at 26144 100 27168 facing 0 0 in minecraft:overworld in creative",
+    "player Burst077 spawn at 27168 100 27168 facing 0 0 in minecraft:overworld in creative",
+    "player Burst078 spawn at 28192 100 27168 facing 0 0 in minecraft:overworld in creative",
+    "player Burst079 spawn at 29216 100 27168 facing 0 0 in minecraft:overworld in creative",
+    "player Burst080 spawn at 20000 100 28192 facing 0 0 in minecraft:overworld in creative",
+    "player Burst081 spawn at 21024 100 28192 facing 0 0 in minecraft:overworld in creative",
+    "player Burst082 spawn at 22048 100 28192 facing 0 0 in minecraft:overworld in creative",
+    "player Burst083 spawn at 23072 100 28192 facing 0 0 in minecraft:overworld in creative",
+    "player Burst084 spawn at 24096 100 28192 facing 0 0 in minecraft:overworld in creative",
+    "player Burst085 spawn at 25120 100 28192 facing 0 0 in minecraft:overworld in creative",
+    "player Burst086 spawn at 26144 100 28192 facing 0 0 in minecraft:overworld in creative",
+    "player Burst087 spawn at 27168 100 28192 facing 0 0 in minecraft:overworld in creative",
+    "player Burst088 spawn at 28192 100 28192 facing 0 0 in minecraft:overworld in creative",
+    "player Burst089 spawn at 29216 100 28192 facing 0 0 in minecraft:overworld in creative",
+    "player Burst090 spawn at 20000 100 29216 facing 0 0 in minecraft:overworld in creative",
+    "player Burst091 spawn at 21024 100 29216 facing 0 0 in minecraft:overworld in creative",
+    "player Burst092 spawn at 22048 100 29216 facing 0 0 in minecraft:overworld in creative",
+    "player Burst093 spawn at 23072 100 29216 facing 0 0 in minecraft:overworld in creative",
+    "player Burst094 spawn at 24096 100 29216 facing 0 0 in minecraft:overworld in creative",
+    "player Burst095 spawn at 25120 100 29216 facing 0 0 in minecraft:overworld in creative",
+    "player Burst096 spawn at 26144 100 29216 facing 0 0 in minecraft:overworld in creative",
+    "player Burst097 spawn at 27168 100 29216 facing 0 0 in minecraft:overworld in creative",
+    "player Burst098 spawn at 28192 100 29216 facing 0 0 in minecraft:overworld in creative",
+    "player Burst099 spawn at 29216 100 29216 facing 0 0 in minecraft:overworld in creative"
+  ],
+  "stop_command": "stop",
+  "terminate_seconds": 5,
+  "time_command": "execute in minecraft:overworld run time query gametime",
+  "woven_class_evidence": "server/.mixin.out"
+}

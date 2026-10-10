@@ -1,13 +1,7 @@
 plugins {
     id 'java-library'
-}
-
-base {
-    archivesName = "${mod_id}-${project.name}"
-}
-
-java {
-    toolchain.languageVersion = JavaLanguageVersion.of(java_version)
+    id 'fabrolia-java'
+    id 'fabrolia-release'
 }
 
 repositories {
@@ -28,9 +22,9 @@ jar {
         attributes([
                 'Specification-Title'   : mod_name,
                 'Specification-Vendor'  : mod_author,
-                'Specification-Version' : project.jar.archiveVersion,
+                'Specification-Version' : project.version,
                 'Implementation-Title'  : project.name,
-                'Implementation-Version': project.jar.archiveVersion,
+                'Implementation-Version': project.version,
                 'Implementation-Vendor' : mod_author,
                 'Built-On-Minecraft'    : minecraft_version
         ])

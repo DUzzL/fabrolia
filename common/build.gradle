@@ -1,19 +1,12 @@
 plugins {
     id 'idea'
     id 'net.fabricmc.fabric-loom'
+    id 'fabrolia-java'
 }
 
 // Common is consumed as a project dependency by both loader modules. Pin its
 // published JVM variant as well as its compiler so launching Gradle on JDK 26
 // cannot silently emit/advertise class major 70 to a Java 25 server build.
-java {
-    toolchain.languageVersion = JavaLanguageVersion.of(project.java_version)
-}
-
-tasks.withType(JavaCompile).configureEach {
-    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
-}
-
 repositories {
     maven { url = 'https://maven.bawnorton.com/releases' }
     maven { url 'https://api.modrinth.com/maven' }

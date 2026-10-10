@@ -100,6 +100,11 @@ public final class IslandRegistry {
 
         private final ArrayList<StampedEvent> pendingStampedEvents = new ArrayList<>(8);
         final ArrayList<net.minecraft.world.level.BlockEventData> nextUnitEvents = new ArrayList<>(4);
+        /** The current unit's live ordered queue. All queue mutations share
+         * pendingBlockEvents; execution removes ONE event before its callback,
+         * preserving dedup and clearBlockEvents for the unconsumed suffix. */
+        private final it.unimi.dsi.fastutil.objects.ObjectLinkedOpenHashSet<net.minecraft.world.level.BlockEventData>
+                unitBlockEvents = new it.unimi.dsi.fastutil.objects.ObjectLinkedOpenHashSet<>();
         /** Dedup for the drive+lane duplicate race: a queued-but-not-started
          *  unit must not be enqueued again. The flag stays set through the
          *  task's claim attempt so opportunistic c2me incremental saves yield
@@ -134,12 +139,50 @@ public final class IslandRegistry {
             }
         }
 
-        ArrayList<StampedEvent> drainDueEventsEntered(long unitL) {
+        void captureUnitBlockEvent(net.minecraft.world.level.BlockEventData ev) {
             synchronized (pendingBlockEvents) {
-                if (pendingStampedEvents.isEmpty()) return null;
-                ArrayList<StampedEvent> out = new ArrayList<>(pendingStampedEvents);
+                unitBlockEvents.add(ev);
+            }
+        }
+
+        /** Preserve the previous eligibility order without detaching the
+         * queued suffix from its dedup/cancellation owner. The level's block
+         * event lock covers this transfer and every admission/dequeue. */
+        void prepareUnitBlockEvents() {
+            synchronized (pendingBlockEvents) {
+                if (pendingStampedEvents.isEmpty() && nextUnitEvents.isEmpty()) return;
+                var merged = new it.unimi.dsi.fastutil.objects.ObjectLinkedOpenHashSet<net.minecraft.world.level.BlockEventData>();
+                for (StampedEvent event : pendingStampedEvents) merged.add(event.ev());
+                merged.addAll(nextUnitEvents);
+                merged.addAll(unitBlockEvents);
                 pendingStampedEvents.clear();
+                nextUnitEvents.clear();
+                unitBlockEvents.clear();
+                unitBlockEvents.addAll(merged);
+            }
+        }
+
+        net.minecraft.world.level.BlockEventData pollUnitBlockEvent() {
+            synchronized (pendingBlockEvents) {
+                return unitBlockEvents.isEmpty() ? null : unitBlockEvents.removeFirst();
+            }
+        }
+
+        ArrayList<net.minecraft.world.level.BlockEventData> takeCapturedBlockEvents() {
+            synchronized (pendingBlockEvents) {
+                if (unitBlockEvents.isEmpty()) return null;
+                var out = new ArrayList<>(unitBlockEvents);
+                unitBlockEvents.clear();
                 return out;
+            }
+        }
+
+        boolean clearBlockEvents(java.util.function.Predicate<net.minecraft.world.level.BlockEventData> filter) {
+            synchronized (pendingBlockEvents) {
+                boolean changed = pendingStampedEvents.removeIf(event -> filter.test(event.ev()));
+                changed |= nextUnitEvents.removeIf(filter);
+                changed |= unitBlockEvents.removeIf(filter);
+                return changed;
             }
         }
 
@@ -157,15 +200,6 @@ public final class IslandRegistry {
         void stashNextUnitEvent(net.minecraft.world.level.BlockEventData ev) {
             synchronized (pendingBlockEvents) {
                 nextUnitEvents.add(ev);
-            }
-        }
-
-        ArrayList<net.minecraft.world.level.BlockEventData> drainNextUnitEventsEntered() {
-            synchronized (pendingBlockEvents) {
-                if (nextUnitEvents.isEmpty()) return null;
-                ArrayList<net.minecraft.world.level.BlockEventData> out = new ArrayList<>(nextUnitEvents);
-                nextUnitEvents.clear();
-                return out;
             }
         }
 

@@ -1,0 +1,11 @@
+{
+  "tests": 1439,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 8,
+  "passed": 1431,
+  "jars": {
+    "fabric/build/libs/fabrolia-fabric-0.2.38+alpha-26.3.jar": "8a3bf47493755493581236d9b17c2ce65040d3ab80f8e666fce4db58d040adb4",
+    "neoforge/build/libs/fabrolia-neoforge-0.2.38+alpha-26.3.jar": "c0b15bd0d5abc065016c46a57f8c368a77168d6c28b0615504be6c87e268c240"
+  }
+}

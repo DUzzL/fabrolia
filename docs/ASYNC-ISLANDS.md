@@ -437,10 +437,12 @@ construction — one global EpochDomain everywhere):
   (RegionizedServer.assignDomain).
 - **IslandTickUnit** — the unit is a worker-run COORDINATOR:
   [scheduled block/fluid ticks collected at the island's L] → [its block
-  events] → [entity phase via the R5 event machinery on its own barrier,
-  coordinator helps its own frontier and global/Main-safe dependencies without
-  polling the shared ready queue or entering another unit, with a domain-scoped
-  liveness backstop] → [island-internal deferred cross-region replay] →
+  events] → [queue-only member dispatch on its own barrier, joined by the
+  coordinator with domain-scoped liveness checking] → [exclusive serial entity
+  pass over a finite Vanilla EntityTickList snapshot, filtered to this island
+  in insertion order; authenticated by IslandEntityPhaseScope, with inline
+  block effects throughout its core and halo] → [remaining island-internal
+  deferred cross-region replay] →
   [BE phase: persistent cell index + mid-unit registrations same-tick] →
   [L++, real cost, deadline roll]. Deadline roll re-anchors only when ≥1
   FULL tick behind (sub-tick drift keeps phase — re-anchoring on ε starved
@@ -698,6 +700,30 @@ only take snapshots now. `common/save/AsyncSaveWriter` writes the files.
   it is not rethrown into the storage's write chain, which would stop every
   later server SavedData write. Placeholders are weak keys: a write task
   dropped after an earlier failure in the chain frees its snapshot.
+
+### Gate-held End arrivals (2026-10-08)
+
+Save and teardown use the same `EndPlatformHandoff` landing gate as a normal
+destination head. A full server save seals all source domains before the first
+destination snapshot. Eligible arrivals publish under the claims; held cohorts
+remain queued. Before vanilla collects SavedData, `EndArrivalSavedData` snapshots
+their ordered typed operations (platform position/drop flag or entity NBT) and
+the UUID/chunk identities of airborne predecessors into
+`data/fabrolia/end_arrivals.dat` in the destination dimension.
+
+Recovery runs once before the first level tick, including dimensions constructed
+lazily after scheduler startup. A missing predecessor UUID does not count as a
+landing until its entity chunk has loaded; portal leases keep that load progressing.
+A runtime stop retains live queues and the tracker on Main. Main applies the same
+gate while region threading is off; restarting the scheduler transfers that state
+back once. Recovered source domains have fresh identities so new cohorts cannot
+accidentally merge with a saved source epoch.
+
+This is a world-save snapshot, not a transaction journal across chunk/entity and
+SavedData files. A completed flushing save and clean restart are the recovery
+boundary; arbitrary crashes between writes/publications have no exactly-once
+guarantee. Keeping that boundary is preferable to inserting held entities during
+save and destroying the predecessor's landing order.
 
 ## 15. Entity tracking tick (opt/tracking, 2026-10-04)
 

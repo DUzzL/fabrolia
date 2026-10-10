@@ -18,12 +18,13 @@ import net.minecraft.world.level.Level;
  * its own claimed region, the inline cascade stays confined to that region — it can never
  * reach the concurrent distance-2 region, and every read it does is distance ≤1 and safe.
  *
- * <p>This class is that fence: {@link #tryDefer} returns true (and the caller cancels the
- * inline op) when the current region worker is about to touch a block state outside its
- * claimed region. The op is queued on the level's {@link RegionizedServer} and replayed by
- * the MAIN thread after the phase barrier, when every region is quiescent and cross-region
- * propagation is single-threaded and safe. Replays run on main → not a worker → never
- * deferred again, so they propagate fully.
+ * <p>This class is that fence: {@link #crossRegionTargetOrNull} selects deferral when a
+ * worker is about to touch a block outside its spatial authority. Ordinary region helpers
+ * own just their claimed region. After an island's queue-only entity dispatch has joined,
+ * {@link IslandEntityPhaseScope} authenticates its coordinator's serial entity pass and
+ * permits complete vanilla callbacks throughout that island's core and write halo. Other
+ * islands and dimensions remain protected. Keeping the block removal and its explosion
+ * callback inline together prevents a second explosion from igniting the same TNT twice.
  *
  * <p>Cost: in-region effects (≈99.95% — the detector's live figure) are never deferred and
  * run exactly as before; only boundary crossings pay a queue add + a one-sub-phase delay
@@ -44,7 +45,7 @@ public final class CrossRegionGuard {
 
     /**
      * Fast, allocation-free check: would the CURRENT region worker act on a block outside
-     * its claimed region? Returns the level's {@link RegionizedServer} (so the caller can
+     * its current spatial authority? Returns the level's {@link RegionizedServer} (so the caller can
      * snapshot {@code pos}, build the replay op and {@link RegionizedServer#deferCrossRegion}
      * it, then cancel the inline action) — or {@code null} for the in-region / not-a-worker
      * common path, which must run inline. Reads only {@code pos.getX()/getZ()}, so a reused
@@ -59,6 +60,15 @@ public final class CrossRegionGuard {
         }
         if (!(Thread.currentThread() instanceof RegionWorkerThread w)) {
             return null;    // main / pool / IO — the serialization point, run inline
+        }
+        IslandEntityPhaseScope exclusive = w.exclusiveEntityPhase;
+        if (exclusive != null) {
+            if (exclusive.ownsTarget(level, pos)) {
+                return null; // one serial entity pass owns this entire island + halo
+            }
+            // An exclusive phase is spatially bounded. In particular, do not
+            // let its null currentRegion stamp open writes to another island.
+            return level instanceof ServerLevel sl ? RegionScheduler.forLevel(sl) : null;
         }
         Region claimed = w.currentRegion;
         if (claimed == null) {

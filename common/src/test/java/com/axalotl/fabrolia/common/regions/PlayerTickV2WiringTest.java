@@ -609,19 +609,17 @@ class PlayerTickV2WiringTest {
 
         MethodNode owes = method(regionizer, "owesEntityPhase",
                 "(Lcom/axalotl/fabrolia/common/regions/Region;)Z");
-        int globalDomain = fieldIndex(owes, Opcodes.GETFIELD,
-                internal(RegionizedServer.class), "globalDomain");
-        int queueOnlyRead = fieldIndex(owes, Opcodes.GETFIELD,
-                internal(RegionizedServer.class), "queueOnlyEntityEpoch");
+        int queueOnlyRead = callIndex(owes,
+                internal(RegionizedServer.class), "isQueueOnlyEntityEpoch");
         int suppressedReturn = opcodeIndexAfter(owes, Opcodes.IRETURN, queueOnlyRead);
         int groupedRead = fieldIndex(owes, Opcodes.GETFIELD,
                 internal(Region.class), "groupedEpoch");
         int entityEpoch = fieldIndex(owes, Opcodes.GETFIELD,
                 internal(Region.class), "entityEpoch");
-        assertTrue(globalDomain >= 0 && queueOnlyRead > globalDomain
+        assertTrue(queueOnlyRead >= 0
                         && suppressedReturn > queueOnlyRead && groupedRead > suppressedReturn
                         && entityEpoch > groupedRead,
-                "matching global queue-only epoch must return false before the owed-phase test");
+                "matching domain queue-only epoch must return false before the owed-phase test");
     }
 
 

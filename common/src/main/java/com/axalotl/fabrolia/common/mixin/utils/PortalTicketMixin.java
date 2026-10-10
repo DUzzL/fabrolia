@@ -4,6 +4,9 @@ import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.TicketType;
+import net.minecraft.world.level.ChunkPos;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -29,17 +32,17 @@ public abstract class PortalTicketMixin {
     @Inject(method = "placePortalTicket", at = @At("HEAD"), cancellable = true)
     private void fabrolia$deferPortalTicket(BlockPos pos, CallbackInfo ci) {
         Entity self = (Entity) (Object) this;
-        var server = self.level().getServer();
-        if (server == null
-                || RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
+        if (!(self.level() instanceof ServerLevel destination)) return;
+        var server = destination.getServer();
+        if (RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
             return; // physical Main / vanilla context: unchanged
         }
-        BlockPos immutable = pos.immutable();
-        RegionScheduler.enqueueGlobalMainOnly(() -> {
-            if (!self.isRemoved()) {
-                self.placePortalTicket(immutable);
-            }
-        });
+        ChunkPos chunk = ChunkPos.containing(pos);
+        // The request belongs to this destination now. Pickup, merging or a
+        // later teleport may remove/change the entity before Main drains it;
+        // vanilla has already placed the ticket by then.
+        RegionScheduler.enqueueGlobalMainOnly(() -> destination.getChunkSource()
+                .addTicketWithRadius(TicketType.PORTAL, chunk, 3));
         ci.cancel();
     }
 }

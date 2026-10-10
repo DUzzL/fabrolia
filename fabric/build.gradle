@@ -5,23 +5,17 @@ plugins {
     id 'idea'
 }
 
-tasks.withType(JavaCompile).configureEach {
-    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
-}
-
 repositories {
     maven { url 'https://api.modrinth.com/maven' }
 }
 
-apply plugin: 'com.modrinth.minotaur'
 modrinth {
     token = System.getenv("MODRINTH_TOKEN")
     projectId = "fabrolia"
     versionNumber.set(project.version.toString())
     versionName.set(project.version.toString())
     versionType = "alpha"
-    def libsDir = layout.buildDirectory.dir("libs").get().asFile
-    uploadFile = libsDir.listFiles().find { it.name.endsWith(".jar") }
+    uploadFile.set(tasks.named('jar', Jar).flatMap { it.archiveFile })
     gameVersions = ["26.3"]
     loaders = ["fabric", "quilt"]
     dependencies {

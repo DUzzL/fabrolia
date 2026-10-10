@@ -4,12 +4,9 @@ import com.axalotl.fabrolia.common.regions.CrossDimArrivals;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
-import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
-import com.axalotl.fabrolia.common.utils.DragonEntityIds;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -26,10 +23,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(ServerLevel.class)
 public abstract class CrossDimTeleportMixin {
-
-    @org.spongepowered.asm.mixin.Unique
-    private static final java.util.concurrent.atomic.AtomicLong fabrolia$deadArrivalLogNanos =
-            new java.util.concurrent.atomic.AtomicLong();
 
     /** Vanilla's void teleport entry discards the admission result. A rejected
      * staged member is a failed publication, not an airborne entity to await. */
@@ -61,6 +54,12 @@ public abstract class CrossDimTeleportMixin {
             return;
         }
         if (!RegionScheduler.isActive()) {
+            if (com.axalotl.fabrolia.common.regions.EndArrivalSavedData.hasFallback(self)) {
+                CrossDimArrivals.stage(self, chunkKey,
+                        () -> com.axalotl.fabrolia.common.regions.StagedEntityArrival.publish(self, chunkKey, entity),
+                        "entity", entity);
+                ci.cancel();
+            }
             return;
         }
         RegionizedServer destRs = RegionScheduler.forLevel(self);
@@ -84,61 +83,9 @@ public abstract class CrossDimTeleportMixin {
         // velocity excess). Minting inside the FIFO restores vanilla creation
         // order: every staged op that vanilla ran before the copy existed has
         // already minted its ids by the time this closure runs.
-        CrossDimArrivals.stage(self, chunkKey, () -> {
-            // POPULATION SUSTAIN (task #26): the in-flight lease pins the
-            // destination only while the op is QUEUED — from publication until
-            // the arrival's own activity refreshes tickets, nothing held the
-            // chunk, so the destination could demote/unload (and its island
-            // retire, populated-ness being FULL-chunk based) under a freshly
-            // published entity. Place the same PORTAL ticket vanilla's arrival
-            // path uses, AT publication, for every staged entity arrival —
-            // ticket structures are main-confined, so defer off-main (the
-            // PortalTicketMixin discipline).
-            Runnable sustain = () -> self.getChunkSource().addTicketWithRadius(
-                    net.minecraft.server.level.TicketType.PORTAL,
-                    new net.minecraft.world.level.ChunkPos(
-                            net.minecraft.world.level.ChunkPos.getX(chunkKey),
-                            net.minecraft.world.level.ChunkPos.getZ(chunkKey)), 3);
-            if (RegionalPlayerEntityTicksV2
-                    .isPhysicalServerThread(self.getServer())) {
-                sustain.run();
-            } else {
-                RegionScheduler.enqueueGlobalMainOnly(sustain);
-            }
-            // The arrival copy can be KILLED between staging and publication.
-            // Vanilla inserts the copy (Entity.teleportCrossDimension:3090) and only
-            // THEN runs the type's post-insertion continuation — ItemEntity.teleport
-            // calls mergeWithNeighbours() at ItemEntity.java:365, and merge() ends in
-            // fromItem.discard(). Because staging cancels the insert and defers it,
-            // that continuation runs here on an entity that belongs to no level, so a
-            // merge can discard the arrival before it is ever inserted. Publishing it
-            // anyway is what produces vanilla's
-            //   "Tried to add entity minecraft:item but it was marked as removed already"
-            // (ServerLevel.java:994) from a region worker. Drop the op instead of
-            // handing a dead entity to addEntity, and say so once per 5 min with the
-            // removal reason so a recurrence is classifiable.
-            if (entity.isRemoved()) {
-                long now = System.nanoTime();
-                long last = fabrolia$deadArrivalLogNanos.get();
-                if (now - last > 300_000_000_000L
-                        && fabrolia$deadArrivalLogNanos.compareAndSet(last, now)) {
-                    org.slf4j.LoggerFactory.getLogger("Fabrolia-XDim").warn(
-                            "Dropped a cross-dimension arrival that was removed ({}) between "
-                                    + "staging and publication: {} into {}. The entity died in the "
-                                    + "window where it belongs to no level; it is NOT inserted. "
-                                    + "Throttled to one line per 5 min.",
-                            entity.getRemovalReason(), entity.getType().toString(),
-                            self.dimension().identifier());
-                }
-                return;
-            }
-            if (entity instanceof EnderDragon dragon) {
-                DragonEntityIds.assignUnpublished(self, dragon);
-            } else {
-                entity.setId(self.getNextEntityId());
-            }
-            self.addDuringTeleport(entity);
-        }, "entity", entity);
+        CrossDimArrivals.stage(self, chunkKey,
+                () -> com.axalotl.fabrolia.common.regions.StagedEntityArrival.publish(self, chunkKey, entity),
+                "entity", entity);
         ci.cancel();
     }
 }

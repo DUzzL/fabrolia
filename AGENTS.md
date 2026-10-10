@@ -33,8 +33,11 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 ./gradlew :common:test --tests '*GlobalBlockUpdateDrainTest'      # while iterating
 ```
 
-Jar: `fabric/build/libs/fabrolia-fabric-<version>.jar` (the version string stays
-`0.2.38+alpha-26.3`; the released commit is tagged `prod/current`). ~1400 tests, all must
+Jar: `fabric/build/libs/fabrolia-alpha_<major>.<minor>.<patch>.jar`; current release
+`fabrolia-alpha_3.0.1.jar`. Metadata version: `3.0.1-alpha` in `gradle.properties`.
+The owner's 2026-10-10 versioning rule supersedes the old fixed `0.2.38+alpha-26.3`:
+minor releases increment the middle number and reset patch; bugfixes increment patch.
+Use `tools/release/release_version.py`; see `docs/RELEASES.md`. ~1400 tests, all must
 pass; `:fabric:build` runs `:common:test` first, so a red test also blocks the jar.
 
 About 57 test classes are **wiring tests**: they read Java source or bytecode and assert
@@ -54,7 +57,7 @@ classes of the real mod set: `tools/stand/stand.sh export exp-1 <jar>`, then
 (details, scenarios and how to read results: `docs/STAND.md`):
 
 ```bash
-tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-fabric-0.2.38+alpha-26.3.jar   # must print ALL PASS
+tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.0.1.jar   # must print ALL PASS
 tools/stand/stand.sh perf perf-1 <jar> 120 [--scenario items|pistons] [--heap]
 python3 tools/spark/frames.py <old>.sparkprofile <new>.sparkprofile
 ```
@@ -82,8 +85,10 @@ Every change touching runtime code: tests + `verify`. Threading/performance chan
 - `docs/ASYNC-ISLANDS.md`: the island design and its invariants (sections 0, 2, 12–17 are the
   ones edits usually need).
 - `CHANGELOG.md`: what changed and why, newest first; every user-visible change goes here.
+- `docs/README.md`: documentation index. `docs/RELEASES.md` and `tools/release/`:
+  release versions, exact artifact naming and archive checks.
 - `tools/stand/`, `tools/spark/`: stand and profile tooling. `docs/C2ME-FLAG_BROKEN-STRAND.md`:
-  a C2ME bug Fabrolia contains (`/fabrolia regions chunkheal`).
+  the C2ME broken-strand diagnosis (always active when applicable).
 - `../Rustmi` (production mod) compiles against and reflects on Fabrolia: `regions.{Region,
   RegionGrid,RegionScheduler,RegionTickHooks,RegionWorkerThread}`, `SensorCandidateBridge`,
   `LocalCapBridge`, `ParallelProcessor.executor`/`pumpUntilDone`; Fabrolia's
@@ -95,7 +100,8 @@ Every change touching runtime code: tests + `verify`. Threading/performance chan
 1. Tests + `verify` ALL PASS (+ `perf` comparison for performance work).
 2. Move the tag `prod/current` to the released commit (`git tag -fa prod/current`) and replace
    the jars in `release/` (Fabrolia fabric jar + MCFC jar), then `sha256sum *.jar > SHA256SUMS`.
-3. Install with the server stopped: replace `mods/fabrolia-fabric-*.jar`, start. A jar
+3. Install with the server stopped: remove the old Fabrolia jar (including the former
+   `fabrolia-fabric-*.jar` name), install `fabrolia-alpha_*.jar`, then start. A jar
    overwritten under a running server breaks its next class load (seen as a crash on
    `/stop`); if the server is live, copy to a temp name in `mods/` and `mv` it over the old
    jar, then restart.
@@ -121,15 +127,26 @@ player ticks stay on Main). Datapacks include BlazeandCave's Advancements.
 
 - Islands do not catch up ticks lost to a pause (Main does); left open by the owner.
 - Production autosaves once a minute (a ~470 ms tick in the 2026-10-05 profile; check
-  ServerCore `autosave-interval-seconds`, 300 is recommended). The save path itself is
-  deliberately left as it is.
+  ServerCore `autosave-interval-seconds`). The owner's 2026-10-08 fix request changes
+  the End-arrival save boundary: held cohorts are persisted in destination SavedData
+  instead of bypassing the landing gate. Preserve this rule on save, scheduler stop,
+  and lazy dimension creation; see `docs/CRITICAL-FIXES-2026-10-08.md`.
 - Carpet/vanilla custom spawners on Main read blocks of island chunks near players
   (reads only; low risk).
-- `Long2ObjectConcurrentHashMap` boxes keys (~1–2 ms/tick of worker CPU).
-- Carpet `/spawn tracking start` crashes the server under async islands: Carpet's
-  `NaturalSpawner` hook writes `SpawnReporter.local_spawns`, which is null on island threads
-  (`NullPointerException` from `ServerChunkCache.fabrolia$tickIslandChunks`, seen 2026-10-07).
-  Production should keep `/carpet commandSpawn false` until this is fixed.
+- `Long2ObjectConcurrentHashMap.get` is the top worker self-time frame in production
+  (2026-10-10: ~8 % of worker CPU, half of it Lithium's per-block-entity
+  `areEntitiesLoaded`, a vanilla-equivalent call). Boxing is not the cost: a
+  microbenchmark (22.5k chunk keys, 1 and 8 threads) put the primitive
+  `Long2IntConcurrentHashMap` only 5–25 % ahead with a warm cache and level or
+  behind with a cold one (~50–100 ns both).
+  The cost is memory latency per lookup; a map swap alone does not pay.
+- Carpet spawn tracking is incompatible with independent/deferred spawning: its
+  `NaturalSpawner` hooks use shared, non-thread-safe world-cycle counters (`local_spawns`
+  and `first_chunk_marker`). Fabrolia automatically rejects `/spawn tracking start` and
+  `/spawn test` while parallel spawning or async islands are enabled, and stops existing
+  tracking on a mode change. Other `/spawn` commands remain available; no manual
+  `/carpet commandSpawn false` is needed with this guard. True parallel tracking remains
+  unsupported.
 - Memory leak in Lithium, not Fabrolia (production heap dump 2026-10-08: 379 `ServerPlayer`
   for 25 online, ≈ 600 MB after 19.4 h, ~30 MB/h): Lithium's `mixin.entity.framed_maps`
   makes a framed map's `tickCarriedBy` visit only the ticking player, so players who left or

@@ -18,7 +18,7 @@ final class VanillaFailurePropagationWiringTest {
         String levelMixin = source("common/mixin/world/ServerLevelMixin.java");
         String levelSave = methodSlice(levelMixin,
                 "private void fabrolia$quiesceIslandsForLevelSave(",
-                "// All five redirects now operate");
+                "    @Redirect(method = \"blockEvent\"");
         int levelBypass = levelSave.indexOf(
                 "rsq.currentThreadHoldsAllClaims())");
         int levelBypassAdmission = levelSave.indexOf(

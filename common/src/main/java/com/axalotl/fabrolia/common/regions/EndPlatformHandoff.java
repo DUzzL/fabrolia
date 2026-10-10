@@ -99,6 +99,9 @@ public final class EndPlatformHandoff {
         Object landingHandle(int i);
     }
 
+    /** Save/rebind snapshot. Handles remain opaque to this MC-free rule. */
+    public record Landing(long chunkKey, Object handle) {}
+
     /**
      * Per-destination-LEVEL airborne-member tracker. Lives on
      * {@link RegionizedServer} (not on an island) deliberately: island
@@ -162,6 +165,15 @@ public final class EndPlatformHandoff {
                 n += l.size();
             }
             return n;
+        }
+
+        public synchronized java.util.List<Landing> snapshot() {
+            sweep();
+            ArrayList<Landing> result = new ArrayList<>();
+            airborneByChunk.forEach((chunk, entries) -> {
+                for (Entry entry : entries) result.add(new Landing(chunk, entry.handle()));
+            });
+            return result;
         }
 
         private void purge(ArrayList<Entry> list) {

@@ -63,6 +63,9 @@ def owned(run_id, exists=True):
 def inventory(root):
     result = {}
     for path in sorted(root.rglob('*')):
+        # Finder metadata can change while inspecting a run; it is not server input.
+        if path.name == '.DS_Store' or path.name.startswith('._'):
+            continue
         if path.is_symlink():
             raise ValueError('Symlink forbidden: ' + str(path))
         if path.is_file():

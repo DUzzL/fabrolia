@@ -21,7 +21,7 @@ import net.minecraft.world.level.gamerules.GameRules;
  * window and dies by the two-strike rule.
  *
  * <p>Newly created raids are assigned immediately; main's {@code Raids.tick}
- * refreshes ownership and maintains tickets. The island ticks every assigned
+ * refreshes ownership. The island ticks every assigned
  * raid at the vanilla slot (after scheduled ticks, before block events), once
  * per UNIT in lockstep with its scheduled ticks, whatever main's rate is.
  * Stopped raids are dropped; a surviving raid whose center migrated is handed
@@ -42,8 +42,8 @@ public final class RaidIslandDispatch {
         RaidOwnerAccess.View view = ((RaidOwnerAccess) raid).fabrolia$raidView();
         IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(ChunkPos.pack(view.center()));
         if (owner != null && !owner.retired) assign(owner, raid);
-        // Ticket storage remains Main-owned; it is not the first-tick admission.
-        RegionScheduler.enqueueGlobalMainOnly(() -> RaidIslandMerge.onRaidDispatched(level, raid));
+        // Do not add raid tickets. Vanilla's existing player/portal/forceload
+        // tickets decide which chunks are loaded and eligible for wave spawning.
     }
 
     /**
@@ -60,7 +60,6 @@ public final class RaidIslandDispatch {
             IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(ChunkPos.pack(view.center()));
             if (owner != null && !owner.retired) {
                 assign(owner, raid);
-                RaidIslandMerge.onRaidDispatched(level, raid);
                 return false;
             }
         }
