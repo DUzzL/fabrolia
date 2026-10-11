@@ -64,6 +64,27 @@ public abstract class PersistentEntityUnloadRetryMixin
     private static final java.util.concurrent.atomic.AtomicLong fabrolia$unloadRetryLogNanos =
             new java.util.concurrent.atomic.AtomicLong();
 
+    /** A retried unload is normal (vanilla retries a false store every tick,
+     *  silently); one that keeps failing this long is a stranded chunk. */
+    @Unique
+    private static final long FABROLIA$UNLOAD_STUCK_NANOS = 60_000_000_000L;
+
+    /** First failed attempt of every chunk still pending a retry, carried
+     *  across passes. Mutated only under the {@code chunksToUnload} monitor;
+     *  the two maps are swapped each pass instead of reallocated. */
+    @Unique
+    private it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap fabrolia$unloadRetrySince;
+
+    @Unique
+    private it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap fabrolia$unloadRetrySinceNext;
+
+    /** Oldest pending retry after the last pass: chunk and first-failure time. */
+    @Unique
+    private long fabrolia$oldestRetryChunk;
+
+    @Unique
+    private long fabrolia$oldestRetrySince;
+
     @Inject(method = "<init>", at = @At("RETURN"))
     private void fabrolia$initializeUnloadRetryState(CallbackInfo ci) {
         // ThreadLocal.withInitial uses invokedynamic in the mixin instance
@@ -74,6 +95,8 @@ public abstract class PersistentEntityUnloadRetryMixin
         this.fabrolia$unloadFairness =
                 new IslandUnitAdmission.EntityUnloadRetryFairness();
         this.fabrolia$statusTransitions = new FabroliaStatusTransitions();
+        this.fabrolia$unloadRetrySince = new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
+        this.fabrolia$unloadRetrySinceNext = new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
         // Pass C2ME's instanceof check so its overwritten loop never replaces
         // the set object while our outer monitor is held.
         if (!(this.chunksToUnload instanceof LongLinkedOpenHashSet)) {
@@ -583,6 +606,10 @@ public abstract class PersistentEntityUnloadRetryMixin
                 // supplies both the entry cut and peer-W terminal cut.
                 com.axalotl.fabrolia.common.regions.RegionScheduler
                         .runSuccessBodyIfHealthy(() -> {
+                    long now = System.nanoTime();
+                    var since = this.fabrolia$unloadRetrySince;
+                    var next = this.fabrolia$unloadRetrySinceNext;
+                    next.clear();
                     for (long chunkPos : retries) {
                         // Vanilla re-checks this predicate on every false-result
                         // retry. Without it a promotion racing the failed save
@@ -593,7 +620,9 @@ public abstract class PersistentEntityUnloadRetryMixin
                         }
                         this.chunksToUnload.add(chunkPos);
                         restored[0]++;
+                        next.put(chunkPos, since.containsKey(chunkPos) ? since.get(chunkPos) : now);
                     }
+                    fabrolia$carryPendingRetryAges(since, next, now);
                 });
             } catch (Throwable bodyFailure) {
                 // Either processUnloads or the normal-result restoration may
@@ -636,21 +665,73 @@ public abstract class PersistentEntityUnloadRetryMixin
                 // Diagnostics are also a successor stage: they must not run after
                 // a peer W, and their own failure must not be swallowed as a reason
                 // to continue this server tick.
+                //
+                // A false store is routine (an island owns the chunk, entities
+                // still loading) and vanilla retries it silently every tick; the
+                // former 10 s WARN produced 5.9k lines in one 20 h production log
+                // without saying whether any chunk was actually stranded. WARN
+                // now names the oldest chunk once it has failed for a minute;
+                // the routine count stays available at DEBUG.
                 com.axalotl.fabrolia.common.regions.RegionScheduler
                         .runSuccessBodyIfHealthy(() -> {
                     fabrolia$unloadRetryTotal.add(restoredCount);
                     long now = System.nanoTime();
                     long last = fabrolia$unloadRetryLogNanos.get();
-                    if (now - last > 10_000_000_000L
+                    long stuckFor = now - this.fabrolia$oldestRetrySince;
+                    boolean stuck = stuckFor >= FABROLIA$UNLOAD_STUCK_NANOS;
+                    long interval = stuck ? FABROLIA$UNLOAD_STUCK_NANOS : 10_000_000_000L;
+                    if (now - last > interval
                             && fabrolia$unloadRetryLogNanos.compareAndSet(last, now)) {
-                        org.slf4j.LoggerFactory.getLogger("Fabrolia-PearlLoad").warn(
-                                "[entity-unload] restored {} deferred chunk unload request(s) "
-                                        + "whose store returned false; total={} (C2ME retry repair)",
-                                restoredCount, fabrolia$unloadRetryTotal.sum());
+                        var log = org.slf4j.LoggerFactory.getLogger("Fabrolia-PearlLoad");
+                        long oldest = this.fabrolia$oldestRetryChunk;
+                        if (stuck) {
+                            log.warn("[entity-unload] chunk [{}, {}] has failed to unload for {} s "
+                                            + "({} chunk(s) pending retry; total retries={}) "
+                                            + "- stranded entity section (C2ME retry repair)",
+                                    ChunkPos.getX(oldest), ChunkPos.getZ(oldest),
+                                    stuckFor / 1_000_000_000L, this.fabrolia$unloadRetrySince.size(),
+                                    fabrolia$unloadRetryTotal.sum());
+                        } else if (log.isDebugEnabled()) {
+                            log.debug("[entity-unload] restored {} deferred chunk unload request(s) "
+                                            + "whose store returned false; total={} (C2ME retry repair)",
+                                    restoredCount, fabrolia$unloadRetryTotal.sum());
+                        }
                     }
                 });
             }
         }
+    }
+
+    /** Monitor held. A key a bounded pop loop did not reach this pass keeps
+     *  its age while it is still queued; a stored or re-promoted key drops
+     *  out. Swaps the maps and records the oldest pending retry. */
+    @Unique
+    private void fabrolia$carryPendingRetryAges(
+            it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap since,
+            it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap next, long now) {
+        var entries = since.long2LongEntrySet().fastIterator();
+        while (entries.hasNext()) {
+            var entry = entries.next();
+            long chunkPos = entry.getLongKey();
+            if (!next.containsKey(chunkPos) && this.chunksToUnload.contains(chunkPos)) {
+                next.put(chunkPos, entry.getLongValue());
+            }
+        }
+        long oldestSince = now;
+        long oldestChunk = 0L;
+        var pending = next.long2LongEntrySet().fastIterator();
+        while (pending.hasNext()) {
+            var entry = pending.next();
+            if (entry.getLongValue() < oldestSince) {
+                oldestSince = entry.getLongValue();
+                oldestChunk = entry.getLongKey();
+            }
+        }
+        since.clear();
+        this.fabrolia$unloadRetrySince = next;
+        this.fabrolia$unloadRetrySinceNext = since;
+        this.fabrolia$oldestRetrySince = oldestSince;
+        this.fabrolia$oldestRetryChunk = oldestChunk;
     }
 
     @Unique

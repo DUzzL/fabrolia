@@ -24,6 +24,9 @@ import org.slf4j.LoggerFactory;
  *       first line after a throttled window reports the suppressed count.
  *       Shutdown unload cascades are additionally muted via
  *       {@code server.isRunning()}.</li>
+ *   <li><b>Aggregated self-heal.</b> Ticket holds that engage and heal are
+ *       the designed outcome, not anomalies; they are counted and reported in
+ *       one summary line per five minutes.</li>
  * </ul>
  */
 public final class PearlTrace {
@@ -151,34 +154,58 @@ public final class PearlTrace {
     }
 
     /** A burned-down ENDER_PEARL ticket is being held at zero because a live
-     *  (frozen) pearl sits in its chunk — the self-heal engaged. Logged once
-     *  per hold; this is THE prod signal that the margin race was caught. */
+     *  pearl sits in its chunk — the self-heal engaged. The ticket survives,
+     *  so the chunk stays entity-ticking: this is the expected outcome of the
+     *  deferred-renewal margin under async islands, not an anomaly. Holds and
+     *  heals are therefore aggregated into one summary line per
+     *  {@link #SELF_HEAL_SUMMARY_INTERVAL_NANOS} (2026-10-11: the per-event
+     *  lines were 4.6k of a 20 h production log, every one "self-heal OK").
+     *  The anomalies — budget exhausted, expiry with a live pearl, a completed
+     *  entity-ticking loss — keep their individual lines. */
     public static void holdEngaged(ServerLevel level, long packedChunkPos, String probe) {
         if (!FabroliaDebug.PEARL_TRACE) {
             return;
         }
-        long suppressed = takeSuppressed();
-        if (allow()) {
-            LOG.info("[pearl-ticket] holding ENDER_PEARL ticket at {} — live frozen pearl(s):{} | {}{}",
-                    ChunkPos.unpack(packedChunkPos), livePearlsInChunk(level, packedChunkPos), probe,
-                    suppressed > 0 ? " (+" + suppressed + " suppressed)" : "");
-        }
+        HOLDS_ENGAGED.increment();
+        latestHold = ChunkPos.unpack(packedChunkPos) + " " + probe;
+        maybeSummarizeSelfHeal();
     }
 
-    /** A previously held ticket renewed out of the hold (the pearl unfroze
-     *  and its renewal reached the storage) — the self-heal completed. */
+    /** A previously held ticket renewed out of the hold (the pearl's renewal
+     *  reached the storage) — the self-heal completed. Aggregated. */
     public static void holdHealed(ServerLevel level, long packedChunkPos, int heldPasses) {
         if (!FabroliaDebug.PEARL_TRACE) {
             return;
         }
-        long suppressed = takeSuppressed();
-        if (allow()) {
-            LOG.info("[pearl-ticket] hold released at {} after {} passes — pearl resumed renewing "
-                            + "(self-heal OK); pearl(s):{}{}",
-                    ChunkPos.unpack(packedChunkPos), heldPasses,
-                    livePearlsInChunk(level, packedChunkPos),
-                    suppressed > 0 ? " (+" + suppressed + " suppressed)" : "");
+        HOLDS_HEALED.increment();
+        MAX_HEAL_PASSES.accumulateAndGet(heldPasses, Math::max);
+        maybeSummarizeSelfHeal();
+    }
+
+    private static final long SELF_HEAL_SUMMARY_INTERVAL_NANOS = 300_000_000_000L;
+    private static final java.util.concurrent.atomic.LongAdder HOLDS_ENGAGED =
+            new java.util.concurrent.atomic.LongAdder();
+    private static final java.util.concurrent.atomic.LongAdder HOLDS_HEALED =
+            new java.util.concurrent.atomic.LongAdder();
+    private static final java.util.concurrent.atomic.AtomicInteger MAX_HEAL_PASSES =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicLong SELF_HEAL_WINDOW_START =
+            new java.util.concurrent.atomic.AtomicLong(System.nanoTime());
+    private static volatile String latestHold = "";
+
+    private static void maybeSummarizeSelfHeal() {
+        long now = System.nanoTime();
+        long start = SELF_HEAL_WINDOW_START.get();
+        if (now - start < SELF_HEAL_SUMMARY_INTERVAL_NANOS
+                || !SELF_HEAL_WINDOW_START.compareAndSet(start, now)) {
+            return;
         }
+        long engaged = HOLDS_ENGAGED.sumThenReset();
+        long healed = HOLDS_HEALED.sumThenReset();
+        int maxPasses = MAX_HEAL_PASSES.getAndSet(0);
+        LOG.info("[pearl-ticket] self-heal summary (last {}s): {} hold(s) engaged, {} healed "
+                        + "(max {} passes); latest hold {}",
+                (now - start) / 1_000_000_000L, engaged, healed, maxPasses, latestHold);
     }
 
     /** The hold's leak bound released a wedged pearl's ticket to vanilla
@@ -213,8 +240,9 @@ public final class PearlTrace {
         }
     }
 
-    /** A chunk holding a live pearl left entity-ticking range — the pearl is
-     *  now frozen (no ticks, no renewals). */
+    /** A chunk holding a live pearl left entity-ticking range at the end of a
+     *  completed propagation wave — the pearl is now frozen (no ticks, no
+     *  renewals). Intermediate wave states are filtered by the caller. */
     public static void frozen(ServerLevel level, long packedChunkPos) {
         if (!level.getServer().isRunning()) {
             return; // shutdown unload cascade — every pearl "freezes", noise

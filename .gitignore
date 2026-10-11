@@ -18,6 +18,9 @@ out
 build
 .gradle
 
+# vscode: ModDevGradle regenerates launch.json with absolute local paths
+.vscode/launch.json
+
 # other
 .DS_Store
 ._*

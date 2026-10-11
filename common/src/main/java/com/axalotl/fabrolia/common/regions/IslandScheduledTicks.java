@@ -189,22 +189,41 @@ public final class IslandScheduledTicks {
         LOGGER.warn("[scheduled-ticks] {}", message);
     }
 
-    /** Every input of vanilla's exact check plus the DM levels, so a log line
-     *  says WHICH leg refused (same probe shape as PortalStuckProbe). */
+    /** Every input of vanilla's exact check plus the simulation level, so a log
+     *  line says WHICH leg refused (same probe shape as PortalStuckProbe).
+     *
+     *  <p>Each leg is read on its own: one unreadable leg must not hide the
+     *  others. The loading level is taken from the holder's ticket level, not
+     *  from {@code DistanceManager.getChunkLevel(pos, false)}: C2ME replaces
+     *  vanilla's loading tracker and leaves {@code loadingChunkTracker} null,
+     *  which turned every production SCHEDULED-HOLD line into
+     *  {@code readiness=probe-failed:NullPointerException} (2026-10-11 log). */
     private static String describeChunkReadiness(ServerLevel level, long chunkPos) {
+        StringBuilder sb = new StringBuilder(160);
+        net.minecraft.server.level.ServerChunkCache cs;
+        net.minecraft.server.level.ChunkHolder holder;
         try {
-            var cs = level.getChunkSource();
-            var dm = cs.chunkMap.getDistanceManager();
-            var holder = cs.getVisibleChunkIfPresent(chunkPos);
-            return " simLevel=" + dm.getChunkLevel(chunkPos, true)
-                    + " loadLevel=" + dm.getChunkLevel(chunkPos, false)
-                    + " entityTickingRange=" + dm.inEntityTickingRange(chunkPos)
-                    + " ticketLevel=" + (holder == null ? "unloaded" : holder.getTicketLevel())
-                    + " tickingChunk=" + (holder != null && holder.getTickingChunk() != null)
-                    + " entitiesLoaded=" + level.areEntitiesLoaded(chunkPos)
-                    + " shouldTickBlocks=" + level.shouldTickBlocksAt(chunkPos);
+            cs = level.getChunkSource();
+            holder = cs.getVisibleChunkIfPresent(chunkPos);
         } catch (Throwable t) {
             return " readiness=probe-failed:" + t;
+        }
+        appendProbe(sb, "simLevel", () -> cs.chunkMap.getDistanceManager().getChunkLevel(chunkPos, true));
+        appendProbe(sb, "entityTickingRange", () -> cs.chunkMap.getDistanceManager().inEntityTickingRange(chunkPos));
+        appendProbe(sb, "ticketLevel", () -> holder == null ? "unloaded" : holder.getTicketLevel());
+        appendProbe(sb, "tickingChunk", () -> holder != null && holder.getTickingChunk() != null);
+        appendProbe(sb, "entitiesLoaded", () -> level.areEntitiesLoaded(chunkPos));
+        appendProbe(sb, "shouldTickBlocks", () -> level.shouldTickBlocksAt(chunkPos));
+        return sb.toString();
+    }
+
+    private static void appendProbe(StringBuilder sb, String name,
+                                    java.util.function.Supplier<Object> leg) {
+        sb.append(' ').append(name).append('=');
+        try {
+            sb.append(leg.get());
+        } catch (Throwable t) {
+            sb.append("probe-failed:").append(t.getClass().getSimpleName());
         }
     }
 

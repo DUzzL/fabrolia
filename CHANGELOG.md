@@ -1,3 +1,28 @@
+## Unreleased
+
+Findings from the 2026-10-11 production log (20 h, 68.7k lines); details and
+numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
+
+### Diagnostics
+
+- SCHEDULED-HOLD lines print the chunk's readiness again. The probe read the
+  loading level through `DistanceManager.getChunkLevel(pos, false)`, whose
+  `loadingChunkTracker` is null under C2ME, so all 2,015 hold lines of the log
+  said `readiness=probe-failed:NullPointerException`. The loading level now
+  comes from the holder's ticket level, and each leg is probed on its own.
+- The pearl-freeze trace judges completed propagation waves only. It fired on
+  intermediate `setLevel` states (the fixed-point propagation lifts a node to
+  the maximum and relaxes it back within one wave), so stasis chunks that never
+  left entity-ticking were reported up to ~1,000 times each.
+- Ender-pearl ticket holds that engage and heal are summarised once per five
+  minutes instead of one INFO line each (4.6k lines, all "self-heal OK").
+  Budget exhaustion, expiry with a live pearl and real freezes still log
+  individually.
+- `[entity-unload]` retries of a false entity store are routine (vanilla retries
+  silently every tick) and no longer WARN every 10 s (5.9k lines). The age of
+  every pending retry is tracked; WARN names the oldest chunk once it has failed
+  to unload for 60 s. The routine count remains at DEBUG.
+
 ## 3.0.1-alpha (2026-10-11)
 
 - Remove the ineffective `/fabrolia regions chunkheal on/off` command and its
