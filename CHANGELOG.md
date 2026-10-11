@@ -56,6 +56,19 @@ numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
   the rest of the session.
 - Stats and `setFabroliaChunkSend` label the chunk-send key as legacy (no effect).
 
+### Build and tools
+
+- CI: `actions/setup-java@v4` with Temurin 25 (v2 ran on the retired Node 12
+  runtime), `gradle/actions/setup-gradle`, Ubuntu 24.04 without the obsolete
+  `libtinfo5` install, and `check_jar.py` on the built Fabric jar.
+- `gradlew` and `tools/stand/stand.sh` are committed executable.
+- `.vscode/launch.json` is no longer tracked (regenerated with absolute local
+  paths on every Gradle configure).
+- Spark tools: `sparkwin.py` and `frames.py` print usage instead of a
+  traceback; `tools/spark/requirements.txt` pins the protobuf 7.x runtime the
+  committed bindings need.
+- Bug-report template assigns the fork owner instead of upstream maintainers.
+
 ## 3.0.1-alpha (2026-10-11)
 
 - Remove the ineffective `/fabrolia regions chunkheal on/off` command and its
