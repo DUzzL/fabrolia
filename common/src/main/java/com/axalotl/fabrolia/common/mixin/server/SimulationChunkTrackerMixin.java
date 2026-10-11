@@ -67,11 +67,10 @@ public abstract class SimulationChunkTrackerMixin implements RegionTickingTracke
     @Unique
     private boolean fabrolia$mirrorWarned;
 
-    /** Chunks whose level crossed out of ENTITY_TICKING at some {@code setLevel}
-     *  of the running wave; judged once the wave has relaxed. Same monitor as
-     *  {@code setLevel}/{@code runAllUpdates}, so a plain set is enough. */
+    /** Candidates of the running wave, judged once it has relaxed. Same monitor
+     *  as {@code setLevel}/{@code runAllUpdates}. */
     @Unique
-    private it.unimi.dsi.fastutil.longs.LongOpenHashSet fabrolia$entityTickingLossCandidates;
+    private com.axalotl.fabrolia.common.regions.EntityTickingLossTrace fabrolia$entityTickingLoss;
 
     @Unique
     private static final org.slf4j.Logger FABROLIA$LOG = org.slf4j.LoggerFactory.getLogger("Fabrolia");
@@ -98,7 +97,7 @@ public abstract class SimulationChunkTrackerMixin implements RegionTickingTracke
         this.chunks.defaultReturnValue(defaultVal);
         this.fabrolia$liveLevels = new CompletedChunkLevels.Builder(defaultVal);
         this.fabrolia$completedView = this.fabrolia$liveLevels.published();
-        this.fabrolia$entityTickingLossCandidates = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        this.fabrolia$entityTickingLoss = new com.axalotl.fabrolia.common.regions.EntityTickingLossTrace();
     }
 
     /** Republish the completed view once the wave has fully relaxed. Runs under
@@ -135,44 +134,28 @@ public abstract class SimulationChunkTrackerMixin implements RegionTickingTracke
      *  renewals). Anomaly-filtered and rate-limited inside PearlTrace — silent
      *  for plain unloads.
      *
-     *  <p>Only a candidate is recorded here. {@code setLevel} also sees the
-     *  wave's intermediate states: on a level increase the fixed-point
-     *  propagation first lifts a node to the maximum and then relaxes it back,
-     *  so a pearl chunk whose ticket set merely changed (a player ticket
-     *  moving, a renewal) passed through "not entity-ticking" without ever
-     *  leaving it. Reporting those made up most of the 5.6k "LEFT
-     *  entity-ticking" lines of the 2026-10-10 production log (one stasis
-     *  chunk ~1000 times). The verdict is taken on completed states in
-     *  {@link #fabrolia$traceCompletedEntityTickingLoss}. */
+     *  <p>Only a candidate is recorded here: {@code setLevel} also sees the
+     *  wave's intermediate states, and reporting those made up most of the
+     *  5.6k "LEFT entity-ticking" lines of the 2026-10-10 production log (one
+     *  stasis chunk ~1000 times). See {@code EntityTickingLossTrace}. */
     @Inject(method = "setLevel(JI)V", at = @At("HEAD"))
     private void fabrolia$tracePearlFreeze(long pos, int newLevel, CallbackInfo ci) {
         if (!com.axalotl.fabrolia.common.utils.FabroliaDebug.PEARL_TRACE) return;
         if (ChunkLevel.isEntityTicking(newLevel)) return;
-        if (ChunkLevel.isEntityTicking(this.getLevel(pos))) {
-            this.fabrolia$entityTickingLossCandidates.add(pos);
-        }
+        this.fabrolia$entityTickingLoss.noteLevelChange(pos, this.getLevel(pos), newLevel);
     }
 
     /** A candidate froze only if it was entity-ticking in the previous
      *  completed wave and is not entity-ticking in this one. */
     @Unique
     private void fabrolia$traceCompletedEntityTickingLoss(CompletedChunkLevels previous) {
-        var candidates = this.fabrolia$entityTickingLossCandidates;
-        if (candidates.isEmpty()) return;
-        try {
-            if (!(this.fabrolia$chunkMap instanceof com.axalotl.fabrolia.common.regions.LevelAccess la)) {
-                return;
-            }
-            var it = candidates.iterator();
-            while (it.hasNext()) {
-                long pos = it.nextLong();
-                if (ChunkLevel.isEntityTicking(previous.get(pos))
-                        && !ChunkLevel.isEntityTicking(this.getLevel(pos))) {
-                    com.axalotl.fabrolia.common.utils.PearlTrace.frozen(la.fabrolia$level(), pos);
-                }
-            }
-        } finally {
-            candidates.clear();
+        var trace = this.fabrolia$entityTickingLoss;
+        if (trace.isEmpty()) return;
+        if (!(this.fabrolia$chunkMap instanceof com.axalotl.fabrolia.common.regions.LevelAccess la)) {
+            trace.clear();
+            return;
         }
+        trace.judge(previous::get, pos -> this.getLevel(pos),
+                pos -> com.axalotl.fabrolia.common.utils.PearlTrace.frozen(la.fabrolia$level(), pos));
     }
 }
