@@ -39,6 +39,9 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // DocumentationReferencesTest reads these; rerun when they change.
+    inputs.files(rootProject.file('docs/CODEMAP.md'), rootProject.file('AGENTS.md'))
+            .withPathSensitivity(PathSensitivity.RELATIVE)
     testLogging {
         events "passed", "failed", "skipped"
         exceptionFormat = "full"
