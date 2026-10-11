@@ -140,8 +140,11 @@ twice` (Vanilla-Warnung).
 
 ## Prüfung
 
-- `:common:test` 1.434 bestanden, 8 übersprungen (externe Jars), 0 fehlgeschlagen –
-  identisch mit dem Ausgangsstand.
+- `:common:test` 1.439 bestanden (Ausgangsstand 1.434 plus fünf neue Tests),
+  8 übersprungen (externe Jars), 0 fehlgeschlagen.
+- Version 3.0.2-alpha; `tools/release/check_jar.py` PASS für
+  `fabrolia-alpha_3.0.2.jar`. Alle Änderungen dieser Sitzung stehen im
+  [CHANGELOG](../CHANGELOG.md) unter 3.0.2-alpha.
 - `:fabric:build` inklusive Byte-Vergleich des Jars mit dem getesteten Output
   und `:neoforge:build` erfolgreich.
 - Kein Stand-Lauf: Der Teststand (`tools/stand/stand.sh`) braucht Linux und 40
