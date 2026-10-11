@@ -712,8 +712,12 @@ class FullModpackMixinExportVerifierTest {
                 "quiesceAllExcept", unboundedDesc);
         int bounded = callIndex(fence, ISLAND_COMMANDS,
                 "quiesceAllExcept", boundedDesc);
-        int preBodyFailStop = callIndex(fence, ISLAND_COMMANDS,
-                "publishAndPropagate", "(Ljava/lang/Throwable;)V");
+        // The worker and owner-local-reward branches ahead of the fence publish
+        // their own fail-stops; the pre-body fail-stop is the one after the
+        // bounded quiesce. (Taking the first call made this check fail on every
+        // export, the production jar included.)
+        int preBodyFailStop = callIndexAfter(fence, ISLAND_COMMANDS,
+                "publishAndPropagate", "(Ljava/lang/Throwable;)V", bounded);
         int stickyRead = lastCallIndexByName(fence,
                 ADVANCEMENT_BATCH_SCOPE, "rewardFunctionActive");
         int release = callIndex(fence, ISLAND_COMMANDS,

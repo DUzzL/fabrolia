@@ -64,6 +64,11 @@ numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
 
 ### Build and tools
 
+- `FullModpackMixinExportVerifierTest`: the function-fence ordering check used
+  the first `publishAndPropagate` of `fabrolia$fenceFunction`, which belongs to
+  the worker/owner-local branches added ahead of the fence, so the verifier
+  failed on every export (production jar included) and never reached its later
+  checks. It now takes the fail-stop after the bounded quiesce.
 - CI: `actions/setup-java@v4` with Temurin 25 (v2 ran on the retired Node 12
   runtime), `gradle/actions/setup-gradle`, Ubuntu 24.04 without the obsolete
   `libtinfo5` install, and `check_jar.py` on the built Fabric jar.

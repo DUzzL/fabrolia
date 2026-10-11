@@ -167,8 +167,9 @@ player ticks stay on Main). Datapacks include BlazeandCave's Advancements.
   how the gap receipt and the queued lifecycle handoff compose (cf.
   `updateTrackingTopologyGapForLifecycleLocked` for the opposite order). See
   `docs/reviews/2026-10-11/unused-code-cleanup/`.
-- `:common:verifyFullModpackMixinExport` fails in `verifyServerFunctionManager` ("the sticky
-  cleanup receipt must precede fence acquisition"): the assertion pins an older instruction
-  order of `ServerFunctionManager.fabrolia$fenceFunction`; it fails on the production jar as
-  well, so the checks after it never run. Re-derive it from the current code before relying
-  on this verifier.
+- `:common:verifyFullModpackMixinExport`: the `verifyServerFunctionManager` ordering check
+  ("the sticky cleanup receipt must precede fence acquisition") took the method's first
+  `publishAndPropagate`, which now belongs to the worker/owner-local branches ahead of the
+  fence; fixed 2026-10-11 to take the fail-stop after the bounded quiesce (order checked
+  against the compiled mixin). The checks after it never ran before; run the verifier on a
+  fresh export before relying on it.
