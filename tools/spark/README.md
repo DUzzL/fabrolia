@@ -8,7 +8,8 @@ pyramid** (icicle graph).
 No network, no upload, fully local.
 
 ## Requirements
-- Python 3 with the `protobuf` runtime (`python3 -c "import google.protobuf"`).
+- Python 3 with the `protobuf` 7.x runtime: `pip install -r tools/spark/requirements.txt`
+  (check: `python3 -c "import google.protobuf"`).
 - `protoc` only to regenerate the proto bindings; `gen/spark/*_pb2.py` are committed.
 
 ## Usage

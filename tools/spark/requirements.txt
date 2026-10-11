@@ -1,0 +1,2 @@
+# gen/spark/*_pb2.py were generated with protoc for the Python protobuf 7.36 runtime.
+protobuf>=7.36.1,<8

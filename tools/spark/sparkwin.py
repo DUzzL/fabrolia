@@ -162,7 +162,12 @@ def mode_perwin(path, thread_re, sub):
         print(f"k={k:2d} {core.local_ts(rows[k]['start'], '%H:%M')} {w[k]:9.1f} ms  max_mspt={rows[k]['mspt_max']:.0f}")
 
 
+MIN_ARGS = {'groups': 2, 'subtree': 4, 'callers': 3, 'perwin': 2}
+
 if __name__ == '__main__':
+    if len(sys.argv) < 3 or sys.argv[1] in ('-h', '--help') \
+            or sys.argv[2] not in MIN_ARGS or len(sys.argv) - 3 < MIN_ARGS[sys.argv[2]]:
+        sys.exit(__doc__)
     p, mode = sys.argv[1], sys.argv[2]
     r = sys.argv[3:]
     if mode == 'groups':

@@ -39,6 +39,9 @@ def match(label, t):
     return name == t if t.count('.') > 2 else t in label
 
 
+if len(sys.argv) < 2 or sys.argv[1] in ('-h', '--help'):
+    sys.exit(__doc__)
+
 for path in sys.argv[1:]:
     a = core.Analysis(core.load(path), path)
     # Spark's first/last windows may cover only part of a minute, and long
