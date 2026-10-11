@@ -216,4 +216,70 @@ public final class IslandUnitAdmission {
             return eligibleAtNanos.size();
         }
     }
+
+    /**
+     * Age of every deferred entity unload that is still pending a retry, for
+     * diagnostics only. A false store is routine and vanilla retries it every
+     * tick; one that keeps failing for a long time is a stranded section.
+     *
+     * <p>One pass: {@link #beginPass}, {@link #retried} for every key restored
+     * after a false result, then {@link #endPass}. A key the pass did not reach
+     * (C2ME's pop loop is bounded) keeps its age while it is still queued; a
+     * stored or re-promoted key drops out. The caller serializes passes (the
+     * {@code chunksToUnload} monitor); the two maps are swapped, not reallocated.
+     */
+    public static final class EntityUnloadRetryAges {
+        private Long2LongOpenHashMap since = new Long2LongOpenHashMap();
+        private Long2LongOpenHashMap next = new Long2LongOpenHashMap();
+        private long oldestChunk;
+        private long oldestSinceNanos;
+        private boolean any;
+
+        public void beginPass() {
+            next.clear();
+        }
+
+        /** {@code chunkPos} failed again and was re-queued in this pass. */
+        public void retried(long chunkPos, long nowNanos) {
+            next.put(chunkPos, since.containsKey(chunkPos) ? since.get(chunkPos) : nowNanos);
+        }
+
+        public void endPass(java.util.function.LongPredicate stillQueued) {
+            var carried = since.long2LongEntrySet().fastIterator();
+            while (carried.hasNext()) {
+                var entry = carried.next();
+                long chunkPos = entry.getLongKey();
+                if (!next.containsKey(chunkPos) && stillQueued.test(chunkPos)) {
+                    next.put(chunkPos, entry.getLongValue());
+                }
+            }
+            any = false;
+            var pending = next.long2LongEntrySet().fastIterator();
+            while (pending.hasNext()) {
+                var entry = pending.next();
+                if (!any || entry.getLongValue() - oldestSinceNanos < 0) {
+                    oldestSinceNanos = entry.getLongValue();
+                    oldestChunk = entry.getLongKey();
+                    any = true;
+                }
+            }
+            Long2LongOpenHashMap previous = since;
+            since = next;
+            next = previous;
+            next.clear();
+        }
+
+        /** Nanoseconds the oldest pending retry has been failing; 0 when none. */
+        public long oldestAgeNanos(long nowNanos) {
+            return any ? nowNanos - oldestSinceNanos : 0L;
+        }
+
+        public long oldestChunk() {
+            return oldestChunk;
+        }
+
+        public int pending() {
+            return since.size();
+        }
+    }
 }
