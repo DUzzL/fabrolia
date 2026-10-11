@@ -1,7 +1,7 @@
 # Fabrolia
 
 Fabrolia is a Minecraft server mod that distributes world ticking across multiple CPU
-cores. It is based on [Axalotl's Async project](https://github.com/AxalotLDev/Async)
+cores. It is based on [Async](https://github.com/AxalotLDev/Async)
 and extends that foundation with region-based scheduling and independently ticking islands.
 Builds are available for Fabric and NeoForge.
 
@@ -118,7 +118,7 @@ also require comparable measurements before and after the change.
 
 ## Credits and license
 
-Fabrolia builds on [Async by Axalotl](https://github.com/AxalotLDev/Async).
+Fabrolia is based on [Async by Axalotl](https://github.com/AxalotLDev/Async).
 Thanks also to Grider and jediminer543 for the earlier MCMTFabric and JMT-MCMT
 projects in its lineage.
 
