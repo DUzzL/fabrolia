@@ -158,8 +158,15 @@ player ticks stay on Main). Datapacks include BlazeandCave's Advancements.
 - Intermittent stand crash `A5 topology-gap handoff lost its exact player/session
   binding` (3.0.1 first campaign, during player distribution; the rerun passed). The
   message now lists the broken legs; on the next occurrence fix the named leg at its
-  source (likely a teleport lifecycle handoff racing the topology rebuild), do not
-  relax the check. See `docs/reviews/2026-10-11/unused-code-cleanup/`.
+  source, do not relax the check. Code-reading hypothesis (unproven): a teleport runs
+  `AsyncIslandPlayerTicks.invalidateForLifecycleMutation` (sets `lifecycleInvalidated`
+  and `auditedLifecycleMutationPending`, schedules the Main handoff); the level-head
+  topology rebuild then reroutes the player's tracker into an ownerless cell before that
+  handoff drains, and `handoffTrackingTopologyGapLocked` refuses the pending audited
+  mutation. If the message shows `auditedLifecycleMutationPending`, decide on the stand
+  how the gap receipt and the queued lifecycle handoff compose (cf.
+  `updateTrackingTopologyGapForLifecycleLocked` for the opposite order). See
+  `docs/reviews/2026-10-11/unused-code-cleanup/`.
 - `:common:verifyFullModpackMixinExport` fails in `verifyServerFunctionManager` ("the sticky
   cleanup receipt must precede fence acquisition"): the assertion pins an older instruction
   order of `ServerFunctionManager.fabrolia$fenceFunction`; it fails on the production jar as
