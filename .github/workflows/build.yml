@@ -4,39 +4,25 @@ on:
   pull_request: { }
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: true
 
+      # Production runs Temurin 25; jars must stay at class major 69.
       - name: Set up JDK 25
-        uses: actions/setup-java@v2
+        uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: 'temurin'
           java-version: 25
-          java-package: jdk
 
-      - name: Install required dependencies
-        run: sudo apt update && sudo apt install libtinfo5
-
-      - name: Grant execute permission to gradlew
-        run: chmod +x ./gradlew
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-            ./.gradle/loom-cache
-          key: ${{ runner.os }}-gradle4-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle4-
+      - name: Set up Gradle (wrapper validation and cache)
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Build Fabrolia
-        run: |
-          ./gradlew clean processIncludeJars build --stacktrace
+        run: ./gradlew clean processIncludeJars build --stacktrace
+
+      - name: Check the Fabric release jar
+        run: python3 tools/release/check_jar.py fabric/build/libs/fabrolia-alpha_*.jar
 
       - name: Prepare artifact directory
         run: |
