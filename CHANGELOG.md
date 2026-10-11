@@ -29,6 +29,16 @@ numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
   (`docs/reviews/2026-10-11/unused-code-cleanup/`) shared one message across
   eleven conditions and could not be attributed. Behaviour is unchanged.
 
+### Performance
+
+- Island entity phases share the whole-level `EntityTickList` snapshot while
+  its membership is unchanged. Every island unit took its own copy of the
+  complete list (~10k references per level, per island, per tick); islands that
+  run between two membership changes now reuse one immutable copy. Content and
+  order are identical by construction (only `add`/`remove` change the list and
+  both bump the version); covered by `EntityPhaseMembershipParityTest`. The
+  effect has not been measured on the stand yet.
+
 ### Configuration and cleanup
 
 - Remove the unreachable synchronous scheduled-tick partition

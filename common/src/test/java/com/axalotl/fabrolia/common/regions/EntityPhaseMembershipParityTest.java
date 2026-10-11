@@ -112,6 +112,25 @@ class EntityPhaseMembershipParityTest {
     }
 
     @Test
+    void unchangedMembershipSharesOneImmutableCutAcrossIslands() throws Exception {
+        Fixture candidate = new Fixture();
+        Entity first = entity(10), second = entity(20);
+        candidate.add(first); candidate.add(second);
+        List<Entity> islandA = candidate.snapshot();
+        List<Entity> islandB = candidate.snapshot();
+        assertSame(islandA, islandB, "no membership change: the second island reuses the copy");
+
+        candidate.remove(first);
+        List<Entity> afterRemoval = candidate.snapshot();
+        assertEquals(List.of(second), afterRemoval);
+        assertEquals(List.of(first, second), islandA, "an earlier cut never changes");
+
+        candidate.add(first);
+        assertEquals(List.of(second, first), candidate.snapshot(),
+                "readmission appends exactly as vanilla's linked map does");
+    }
+
+    @Test
     void snapshotDoesNotReserveOrCorruptVanillasSingleIterationSlot() throws Exception {
         Fixture candidate = new Fixture();
         Entity first = entity(10), birth = entity(20);

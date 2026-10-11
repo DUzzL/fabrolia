@@ -21,13 +21,37 @@ public class EntityTickListMixin implements EntityTickListSnapshotAccess {
     @Shadow private Int2ObjectMap<Entity> passive;
     @Shadow private Int2ObjectMap<Entity> iterated;
 
+    /** Bumped by every membership mutation, under this monitor. */
+    @Unique
+    private long fabrolia$membershipVersion;
+
+    /** Last immutable snapshot and the membership version it was taken at.
+     *  No initializers: the defaults (null, 0) mean "no snapshot yet". */
+    @Unique
+    private List<Entity> fabrolia$snapshot;
+
+    @Unique
+    private long fabrolia$snapshotVersion;
+
     @Override
     public List<Entity> fabrolia$snapshotEntities() {
         synchronized (this) {
             // Independent island cuts must not enter vanilla's single-iterator
             // slot. Copy under the same monitor used by add/remove so births
             // after this cut cannot enter its finite pass.
-            return List.copyOf(this.active.values());
+            //
+            // Every island unit takes this whole-level cut, so islands that run
+            // between two membership changes share one immutable copy instead of
+            // copying ~10k references each. Identical content and order: the
+            // list can only change through add/remove, which bump the version.
+            List<Entity> cached = this.fabrolia$snapshot;
+            if (cached != null && this.fabrolia$snapshotVersion == this.fabrolia$membershipVersion) {
+                return cached;
+            }
+            List<Entity> fresh = List.copyOf(this.active.values());
+            this.fabrolia$snapshot = fresh;
+            this.fabrolia$snapshotVersion = this.fabrolia$membershipVersion;
+            return fresh;
         }
     }
 
@@ -55,6 +79,7 @@ public class EntityTickListMixin implements EntityTickListSnapshotAccess {
         synchronized (this) {
             fabrolia$ensureMutableActive();
             this.active.put(entity.getId(), entity);
+            this.fabrolia$membershipVersion++;
         }
         // Region-owned entity index mirrors EntityTickList membership (no-op when the
         // region scheduler is dormant).
@@ -66,6 +91,7 @@ public class EntityTickListMixin implements EntityTickListSnapshotAccess {
         synchronized (this) {
             fabrolia$ensureMutableActive();
             this.active.remove(entity.getId());
+            this.fabrolia$membershipVersion++;
         }
         RegionScheduler.onEntityRemove(entity);
     }
