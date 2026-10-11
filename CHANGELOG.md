@@ -87,6 +87,9 @@ numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
   runtime), `gradle/actions/setup-gradle`, Ubuntu 24.04 without the obsolete
   `libtinfo5` install, and `check_jar.py` on the built Fabric jar.
 - `gradlew` and `tools/stand/stand.sh` are committed executable.
+- Build scripts: no Gradle 10 deprecations left (`url = …` assignments,
+  single-string `include` notation); the Modrinth upload plugin is pinned to
+  2.10.0 instead of the dynamic `2.+`.
 - `.vscode/launch.json` is no longer tracked (regenerated with absolute local
   paths on every Gradle configure).
 - Spark tools: `sparkwin.py` and `frames.py` print usage instead of a

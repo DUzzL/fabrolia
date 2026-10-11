@@ -1,12 +1,12 @@
 plugins {
     id 'multiloader-loader'
     id 'net.fabricmc.fabric-loom'
-    id "com.modrinth.minotaur" version "2.+"
+    id "com.modrinth.minotaur" version "2.10.0"
     id 'idea'
 }
 
 repositories {
-    maven { url 'https://api.modrinth.com/maven' }
+    maven { url = 'https://api.modrinth.com/maven' }
 }
 
 modrinth {
@@ -36,8 +36,8 @@ dependencies {
 
     include(implementation(annotationProcessor("com.github.bawnorton.mixinsquared:mixinsquared-fabric:${mixinsquared_version}")))
     implementation 'com.electronwill.night-config:toml:3.8.1'
-    include group: 'com.electronwill.night-config', name: 'toml', version: '3.8.1'
-    include group: 'com.electronwill.night-config', name: 'core', version: '3.8.1'
+    include 'com.electronwill.night-config:toml:3.8.1'
+    include 'com.electronwill.night-config:core:3.8.1'
     compileOnly 'org.projectlombok:lombok:1.18.44'
     annotationProcessor 'org.projectlombok:lombok:1.18.44'
 
