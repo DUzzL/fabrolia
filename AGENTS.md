@@ -109,8 +109,12 @@ Every change touching runtime code: tests + `verify`. Threading/performance chan
    `/stop`); if the server is live, copy to a temp name in `mods/` and `mv` it over the old
    jar, then restart.
 
-MCFC (the datapack compiler the server uses) is built from `../MinecraftFunctionCompiler`,
-branch `local/optimize-get-all-entities-pVriB`.
+MCFC (the datapack compiler the server uses) is built from `../MinecraftFunctionCompiler`, a clone of
+github.com/DUzzL/mcfc, branch `main` (`./gradlew build` also runs its gametests; jar
+`mc-26-1-fabric/build/libs/mcfc-<version>+26.3-fabric.jar`). Its compiled functions run only on
+the server thread (`ServerThreadGate`); island threads use vanilla's interpreter. Its
+`EntityLookupTypeIndexMixin` wraps `EntityLookup.add/remove`, which Fabrolia's `EntityLookupMixin`
+replaces: keep that composition working when either side changes.
 
 ## Git
 
