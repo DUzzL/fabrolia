@@ -22,6 +22,12 @@ numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
   silently every tick) and no longer WARN every 10 s (5.9k lines). The age of
   every pending retry is tracked; WARN names the oldest chunk once it has failed
   to unload for 60 s. The routine count remains at DEBUG.
+- The fail-stop `A5 topology-gap handoff lost its exact player/session binding`
+  now names every broken leg (listener, owner stamp, tracking publication,
+  pending lifecycle handoff, invalidation, …), the player, phase and session
+  epoch. The intermittent 3.0.1 stand crash with this message
+  (`docs/reviews/2026-10-11/unused-code-cleanup/`) shared one message across
+  eleven conditions and could not be attributed. Behaviour is unchanged.
 
 ### Configuration and cleanup
 

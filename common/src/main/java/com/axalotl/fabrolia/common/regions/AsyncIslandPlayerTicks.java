@@ -728,21 +728,16 @@ public final class AsyncIslandPlayerTicks {
             IslandPlayerTurnSession.Phase phase = view.phase();
             ServerGamePacketListenerImpl listener = player.connection;
             if (owner == null) return false;
-            if (listener == null || listener.player != player
-                    || owner.playerIdentity() != player
-                    || owner.listenerIdentity() != listener
-                    || owner.kind() != kind
-                    || state.listenerGate != listener
-                    || !state.trackingPublication.matches(tracker, owner)
-                    || state.mainDisconnectPending
-                    || state.lifecycleMutationBodyDepth != 0
-                    || state.pendingLifecycleHandoff != null
-                    || state.auditedLifecycleMutationPending
-                    || state.hardLifecycleExitPending
-                    || (state.lifecycleInvalidated
-                    && phase != IslandPlayerTurnSession.Phase.MAIN_HANDOFF)) {
+            String broken = topologyGapBindingFailuresLocked(
+                    state, player, listener, owner, kind, tracker, phase);
+            if (broken != null) {
+                // Name every broken leg: the 3.0.1 stand crash with this message
+                // could not be attributed because eleven conditions shared it.
                 throw new IllegalStateException(
-                        "A5 topology-gap handoff lost its exact player/session binding");
+                        "A5 topology-gap handoff lost its exact player/session binding: "
+                                + broken + " (player=" + player.getScoreboardName()
+                                + " phase=" + phase + " sessionEpoch="
+                                + owner.sessionEpoch() + ")");
             }
             if (phase != IslandPlayerTurnSession.Phase.ISLAND_READY
                     && phase != IslandPlayerTurnSession.Phase.MAIN_HANDOFF) {
@@ -779,6 +774,36 @@ public final class AsyncIslandPlayerTicks {
             }
             return true;
         }
+    }
+
+    /** Caller holds {@code state}. The exact binding a topology-gap handoff
+     *  requires; {@code null} when it holds, else every broken leg by name. */
+    private static String topologyGapBindingFailuresLocked(
+            PlayerState state, ServerPlayer player, ServerGamePacketListenerImpl listener,
+            IslandPlayerTurnSession.OwnerStamp owner, IslandPlayerTurnSession.PlayerKind kind,
+            IslandTrackedEntityAccess tracker, IslandPlayerTurnSession.Phase phase) {
+        StringBuilder broken = new StringBuilder();
+        if (listener == null) broken.append(" listener=null");
+        else if (listener.player != player) broken.append(" listener.player");
+        if (owner.playerIdentity() != player) broken.append(" owner.player");
+        if (owner.listenerIdentity() != listener) broken.append(" owner.listener");
+        if (owner.kind() != kind) broken.append(" owner.kind");
+        if (state.listenerGate != listener) broken.append(" listenerGate");
+        if (!state.trackingPublication.matches(tracker, owner)) {
+            broken.append(state.trackingPublication.retiredGeneration(owner)
+                    ? " trackingPublication(retired)" : " trackingPublication(mismatch)");
+        }
+        if (state.mainDisconnectPending) broken.append(" mainDisconnectPending");
+        if (state.lifecycleMutationBodyDepth != 0) {
+            broken.append(" lifecycleMutationBodyDepth=").append(state.lifecycleMutationBodyDepth);
+        }
+        if (state.pendingLifecycleHandoff != null) broken.append(" pendingLifecycleHandoff");
+        if (state.auditedLifecycleMutationPending) broken.append(" auditedLifecycleMutationPending");
+        if (state.hardLifecycleExitPending) broken.append(" hardLifecycleExitPending");
+        if (state.lifecycleInvalidated && phase != IslandPlayerTurnSession.Phase.MAIN_HANDOFF) {
+            broken.append(" lifecycleInvalidated");
+        }
+        return broken.isEmpty() ? null : broken.substring(1);
     }
 
     /**

@@ -155,6 +155,11 @@ player ticks stay on Main). Datapacks include BlazeandCave's Advancements.
   Reproduces with vanilla + Lithium only; reported upstream by the owner (CaffeineMC/lithium).
   Fabrolia deliberately does not override it (owner's decision). Workaround on the server:
   `mixin.entity.framed_maps=false` in `config/lithium.properties`, or periodic restarts.
+- Intermittent stand crash `A5 topology-gap handoff lost its exact player/session
+  binding` (3.0.1 first campaign, during player distribution; the rerun passed). The
+  message now lists the broken legs; on the next occurrence fix the named leg at its
+  source (likely a teleport lifecycle handoff racing the topology rebuild), do not
+  relax the check. See `docs/reviews/2026-10-11/unused-code-cleanup/`.
 - `:common:verifyFullModpackMixinExport` fails in `verifyServerFunctionManager` ("the sticky
   cleanup receipt must precede fence acquisition"): the assertion pins an older instruction
   order of `ServerFunctionManager.fabrolia$fenceFunction`; it fails on the production jar as
