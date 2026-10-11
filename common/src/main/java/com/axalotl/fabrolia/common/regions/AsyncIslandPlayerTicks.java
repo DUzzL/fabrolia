@@ -2174,7 +2174,7 @@ public final class AsyncIslandPlayerTicks {
                             && venueRegion.state() == RegionState.ACTIVE
                             && venueRegion.domain == venue.domain
                             && runtime.regionMatches(venueRegion, player.chunkPosition())
-                            && eligible(player, (ServerLevel) player.level(), kind)) {
+                            && eligible(player, player.level(), kind)) {
                         // MAIN is only the quiescent publication state between owners. An
                         // eligible exact player is about to be admitted by its autonomous
                         // island; letting Connection.tick run first would give this wall tick

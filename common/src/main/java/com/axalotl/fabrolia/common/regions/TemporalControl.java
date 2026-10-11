@@ -1074,7 +1074,7 @@ public final class TemporalControl {
         PACER.reconcile(rs);
     }
 
-    /** Per-level session registry lives on RegionizedServer.temporalSessions. */
+    // Per-level session registry lives on RegionizedServer.temporalSessions.
 
     /** REPLACE SEMANTICS (2026-07-14 "rate stops applying" fix): an explicit
      *  rate command on an island REPLACES every rate session touching it. The

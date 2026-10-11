@@ -112,10 +112,6 @@ public final class RegionAccessDetector {
         }
     }
 
-    /** Full-context cross-domain report. {@code claimed} null = coordinator/
-     *  lane context (no region claim — the 2026-07-13 reroute bug's signature);
-     *  the logged stack carries the mutation source (random tick vs neighbor
-     *  update vs mod, and whether lithium selected the block). */
     /** Origin classes for a cross-domain write (2026-07-14: the old message
      *  blamed "a mod" unconditionally — the production trip was pure vanilla
      *  fluid spread routed by OUR topology; operators must not be told to
@@ -175,6 +171,10 @@ public final class RegionAccessDetector {
         return CrossDomainOrigin.UNKNOWN;
     }
 
+    /** Full-context cross-domain report. {@code claimed} null = coordinator/
+     *  lane context (no region claim — the 2026-07-13 reroute bug's signature);
+     *  the logged stack carries the mutation source (random tick vs neighbor
+     *  update vs mod, and whether lithium selected the block). */
     private static void recordCrossDomain(BlockPos pos, RegionWorkerThread w,
                                           Region claimed, Region target,
                                           EpochDomain mine, EpochDomain theirs) {

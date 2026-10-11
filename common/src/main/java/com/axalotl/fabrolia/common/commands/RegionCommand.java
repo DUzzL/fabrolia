@@ -398,7 +398,7 @@ public final class RegionCommand {
                                                 send(ctx, "name: ", "player required", false);
                                                 return 0;
                                             }
-                                            var rsN = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel((net.minecraft.server.level.ServerLevel) pl.level());
+                                            var rsN = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(pl.level());
                                             var islN = rsN == null ? null : rsN.islandOwnerOfChunk(pl.chunkPosition().pack());
                                             if (islN == null) { send(ctx, "name: ", "no island here", false); return 0; }
                                             islN.alias = com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "alias");
@@ -414,7 +414,7 @@ public final class RegionCommand {
                                         send(ctx, "name: ", "player required", false);
                                         return 0;
                                     }
-                                    var rsN = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel((net.minecraft.server.level.ServerLevel) pl.level());
+                                    var rsN = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(pl.level());
                                     var islN = rsN == null ? null : rsN.islandOwnerOfChunk(pl.chunkPosition().pack());
                                     if (islN != null) { islN.alias = null; islN.labelCache = null; }
                                     send(ctx, "name: ", "cleared", false);
@@ -1576,7 +1576,7 @@ public final class RegionCommand {
             src.sendSystemMessage(net.minecraft.network.chat.Component.literal("player required"));
             return 0;
         }
-        var lvl = (net.minecraft.server.level.ServerLevel) pl.level();
+        var lvl = pl.level();
         var rs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(lvl);
         var isl = rs == null ? null : rs.islandOwnerOfChunk(pl.chunkPosition().pack());
         if (isl == null) {
@@ -1594,7 +1594,7 @@ public final class RegionCommand {
             src.sendSystemMessage(net.minecraft.network.chat.Component.literal("player required"));
             return 0;
         }
-        var lvl = (net.minecraft.server.level.ServerLevel) pl.level();
+        var lvl = pl.level();
         var rs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(lvl);
         var isl = rs == null ? null : rs.islandOwnerOfChunk(pl.chunkPosition().pack());
         if (isl == null) {

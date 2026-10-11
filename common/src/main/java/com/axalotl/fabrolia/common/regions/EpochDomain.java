@@ -239,17 +239,6 @@ final class EpochDomain {
         }
     }
 
-    /** Cross-region effects deferred INTO this timeline (CrossRegionGuard,
-     *  routed by target position). Global domain: replayed by main after the
-     *  phase pump (the pre-A2 behavior, unchanged in sync mode). Island
-     *  domains: replayed by the island's unit coordinator between its entity
-     *  barrier and its BE phase — same island-internal ordering the main
-     *  replay gave ([entities → replay → BEs]), all member regions quiescent,
-     *  and no other island reachable by construction. MPSC-ish: workers offer
-     *  during phases, exactly one drainer per domain per tick. */
-    /** Cross-dimension arrival staging (2026-07-15 cohort atomicity): the
-     *  destination-side halves of teleports executed during THIS domain's
-     *  phases, sealed into one cohort batch at phase end. */
     /** Vanilla ServerLevel.handlingTick equivalent for THIS timeline
      *  (2026-07-15 piston D1 fix): true while the unit runs its scheduled-
      *  tick + block-event segments (vanilla phases 0-6), false during the
@@ -261,9 +250,20 @@ final class EpochDomain {
      *  ~5 cycles on the production machine). */
     volatile boolean handlingTickPhase;
 
+    /** Cross-dimension arrival staging (2026-07-15 cohort atomicity): the
+     *  destination-side halves of teleports executed during THIS domain's
+     *  phases, sealed into one cohort batch at phase end. */
     final java.util.concurrent.ConcurrentLinkedQueue<CrossDimArrivals.StagedOp> crossDimStage =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
 
+    /** Cross-region effects deferred INTO this timeline (CrossRegionGuard,
+     *  routed by target position). Global domain: replayed by main after the
+     *  phase pump (the pre-A2 behavior, unchanged in sync mode). Island
+     *  domains: replayed by the island's unit coordinator between its entity
+     *  barrier and its BE phase — same island-internal ordering the main
+     *  replay gave ([entities → replay → BEs]), all member regions quiescent,
+     *  and no other island reachable by construction. MPSC-ish: workers offer
+     *  during phases, exactly one drainer per domain per tick. */
     final java.util.concurrent.ConcurrentLinkedQueue<Runnable> deferredOps =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
 

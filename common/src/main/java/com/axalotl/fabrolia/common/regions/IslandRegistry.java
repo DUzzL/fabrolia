@@ -422,8 +422,6 @@ public final class IslandRegistry {
         // Cached so one reader never consumes/reset the sample for another.
         final TpsWindow tpsWindow = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, 0.0);
 
-        /** task #19 arrival spacing chain: {lastSourceTick, lastDeliveryL, valid}.
-         *  Guarded by the pendingArrivals monitor. */
         /** Per-source-clock-domain delivery chains (task #20): domain key →
          *  {lastSourceTick, lastDestTick}. Guarded by the pendingArrivals
          *  monitor. Cleared when the queue drains (idle re-anchor). */

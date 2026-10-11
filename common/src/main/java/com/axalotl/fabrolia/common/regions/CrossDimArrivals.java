@@ -597,10 +597,6 @@ public final class CrossDimArrivals {
         }
     }
 
-    /** Publish every arrival queued for this island. Called at the unit head
-     *  UNDER THE UNIT CLAIM, before scheduled ticks and the entity phase —
-     *  the vanilla-equivalent boundary (arrivals precede the destination's
-     *  whole tick). */
     /**
      * Delegates to {@link ArrivalReleaseRule}. See that class for why the release
      * rule is causal rather than rate-paced: holding a completed source cohort
@@ -676,6 +672,10 @@ public final class CrossDimArrivals {
         return released.isEmpty() ? null : released;
     }
 
+    /** Publish every arrival queued for this island. Called at the unit head
+     *  UNDER THE UNIT CLAIM, before scheduled ticks and the entity phase —
+     *  the vanilla-equivalent boundary (arrivals precede the destination's
+     *  whole tick). */
     public static void publishIsland(IslandRegistry.PIsland island) {
         // Delivery point: the unit head, under the claim, before scheduled
         // ticks and the entity phase — the vanilla-equivalent boundary
@@ -1094,9 +1094,9 @@ public final class CrossDimArrivals {
      *  visible and island-ticked, but not correctly in its chunk section, so a
      *  portal minecart could not engage its rail and drifted to rest inside
      *  the portal, where vanilla's cooldown re-arm traps it until the chunk
-     *  reloads from NBT). */
-    /**
-     * Publish every releasable in-flight arrival across {@code levels}.
+     *  reloads from NBT).
+     *
+     * <p>Publishes every releasable in-flight arrival across {@code levels}.
      *
      * <p>The level list is a REQUIRED PARAMETER, deliberately. This used to read
      * {@code RegionScheduler.allLevels()} itself, and both of its call sites are

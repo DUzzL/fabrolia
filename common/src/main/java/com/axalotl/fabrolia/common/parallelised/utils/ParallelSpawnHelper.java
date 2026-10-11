@@ -829,35 +829,13 @@ public final class ParallelSpawnHelper {
         }
     }
 
-    /**
-     * Fills {@link #entityBuf} from the {@link com.axalotl.fabrolia.common.parallelised.utils.SpawnIndex}
-     * snapshot, applying the lifecycle filters (removed, fake-player, fast-removed) inline so
-     * downstream {@link #computeRange} can do raw per-entity work without re-checking. The
-     * c2me-notickvd "is in ticking chunk" filter is intentionally NOT applied here — it's
-     * handled by {@code chunkGetter.query} inside {@code computeRange}, which silently no-ops
-     * for non-ticking chunks. That keeps semantics identical to vanilla's filtered iterator
-     * while skipping the per-entity {@code ChunkPos.pack} + {@code Long2ByteConcurrentHashMap.containsKey}
-     * pre-check chain that costs ~2% of server thread on a 23-player session.
-     */
-    /** AUTHORITATIVE census membership (2026-07-18 mob-switch release): an
-     *  entity exists for gameplay iff its CURRENT section contains it —
-     *  selectors, kills, and collisions all resolve through section storage.
-     *  The c2me chunk system unloads entities without firing stopTracking OR
-     *  clearing byId (vanilla's own byId leaks the stale objects identically;
-     *  invisible to baseline only because c2me's census filters to ticking
-     *  chunks), so neither isRemoved nor byId identity can detect them. The
-     *  section check is one map get + an identity scan of one section's
-     *  small list, at census time, on whatever thread reads the index —
-     *  independent of any island ticking or unload path firing. */
     /** Dead-but-unremoved mobs (health 0, tickDeath pending) never leave a
      *  chunk that stopped entity-ticking — vanilla's removal needs ~20 ticks
      *  of tickDeath, so an admin-kill into a lazy mob switch leaves frozen
      *  corpses that hold the cap until someone walks close (a vanilla edge
-     *  artifact, invisible in practice because looking = ticking). Vanilla
-     *  steady-state census semantics count a corpse for at most 20 transient
-     *  ticks; skipping them entirely is observably identical and makes cap
-     *  release independent of the owning chunk ever ticking again. */
-    /** REFINED 2026-07-21 (refill-cadence parity): vanilla's census counts a
+     *  artifact, invisible in practice because looking = ticking).
+     *
+     *  <p>REFINED 2026-07-21 (refill-cadence parity): vanilla's census counts a
      *  dying mob for its whole ~20-tick death animation — after a mass /kill
      *  the caps stay held for that window and refill starts LATE. The original
      *  blanket corpse-skip released caps the same instant the kill landed,
@@ -880,6 +858,16 @@ public final class ParallelSpawnHelper {
         return ticking.get(e.chunkPosition().pack()) == 0;
     }
 
+    /** AUTHORITATIVE census membership (2026-07-18 mob-switch release): an
+     *  entity exists for gameplay iff its CURRENT section contains it —
+     *  selectors, kills, and collisions all resolve through section storage.
+     *  The c2me chunk system unloads entities without firing stopTracking OR
+     *  clearing byId (vanilla's own byId leaks the stale objects identically;
+     *  invisible to baseline only because c2me's census filters to ticking
+     *  chunks), so neither isRemoved nor byId identity can detect them. The
+     *  section check is one map get + an identity scan of one section's
+     *  small list, at census time, on whatever thread reads the index —
+     *  independent of any island ticking or unload path firing. */
     private static boolean fabrolia$inSections(ServerLevel level, Entity e) {
         var storage = ((com.axalotl.fabrolia.common.parallelised.utils.TickingChunksAccess)
                 ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor) level)
@@ -916,6 +904,16 @@ public final class ParallelSpawnHelper {
         throw (T) failure;
     }
 
+    /**
+     * Fills {@link #entityBuf} from the {@link com.axalotl.fabrolia.common.parallelised.utils.SpawnIndex}
+     * snapshot, applying the lifecycle filters (removed, fake-player, fast-removed) inline so
+     * downstream {@link #computeRange} can do raw per-entity work without re-checking. The
+     * c2me-notickvd "is in ticking chunk" filter is intentionally NOT applied here — it's
+     * handled by {@code chunkGetter.query} inside {@code computeRange}, which silently no-ops
+     * for non-ticking chunks. That keeps semantics identical to vanilla's filtered iterator
+     * while skipping the per-entity {@code ChunkPos.pack} + {@code Long2ByteConcurrentHashMap.containsKey}
+     * pre-check chain that costs ~2% of server thread on a 23-player session.
+     */
     private static int fillBufferFromIndex(ServerLevel level, Collection<Entity> entities) {
         // size() of the LIVE concurrent set is a capacity HINT, never a bound
         // (2026-07-17 production AIOOBE: buffer sized exactly to a stale

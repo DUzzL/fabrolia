@@ -450,14 +450,14 @@ public final class RegionizedServer {
     private final it.unimi.dsi.fastutil.longs.LongOpenHashSet scheduledTickDiscoveryCells =
             new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
 
-    /** Main thread (updateChunkScheduling seam). Region created eagerly: a
-     *  freshly populated cell must exist to be claimable by the rebuild. */
     /** Redundant-delivery counters (fabric event + vanilla seam feed the same
      *  idempotent funnel; overlaps are expected and harmless — these exist so
      *  popcheck can show which source is actually firing). */
     public final java.util.concurrent.atomic.AtomicLong popIgnoredAdds = new java.util.concurrent.atomic.AtomicLong();
     public final java.util.concurrent.atomic.AtomicLong popIgnoredRemoves = new java.util.concurrent.atomic.AtomicLong();
 
+    /** Main thread (updateChunkScheduling seam). Region created eagerly: a
+     *  freshly populated cell must exist to be claimable by the rebuild. */
     public void onChunkFullTransition(long packedChunkPos, boolean nowFull, LevelChunk chunk) {
         // INVARIANT (audit 2026-07-26): this runs on the main thread only, which is
         // what lets Region.fullChunks be a plain LongOpenHashSet while the derived
@@ -2780,14 +2780,6 @@ public final class RegionizedServer {
     // Dispatch
     // ---------------------------------------------------------------------
 
-    /**
-     * Region-GROUP dispatch (coalescing): instead of one task+future per region
-     * (3×regionCount tasks/tick — measurable scheduler and GC overhead at ~450 regions),
-     * regions are greedily bin-packed by entityCount into ~2×workers balanced groups.
-     * A group task processes its regions back-to-back: spin-claim → drain the region's
-     * queue inline (its spawn/random tasks, preserving the per-area
-     * [spawn][random][entities] FIFO) → tick entities serially → release.
-     */
     /** (region, load) pair with the entity count FROZEN at dispatch time. Sorting by the
      *  live AtomicLong violated the comparator contract — workers migrate entities between
      *  regions mid-sort, TimSort threw "Comparison method violates its general contract"
@@ -3586,6 +3578,15 @@ public final class RegionizedServer {
         }
     }
 
+    /**
+     * Legacy region-GROUP dispatch (coalescing, {@code regionEventScheduler=false}):
+     * instead of one task+future per region (3×regionCount tasks/tick — measurable
+     * scheduler and GC overhead at ~450 regions), regions are greedily bin-packed by
+     * entityCount into ~2×workers balanced groups. A group task processes its regions
+     * back-to-back: spin-claim → drain the region's queue inline (its spawn/random
+     * tasks, preserving the per-area [spawn][random][entities] FIFO) → tick entities
+     * serially → release. The event scheduler path is prepared here as well.
+     */
     private EntityDispatchPlan prepareEntityDispatchPlan(
             EpochDomain d, List<Region> regions, boolean tickEntities) {
         // New epoch = new orphan window: full heal cadence. This and every plan

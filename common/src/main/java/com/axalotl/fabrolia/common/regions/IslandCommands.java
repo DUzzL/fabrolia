@@ -1083,15 +1083,6 @@ public final class IslandCommands {
         return sb.toString();
     }
 
-    /** Blocking, batch-aware single-island claim from MAIN. Pair with
-     *  {@link #mainRelease}.
-     *
-     *  <p>MAIN-CONFINED (task #25, the 2026-07-23 05:58/08:05 production
-     *  wedges): MAIN_HELD and the routed-batch machinery reachable from this
-     *  spin are main-thread structures. The historical off-main caller — the
-     *  interaction wraps entered on the Netty event loop BEFORE vanilla's
-     *  ensureRunningOnSameThread requeue — now passes through in the mixin;
-     *  any new off-main entry is a bug and trips the belt log. */
     /** Main claim accounting: claims taken, contended claims, parked nanos (flightrec status). */
     static final java.util.concurrent.atomic.LongAdder MAIN_CLAIMS = new java.util.concurrent.atomic.LongAdder();
     static final java.util.concurrent.atomic.LongAdder MAIN_CLAIMS_CONTENDED = new java.util.concurrent.atomic.LongAdder();
@@ -1102,6 +1093,15 @@ public final class IslandCommands {
                 + " waitMs=" + MAIN_CLAIM_WAIT_NANOS.sum() / 1_000_000;
     }
 
+    /** Blocking, batch-aware single-island claim from MAIN. Pair with
+     *  {@link #mainRelease}.
+     *
+     *  <p>MAIN-CONFINED (task #25, the 2026-07-23 05:58/08:05 production
+     *  wedges): MAIN_HELD and the routed-batch machinery reachable from this
+     *  spin are main-thread structures. The historical off-main caller — the
+     *  interaction wraps entered on the Netty event loop BEFORE vanilla's
+     *  ensureRunningOnSameThread requeue — now passes through in the mixin;
+     *  any new off-main entry is a bug and trips the belt log. */
     public static void mainClaim(IslandRegistry.PIsland owner) {
         offMainBelt("mainClaim");
         if (mainHolds(owner)) {

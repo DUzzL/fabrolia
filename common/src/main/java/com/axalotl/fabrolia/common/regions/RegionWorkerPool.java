@@ -1432,16 +1432,6 @@ public final class RegionWorkerPool {
     public int size() { return workers.length; }
 
     /**
-     * Global ready-queue of regions with pending work. Submit paths push the region
-     * here (always — duplicates are benign); workers poll O(1) instead of the old
-     * linear scan over every region snapshot. The scan was the region-owned-ticking
-     * killer: ~400 region tasks/tick × 30 workers × `synchronized snapshot()`
-     * (ArrayList copy of the whole region map under the regionizer monitor) per
-     * claim attempt = O(R²) copies and a serialized claim path (tick median 24 → 37ms,
-     * live 2026-06-09). CLQ claim protocol below closes the stranded-task race:
-     * whoever holds the claim re-arms the region at release if its queue refilled.
-     */
-    /**
      * A queue node is visible before its publishing admission is committed.  The
      * consumer may detach it, but cannot enter the represented body while the node
      * is OFFERING.  This closes both offer-then-throw and queue-offer followed by a
@@ -1578,6 +1568,16 @@ public final class RegionWorkerPool {
         }
     }
 
+    /**
+     * Global ready-queue of regions with pending work. Submit paths push the region
+     * here (always — duplicates are benign); workers poll O(1) instead of the old
+     * linear scan over every region snapshot. The scan was the region-owned-ticking
+     * killer: ~400 region tasks/tick × 30 workers × `synchronized snapshot()`
+     * (ArrayList copy of the whole region map under the regionizer monitor) per
+     * claim attempt = O(R²) copies and a serialized claim path (tick median 24 → 37ms,
+     * live 2026-06-09). CLQ claim protocol below closes the stranded-task race:
+     * whoever holds the claim re-arms the region at release if its queue refilled.
+     */
     private final ConcurrentLinkedQueue<ReadyEntry> ready = new ConcurrentLinkedQueue<>();
 
     /** Non-null result meaning the live holder had no helper ready to detach. */
@@ -2877,6 +2877,12 @@ public final class RegionWorkerPool {
         }
     }
 
+    /** /fabrolia regions top: cumulative main-thread help-batch steals. */
+    public static final java.util.concurrent.atomic.AtomicLong MAIN_HELP_BATCHES =
+            new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong MAIN_HELP_NANOS =
+            new java.util.concurrent.atomic.AtomicLong();
+
     /**
      * One non-blocking barrier-pump step. Physical Main consumes only its two
      * explicit Main lanes; autonomous ready/help work remains visible to region
@@ -2885,12 +2891,6 @@ public final class RegionWorkerPool {
      *
      * @return true if any work was executed.
      */
-    /** /fabrolia regions top: cumulative main-thread help-batch steals. */
-    public static final java.util.concurrent.atomic.AtomicLong MAIN_HELP_BATCHES =
-            new java.util.concurrent.atomic.AtomicLong();
-    public static final java.util.concurrent.atomic.AtomicLong MAIN_HELP_NANOS =
-            new java.util.concurrent.atomic.AtomicLong();
-
     boolean stealOne(boolean physicalMain) {
         java.util.function.BooleanSupplier body = () -> stealOneBody(physicalMain);
         StepToken causalAuthority = currentThreadCausalStepForThisPoolOrNull();
