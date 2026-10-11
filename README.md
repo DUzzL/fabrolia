@@ -1,69 +1,125 @@
-# Fabrolia (26.3 server fork)
+# Fabrolia
 
-Multithreaded ticking for Minecraft 26.3 servers (Fabric; NeoForge builds too). The world
-is split into regions grouped into **islands**; each island ticks on its own worker
-thread with its own clock, while the Server thread keeps the global lane, commands and
-cross-island work. The goal is vanilla behaviour at 20 TPS on a busy server.
+Fabrolia is a Minecraft server mod that distributes world ticking across multiple CPU
+cores. It is based on [Axalotl's Async project](https://github.com/AxalotLDev/Async)
+and extends that foundation with region-based scheduling and independently ticking islands.
+Builds are available for Fabric and NeoForge.
 
-This is the fork that runs one ~35-player production server. It started from
-[AxalotLDev/Fabrolia](https://github.com/AxalotLDev/Fabrolia) (itself based on
-MCMTFabric / JMT-MCMT) and has been rewritten around async islands.
+**Fabrolia is still in alpha development.** Features, configuration and compatibility
+are evolving, and bugs or crashes can occur. Preserving vanilla behavior for players,
+redstone, farms and datapacks is the goal and remains under active testing.
+Back up your worlds and test your modpack before deploying changes.
 
-- **Working on the code (people and AI agents): read [`AGENTS.md`](AGENTS.md) first.**
-- Code map: [`docs/CODEMAP.md`](docs/CODEMAP.md). Design: [`docs/ASYNC-ISLANDS.md`](docs/ASYNC-ISLANDS.md).
-  Requirements: [`docs/USER-REQUIREMENTS.md`](docs/USER-REQUIREMENTS.md). Changes: [`CHANGELOG.md`](CHANGELOG.md).
-- Test stand: [`docs/STAND.md`](docs/STAND.md). Profile tools: [`tools/spark/README.md`](tools/spark/README.md).
-- Documentation index: [`docs/README.md`](docs/README.md). Releases and version bumps:
-  [`docs/RELEASES.md`](docs/RELEASES.md).
+## Features
 
-## Requirements
+- **Parallel world ticking:** Each dimension is divided into regions, grouped into
+  islands. Separate islands can tick on worker threads while the main server thread
+  handles global work and coordinates interactions between islands.
+- **Independent island ticks:** Optional async islands run on their own tick schedules,
+  allowing separate areas of the world to progress independently. Shared work still
+  requires coordination, so a busy island can affect main-thread tick times.
+- **Regional simulation:** Island workers handle local entities, block entities,
+  scheduled block and fluid ticks, random ticks and spawning. Optional player ticking
+  assigns players to their island's worker.
+- **Configurable entity processing:** Choose vanilla entity order within an async
+  island or opt into parallel entity ticking across its regions. Parallel mode changes
+  ordering across region boundaries; islands containing primed TNT or TNT minecarts
+  retain serial processing.
+- **Monitoring and diagnostics:** Inspect island TPS, milliseconds per tick (MSPT),
+  lag, entity counts and worker activity through in-game commands and a TPS HUD.
+  Carpet integration provides separate main-server and local-island TPS lines.
+- **Runtime controls:** Manage region threading, async islands and feature switches
+  through configuration and commands.
 
-- Minecraft 26.3, Fabric Loader 0.19.5+, Fabric API, Java 25.
-- Declared incompatible: Moonrise, Open Parties and Claims, C2ME older than 0.4.2-alpha.0.88.
-- Tested with C2ME, Lithium, VMP (Very Many Players), Carpet, ServerCore, ScalableLux,
-  FerriteCore, MCFC and BlueMap.
+Performance depends on world layout, workload, hardware and the installed mods.
 
-## Build and install
+## Installation
 
-```bash
-bash gradlew :common:test :fabric:build          # JAVA_HOME = JDK 25
-python3 tools/release/check_jar.py fabric/build/libs/fabrolia-alpha_3.1.0.jar
-```
+1. Choose a Fabrolia build matching your Minecraft version and mod loader.
+2. Install the Java version and dependencies required by that build, including Fabric
+   API when using Fabric.
+3. Stop the server, remove the previous Fabrolia jar from `mods/`, and install the new jar.
+4. Start the server and review `config/fabrolia.toml`.
 
-On Windows (PowerShell; the 40-client stand in `tools/stand/` needs Linux or macOS):
+Minecraft, loader and Java requirements are defined by each build's metadata.
+Use the Fabric or NeoForge artifact that matches your server's loader.
 
-```powershell
-$env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-25...'   # any JDK 25
-.\gradlew.bat :common:test :fabric:build :neoforge:build
-python tools\release\check_jar.py fabric\build\libs\fabrolia-alpha_3.1.0.jar
-```
-
-Current build: **`fabrolia-alpha_3.1.0.jar`** (metadata `3.1.0-alpha`; stand verification pending). Minor releases
-increment the middle number; bugfixes increment the last number. See the
-[release workflow](docs/RELEASES.md).
-
-Stop the server, replace the old Fabrolia jar in `mods/`, start. The production jars (Fabrolia + MCFC) are
-in `release/` next to this README (not in git).
+Compatibility depends on the specific modpack and build. Moonrise and Open Parties
+and Claims are declared incompatible. See the [documentation](docs/README.md) for
+integration details and known limitations.
 
 ## Configuration
 
-`config/fabrolia.toml`. The production server uses `enableRegionThreading = true` and
-`asyncIslands = true`; every key and its default is in
-`common/src/main/java/com/axalotl/fabrolia/common/config/FabroliaConfig.java`.
+Settings are stored in `config/fabrolia.toml`. Key controls include:
+
+| Setting | Purpose |
+| --- | --- |
+| `enableRegionThreading` | Enable region-based worker scheduling. |
+| `asyncIslands` | Enable independently scheduled island ticks. |
+| `enablePlayerTickActor` | Enable worker-owned player ticking; the active mode depends on island scheduling. |
+| `regionWorkerCount` | Set the region worker count; `-1` selects it automatically. |
+| `islandEntityParallel` | Opt into parallel entity processing within async islands. |
+
+For the complete settings and defaults, see
+[`FabroliaConfig.java`](common/src/main/java/com/axalotl/fabrolia/common/config/FabroliaConfig.java).
 
 ## Commands
 
-All under `/fabrolia` (operator level):
+Commands use the `/fabrolia` prefix. Configuration changes and administrative controls
+require the appropriate operator permissions. Use in-game tab completion for additional
+arguments and diagnostic commands.
 
-- `/fabrolia regions` — region and island state; `regions top verbose 100` (per-island TPS,
-  MSPT, lag), `regions list`, `regions async on|off`, `regions tps` (action-bar HUD),
-  `regions debug …` (diagnostics, e.g. `debug spawnrate`, `debug advstats`).
-- `/fabrolia config …` — `reload`, `toggle`, `synchronizedEntities add|remove`, feature switches.
-- `/fabrolia stats` — thread and entity counts.
+| Command | Purpose |
+| --- | --- |
+| `/fabrolia regions` | Show region and island status. |
+| `/fabrolia regions list` | List islands with TPS, MSPT and lag information. |
+| `/fabrolia regions top verbose 100` | Show detailed statistics for up to 100 of the heaviest islands. |
+| `/fabrolia regions tps` | Toggle the player's action-bar TPS HUD. |
+| `/fabrolia regions on\|off\|toggle` | Control region threading. |
+| `/fabrolia regions async on\|off` | Enable or disable independent island ticking. |
+| `/fabrolia regions playerticks on\|off` | Enable or disable worker-owned player ticking. |
+| `/fabrolia regions islandentities vanilla\|parallel` | Select serial vanilla entity order or parallel region processing within async islands. |
+| `/fabrolia regions crossdim` | Inspect cross-dimension island links and coupling status. |
+| `/fabrolia regions debug ...` | Access diagnostics and advanced feature controls. |
+| `/fabrolia config setFabroliaEntitySpawn true\|false` | Enable or disable parallel mob spawning. |
+| `/fabrolia config setFabroliaRandomTicks true\|false` | Enable or disable Fabrolia random-tick processing. |
+| `/fabrolia config reload` | Reload configuration from disk. |
+| `/fabrolia config toggle` | Toggle the mod's disabled state. |
+| `/fabrolia config synchronizedEntities` | List entity types configured for synchronized processing. |
+| `/fabrolia config synchronizedEntities add\|remove <entity>` | Change synchronized entity rules. |
+| `/fabrolia stats` | Show mod status, thread usage and entity statistics. |
 
-With Carpet installed, `/log tps` shows two lines for a player on an island: `Main` and `Local`.
+In the table, `on|off` and similar alternatives mean choose one argument.
+With Carpet installed, `/log tps` also shows `Main` and `Local` tick information
+for players on an island.
 
-## License
+## Building and contributing
 
-See [`LICENSE`](LICENSE). Thanks to Grider and jediminer543 (MCMTFabric / JMT-MCMT) and to
-the original Fabrolia authors.
+Use the JDK required by the checked-out source and set `JAVA_HOME` accordingly.
+
+```bash
+./gradlew :common:test :fabric:build :neoforge:build
+```
+
+On Windows, use `./gradlew.bat` instead. Artifacts are written to
+`fabric/build/libs/` and `neoforge/build/libs/`.
+
+Read [`AGENTS.md`](AGENTS.md) before changing the code. Runtime changes require tests
+and verification on the [test stand](docs/STAND.md); threading and performance changes
+also require comparable measurements before and after the change.
+
+- [Documentation index](docs/README.md)
+- [Code map](docs/CODEMAP.md)
+- [Async island design](docs/ASYNC-ISLANDS.md)
+- [Behavior requirements](docs/USER-REQUIREMENTS.md)
+- [Changelog](CHANGELOG.md)
+- [Build and release workflow](docs/RELEASES.md)
+- [Profiling tools](tools/spark/README.md)
+
+## Credits and license
+
+Fabrolia builds on [Async by Axalotl](https://github.com/AxalotLDev/Async).
+Thanks also to Grider and jediminer543 for the earlier MCMTFabric and JMT-MCMT
+projects in its lineage.
+
+See [`LICENSE`](LICENSE) for the license terms.
