@@ -115,7 +115,7 @@ public abstract class LevelTicksMixin<T> implements LevelTickAccess<T>,
      * which mutates two non-thread-safe vanilla containers: a
      * {@code PriorityQueue<ScheduledTick>} ({@code tickQueue}) and a
      * {@code HashSet<ScheduledTick<?>>} ({@code ticksPerPosition}). Under
-     * {@code fabroliaIslandScheduledTicks=true} two worker handlers can call
+     * island scheduled-tick lanes two worker handlers can call
      * {@code level.scheduleTick} concurrently and corrupt those structures.
      *
      * <p>Cost: ~20ns sync per call; typical tick does O(100–1000) schedules

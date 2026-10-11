@@ -892,9 +892,6 @@ public final class RegionCommand {
         dbg.then(boolToggle("eventsched", "R5 event-driven entity dispatch (off = legacy group dispatch)",
                         () -> FabroliaConfig.regionEventScheduler,
                         v -> FabroliaConfig.regionEventScheduler = v));
-        dbg.then(boolToggle("setIslandScheduledTicks", "island scheduled ticks",
-                        () -> FabroliaConfig.fabroliaIslandScheduledTicks,
-                        v -> FabroliaConfig.fabroliaIslandScheduledTicks = v));
         dbg.then(boolToggle("setIslandBlockEntityTicks", "island block-entity ticks",
                         () -> FabroliaConfig.fabroliaIslandBlockEntityTicks,
                         v -> FabroliaConfig.fabroliaIslandBlockEntityTicks = v));

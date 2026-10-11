@@ -39,10 +39,12 @@ public class FabroliaConfig {
     private static final ModConfigSpec.BooleanValue enablePlayerTickActor;
     private static final ModConfigSpec.IntValue regionWorkerCount;
     private static final ModConfigSpec.BooleanValue enableSpawnBarrierOverlap;
+    private static final ModConfigSpec.BooleanValue regionEventScheduler;
 
     // ── Island parallelism ──────────────────────────────────────────────
     private static final ModConfigSpec.BooleanValue fabroliaRegionColorGate;
-    private static final ModConfigSpec.BooleanValue fabroliaIslandScheduledTicks;
+    private static final ModConfigSpec.BooleanValue fabroliaRegionEviction;
+    private static final ModConfigSpec.BooleanValue fabroliaRedstoneCrossRegionGuard;
     private static final ModConfigSpec.BooleanValue fabroliaIslandBlockEntityTicks;
     private static final ModConfigSpec.BooleanValue asyncIslands;
     private static final ModConfigSpec.BooleanValue asyncFailClosed;
@@ -82,7 +84,7 @@ public class FabroliaConfig {
                 .define("fabroliaSpawnLocalCapReservation", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaSpawnLocalCapReservation);
         enableFabroliaRandomTicks = BUILDER.comment("Fabrolia random block ticks (parallel per-chunk). Default ON.")
                 .define("enableFabroliaRandomTicks", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaRandomTicks);
-        enableFabroliaChunkSend = BUILDER.comment("Pre-build ClientboundLevelChunkWithLightPacket on the worker pool during PlayerChunkSender.sendNextChunks. Removes main-thread cost of chunk packet construction on join bursts.")
+        enableFabroliaChunkSend = BUILDER.comment("Legacy key with no effect: chunk delivery always uses Fabrolia's batched sender. Kept so existing configs and /fabrolia config toggles stay valid.")
                 .define("enableFabroliaChunkSend", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaChunkSend);
         enableFabroliaDespawn = BUILDER.comment("Pre-pass despawn checks on workers (TickGuard entity reentry path). Halves the per-entity main-thread despawn cost on high-mob servers.")
                 .define("enableFabroliaDespawn", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaDespawn);
@@ -102,21 +104,25 @@ public class FabroliaConfig {
                 .defineInRange("regionWorkerCount", com.axalotl.fabrolia.common.config.FabroliaConfig.regionWorkerCount, -1, Integer.MAX_VALUE);
         enableSpawnBarrierOverlap = BUILDER.comment("Let the parallel-spawn future ride to the entity-phase barrier instead of awaiting it at the end of tickChunks. Main parks once for max(spawn, entities). Random/fluid ticks are still awaited before chunk phase ends (vanilla order preserved).")
                 .define("enableSpawnBarrierOverlap", com.axalotl.fabrolia.common.config.FabroliaConfig.enableSpawnBarrierOverlap);
+        regionEventScheduler = BUILDER.comment("R5 event-driven entity dispatch: regions are the tasks; markDone pushes each dependent when its last color-DAG blocker completes. Both dispatchers preserve the same DAG, chunk-task FIFO and serial entity order. false = legacy group dispatch. Runtime: /fabrolia regions debug eventsched true|false.")
+                .define("regionEventScheduler", com.axalotl.fabrolia.common.config.FabroliaConfig.regionEventScheduler);
 
         BUILDER.pop();
 
         // ───── Island parallelism ─────
-        BUILDER.comment("Cross-region safety + parallel scheduled/BE ticks per island.").push("islands");
+        BUILDER.comment("Cross-region safety, synchronous block-entity partitioning and async islands.").push("islands");
 
         fabroliaRegionColorGate = BUILDER.comment("R4 stage A: color-DAG scheduling — neighbours never tick concurrently. Required whenever region threading is enabled; false is clamped back to true.")
                 .define("fabroliaRegionColorGate", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionColorGate);
-        fabroliaIslandScheduledTicks = BUILDER.comment("F1: island-partitioned scheduled block/fluid ticks. Due chunks split by loaded-space islands (≥16-chunk unloaded gap between any two); each slice runs vanilla's exact collect/run; heaviest slice stays on main. <2 islands → vanilla. Runtime: /fabrolia regions islandticks on|off.")
-                .define("fabroliaIslandScheduledTicks", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandScheduledTicks);
-        fabroliaIslandBlockEntityTicks = BUILDER.comment("F2 (Stage C): island-partitioned block-entity ticks. Each island's loaded chunks dispatch their LevelChunk.tickersInLevel entries to one worker; islands are spatially separated by ≥16 unloaded chunks so cross-island side effects are impossible by construction. Heaviest island stays on main. <2 islands → vanilla. Runtime: /fabrolia regions islandbeticks on|off.")
+        fabroliaRegionEviction = BUILDER.comment("Reclaim idle regions (no full chunks, no entities, idle ~5s) at tick head - bounds the region map on long exploration so O(regions) scans and mspt stop climbing. Default ON. Runtime: /fabrolia regions debug eviction true|false.")
+                .define("fabroliaRegionEviction", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionEviction);
+        fabroliaRedstoneCrossRegionGuard = BUILDER.comment("Defer a region worker's out-of-region block writes / neighbour updates to the main thread (post-barrier) so a cascade crossing into a concurrently-ticking region cannot race it. In-region redstone is untouched. Runtime: /fabrolia regions debug crossredstone true|false.")
+                .define("fabroliaRedstoneCrossRegionGuard", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRedstoneCrossRegionGuard);
+        fabroliaIslandBlockEntityTicks = BUILDER.comment("Synchronous region threading only (asyncIslands=false): block-entity ticks are split by loaded-space islands (≥16 unloaded chunks apart), one worker per island; the heaviest island stays on main, <2 islands → vanilla. Async islands always tick their own block entities. Runtime: /fabrolia regions debug setIslandBlockEntityTicks true|false.")
                 .define("fabroliaIslandBlockEntityTicks", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandBlockEntityTicks);
         asyncFailClosed = BUILDER.comment("Legacy debug-drill containment toggle. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.")
                 .define("asyncFailClosed", com.axalotl.fabrolia.common.config.FabroliaConfig.asyncFailClosed);
-        asyncIslands = BUILDER.comment("A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. DEFAULT OFF while the phase rewire completes. Runtime: /fabrolia regions async.")
+        asyncIslands = BUILDER.comment("A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. Default off. Runtime: /fabrolia regions async on|off (saved immediately).")
                 .define("asyncIslands", com.axalotl.fabrolia.common.config.FabroliaConfig.asyncIslands);
         fabroliaCrossDimCoupling = BUILDER.comment("Cross-dimension cadence coupling: Overworld islands whose down-projected footprint (vanilla portal scale + pairing reach) touches a Nether island's cells are LINKED, and linked members share one deadline anchor + one lower-TPS-wins rate — removes the phase drift that breaks portal farms straddling the boundary. Clocks stay per-island (phase-lock, never value-merge); the End can never be linked. Runtime: /fabrolia regions crossdim on|off.")
                 .define("fabroliaCrossDimCoupling", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling);
@@ -162,9 +168,11 @@ public class FabroliaConfig {
         com.axalotl.fabrolia.common.config.FabroliaConfig.enablePlayerTickActor = enablePlayerTickActor.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.regionWorkerCount = regionWorkerCount.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.enableSpawnBarrierOverlap = enableSpawnBarrierOverlap.get();
+        com.axalotl.fabrolia.common.config.FabroliaConfig.regionEventScheduler = regionEventScheduler.get();
 
         com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionColorGate = fabroliaRegionColorGate.get();
-        com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandScheduledTicks = fabroliaIslandScheduledTicks.get();
+        com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionEviction = fabroliaRegionEviction.get();
+        com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRedstoneCrossRegionGuard = fabroliaRedstoneCrossRegionGuard.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandBlockEntityTicks = fabroliaIslandBlockEntityTicks.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.asyncIslands = asyncIslands.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.asyncFailClosed = asyncFailClosed.get();
@@ -201,9 +209,11 @@ public class FabroliaConfig {
         enablePlayerTickActor.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enablePlayerTickActor);
         regionWorkerCount.set(com.axalotl.fabrolia.common.config.FabroliaConfig.regionWorkerCount);
         enableSpawnBarrierOverlap.set(com.axalotl.fabrolia.common.config.FabroliaConfig.enableSpawnBarrierOverlap);
+        regionEventScheduler.set(com.axalotl.fabrolia.common.config.FabroliaConfig.regionEventScheduler);
 
         fabroliaRegionColorGate.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionColorGate);
-        fabroliaIslandScheduledTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandScheduledTicks);
+        fabroliaRegionEviction.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionEviction);
+        fabroliaRedstoneCrossRegionGuard.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRedstoneCrossRegionGuard);
         fabroliaIslandBlockEntityTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandBlockEntityTicks);
         fabroliaCrossDimCoupling.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling);
         crossDimUnlinkGraceTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimUnlinkGraceTicks);

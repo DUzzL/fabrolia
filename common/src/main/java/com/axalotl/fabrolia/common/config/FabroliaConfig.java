@@ -89,12 +89,12 @@ public class FabroliaConfig {
     // REMOVED 2026-06-30: its serial main border pass (~44% of scattered entities) was a net
     // 2× regression vs ColorGate's all-parallel 4-wave (user-confirmed). The border metric
     // above stays for diagnostics.
-    /** F1 — island-partitioned scheduled block/fluid ticks: due chunks split
-     *  by loaded-space islands (≥16-chunk unloaded gap between any two), each
-     *  slice runs vanilla's exact collect/run; heaviest slice stays on main
-     *  (Oxidizium redstone engine is main-confined). <2 islands → vanilla. */
-    public static boolean fabroliaIslandScheduledTicks = true;
-    /** F2 — island-partitioned block-entity ticks (Stage C). Each island's
+    // F1 (fabroliaIslandScheduledTicks, island-partitioned scheduled ticks in
+    // synchronous mode) was removed 2026-10-11: its entry point returned early
+    // unless async islands were active, where slotPartitionedAsync always takes
+    // the lane first, so the partitioned body could never run.
+    /** F2 — synchronous region threading only (async islands tick their own
+     *  block entities): island-partitioned block-entity ticks. Each island's
      *  loaded chunks dispatch their {@code LevelChunk.tickersInLevel} entries
      *  to one worker; islands are spatially separated by ≥16 unloaded chunks
      *  so cross-island side effects (hopper pulls, piston pushes, comparator

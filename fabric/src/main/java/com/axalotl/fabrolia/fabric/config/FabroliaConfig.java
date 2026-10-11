@@ -102,8 +102,17 @@ public class FabroliaConfig {
             public String key() { return key; }
             public String comment() { return comment; }
             public Object read() { return get.get(); }
-            @SuppressWarnings("unchecked")
-            public void write(Object v) { if (v instanceof List<?> l) set.accept((List<String>) l); }
+            public void write(Object v) {
+                if (!(v instanceof List<?> l)) return;
+                // A hand-edited TOML may hold non-string items; they must not
+                // reach the String-typed config sets.
+                List<String> strings = new ArrayList<>(l.size());
+                for (Object item : l) {
+                    if (item instanceof String s) strings.add(s);
+                    else LOGGER.warn("Ignoring non-string entry {} in config key {}", item, key);
+                }
+                set.accept(strings);
+            }
         };
     }
 
@@ -143,7 +152,7 @@ public class FabroliaConfig {
                 "Fabrolia random block ticks (parallel per-chunk). Default ON.",
                 () -> enableFabroliaRandomTicks, v -> enableFabroliaRandomTicks = v));
         e.add(bool("enableFabroliaChunkSend", null,
-                "Pre-build ClientboundLevelChunkWithLightPacket on the worker pool during PlayerChunkSender.sendNextChunks. Removes main-thread cost of chunk packet construction on join bursts.",
+                "Legacy key with no effect: chunk delivery always uses Fabrolia's batched sender. Kept so existing configs and /fabrolia config toggles stay valid.",
                 () -> enableFabroliaChunkSend, v -> enableFabroliaChunkSend = v));
         e.add(bool("enableFabroliaDespawn", null,
                 "Pre-pass despawn checks on workers (TickGuard entity reentry path). Halves the per-entity main-thread despawn cost on high-mob servers.",
@@ -167,25 +176,22 @@ public class FabroliaConfig {
                 "Let the parallel-spawn future ride to the entity-phase barrier instead of awaiting it at the end of tickChunks. Main parks once for max(spawn, entities). Random/fluid ticks are still awaited before chunk phase ends (vanilla order preserved).",
                 () -> enableSpawnBarrierOverlap, v -> enableSpawnBarrierOverlap = v));
         e.add(bool("regionEventScheduler", null,
-                "R5 event-driven entity dispatch: regions are the tasks; markDone pushes each dependent when its last color-DAG blocker completes. Both dispatchers preserve the same DAG, chunk-task FIFO and serial entity order. false = legacy group dispatch. Runtime: /fabrolia regions eventsched.",
+                "R5 event-driven entity dispatch: regions are the tasks; markDone pushes each dependent when its last color-DAG blocker completes. Both dispatchers preserve the same DAG, chunk-task FIFO and serial entity order. false = legacy group dispatch. Runtime: /fabrolia regions debug eventsched true|false.",
                 () -> regionEventScheduler, v -> regionEventScheduler = v));
 
         // ── Island parallelism ─────────────────────────────────────────
         e.add(bool("fabroliaRegionColorGate",
-                banner("Island parallelism", "Cross-region safety + parallel scheduled/BE ticks per island."),
+                banner("Island parallelism", "Cross-region safety, synchronous block-entity partitioning and async islands."),
                 "R4 stage A: color-DAG scheduling — neighbours never tick concurrently. Required whenever region threading is enabled; false is clamped back to true.",
                 () -> fabroliaRegionColorGate, v -> fabroliaRegionColorGate = v));
         e.add(bool("fabroliaRegionEviction", null,
-                "Reclaim idle regions (no full chunks, no entities, idle ~5s) at tick head — bounds the region map on long exploration so O(regions) scans and mspt stop climbing. DEFAULT OFF: deadlocked once before the phantom-blocker fix; opt in to exercise it. Runtime: /fabrolia regions eviction on|off.",
+                "Reclaim idle regions (no full chunks, no entities, idle ~5s) at tick head — bounds the region map on long exploration so O(regions) scans and mspt stop climbing. Default ON. Runtime: /fabrolia regions debug eviction true|false.",
                 () -> fabroliaRegionEviction, v -> fabroliaRegionEviction = v));
         e.add(bool("fabroliaRedstoneCrossRegionGuard", null,
-                "Defer a region worker's out-of-region block writes / neighbour updates to the main thread (post-barrier) so a cascade crossing into a concurrently-ticking region cannot race it. In-region redstone is untouched. Runtime: /fabrolia regions crossredstone on|off.",
+                "Defer a region worker's out-of-region block writes / neighbour updates to the main thread (post-barrier) so a cascade crossing into a concurrently-ticking region cannot race it. In-region redstone is untouched. Runtime: /fabrolia regions debug crossredstone true|false.",
                 () -> fabroliaRedstoneCrossRegionGuard, v -> fabroliaRedstoneCrossRegionGuard = v));
-        e.add(bool("fabroliaIslandScheduledTicks", null,
-                "F1: island-partitioned scheduled block/fluid ticks. Due chunks split by loaded-space islands (≥16-chunk unloaded gap between any two); each slice runs vanilla's exact collect/run; heaviest slice stays on main. <2 islands → vanilla. Runtime: /fabrolia regions islandticks on|off.",
-                () -> fabroliaIslandScheduledTicks, v -> fabroliaIslandScheduledTicks = v));
         e.add(bool("fabroliaIslandBlockEntityTicks", null,
-                "F2 (Stage C): island-partitioned block-entity ticks. Each island's loaded chunks dispatch their LevelChunk.tickersInLevel entries to one worker; islands are spatially separated by ≥16 unloaded chunks so cross-island side effects are impossible by construction. Heaviest island stays on main. <2 islands → vanilla. Runtime: /fabrolia regions islandbeticks on|off.",
+                "Synchronous region threading only (asyncIslands=false): block-entity ticks are split by loaded-space islands (≥16 unloaded chunks apart), one worker per island; the heaviest island stays on main, <2 islands → vanilla. Async islands always tick their own block entities. Runtime: /fabrolia regions debug setIslandBlockEntityTicks true|false.",
                 () -> fabroliaIslandBlockEntityTicks, v -> fabroliaIslandBlockEntityTicks = v));
         e.add(bool("fabroliaCrossDimCoupling", null,
                 "Cross-dimension cadence coupling: Overworld islands whose down-projected footprint (vanilla portal scale + pairing reach) touches a Nether island's cells are LINKED, and linked members share one deadline anchor + one lower-TPS-wins rate — removes the phase drift that breaks portal farms straddling the boundary. Clocks stay per-island (phase-lock, never value-merge); the End can never be linked. Runtime: /fabrolia regions crossdim on|off.",
@@ -201,7 +207,7 @@ public class FabroliaConfig {
                 "Legacy debug-drill containment toggle. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.",
                 () -> asyncFailClosed, v -> asyncFailClosed = v));
         e.add(bool("asyncIslands", null,
-                "A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. DEFAULT OFF while the phase rewire completes. Runtime: /fabrolia regions async.",
+                "A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. Default off. Runtime: /fabrolia regions async on|off (saved immediately).",
                 () -> asyncIslands, v -> asyncIslands = v));
 
         return e;
@@ -252,23 +258,16 @@ public class FabroliaConfig {
         LOGGER.info("Configuration saved.");
     }
 
+    /** Reads the user's values. {@link #init} writes the file once afterwards
+     *  through {@link #saveConfig}, which also drops stale keys, restores our
+     *  comments and applies the safety invariants. */
     private static void loadConfigValues() {
-        removeUnusedKeys();
         for (Entry entry : ENTRIES) {
             Object value = CONFIG.get(entry.key());
             if (value != null) {
                 entry.write(value);
             }
         }
-        // Re-apply all comments (file may have been edited by the user — we
-        // own the comment contents but preserve their value choices).
-        for (Entry entry : ENTRIES) {
-            if (CONFIG.contains(entry.key())) {
-                CONFIG.setComment(entry.key(), entry.comment());
-            }
-        }
-        com.axalotl.fabrolia.common.config.FabroliaConfig.enforceSafetyInvariants();
-        CONFIG.save();
     }
 
     private static void removeUnusedKeys() {

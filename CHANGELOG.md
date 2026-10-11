@@ -23,6 +23,27 @@ numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
   every pending retry is tracked; WARN names the oldest chunk once it has failed
   to unload for 60 s. The routine count remains at DEBUG.
 
+### Configuration and cleanup
+
+- Remove the unreachable synchronous scheduled-tick partition
+  (`IslandScheduledTicks.tickPartitioned`, ~200 lines with its slice gate and
+  snapshot helpers) and its ineffective `fabroliaIslandScheduledTicks` key and
+  `regions debug setIslandScheduledTicks` toggle. The method returned early
+  unless async islands were active, and with async islands
+  `slotPartitionedAsync` always takes the lane first. Without async islands the
+  vanilla scheduler runs, as before. Existing configs drop the key on the next
+  load (one "Removed unused config key" line).
+- NeoForge now persists `regionEventScheduler`, `fabroliaRegionEviction` and
+  `fabroliaRedstoneCrossRegionGuard` like Fabric; their runtime toggles were
+  lost on restart.
+- Config descriptions: correct runtime command paths (`regions debug eviction`,
+  `crossredstone`, `eventsched`, `setIslandBlockEntityTicks` take `true|false`),
+  the eviction default (on), the legacy `enableFabroliaChunkSend` key (no
+  effect) and the synchronous-only scope of `fabroliaIslandBlockEntityTicks`.
+- Fabric config: ignore non-string items in list keys instead of storing them
+  in String sets; write the file once at startup instead of twice.
+- `tools/release/check_jar.py` reads only the 8-byte class header.
+
 ## 3.0.1-alpha (2026-10-11)
 
 - Remove the ineffective `/fabrolia regions chunkheal on/off` command and its

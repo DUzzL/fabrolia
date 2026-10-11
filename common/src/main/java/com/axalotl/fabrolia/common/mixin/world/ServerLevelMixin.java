@@ -157,8 +157,9 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
 
     /**
      * Autonomous islands own their scheduled lanes; Main services only the
-     * residual native complement. Regions-off retains the original scheduler
-     * under global authority. Both block and fluid call sites use this boundary.
+     * residual native complement. Without async islands (regions off or
+     * synchronous region threading) the original scheduler runs under global
+     * authority. Both block and fluid call sites use this boundary.
      */
     @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
             method = "tick(Ljava/util/function/BooleanSupplier;)V",
@@ -174,11 +175,6 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
             if (com.axalotl.fabrolia.common.regions.IslandScheduledTicks
                     .slotPartitionedAsync(
-                            instance, this.getLevel(), gameTime, maxTicks, ticker)) {
-                return;
-            }
-            if (com.axalotl.fabrolia.common.regions.IslandScheduledTicks
-                    .tickPartitioned(
                             instance, this.getLevel(), gameTime, maxTicks, ticker)) {
                 return;
             }

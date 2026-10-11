@@ -36,7 +36,8 @@ def check(jar: Path) -> None:
         classes = 0
         for name in names:
             if name.endswith('.class'):
-                header = archive.read(name)[:8]
+                with archive.open(name) as entry:
+                    header = entry.read(8)
                 magic, _, major = struct.unpack('>IHH', header)
                 if magic != 0xCAFEBABE or major > 69:
                     raise ValueError(f'{name} requires more than Java 25 or is invalid')

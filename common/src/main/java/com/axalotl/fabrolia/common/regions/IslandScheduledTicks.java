@@ -1,7 +1,5 @@
 package com.axalotl.fabrolia.common.regions;
 
-import com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap;
-import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import it.unimi.dsi.fastutil.longs.Long2LongMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
@@ -26,10 +24,8 @@ import java.util.PriorityQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
-import java.util.function.IntConsumer;
 import java.util.function.LongPredicate;
 
 /**
@@ -60,8 +56,6 @@ public final class IslandScheduledTicks {
      * never a reason to silently run the island incoherently.
      */
     static final int SCHEDULED_HOLD_STUCK_STREAK = 200;
-    private static final ThreadLocal<PrimitiveEntryScratch> NEXT_TICK_SCRATCH =
-            ThreadLocal.withInitial(PrimitiveEntryScratch::new);
     /** Logical LevelTicks phase of the handler currently running on this
      * thread. willTickThisTick is phase-local in vanilla; consulting foreign
      * islands would mix independent clocks and create a global barrier. */
@@ -273,100 +267,6 @@ public final class IslandScheduledTicks {
             if (hb == null) return -1;
             return ScheduledTick.INTRA_TICK_DRAIN_ORDER.compare(ha, hb);
         };
-    }
-
-    static final class SliceFailStopGate {
-        private final int sliceCount;
-        private int nextWorkerSlice = 1;
-        private int active;
-        private boolean closed;
-        private Throwable failure;
-
-        SliceFailStopGate(int sliceCount) {
-            this.sliceCount = sliceCount;
-        }
-
-        boolean runNextWorkerSlice(IntConsumer body) {
-            if (body == null) throw new NullPointerException("body");
-            synchronized (this) {
-                if (closed || nextWorkerSlice >= sliceCount) return false;
-            }
-            return runClaimedSlice(true, body, true);
-        }
-
-        boolean runMainLane(Runnable body) {
-            if (body == null) throw new NullPointerException("body");
-            synchronized (this) {
-                if (closed) return false;
-            }
-            return runClaimedSlice(false, ignored -> body.run(), false);
-        }
-
-        private boolean runClaimedSlice(boolean worker, IntConsumer body, boolean propagateFailure) {
-            int[] claimed = new int[]{-1};
-            boolean ran = false;
-            Throwable failure = null;
-            try {
-                ran = RegionScheduler.callSuccessBooleanIfHealthy(() -> {
-                    int index;
-                    synchronized (this) {
-                        if (closed) return false;
-                        if (worker) {
-                            if (nextWorkerSlice >= sliceCount) return false;
-                            index = nextWorkerSlice++;
-                        } else {
-                            index = 0;
-                        }
-                        active++;
-                        claimed[0] = index;
-                    }
-                    body.accept(index);
-                    return true;
-                });
-            } catch (Throwable thrown) {
-                failure = failAndSelect(thrown);
-            }
-            if (claimed[0] >= 0) {
-                finish();
-            }
-            if (failure != null && propagateFailure) {
-                rethrow(failure);
-            }
-            return ran;
-        }
-
-        Throwable failAndSelect(Throwable candidate) {
-            synchronized (this) {
-                closed = true;
-                if (this.failure == null) {
-                    this.failure = candidate;
-                }
-                notifyAll();
-            }
-            Throwable winner = RegionScheduler.publishFatalAndSelectWinner(candidate);
-            synchronized (this) {
-                this.failure = winner;
-                notifyAll();
-                return winner;
-            }
-        }
-
-        synchronized void finish() {
-            active--;
-            notifyAll();
-        }
-
-        synchronized boolean hasActive() {
-            return active != 0;
-        }
-
-        synchronized boolean failed() {
-            return failure != null;
-        }
-
-        synchronized Throwable failure() {
-            return failure;
-        }
     }
 
     /** Scheduler-owned visibility domain for every concurrent custom slice of
@@ -1065,22 +965,6 @@ public final class IslandScheduledTicks {
         }
     }
 
-    private static void snapshotNextTicks(Long2LongMap nextTick, PrimitiveEntryScratch snapshot) {
-        if (nextTick instanceof Long2LongConcurrentHashMap concurrent) {
-            concurrent.copyPrimitiveEntries(snapshot.keys, snapshot.values);
-        } else {
-            snapshot.keys.clear();
-            snapshot.values.clear();
-            int expected = nextTick.size();
-            snapshot.keys.ensureCapacity(expected);
-            snapshot.values.ensureCapacity(expected);
-            for (Long2LongMap.Entry entry : nextTick.long2LongEntrySet()) {
-                snapshot.keys.add(entry.getLongKey());
-                snapshot.values.add(entry.getLongValue());
-            }
-        }
-    }
-
     /** Exact vanilla collection decision without shared queue/map mutation.
      *  Both autonomous and wall-clock block lanes use this same read-only
      *  pass; only the static cell frontier differs from vanilla collection. */
@@ -1450,128 +1334,6 @@ public final class IslandScheduledTicks {
                 + " trigger=" + h.triggerTick() + " sub=" + h.subTickOrder();
     }
 
-    public static <T> boolean tickPartitioned(LevelTicks<T> scheduler, ServerLevel level,
-                                              long gameTime, int maxTicks,
-                                              BiConsumer<BlockPos, T> ticker) {
-        if (!FabroliaConfig.fabroliaIslandScheduledTicks || !RegionScheduler.isActive()) {
-            return false;
-        }
-        RegionizedServer rs = RegionScheduler.forLevel(level);
-        if (rs == null || !rs.asyncActive) {
-            return false;
-        }
-        if (rs.islands().size() < 2) {
-            return false;
-        }
-
-        @SuppressWarnings("unchecked")
-        LevelTicksIslandAccess<T> access = (LevelTicksIslandAccess<T>) scheduler;
-        Long2LongMap nextTick = access.fabrolia$nextTickForContainer();
-        if (nextTick.isEmpty()) {
-            RegionScheduler.commitSuccessIfHealthy(() -> {});
-            return true;
-        }
-
-        int islandCount = rs.islands().size();
-        LongArrayList[] perIsland = new LongArrayList[islandCount];
-        LongArrayList isolated = null;
-        PrimitiveEntryScratch snapshot = NEXT_TICK_SCRATCH.get();
-        snapshotNextTicks(nextTick, snapshot);
-        for (int i = 0, n = snapshot.keys.size(); i < n; i++) {
-            if (snapshot.values.getLong(i) > gameTime) continue;
-            long chunkPos = snapshot.keys.getLong(i);
-            int island = rs.islandForChunk(chunkPos);
-            if (island >= 0 && island < islandCount) {
-                LongArrayList list = perIsland[island];
-                if (list == null) {
-                    perIsland[island] = list = new LongArrayList(16);
-                }
-                list.add(chunkPos);
-            } else {
-                if (isolated == null) {
-                    isolated = new LongArrayList(4);
-                }
-                isolated.add(chunkPos);
-            }
-        }
-
-        ArrayList<LongArrayList> slices = new ArrayList<>(islandCount);
-        for (LongArrayList list : perIsland) {
-            if (list != null) {
-                slices.add(list);
-            }
-        }
-
-        if (slices.isEmpty()) {
-            if (isolated != null) {
-                LongArrayList isolatedLane = isolated;
-                RegionScheduler.runSuccessBodyIfHealthy(
-                        () -> runSlice(access, isolatedLane, gameTime, new AtomicInteger(maxTicks), ticker));
-            } else {
-                RegionScheduler.commitSuccessIfHealthy(() -> {});
-            }
-            return true;
-        }
-
-        slices.sort((a, b) -> Integer.compare(b.size(), a.size()));
-        RegionScheduler.drainMainSafeNow();
-        AtomicInteger budget = new AtomicInteger(maxTicks);
-        SliceFailStopGate gate = new SliceFailStopGate(slices.size());
-        Runnable runner = () -> {
-            while (gate.runNextWorkerSlice(idx -> runSlice(access, slices.get(idx), gameTime, budget, ticker))) {
-            }
-        };
-        int workerRunners = Math.min(slices.size() - 1, Math.max(1, RegionScheduler.workerCount()));
-        try {
-            for (int ix = 0; ix < workerRunners; ix++) {
-                RegionScheduler.enqueueGlobal(runner);
-            }
-        } catch (Throwable failure) {
-            gate.failAndSelect(failure);
-        }
-        if (workerRunners > 0 && !gate.failed()) {
-            try {
-                RegionScheduler.wakeWorkers();
-            } catch (Throwable failure) {
-                gate.failAndSelect(failure);
-            }
-        }
-
-        gate.runMainLane(() -> runSlice(access, slices.get(0), gameTime, budget, ticker));
-        if (isolated != null) {
-            LongArrayList isolatedLane = isolated;
-            gate.runMainLane(() -> runSlice(access, isolatedLane, gameTime, budget, ticker));
-        }
-        runner.run();
-
-        while (gate.hasActive()) {
-            if (gate.failed()) {
-                LockSupport.parkNanos(20_000L);
-                continue;
-            }
-            boolean drained;
-            try {
-                RegionScheduler.throwWorkerFailureIfAny();
-                drained = RegionScheduler.callSuccessBooleanIfHealthy(
-                        () -> level.getChunkSource().mainThreadProcessor.pollTask());
-                RegionScheduler.throwWorkerFailureIfAny();
-            } catch (Throwable taskFailure) {
-                gate.failAndSelect(taskFailure);
-                drained = false;
-            }
-            if (!drained) {
-                LockSupport.parkNanos(20_000L);
-            }
-        }
-
-        Throwable t = gate.failure();
-        if (t != null) {
-            rethrow(t);
-        }
-        RegionScheduler.commitSuccessIfHealthy(() -> {});
-        return true;
-    }
-
     @SuppressWarnings("unchecked")
     private static <T extends Throwable> void rethrow(Throwable failure) throws T {
         throw (T) failure;
@@ -1841,11 +1603,6 @@ public final class IslandScheduledTicks {
         } finally {
             read.unlock();
         }
-    }
-
-    private static final class PrimitiveEntryScratch {
-        final LongArrayList keys = new LongArrayList();
-        final LongArrayList values = new LongArrayList();
     }
 
     private static final class RunOneState {

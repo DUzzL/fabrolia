@@ -72,7 +72,7 @@ Core concepts and the classes that own them:
       - `rebuildIslandsIfDirty`
       - In async mode: `IslandCommands.drainRoutedBatch`, then `RegionScheduler.drainMainSyncOutOfPhase`.
    2. Vanilla sub-phases. Each one is wrapped in `runSuccessBodyIfHealthy` (`C/mixin/world/ServerLevelMixin.java`). Main does only the global/ownerless part of each:
-      - scheduled ticks: `fabrolia$islandScheduledTicks` → `IslandScheduledTicks.slotPartitionedAsync` / `tickPartitioned`
+      - scheduled ticks: `fabrolia$islandScheduledTicks` → `IslandScheduledTicks.slotPartitionedAsync` (async islands; otherwise the vanilla scheduler runs)
       - raids: `RaidsTickMixin.fabrolia$dispatchRaidLifecycle` → `RaidIslandDispatch.dispatch`
       - chunk source tick
       - block events: `fabrolia$islandBlockEvents` → `IslandBlockEvents.runPartitioned`
