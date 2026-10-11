@@ -48,14 +48,7 @@ dependencies {
 }
 
 loom {
-    def aw = project(':common').file("src/main/resources/fabrolia.accesswidener")
-    accessWidenerPath.set(project(":common").file("src/main/resources/fabrolia.accesswidener"))
-    if (aw.exists()) {
-        accessWidenerPath.set(aw)
-    }
-    mixin {
-        useLegacyMixinAp = false
-    }
+    accessWidenerPath.set(project(':common').file('src/main/resources/fabrolia.accesswidener'))
     runs {
         client {
             client()
