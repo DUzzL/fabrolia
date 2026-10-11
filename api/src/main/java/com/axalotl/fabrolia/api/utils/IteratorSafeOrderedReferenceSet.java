@@ -2,13 +2,20 @@ package com.axalotl.fabrolia.api.utils;
 
 import it.unimi.dsi.fastutil.objects.Reference2IntLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Reference2IntMap;
-import lombok.Getter;
 
 import java.lang.reflect.Array;
 import java.util.Arrays;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * Insertion-ordered reference set whose iterators tolerate concurrent removal.
+ *
+ * <p>With {@code threadRestricted = true} iterators are not tracked, so the set
+ * can never prove that no iteration is running and never defragments: removed
+ * slots stay {@code null} and the backing array only grows. Use that mode only
+ * for short-lived or append-mostly sets.
+ */
 public final class IteratorSafeOrderedReferenceSet<E> {
 
     public static final int ITERATOR_FLAG_SEE_ADDITIONS = 1;
@@ -18,7 +25,6 @@ public final class IteratorSafeOrderedReferenceSet<E> {
     private final AtomicInteger firstInvalidIndex = new AtomicInteger(-1);
 
     private E[] listElements;
-    @Getter
     private volatile int listSize;
 
     private final double maxFragFactor;
@@ -40,6 +46,11 @@ public final class IteratorSafeOrderedReferenceSet<E> {
         this.maxFragFactor = maxFragFactor;
         this.listElements = (E[]) Array.newInstance(arrComponent, arrayCapacity);
         this.threadRestricted = threadRestricted;
+    }
+
+    /** Highest used slot index + 1, including removed (null) slots. */
+    public int getListSize() {
+        return this.listSize;
     }
 
     private boolean allowSafeIteration() {

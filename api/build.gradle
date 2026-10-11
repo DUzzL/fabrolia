@@ -30,7 +30,6 @@ dependencies {
     minecraft("com.mojang:minecraft:${minecraft_version}")
     compileOnly("net.fabricmc:fabric-loader:$fabric_loader_version")
     compileOnly "net.fabricmc.fabric-api:fabric-api:${fabric_version}"
-    compileOnly(annotationProcessor'org.projectlombok:lombok:1.18.44')
 }
 
 // NeoForge (FML) loads a nested jar without mods.toml as a plugin-layer
