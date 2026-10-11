@@ -55,9 +55,6 @@ public class FabroliaNeoForge extends FabroliaCommon {
         FabroliaCommand.register(dispatcher);
     }
 
-    /** Per-level teardown parity with the Fabric loader (2026-07-17 audit:
-     *  NeoForge wired nothing — precompute slot, spawn index, and the native
-     *  cap arena retained unloaded ServerLevels forever). */
     /** Event-driven FULL-chunk tracking, loader parity (audit #10): Fabric
      *  wires ServerChunkEvents.CHUNK_LOAD/UNLOAD because the vanilla
      *  updateChunkScheduling seam is c2me-bypassed — without these the
@@ -81,6 +78,9 @@ public class FabroliaNeoForge extends FabroliaCommon {
         }
     }
 
+    /** Per-level teardown parity with the Fabric loader (2026-07-17 audit:
+     *  NeoForge wired nothing — precompute slot, spawn index, and the native
+     *  cap arena retained unloaded ServerLevels forever). */
     @SubscribeEvent
     public void onLevelUnload(LevelEvent.Unload event) {
         if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel sl) {

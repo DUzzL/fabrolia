@@ -26,7 +26,7 @@ public class FabroliaFabric extends FabroliaCommon implements ModInitializer {
             LOGGER.info("Fabrolia Setting up thread-pool...");
             ParallelProcessor.setServer(server);
             ParallelProcessor.setupThreadPool(FabroliaConfig.getParallelism());
-            // Region scheduler is a no-op when FabroliaConfig.enableRegionThreading=false (default).
+            // Region scheduler is a no-op when FabroliaConfig.enableRegionThreading=false.
             RegionScheduler.start(server);
         });
 
