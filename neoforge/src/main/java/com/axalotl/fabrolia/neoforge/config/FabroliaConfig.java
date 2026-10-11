@@ -47,6 +47,7 @@ public class FabroliaConfig {
     private static final ModConfigSpec.BooleanValue fabroliaRedstoneCrossRegionGuard;
     private static final ModConfigSpec.BooleanValue fabroliaIslandBlockEntityTicks;
     private static final ModConfigSpec.BooleanValue asyncIslands;
+    private static final ModConfigSpec.BooleanValue islandEntityParallel;
     private static final ModConfigSpec.BooleanValue asyncFailClosed;
     private static final ModConfigSpec.BooleanValue fabroliaCrossDimCoupling;
     private static final ModConfigSpec.IntValue crossDimUnlinkGraceTicks;
@@ -124,6 +125,8 @@ public class FabroliaConfig {
                 .define("asyncFailClosed", com.axalotl.fabrolia.common.config.FabroliaConfig.asyncFailClosed);
         asyncIslands = BUILDER.comment("A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. Default off. Runtime: /fabrolia regions async on|off (saved immediately).")
                 .define("asyncIslands", com.axalotl.fabrolia.common.config.FabroliaConfig.asyncIslands);
+        islandEntityParallel = BUILDER.comment("Async islands: false (default) ticks an island's entities in one serial pass in Vanilla insertion order. true ticks its regions in parallel under the color gate, as up to 0.2.38 (much faster for large islands; entity order across region borders follows the color waves, out-of-region block writes are replayed after the phase). Islands holding primed TNT or a TNT minecart always use the serial pass. Runtime: /fabrolia regions islandentities vanilla|parallel.")
+                .define("islandEntityParallel", com.axalotl.fabrolia.common.config.FabroliaConfig.islandEntityParallel);
         fabroliaCrossDimCoupling = BUILDER.comment("Cross-dimension cadence coupling: Overworld islands whose down-projected footprint (vanilla portal scale + pairing reach) touches a Nether island's cells are LINKED, and linked members share one deadline anchor + one lower-TPS-wins rate — removes the phase drift that breaks portal farms straddling the boundary. Clocks stay per-island (phase-lock, never value-merge); the End can never be linked. Runtime: /fabrolia regions crossdim on|off.")
                 .define("fabroliaCrossDimCoupling", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling);
         crossDimUnlinkGraceTicks = BUILDER.comment("Unlink hysteresis for cross-dimension links: the intersection must be absent for this many wall ticks before a link drops (reappearance resets the timer). Links themselves form immediately.")
@@ -175,6 +178,7 @@ public class FabroliaConfig {
         com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRedstoneCrossRegionGuard = fabroliaRedstoneCrossRegionGuard.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandBlockEntityTicks = fabroliaIslandBlockEntityTicks.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.asyncIslands = asyncIslands.get();
+        com.axalotl.fabrolia.common.config.FabroliaConfig.islandEntityParallel = islandEntityParallel.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.asyncFailClosed = asyncFailClosed.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling = fabroliaCrossDimCoupling.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimUnlinkGraceTicks = crossDimUnlinkGraceTicks.get();
@@ -215,6 +219,7 @@ public class FabroliaConfig {
         fabroliaRegionEviction.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionEviction);
         fabroliaRedstoneCrossRegionGuard.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRedstoneCrossRegionGuard);
         fabroliaIslandBlockEntityTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandBlockEntityTicks);
+        islandEntityParallel.set(com.axalotl.fabrolia.common.config.FabroliaConfig.islandEntityParallel);
         fabroliaCrossDimCoupling.set(com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling);
         crossDimUnlinkGraceTicks.set(com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimUnlinkGraceTicks);
         crossDimLinkedPairs.set(new ArrayList<>(com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimLinkedPairs));

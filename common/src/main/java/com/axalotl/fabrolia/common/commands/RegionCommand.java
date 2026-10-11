@@ -234,6 +234,33 @@ public final class RegionCommand {
                     return 1;
                 })));
 
+        // Entity phase of async island units: serial Vanilla insertion order or
+        // ColorGate-parallel regions. Each unit reads the mode once at dispatch.
+        regionsCmd.then(literal("islandentities").requires(PlatformPermission.require("command.regions.toggle", 4))
+                .executes(ctx -> {
+                    send(ctx, "island entity phase: ", FabroliaConfig.islandEntityParallel
+                            ? "parallel (ColorGate regions; islands with TNT stay serial)"
+                            : "vanilla (one serial pass per island in insertion order)", false);
+                    return 1;
+                })
+                .then(literal("vanilla").executes(ctx -> {
+                    FabroliaConfig.islandEntityParallel = false;
+                    PlatformUtils.saveConfig();
+                    send(ctx, "island entity phase: ",
+                            "vanilla — each island ticks its entities in one serial pass "
+                            + "in insertion order (from its next unit)", true);
+                    return 1;
+                }))
+                .then(literal("parallel").executes(ctx -> {
+                    FabroliaConfig.islandEntityParallel = true;
+                    PlatformUtils.saveConfig();
+                    send(ctx, "island entity phase: ",
+                            "parallel — island regions tick their entities in parallel under the "
+                            + "ColorGate; islands holding primed TNT or a TNT minecart stay serial "
+                            + "(from their next unit)", true);
+                    return 1;
+                })));
+
         regionsCmd.then(literal("async").requires(PlatformPermission.require("command.regions.toggle", 4))
                         .executes(ctx -> setAsyncIslands(ctx, !FabroliaConfig.asyncIslands))
                         .then(literal("on").executes(ctx -> setAsyncIslands(ctx, true)))

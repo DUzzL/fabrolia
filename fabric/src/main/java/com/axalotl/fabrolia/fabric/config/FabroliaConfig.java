@@ -209,6 +209,9 @@ public class FabroliaConfig {
         e.add(bool("asyncIslands", null,
                 "A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. Default off. Runtime: /fabrolia regions async on|off (saved immediately).",
                 () -> asyncIslands, v -> asyncIslands = v));
+        e.add(bool("islandEntityParallel", null,
+                "Async islands: false (default) ticks an island's entities in one serial pass in Vanilla insertion order. true ticks its regions in parallel under the color gate, as up to 0.2.38 (much faster for large islands; entity order across region borders follows the color waves, out-of-region block writes are replayed after the phase). Islands holding primed TNT or a TNT minecart always use the serial pass. Runtime: /fabrolia regions islandentities vanilla|parallel.",
+                () -> islandEntityParallel, v -> islandEntityParallel = v));
 
         return e;
     }

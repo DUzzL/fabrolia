@@ -1,3 +1,35 @@
+## 3.1.0-alpha (2026-10-11)
+
+Status: unit tests, Fabric/NeoForge builds and the artifact check pass; the
+40-client stand verification and a matched perf comparison have not been run.
+
+### Performance: opt-in parallel island entity phase
+
+Production 3.0.3 with 41 players fell to 5–10 Main TPS while the islands
+themselves ran at 16–20 TPS (spark profiles 2026-10-11, details in
+[`docs/PERF-ANALYSE-2026-10-11.md`](docs/PERF-ANALYSE-2026-10-11.md)). Main
+spent up to 70 ms per tick parked until running island units finished: block
+use packets on the Main lane (`IslandCommands.mainClaim`), overdue tracking
+publications (`IslandBuckets.waitForRemaining`) and function fences. The
+units are long since 3.0.0: each island ticks all its entities in one serial
+pass (TNT fix), so dense islands with several players took 37–52 ms per unit,
+up to 100 ms, while half of the 17 region workers were idle.
+
+- New `islandEntityParallel` (default `false`, unchanged behavior). With
+  `true`, an island unit dispatches its member regions' entity phases in
+  parallel under the ColorGate, the path islands used up to 0.2.38, and skips
+  the serial pass. A unit whose members hold primed TNT or a TNT minecart keeps
+  the serial pass, so the TNT fixes of 3.0.0 stay exact.
+- Accepted deviation with `true` (as up to 0.2.38): inside an island, entities
+  of neighbouring regions tick in ColorGate waves rather than in Vanilla
+  insertion order, and block writes outside the ticking region are replayed
+  after the entity phase.
+- Runtime: `/fabrolia regions islandentities` (status), `… vanilla`,
+  `… parallel`; saved in the Fabric and NeoForge configs. Each unit reads the
+  mode once, so a switch takes effect at the next unit of each island.
+- Tests: `IslandEntityPhaseModeTest` (TNT detection with the real 26.3 entity
+  classes, unit wiring, config persistence).
+
 ## 3.0.3-alpha (2026-10-11)
 
 Status: unit tests, Fabric/NeoForge builds and the artifact check pass; the

@@ -126,6 +126,16 @@ public class FabroliaConfig {
     // gate) and persists the choice — see asyncIslandsPersister below and
     // docs/ASYNC-ISLANDS.md.
     public static volatile boolean asyncIslands = false;
+    /** Entity phase of an async island unit. false (default): one serial pass
+     *  over the island in Vanilla EntityTickList insertion order (3.0.0 TNT
+     *  fix). true: the member regions tick their entities in parallel under the
+     *  ColorGate, as up to 0.2.38; entity order across region borders then
+     *  follows the colour waves instead of insertion order, and block writes
+     *  outside the ticking region are replayed after the phase. A unit whose
+     *  members hold primed TNT or a TNT minecart keeps the serial pass, so TNT
+     *  mechanics stay exact in both modes. Read once per unit; runtime:
+     *  /fabrolia regions islandentities vanilla|parallel. */
+    public static volatile boolean islandEntityParallel = false;
     /** OPERATOR-PREFERENCE PERSISTENCE (2026-07-18 v2, corrected semantics):
      *  /fabrolia regions async [on|off] sets {@link #asyncIslands} AND
      *  persists it immediately through the loader's config system (atomic

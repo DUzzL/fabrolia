@@ -1180,10 +1180,15 @@ public final class IslandTickUnit {
                         }
                     }
                     RegionScheduler.throwWorkerFailureIfAny();
-                    CompletableFuture<Void> barrier = rs.dispatchEntityPhase(d, members, false);
+                    // Serial pass in Vanilla insertion order, or (opt-in) the
+                    // members' own entity phases in parallel under the
+                    // ColorGate. TNT keeps the serial pass in both modes.
+                    boolean regionParallel = com.axalotl.fabrolia.common.config.FabroliaConfig.islandEntityParallel
+                            && !RegionizedServer.holdsOrderSensitiveEntity(members);
+                    CompletableFuture<Void> barrier = rs.dispatchEntityPhase(d, members, regionParallel);
 
                     awaitEntityBarrier(rs, island, d, members, barrier);
-                    rs.tickIslandEntitiesInVanillaOrder(island);
+                    if (!regionParallel) rs.tickIslandEntitiesInVanillaOrder(island);
                     long debugCost = island.debugCostNanos;
                     if (debugCost > 0) {
                         // Diagnostics knob: park in a loop — pool wake permits

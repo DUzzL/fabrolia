@@ -34,9 +34,10 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 ```
 
 Jar: `fabric/build/libs/fabrolia-alpha_<major>.<minor>.<patch>.jar`; current build
-`fabrolia-alpha_3.0.3.jar` (metadata `3.0.3-alpha` in `gradle.properties`), not yet
+`fabrolia-alpha_3.1.0.jar` (metadata `3.1.0-alpha` in `gradle.properties`), not yet
 stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
-which crashed on a mob killing an island player (fixed in 3.0.3).
+which crashed on a mob killing an island player (fixed in 3.0.3); `3.0.3-alpha` ran from
+2026-10-11 12:58 CEST and lagged at 40 players (see `docs/PERF-ANALYSE-2026-10-11.md`).
 The owner's 2026-10-10 versioning rule supersedes the old fixed `0.2.38+alpha-26.3`:
 minor releases increment the middle number and reset patch; bugfixes increment patch.
 Use `tools/release/release_version.py`; see `docs/RELEASES.md`. ~1400 tests, all must
@@ -59,7 +60,7 @@ classes of the real mod set: `tools/stand/stand.sh export exp-1 <jar>`, then
 (details, scenarios and how to read results: `docs/STAND.md`):
 
 ```bash
-tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.0.3.jar   # must print ALL PASS
+tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.0.jar   # must print ALL PASS
 tools/stand/stand.sh perf perf-1 <jar> 120 [--scenario items|pistons] [--heap]
 python3 tools/spark/frames.py <old>.sparkprofile <new>.sparkprofile
 ```
@@ -124,13 +125,23 @@ replaces: keep that composition working when either side changes.
 ## Production facts
 
 Ryzen 9 9950X host, 19 CPU threads and up to 31 GB heap for the JVM, Temurin 25.0.3 with
-JVMCI; 30–36 players, ~13k entities, ~22k loaded chunks; 17 region workers
+JVMCI; 30–42 players, ~13–15k entities, ~22–25k loaded chunks; 17 region workers
 (`regionWorkerCount=-1`). Key mods: C2ME 0.4.2, Lithium 0.26.2, VMP, Carpet, ServerCore,
 ScalableLux, MCFC, BlueMap, LuckPerms, Simple Voice Chat, WorldEdit, Ledger, Rustmi.
-Fabrolia config `config/fabrolia.toml` (`asyncIslands = true`, `enableRegionThreading = true`;
-player ticks stay on Main). Datapacks include BlazeandCave's Advancements.
+Fabrolia config `config/fabrolia.toml` (`asyncIslands = true`, `enableRegionThreading = true`,
+`enablePlayerTickActor = true`: players tick on their island (A5); the log line
+"restored saved player-tick ownership preference ON" confirms it). Datapacks include
+BlazeandCave's Advancements.
 
 ## Known open items
+
+- Main waits for running island units whenever it needs an island: Main-lane packets
+  (`ServerboundUseItemOnPacket` is `MAIN_FIFO` by design), overdue tracking publications
+  (`IslandBuckets.waitForRemaining`), listener ticks, function fences. Each wait lasts the
+  rest of that island's unit, so Main TPS falls with the longest island unit (2026-10-11:
+  dense 5-player islands at 37–52 ms/unit, up to 100 ms, Main 5–10 TPS at 41 players).
+  The 3.0.0 serial entity pass made those units long; `islandEntityParallel` (3.1.0)
+  restores the 0.2.38 parallel regions on opt-in. See `docs/PERF-ANALYSE-2026-10-11.md`.
 
 - Islands do not catch up ticks lost to a pause (Main does); left open by the owner.
 - Production autosaves once a minute (a ~470 ms tick in the 2026-10-05 profile; check

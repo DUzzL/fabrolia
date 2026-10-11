@@ -27,7 +27,7 @@ MCMTFabric / JMT-MCMT) and has been rewritten around async islands.
 
 ```bash
 bash gradlew :common:test :fabric:build          # JAVA_HOME = JDK 25
-python3 tools/release/check_jar.py fabric/build/libs/fabrolia-alpha_3.0.3.jar
+python3 tools/release/check_jar.py fabric/build/libs/fabrolia-alpha_3.1.0.jar
 ```
 
 On Windows (PowerShell; the 40-client stand in `tools/stand/` needs Linux or macOS):
@@ -35,10 +35,10 @@ On Windows (PowerShell; the 40-client stand in `tools/stand/` needs Linux or mac
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-25...'   # any JDK 25
 .\gradlew.bat :common:test :fabric:build :neoforge:build
-python tools\release\check_jar.py fabric\build\libs\fabrolia-alpha_3.0.3.jar
+python tools\release\check_jar.py fabric\build\libs\fabrolia-alpha_3.1.0.jar
 ```
 
-Current build: **`fabrolia-alpha_3.0.3.jar`** (metadata `3.0.3-alpha`; stand verification pending). Minor releases
+Current build: **`fabrolia-alpha_3.1.0.jar`** (metadata `3.1.0-alpha`; stand verification pending). Minor releases
 increment the middle number; bugfixes increment the last number. See the
 [release workflow](docs/RELEASES.md).
 

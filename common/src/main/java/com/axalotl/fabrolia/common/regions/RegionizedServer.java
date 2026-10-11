@@ -4066,6 +4066,26 @@ public final class RegionizedServer {
 
     private record IslandEntityVisit(Entity entity, IslandEntityRegionPhase phase) {}
 
+    /**
+     * Primed TNT and TNT minecarts depend on Vanilla insertion order across
+     * region borders (TNT fix 2026-10-10: impulse before motion, one priming per
+     * block). A unit whose members hold one keeps the serial pass even when
+     * {@code islandEntityParallel} is on. Read by the coordinator under its unit
+     * claim before dispatch; TNT that appears during a parallel phase switches
+     * the next unit to the serial pass.
+     */
+    static boolean holdsOrderSensitiveEntity(List<Region> members) {
+        for (int i = 0, n = members.size(); i < n; i++) {
+            for (Entity e : members.get(i).entities) {
+                if (e instanceof net.minecraft.world.entity.item.PrimedTnt
+                        || e instanceof net.minecraft.world.entity.vehicle.minecart.MinecartTNT) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private static final class IslandEntityRegionPhase {
         /** Cut-local marker for a grid key outside this island; never claimed. */
         static final IslandEntityRegionPhase FOREIGN = new IslandEntityRegionPhase(null);
