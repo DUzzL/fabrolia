@@ -44,6 +44,18 @@ numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
   in String sets; write the file once at startup instead of twice.
 - `tools/release/check_jar.py` reads only the 8-byte class header.
 
+### Commands
+
+- `/fabrolia config synchronizedEntities add|remove`: refused requests are
+  sent to the sender as failures (return 0) instead of being broadcast to every
+  operator as success messages. `remove` of an entity that is only covered by a
+  namespace wildcard no longer reports a removal that did not happen; it names
+  the wildcard entry to remove. Adding an already present wildcard is refused.
+- `/fabrolia stats entity <count> <ticks>` (open to every player) limits the
+  recording window to 6000 ticks; an unbounded window kept Main polling for
+  the rest of the session.
+- Stats and `setFabroliaChunkSend` label the chunk-send key as legacy (no effect).
+
 ## 3.0.1-alpha (2026-10-11)
 
 - Remove the ineffective `/fabrolia regions chunkheal on/off` command and its

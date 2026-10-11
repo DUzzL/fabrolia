@@ -180,7 +180,7 @@ public class ConfigCommand {
     private static LiteralArgumentBuilder<CommandSourceStack> buildFabroliaChunkSendCommand() {
         return literal("setFabroliaChunkSend")
                 .executes(ctx -> {
-                    sendMessage(ctx, "Current value of fabrolia chunk send: ",
+                    sendMessage(ctx, "Current value of fabrolia chunk send (legacy key, no effect): ",
                             String.valueOf(FabroliaConfig.enableFabroliaChunkSend),
                             false);
                     return 1;
@@ -191,7 +191,7 @@ public class ConfigCommand {
                             FabroliaConfig.enableFabroliaChunkSend = value;
                             PlatformUtils.saveConfig();
 
-                            sendMessage(ctx, "Fabrolia Chunk Send set to ",
+                            sendMessage(ctx, "Fabrolia Chunk Send (legacy key, no effect) set to ",
                                     String.valueOf(value),
                                     true);
                             return 1;
@@ -269,12 +269,12 @@ public class ConfigCommand {
 
         if (!BuiltInRegistries.ENTITY_TYPE.containsKey(id)) {
             sendErrorMessage(ctx, "Error entity class ", id.toString(), " does not exist.");
-            return 1;
+            return 0;
         }
 
         if (FabroliaConfig.isEntitySynchronized(id)) {
             sendErrorMessage(ctx, "Error entity class ", id.toString(), " is already synchronized.");
-            return 1;
+            return 0;
         }
 
         FabroliaConfig.syncEntity(id.toString());
@@ -286,22 +286,36 @@ public class ConfigCommand {
     private static int addNamespace(CommandContext<CommandSourceStack> ctx) {
         String namespace = StringArgumentType.getString(ctx, "namespace");
 
-        if (FabroliaConfig.matchesExistingNamespaceWildcard(namespace)) {
-            FabroliaConfig.syncEntity(namespace);
-            sendMessage(ctx, "All entities with namespace ", namespace,
-                    " has been added to the synchronized list.");
-        } else {
+        if (!FabroliaConfig.matchesExistingNamespaceWildcard(namespace)) {
             sendErrorMessage(ctx, "Error namespace ", namespace, " does not exist.");
+            return 0;
         }
+        if (FabroliaConfig.synchronizedEntities.contains(namespace)) {
+            sendErrorMessage(ctx, "Error namespace ", namespace, " is already synchronized.");
+            return 0;
+        }
+        FabroliaConfig.syncEntity(namespace);
+        sendMessage(ctx, "All entities with namespace ", namespace,
+                " have been added to the synchronized list.");
         return 1;
     }
 
     private static int removeEntity(CommandContext<CommandSourceStack> ctx) {
         Identifier id = IdentifierArgument.getId(ctx, "entity");
 
-        if (!FabroliaConfig.isEntitySynchronized(id)) {
-            sendErrorMessage(ctx, "Error entity class ", id.toString(), " is not in the synchronized list.");
-            return 1;
+        // Only an exact entry can be removed. An entity that is synchronized
+        // through a namespace wildcard stays synchronized until the wildcard
+        // itself is removed, so reporting success here would be false.
+        if (!FabroliaConfig.synchronizedEntities.contains(id.toString())) {
+            String wildcard = id.getNamespace() + ":*";
+            if (FabroliaConfig.synchronizedEntities.contains(wildcard)) {
+                sendErrorMessage(ctx, "Error entity class ", id.toString(),
+                        " is synchronized through " + wildcard + "; remove that entry instead.");
+            } else {
+                sendErrorMessage(ctx, "Error entity class ", id.toString(),
+                        " is not in the synchronized list.");
+            }
+            return 0;
         }
 
         FabroliaConfig.removeEntity(id.toString());
@@ -312,20 +326,15 @@ public class ConfigCommand {
 
     private static int removeNamespace(CommandContext<CommandSourceStack> ctx) {
         String namespace = StringArgumentType.getString(ctx, "namespace");
-        Identifier id = Identifier.tryParse(namespace);
-
-        if (id != null) {
-            return 1;
-        }
 
         if (!FabroliaConfig.synchronizedEntities.contains(namespace)) {
             sendErrorMessage(ctx, "Error namespace ", namespace, " is not in the synchronized list.");
-            return 1;
+            return 0;
         }
 
         FabroliaConfig.removeEntity(namespace);
         sendMessage(ctx, "All entities with namespace ", namespace,
-                " has been removed from synchronized list.");
+                " have been removed from synchronized list.");
         return 1;
     }
 
@@ -352,6 +361,8 @@ public class ConfigCommand {
                 .append(Component.literal(prefix).withStyle(style -> style.withColor(ChatFormatting.RED)))
                 .append(Component.literal(error).withStyle(style -> style.withColor(ChatFormatting.RED)))
                 .append(Component.literal(suffix).withStyle(style -> style.withColor(ChatFormatting.RED)));
-        ctx.getSource().sendSuccess(() -> message, true);
+        // A refused request is reported to its sender only, as a failure; it
+        // used to be broadcast to every operator as a success message.
+        ctx.getSource().sendFailure(message);
     }
 }

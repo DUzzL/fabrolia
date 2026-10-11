@@ -29,6 +29,9 @@ import static net.minecraft.commands.Commands.literal;
 
 public class StatsCommand {
 
+    /** Five minutes at 20 TPS. */
+    private static final int MAX_RECORDING_TICKS = 6000;
+
     public static LiteralArgumentBuilder<CommandSourceStack> registerStatus(LiteralArgumentBuilder<CommandSourceStack> root) {
         return root.then(literal("stats").requires(PlatformPermission.require("command.statistics", 0))
                 .executes(cmdCtx -> {
@@ -46,7 +49,10 @@ public class StatsCommand {
                                     showEntityStats(cmdCtx.getSource(), count, false, 0);
                                     return 1;
                                 })
-                                .then(argument("ticks", IntegerArgumentType.integer())
+                                // Bounded: the stats command is open to every
+                                // player, and recording polls on Main until it
+                                // ends (an unbounded window never ended).
+                                .then(argument("ticks", IntegerArgumentType.integer(1, MAX_RECORDING_TICKS))
                                         .executes(cmdCtx -> {
                                             int count = IntegerArgumentType.getInteger(cmdCtx, "count");
                                             int ticks = IntegerArgumentType.getInteger(cmdCtx, "ticks");
@@ -122,6 +128,7 @@ public class StatsCommand {
                 .append(Component.literal("\nFabrolia Chunk Send: ").withStyle(ChatFormatting.WHITE))
                 .append(Component.literal(fabroliaChunkSend ? "Enabled" : "Disabled")
                         .withStyle(fabroliaChunkSend ? ChatFormatting.GREEN : ChatFormatting.RED))
+                .append(Component.literal(" (legacy key, no effect)").withStyle(ChatFormatting.GRAY))
 
                 .append(Component.literal("\nFabrolia Despawn: ").withStyle(ChatFormatting.WHITE))
                 .append(Component.literal(fabroliaDespawn ? "Enabled" : "Disabled")
