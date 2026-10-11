@@ -158,7 +158,7 @@ public final class PearlTrace {
      *  so the chunk stays entity-ticking: this is the expected outcome of the
      *  deferred-renewal margin under async islands, not an anomaly. Holds and
      *  heals are therefore aggregated into one summary line per
-     *  {@link #SELF_HEAL_SUMMARY_INTERVAL_NANOS} (2026-10-11: the per-event
+     *  {@link #SELF_HEAL_SUMMARY_INTERVAL_NANOS} (2026-10-10 log: the per-event
      *  lines were 4.6k of a 20 h production log, every one "self-heal OK").
      *  The anomalies — budget exhausted, expiry with a live pearl, a completed
      *  entity-ticking loss — keep their individual lines. */

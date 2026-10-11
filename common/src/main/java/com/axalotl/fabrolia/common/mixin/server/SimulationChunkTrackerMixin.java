@@ -141,7 +141,7 @@ public abstract class SimulationChunkTrackerMixin implements RegionTickingTracke
      *  so a pearl chunk whose ticket set merely changed (a player ticket
      *  moving, a renewal) passed through "not entity-ticking" without ever
      *  leaving it. Reporting those made up most of the 5.6k "LEFT
-     *  entity-ticking" lines of the 2026-10-11 production log (one stasis
+     *  entity-ticking" lines of the 2026-10-10 production log (one stasis
      *  chunk ~1000 times). The verdict is taken on completed states in
      *  {@link #fabrolia$traceCompletedEntityTickingLoss}. */
     @Inject(method = "setLevel(JI)V", at = @At("HEAD"))

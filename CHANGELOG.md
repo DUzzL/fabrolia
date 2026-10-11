@@ -1,6 +1,6 @@
 ## Unreleased
 
-Findings from the 2026-10-11 production log (20 h, 68.7k lines); details and
+Findings from the 2026-10-10 production log (20 h, 68.7k lines); details and
 numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
 
 ### Diagnostics

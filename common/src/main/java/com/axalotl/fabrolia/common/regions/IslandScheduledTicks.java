@@ -191,7 +191,7 @@ public final class IslandScheduledTicks {
      *  from {@code DistanceManager.getChunkLevel(pos, false)}: C2ME replaces
      *  vanilla's loading tracker and leaves {@code loadingChunkTracker} null,
      *  which turned every production SCHEDULED-HOLD line into
-     *  {@code readiness=probe-failed:NullPointerException} (2026-10-11 log). */
+     *  {@code readiness=probe-failed:NullPointerException} (2026-10-10 log). */
     private static String describeChunkReadiness(ServerLevel level, long chunkPos) {
         StringBuilder sb = new StringBuilder(160);
         net.minecraft.server.level.ServerChunkCache cs;

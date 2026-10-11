@@ -69,7 +69,8 @@ Every change touching runtime code: tests + `verify`. Threading/performance chan
 
 - Lag: ask for a spark profile of all threads covering the event
   (`/spark profiler start --thread * --interval 4`, then `/spark profiler stop` after the
-  lag), then `python3 tools/spark/spark2md.py FILE --only summary` and compare the lag
+  lag; add `--save-to-file` when the bytebin upload times out, as it did during the
+  2026-10-10 lag), then `python3 tools/spark/spark2md.py FILE --only summary` and compare the lag
   windows with the windows before them using `tools/spark/sparkwin.py` (`tools/spark/README.md`).
 - Crash: read the first `fabrolia$…` frame and the `Suppressed:` traces (other threads
   that observed the same fatal). Find the code via `docs/CODEMAP.md` → "Where to look when".

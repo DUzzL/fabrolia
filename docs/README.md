@@ -20,6 +20,7 @@ behaviour is described by the requirements, architecture and [changelog](../CHAN
 | Raids | [Farm review](RAID-FARM-REVIEW-2026-10-09.md), [Vanilla ticket parity](RAID-TICKET-FIX-2026-10-09.md) |
 | TNT and world eaters | [Code review](TNT-CODE-REVIEW-2026-10-10.md), [fixes and verification](TNT-FIX-2026-10-10.md) |
 | MSPT | [Production profile analysis](MSPT-ANALYSE-2026-10-10.md) |
+| Production log | [Full-day log review and diagnostic fixes](LOG-REVIEW-2026-10-11.md) |
 | Alpha 3.0.0 | [Build and cleanup verification](ALPHA-3.0.0-RELEASE.md) |
 | C2ME strand recovery | [Known C2ME issue](C2ME-FLAG_BROKEN-STRAND.md) |
 
