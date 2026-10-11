@@ -27,10 +27,10 @@ MCMTFabric / JMT-MCMT) and has been rewritten around async islands.
 
 ```bash
 bash gradlew :common:test :fabric:build          # JAVA_HOME = JDK 25
-python3 tools/release/check_jar.py fabric/build/libs/fabrolia-alpha_3.0.1.jar
+python3 tools/release/check_jar.py fabric/build/libs/fabrolia-alpha_3.0.2.jar
 ```
 
-Current release: **`fabrolia-alpha_3.0.1.jar`** (metadata `3.0.1-alpha`). Minor releases
+Current build: **`fabrolia-alpha_3.0.2.jar`** (metadata `3.0.2-alpha`; stand verification pending, production runs 3.0.1). Minor releases
 increment the middle number; bugfixes increment the last number. See the
 [release workflow](docs/RELEASES.md).
 

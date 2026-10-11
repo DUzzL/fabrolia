@@ -1,4 +1,8 @@
-## Unreleased
+## 3.0.2-alpha (2026-10-11)
+
+Status: unit tests, Fabric/NeoForge builds and the artifact check pass; the
+40-client stand verification (`tools/stand/stand.sh verify`) has not been run
+yet, so production stays on 3.0.1-alpha until it passes.
 
 Findings from the 2026-10-10 production log (20 h, 68.7k lines); details and
 numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
