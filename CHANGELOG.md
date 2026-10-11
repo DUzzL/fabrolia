@@ -7,6 +7,17 @@ yet, so production stays on 3.0.1-alpha until it passes.
 Findings from the 2026-10-10 production log (20 h, 68.7k lines); details and
 numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
 
+### Fixes
+
+- Servux compatibility (production crash 2026-10-10 23:29,
+  `ConcurrentModificationException` in Servux
+  `StructureDataProvider.sendAndRefreshExpiredStructures`): Servux records
+  structure timeouts in a plain per-player `HashMap` from its
+  `ChunkMap.markChunkPendingToSend` hook and iterates it on Main at tick end;
+  Fabrolia marks chunks on island workers too. `ServuxStructureWatchMainRouteMixin`
+  (only active with Servux installed) runs off-Main calls as Main-only tasks.
+  Verified on a Fabric dev server with `servux-fabric-26.3-0.12.2.jar`.
+
 ### Diagnostics
 
 - SCHEDULED-HOLD lines print the chunk's readiness again. The probe read the

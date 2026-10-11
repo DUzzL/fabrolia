@@ -249,7 +249,8 @@
     "carpet.CarpetPlayerCommandIslandMixin",
     "carpet.CarpetSpawnCommandTrackingMixin",
     "carpet.CarpetSpawnReporterTrackingMixin",
-    "carpet.CarpetThreadValueBlockingWaitMixin"
+    "carpet.CarpetThreadValueBlockingWaitMixin",
+    "servux.ServuxStructureWatchMainRouteMixin"
   ],
   "client": [],
   "server": [

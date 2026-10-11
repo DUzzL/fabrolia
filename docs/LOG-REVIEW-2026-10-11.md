@@ -138,6 +138,30 @@ Lesefehler im Handshake-Zustand existiert kein Disconnect-Paket; Fabrolias
 `netherOrderedSend`-Wrapper reicht nur durch), `handleDisconnection() called
 twice` (Vanilla-Warnung).
 
+## Crash 2026-10-10 23:29 (Servux)
+
+`crash-2026-10-10_23.29.37-server.txt`: `ConcurrentModificationException` in
+`fi.dy.masa.servux.dataproviders.StructureDataProvider.sendAndRefreshExpiredStructures`,
+aufgerufen von Servux' Tick-Ende-Hook auf dem Server-Thread. Laut Report lief
+`Fabrolia 0.2.38+alpha-26.3` (35 h Uptime), nicht der 3.0.1-Build.
+
+Ursache (am Servux-Jar `servux-fabric-26.3-0.12.2.jar`, SHA-256 `ef7d3990…`,
+nachvollzogen): Servux injiziert `StructureDataProvider.onStartedWatchingChunk`
+an den Kopf von `ChunkMap.markChunkPendingToSend` und schreibt dort per
+`computeIfAbsent` in eine einfache `HashMap<ChunkPos, Timeout>` pro Spieler;
+dieselbe Map iteriert Servux am Tick-Ende auf Main. Vanilla markiert Chunks nur
+auf Main, Fabrolia aber auch auf Insel-Workern (`ChunkDelivery`: „callable from
+any thread“). Ein Worker-Insert während der Main-Iteration ist der Crash. Die
+übrigen Servux-Mixins lesen nur Konfiguration oder laufen ohnehin auf Main.
+
+Behebung: `ServuxStructureWatchMainRouteMixin` (`@Pseudo`, greift nur mit
+installiertem Servux) leitet Aufrufe abseits von Main als Main-only-Task um,
+wie `WorkerTicketRouteMixin` es für Ticket-Schreibzugriffe tut. Servux prüft
+dort die Registrierung des Spielers erneut; der Overlay-Timeout kommt höchstens
+einen Main-Drain später. Geprüft mit einem echten Fabric-Dev-Server und genau
+diesem Servux-Jar: Start ohne Fehler, und der Mixin-Export der Servux-Klasse
+zeigt den eingewobenen Handler.
+
 ## Prüfung
 
 - `:common:test` 1.439 bestanden (Ausgangsstand 1.434 plus fünf neue Tests),
