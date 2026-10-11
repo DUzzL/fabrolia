@@ -76,6 +76,14 @@ numbers in [`docs/LOG-REVIEW-2026-10-11.md`](docs/LOG-REVIEW-2026-10-11.md).
   the rest of the session.
 - Stats and `setFabroliaChunkSend` label the chunk-send key as legacy (no effect).
 
+### Tests
+
+- New: `EntityUnloadRetryAgesTest`, `EntityTickingLossTraceTest` (both policies
+  extracted from mixins into plain classes), `ConcurrentLongOpenHashSetTest`
+  (the previously untested set behind `PoiManager.loadedChunks`; randomized
+  differential and concurrent-resize checks found no defect) and a sharing
+  check in `EntityPhaseMembershipParityTest`. 1447 tests pass, 8 optional skip.
+
 ### Build and tools
 
 - `FullModpackMixinExportVerifierTest`: the function-fence ordering check used
