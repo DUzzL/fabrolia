@@ -3132,6 +3132,14 @@ public final class AsyncIslandPlayerTicks {
                         rs.regionizer().grid.keyFor(player.chunkPosition()))) {
             return false;
         }
+        // The serial island entity pass (tickIslandEntitiesInVanillaOrder) runs
+        // after the queue-only join, when every member region is already done
+        // for this epoch: ColorGate eligibility below is false there by
+        // construction. Its exclusive phase scope is the authority instead (this
+        // worker holds the unit claim; the island is otherwise quiescent).
+        // Without it a mob killing an island player failed the lifecycle fence
+        // (production crash 2026-10-11 06:40, piglin melee kill).
+        if (IslandEntityPhaseScope.owns(current)) return true;
         EpochDomain domain = island.domain;
         long epoch = domain.epoch;
         return FabroliaConfig.useRegionColorGate()

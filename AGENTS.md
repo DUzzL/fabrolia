@@ -33,9 +33,10 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 ./gradlew :common:test --tests '*GlobalBlockUpdateDrainTest'      # while iterating
 ```
 
-
-
-`fabrolia-alpha_3.0.1.jar`. Metadata version: `3.0.1-alpha` in `gradle.properties`.
+Jar: `fabric/build/libs/fabrolia-alpha_<major>.<minor>.<patch>.jar`; current build
+`fabrolia-alpha_3.0.3.jar` (metadata `3.0.3-alpha` in `gradle.properties`), not yet
+stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
+which crashed on a mob killing an island player (fixed in 3.0.3).
 The owner's 2026-10-10 versioning rule supersedes the old fixed `0.2.38+alpha-26.3`:
 minor releases increment the middle number and reset patch; bugfixes increment patch.
 Use `tools/release/release_version.py`; see `docs/RELEASES.md`. ~1400 tests, all must
@@ -58,7 +59,7 @@ classes of the real mod set: `tools/stand/stand.sh export exp-1 <jar>`, then
 (details, scenarios and how to read results: `docs/STAND.md`):
 
 ```bash
-tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.0.2.jar   # must print ALL PASS
+tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.0.3.jar   # must print ALL PASS
 tools/stand/stand.sh perf perf-1 <jar> 120 [--scenario items|pistons] [--heap]
 python3 tools/spark/frames.py <old>.sparkprofile <new>.sparkprofile
 ```

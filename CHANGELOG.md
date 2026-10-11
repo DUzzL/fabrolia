@@ -1,3 +1,25 @@
+## 3.0.3-alpha (2026-10-11)
+
+Status: unit tests, Fabric/NeoForge builds and the artifact check pass; the
+40-client stand verification has not been run.
+
+- Fix: a mob killing an island player crashed the server (production,
+  3.0.2-alpha after 69 minutes: a piglin's melee kill,
+  `A5 player lifecycle mutation entered from neither physical Main nor the
+  exact island owner`). Since 3.0.0 island entities tick in the serial
+  `tickIslandEntitiesInVanillaOrder` pass after the queue-only join, when every
+  member region is already done for the epoch; the lifecycle owner check still
+  required color-gate eligibility, which is false there by construction. The
+  exclusive island entity phase scope now authorizes the lifecycle mutation
+  (the same quiescent-owner path the region dispatch used). The same check
+  lets player advancement/stat triggers from island entities run on their
+  owner again. Regression test: `AsyncIslandPlayerLifecycleWiringTest
+  .serialIslandEntityPassAuthorizesAMobKillAfterTheQueueJoin` (fails without
+  the fix).
+- Production log check of 3.0.2: SCHEDULED-HOLD lines carry the readiness legs
+  (no `probe-failed`), no `[entity-unload]` or pearl false-alarm lines, the
+  self-heal summary appears, and no Servux error.
+
 ## 3.0.2-alpha (2026-10-11)
 
 Status: unit tests, Fabric/NeoForge builds and the artifact check pass; the

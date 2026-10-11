@@ -57,6 +57,36 @@ final class AsyncIslandPlayerLifecycleWiringTest {
         }
     }
 
+    /**
+     * Production crash 2026-10-11 06:40: a piglin ticked by the serial island
+     * entity pass killed an island player. After the queue-only join every
+     * member region is done for the epoch, so the color-gate authority is
+     * false; the exclusive phase scope must authorize the death instead.
+     */
+    @Test
+    void serialIslandEntityPassAuthorizesAMobKillAfterTheQueueJoin() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.onWorker(worker -> f.withClaim(worker, () -> {
+                f.source.doneEpoch = f.island.domain.epoch;
+                assertFalse(f.owns(), "outside the serial pass a done region is no authority");
+
+                f.island.domain.queueOnlyEntityEpoch = f.island.domain.epoch;
+                f.island.domain.islandEntityQueueEpoch = f.island.domain.epoch;
+                f.island.domain.islandEntityQueueBarrier = CompletableFuture.completedFuture(null);
+                RegionWorkerThread self = (RegionWorkerThread) Thread.currentThread();
+                Region claimed = self.currentRegion;
+                self.currentRegion = null;
+                try (IslandEntityPhaseScope ignored = IslandEntityPhaseScope.enter(f.runtime, f.island)) {
+                    self.currentRegion = claimed;
+                    assertTrue(f.owns(), "the exclusive serial pass owns its island's player lifecycle");
+                } finally {
+                    self.currentRegion = claimed;
+                }
+                assertFalse(f.owns(), "the authority ends with the serial pass");
+            }));
+        }
+    }
+
     @Test
     void inactiveAsyncWorkerLeavesCreditsToTheNativeCaller() throws Exception {
         try (Fixture f = new Fixture()) {
