@@ -34,8 +34,8 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 ```
 
 Jar: `fabric/build/libs/fabrolia-alpha_<major>.<minor>.<patch>.jar`; current build
-`fabrolia-alpha_3.1.0.jar` (metadata `3.1.0-alpha` in `gradle.properties`), not yet
-stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
+`fabrolia-alpha_3.1.1.jar` (metadata `3.1.1-alpha` in `gradle.properties`; the raid/POI timing
+fix on top of 3.1.0), not yet stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
 which crashed on a mob killing an island player (fixed in 3.0.3); `3.0.3-alpha` ran from
 2026-10-11 12:58 CEST and lagged at 40 players (see `docs/PERF-ANALYSE-2026-10-11.md`).
 The owner's 2026-10-10 versioning rule supersedes the old fixed `0.2.38+alpha-26.3`:
@@ -60,7 +60,7 @@ classes of the real mod set: `tools/stand/stand.sh export exp-1 <jar>`, then
 (details, scenarios and how to read results: `docs/STAND.md`):
 
 ```bash
-tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.0.jar   # must print ALL PASS
+tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.1.jar   # must print ALL PASS
 tools/stand/stand.sh perf perf-1 <jar> 120 [--scenario items|pistons] [--heap]
 python3 tools/spark/frames.py <old>.sparkprofile <new>.sparkprofile
 ```

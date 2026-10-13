@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.world;
 
+import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.regions.NetherPortalPreparation;
 import com.axalotl.fabrolia.common.regions.PoiPublicationFence;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
@@ -32,10 +33,20 @@ public abstract class ServerLevelPortalPreparationMixin implements NetherPortalP
 
     /**
      * Only {@code nether_portal} POI add/remove callbacks enter the fence: the
-     * portal search reads no other POI type, and vanilla itself defers every
-     * POI change through {@code server.execute}. Beds, job sites, hives and
-     * lodestones keep the vanilla path, so their churn cannot make a transfer
-     * wait for Main.
+     * portal search reads no other POI type. Beds, job sites, hives and
+     * lodestones never wait for Main.
+     *
+     * <p>{@code server.execute} runs its callback inline on the ticking server
+     * thread; it queues only off-thread or inside an event-loop task. 26.3
+     * handles packets in {@code processQueuedPackets} and ticks levels outside
+     * any task, so every in-game block change publishes its POI change before
+     * {@code setBlock} returns. A Fabrolia simulation thread is that ticking
+     * thread for its own chunks. Queueing there published the change at Main's
+     * next task drain instead: after the island's later phases, and several
+     * island ticks late while Main lags. Villagers could not claim a re-placed
+     * job site in the same tick, and a raid's village check sampled a POI state
+     * vanilla never shows (2026-10-13: raids stopped about a second after the
+     * Raid Omen expired).
      */
     @WrapOperation(method = {"lambda$updatePOIOnBlockStateChange$0", "lambda$updatePOIOnBlockStateChange$2"},
             at = @At(value = "INVOKE",
@@ -45,7 +56,11 @@ public abstract class ServerLevelPortalPreparationMixin implements NetherPortalP
                                                 Operation<Void> original,
                                                 @Local(argsOnly = true) Holder<PoiType> poiType) {
         if (!poiType.is(PoiTypes.NETHER_PORTAL)) {
-            original.call(server, callback);
+            if (ParallelProcessor.isServerExecutionThread()) {
+                callback.run();
+            } else {
+                original.call(server, callback);
+            }
             return;
         }
         this.fabrolia$portalPublications.submit(callback, tracked -> {

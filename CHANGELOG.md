@@ -1,3 +1,43 @@
+## 3.1.1-alpha (2026-10-13)
+
+Status: unit tests, Fabric/NeoForge builds and the artifact check pass;
+verified on a local Fabric dev server with one real protocol client; the
+40-client stand verification has not been run.
+
+- Fix: raids stopped about a second after the Raid Omen expired (production
+  report 2026-10-13: the raid bar shows for a second and vanishes, no defeat,
+  no wave). Cause: a block change on an island published its POI change late.
+  `ServerLevel.updatePOIOnBlockStateChange` hands the POI add/remove to
+  `server.execute`. Vanilla runs that inline on the ticking server thread
+  (26.3 handles packets in `processQueuedPackets` and ticks levels outside any
+  event-loop task), so a moved or placed job site, bed or bell is in the POI
+  manager before `setBlock` returns. On an island worker `execute` queued the
+  callback for Main's next task drain instead: after the island's entity phase,
+  so a villager could not claim a re-placed job site in the same tick, and
+  several island ticks late while Main lags. A raid's village check then saw
+  POI states vanilla never shows and stopped the raid before its first wave
+  (vanilla's STOP when the center is no village and relocation finds none).
+  Up to 0.2.38 the custom 100-tick village grace hid such samples; 3.0.0
+  removed it to restore vanilla raid rules.
+  The callback now runs inline on Fabrolia simulation threads
+  (`ParallelProcessor.isServerExecutionThread`: region workers, tick pool,
+  exact player actor). Physical Main and other threads keep
+  `MinecraftServer.execute`; `nether_portal` callbacks keep the portal
+  publication fence. Worker POI writes use the column lease and stripe that
+  villager claims already use; no new lock order.
+- Local evidence (async islands, A5 player ticks): a sticky piston moving a
+  fletching table on an island. Before: block change on
+  `Fabrolia-Region-Worker-1` at game time 351, POI removal on the server
+  thread at 352 (add: 353 → 354). After: both on the worker in the same tick.
+  Raids in a one-villager village and in a placed `village_plains` still reach
+  their first wave (also with `islandEntityParallel` and with raid creation
+  routed to Main). The reporter's farm was not available; that it works again
+  still has to be checked on the server.
+- Tests: `PoiBlockChangeCallbackTest` executes the production wrap. On a
+  region worker the job-site and bed callbacks run before the wrapped call
+  returns (both fail without the fix); other threads keep vanilla `execute`.
+  1466 tests pass, 8 optional skip.
+
 ## 3.1.0-alpha (2026-10-11)
 
 Status: unit tests, Fabric/NeoForge builds and the artifact check pass; the

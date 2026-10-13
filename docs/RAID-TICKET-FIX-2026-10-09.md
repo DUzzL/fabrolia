@@ -200,3 +200,17 @@ Alle Artefakthashes, Rohbericht-Pfade, Prüfergebnisse und geänderten Frames
 stehen im [Validierungsnachweis](reviews/2026-10-09/raid-fix-validation.json)
 und in den [Profilen](reviews/2026-10-09/raid-parity-profiles.json). Der
 historische Zwischenstand bleibt ausdrücklich getrennt davon.
+
+## Nachtrag 13.10.2026: POI-Zeitpunkt auf Inseln
+
+Nach dem Rollout (3.0.2/3.0.3) meldete die Produktion Raids, die etwa eine
+Sekunde nach Ablauf des Raid-Omens stoppen: Die Leiste erscheint kurz, es
+kommt keine Welle und keine Niederlage. Ursache war eine verbleibende
+Abweichung außerhalb des Raid-Codes. POI-Änderungen durch Blockwechsel auf
+einer Insel liefen über `server.execute` in die Task-Queue von Main und wurden
+erst beim nächsten Drain angewendet. Vanilla wendet sie im selben Tick sofort
+an. Die alte Debounce-Begründung („main-side block events“) traf die
+Phasenreihenfolge nicht; eine Main-seitige Verzögerung gab es aber tatsächlich,
+bei der POI-Veröffentlichung. Die Fixtures oben entfernen Dorf-POIs per
+Konsolenbefehl auf Main und konnten sie deshalb nicht zeigen. Fix und
+Nachweis: CHANGELOG `3.1.1-alpha`.

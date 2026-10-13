@@ -32,7 +32,7 @@ them in place. Removing a run's hard link does not remove the template's copy.
 ## Commands
 
 ```bash
-J=fabric/build/libs/fabrolia-alpha_3.1.0.jar
+J=fabric/build/libs/fabrolia-alpha_3.1.1.jar
 tools/stand/stand.sh verify vfy-1 "$J"                           # functional checks, ~5 min
 tools/stand/stand.sh perf   perf-1 "$J" 120                      # load + spark profile, ~4 min
 tools/stand/stand.sh perf   items-1 "$J" 60 --scenario items     # + 3000 items in flowing water

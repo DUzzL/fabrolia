@@ -289,8 +289,10 @@ fails, stay merged; merged-but-idle islands cost nothing extra.
   or a player-actor reservation token.
   `NetherPortalPreparation` preserves vanilla POI selection, world-border and
   portal geometry rules. Its publication fence tracks only `nether_portal` POI
-  callbacks (the search reads no other POI type; vanilla defers every POI
-  change through `server.execute`).
+  callbacks (the search reads no other POI type). Every other block-change POI
+  callback runs inline on the Fabrolia simulation thread that changed the
+  block, as vanilla's `server.execute` does on the ticking server thread;
+  queueing it to Main delayed the change past the island's later phases.
   Cold preparation and a genuinely missing portal run on
   physical Main under the real pool pause. This pause may retain queued next-unit
   regional tasks, but waits for running helpers, flat/global work and tracked
@@ -301,7 +303,7 @@ fails, stay merged; merged-but-idle islands cost nothing extra.
   server loop completes the receipts before the request can resolve; waiting
   alone never repeats creation. Generation's own POI callbacks join the existing
   TickTask queue so an older worldgen add cannot be overtaken by a portal remove.
-  Other POI updates retain native execution policy. Creation keeps explicit
+  Creation keeps explicit
   physical-Main/paused-or-quiescent ownership checks, and a later request searches
   its own fresh snapshot before another portal can be created.
   There is no NBT handoff journal or crash-replay guarantee in this protocol.
