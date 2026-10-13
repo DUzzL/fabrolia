@@ -32,7 +32,7 @@ them in place. Removing a run's hard link does not remove the template's copy.
 ## Commands
 
 ```bash
-J=fabric/build/libs/fabrolia-alpha_3.1.1.jar
+J=fabric/build/libs/fabrolia-alpha_3.1.2.jar
 tools/stand/stand.sh verify vfy-1 "$J"                           # functional checks, ~5 min
 tools/stand/stand.sh perf   perf-1 "$J" 120                      # load + spark profile, ~4 min
 tools/stand/stand.sh perf   items-1 "$J" 60 --scenario items     # + 3000 items in flowing water
@@ -158,3 +158,34 @@ covered separately by the normal `verify` and matched `perf` runs.
 
 Use `--sync` on the candidate driver to exercise the global/Main entity lane
 with async islands off against the same reference report.
+
+### Minecart pushing against Vanilla 26.3
+
+`minecart-parity-driver.py` runs on Linux or Windows with a prepared, world-free
+Fabric server template (launcher, Minecraft server bundle and libraries),
+explicit Fabric API/Carpet jars and Java 25. It binds the new server to loopback
+and controls it through local RCON. Run directories must be fresh.
+
+```bash
+python tools/stand/minecart-parity-driver.py build/cart-van \
+  --template TEMPLATE --mods FABRIC_API_JAR CARPET_JAR --suite all
+python tools/stand/minecart-parity-driver.py build/cart-fix \
+  --template TEMPLATE --mods FABRIC_API_JAR CARPET_JAR LITHIUM_JAR \
+  --jar fabric/build/libs/fabrolia-alpha_3.1.2.jar --mode parallel --suite all \
+  --compare-report build/cart-van/minecart-parity-report.json
+```
+
+The 56 cases cover moving, slow and stationary rideable/hopper pairs, both
+insertion orders and three-cart chains, within one region and across x=128.
+`Item.Age` independently verifies each physical tick; no TNT masks the mode
+choice. Each trajectory difference fails the run. Use `--expect-old-failure`
+only for an old jar that must reproduce the border regression.
+
+Without `--template`, the driver accepts an already prepared `RUN/server`
+with loopback RCON. `--jar` must match its single deployed Fabrolia artifact;
+a Vanilla reference must contain only Fabric API, Carpet and optionally spark.
+`--mode serial` checks the control path; `--mode sync` disables async islands.
+`--perf-only --perf-seconds 60` with the same template and a spark jar records
+four powered loops with 160 mixed carts. Compare old/new profiles with
+`tools/spark/frames.py`. This focused fixture supplements the full production
+modpack's 40-client `verify` and matched `perf`; it does not replace them.

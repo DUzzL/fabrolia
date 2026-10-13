@@ -1,3 +1,47 @@
+## 3.1.2-alpha (2026-10-13)
+
+Status: unit tests, Fabric/NeoForge builds and the artifact check pass. The
+isolated Minecraft 26.3 minecart differential matches Vanilla. The production
+modpack's 40-client stand verification has not been run on this Windows host
+(WSL/Linux and the production stand template are absent).
+
+- Fix: with `islandEntityParallel=true`, ordinary and hopper minecarts spanning
+  a region border were ticked in colour-wave order instead of Vanilla insertion
+  order. `AbstractMinecart.push` changes both carts' current momentum immediately,
+  so a different first collision changes the next cart's movement and subsequent
+  collisions. Only TNT minecarts had been protected. Every `AbstractMinecart`,
+  including storage, furnace, spawner, command-block and modded carts, now selects
+  the existing serial entity pass for its island unit, just like primed TNT.
+  Cart movement and impulse calculations remain the composed Vanilla methods.
+- Scope/cost: a unit containing any cart at entity-mode selection ticks the
+  **whole island's entity phase serially**, even for a stationary cart. Independent
+  islands still run concurrently. This can lengthen dense islands' units and
+  Main's waits for those islands. The opt-in parallel-order deviation no longer
+  applies to units containing carts at that selection point.
+- Reproduction: actual 26.3 Fabric/Carpet servers, both cart insertion orders,
+  rideable/rideable, rideable/hopper and hopper/hopper pairs, same-region x=64 and
+  border x=128, moving into stationary or approaching carts. Over 24 cases and
+  five physical ticks, 3.1.1 parallel produces 120 position/momentum differences;
+  3.1.1 serial and 3.1.2 parallel each match Vanilla within 1e-7. An independent
+  item's age checks one physical tick per step. No TNT masks the parallel path.
+  The production log names 3.1.1 but does not record `islandEntityParallel`;
+  the player's exact farm/configuration was not available for replay.
+  Another 32 slow/stationary-pair and three-cart-chain cases with Lithium
+  0.26.2 on the candidate also match the actual Vanilla reference exactly
+  within that tolerance. `tools/stand/minecart-parity-driver.py` preserves the
+  fixture and fails on differences (or explicitly reproduces the old failure).
+- Regression tests: all seven Vanilla cart types and a modded subclass select
+  the serial pass; actual 26.3 `Minecart.push` calls demonstrate the noncommuting
+  impulses of a three-cart chain. Three tests fail before the fix and pass after.
+- Scoped performance comparison: two 60-second Spark captures of the same
+  160-cart powered-loop fixture with Lithium and two workers both remain at
+  20 TPS. Island mean MSPT rises from 1.76 to 3.07; sampled worker running time
+  rises from 1.48 to 2.99 ms/tick, while Main `tickServer` changes from 1.34 to
+  1.38 ms/tick. The frames confirm the move from `tickOwned` to the serial pass.
+  Windows uses Spark's Java sampler; this small fixture does not establish the
+  cost on a 40-player production island. Full evidence and limits:
+  [`docs/MINECART-PUSH-FIX-2026-10-13.md`](docs/MINECART-PUSH-FIX-2026-10-13.md).
+
 ## 3.1.1-alpha (2026-10-13)
 
 Status: unit tests, Fabric/NeoForge builds and the artifact check pass;

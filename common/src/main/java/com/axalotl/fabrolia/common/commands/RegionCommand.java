@@ -239,7 +239,7 @@ public final class RegionCommand {
         regionsCmd.then(literal("islandentities").requires(PlatformPermission.require("command.regions.toggle", 4))
                 .executes(ctx -> {
                     send(ctx, "island entity phase: ", FabroliaConfig.islandEntityParallel
-                            ? "parallel (ColorGate regions; islands with TNT stay serial)"
+                            ? "parallel (ColorGate regions; islands with TNT or minecarts stay serial)"
                             : "vanilla (one serial pass per island in insertion order)", false);
                     return 1;
                 })
@@ -256,7 +256,7 @@ public final class RegionCommand {
                     PlatformUtils.saveConfig();
                     send(ctx, "island entity phase: ",
                             "parallel — island regions tick their entities in parallel under the "
-                            + "ColorGate; islands holding primed TNT or a TNT minecart stay serial "
+                            + "ColorGate; islands holding primed TNT or any minecart stay serial "
                             + "(from their next unit)", true);
                     return 1;
                 })));

@@ -449,6 +449,10 @@ construction — one global EpochDomain everywhere):
   [L++, real cost, deadline roll]. Deadline roll re-anchors only when ≥1
   FULL tick behind (sub-tick drift keeps phase — re-anchoring on ε starved
   idle islands against the 20 Hz drive grid).
+  With opt-in `islandEntityParallel`, member entity phases may run under the
+  ColorGate instead. A unit containing primed TNT or any `AbstractMinecart`
+  always retains the serial insertion-order pass: cart collisions change both
+  endpoints' current momentum, so colour-wave order changes subsequent pushes.
   Scheduled handlers require a protected write frontier: topology supplies the
   one-cell halo for core cells; newly FULL halo cells must also own all eight
   neighboring cells before supplying tick work. Materialized `Region.domain`

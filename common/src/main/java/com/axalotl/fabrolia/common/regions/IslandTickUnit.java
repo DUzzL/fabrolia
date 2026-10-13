@@ -1182,7 +1182,7 @@ public final class IslandTickUnit {
                     RegionScheduler.throwWorkerFailureIfAny();
                     // Serial pass in Vanilla insertion order, or (opt-in) the
                     // members' own entity phases in parallel under the
-                    // ColorGate. TNT keeps the serial pass in both modes.
+                    // ColorGate. TNT and minecarts keep the serial pass in both modes.
                     boolean regionParallel = com.axalotl.fabrolia.common.config.FabroliaConfig.islandEntityParallel
                             && !RegionizedServer.holdsOrderSensitiveEntity(members);
                     CompletableFuture<Void> barrier = rs.dispatchEntityPhase(d, members, regionParallel);
