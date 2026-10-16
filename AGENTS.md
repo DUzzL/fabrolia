@@ -34,8 +34,8 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 ```
 
 Jar: `fabric/build/libs/fabrolia-alpha_<major>.<minor>.<patch>.jar`; current build
-`fabrolia-alpha_3.1.3.jar` (metadata `3.1.3-alpha` in `gradle.properties`; readable info
-commands and warm island TPS on top of the 3.1.2 minecart push-order fix), not yet stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
+`fabrolia-alpha_3.1.4.jar` (metadata `3.1.4-alpha` in `gradle.properties`; island health
+judged on the current rate, on top of the 3.1.3 readable info commands), not yet stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
 which crashed on a mob killing an island player (fixed in 3.0.3); `3.0.3-alpha` ran from
 2026-10-11 12:58 CEST and lagged at 40 players (see `docs/PERF-ANALYSE-2026-10-11.md`).
 The owner's 2026-10-10 versioning rule supersedes the old fixed `0.2.38+alpha-26.3`:
@@ -60,7 +60,7 @@ classes of the real mod set: `tools/stand/stand.sh export exp-1 <jar>`, then
 (details, scenarios and how to read results: `docs/STAND.md`):
 
 ```bash
-tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.3.jar   # must print ALL PASS
+tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.4.jar   # must print ALL PASS
 tools/stand/stand.sh perf perf-1 <jar> 120 [--scenario items|pistons] [--heap]
 python3 tools/spark/frames.py <old>.sparkprofile <new>.sparkprofile
 ```
@@ -145,6 +145,16 @@ BlazeandCave's Advancements.
   restores the 0.2.38 parallel regions on opt-in. See `docs/PERF-ANALYSE-2026-10-11.md`.
 
 - Islands do not catch up ticks lost to a pause (Main does); left open by the owner.
+- Cross-dimension coupling (`CrossDimLinks`, on by default) links an Overworld and a
+  Nether island when their populated cells overlap under the 1:8 projection (+16
+  Nether blocks of portal search reach); no portal has to exist. Couplings are
+  connected groups: every Overworld island above one populated Nether cell (128x128
+  Nether = ~1024x1024 Overworld blocks) joins the same group, so a `rate` on one
+  island applies to all of them (lower TPS wins). Verified with real classes
+  (2026-10-16 review, `CrossDimLinksTest`). Limiting groups to actual portal pairs
+  is open (it would need portal POI reads of island chunks: ownership). The phase
+  heal that anchored healthy members to an overdue member's stale deadline was
+  fixed in 3.1.4 (spread over `max(deadline, now)`, anchor clamped to now).
 - Production autosaves once a minute (a ~470 ms tick in the 2026-10-05 profile; check
   ServerCore `autosave-interval-seconds`). The owner's 2026-10-08 fix request changes
   the End-arrival save boundary: held cohorts are persisted in destination SavedData

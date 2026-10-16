@@ -39,13 +39,30 @@ final class IslandTpsSamplingWiringTest {
     @Test
     void anUnmeasuredIslandWindowIsNaNNotZero() throws Exception {
         assertTrue(source("IslandRegistry.java").contains(
-                "final TpsWindow tpsWindow = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, Double.NaN);"));
+                "final TpsWindow tpsWindow = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, Double.NaN, 5);"));
         String metrics = source("IslandMetrics.java");
         int classify = metrics.indexOf("static State classify(");
         int measuring = metrics.indexOf("if (Double.isNaN(tps)) return State.MEASURING;", classify);
-        int idle = metrics.indexOf("State.IDLE", measuring);
-        assertTrue(classify >= 0 && measuring > classify && idle > measuring,
-                "an unmeasured island may not be classified Idle");
+        int healthy = metrics.indexOf("return State.HEALTHY;", measuring);
+        assertTrue(classify >= 0 && measuring > classify && healthy > measuring,
+                "an unmeasured island must read Measuring before any rate verdict");
+    }
+
+    /**
+     * Production 2026-10-16: every island in /fabrolia regions top read "Lagging"
+     * at a steady 19.8 TPS, "75–129 ticks behind". Islands never make up lost
+     * ticks, so that offset is history, not lag; the verdict uses the rate only.
+     */
+    @Test
+    void theIslandClockOffsetIsNotALagVerdict() throws Exception {
+        String metrics = source("IslandMetrics.java");
+        int classify = metrics.indexOf("static State classify(");
+        int end = metrics.indexOf("\n    }\n", classify);
+        String body = metrics.substring(classify, end);
+        assertTrue(!body.contains("getGameTime") && !body.contains("logicalTick")
+                        && !body.contains("ticksBehind"),
+                "the island clock's distance to game time may not decide Lagging");
+        assertTrue(body.contains("tps >= 0.9 * targetTps(rs, p)"));
     }
 
     private static String source(String file) throws Exception {

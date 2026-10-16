@@ -35,7 +35,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class TpsHud {
 
     private static final Set<UUID> SUBSCRIBERS = ConcurrentHashMap.newKeySet();
-    private static final TpsWindow MAIN_TPS_WINDOW = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, 20.0);
+    private static final TpsWindow MAIN_TPS_WINDOW = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, 20.0, 5);
     private static long mainEmaNanos;
     private static double mainTps = 20.0;
 
@@ -198,18 +198,33 @@ public final class TpsHud {
             return out;
         }
         out.append(grey(String.format(java.util.Locale.ROOT,
-                " | Portal-linked @%.1f TPS",
+                " | Linked x%d @%.1f TPS",
+                c.members.size() - 1,
                 c.sharedTargetNanos > 0 ? 1_000_000_000.0 / c.sharedTargetNanos : 20.0)));
         // The partners' rosters — the whole point of the request: standing in the
         // Overworld half you see the Nether half's occupants (in red) and vice
         // versa. Iterating the coupling's member list is a snapshot read of a
         // main-written ArrayList; this runs on main, so no copy is needed.
+        // A coupling is a connected group and can hold many islands (every
+        // Overworld island above one populated Nether cell): at most two
+        // partner rosters fit the action bar.
+        int shown = 0;
+        int more = 0;
         for (int i = 0; i < c.members.size(); i++) {
             IslandRegistry.PIsland m = c.members.get(i);
-            if (m == isl) {
+            java.util.List<ServerPlayer> players = roster.get(m);
+            if (m == isl || players == null || players.isEmpty()) {
                 continue;
             }
-            appendRoster(out, roster.get(m));
+            if (shown < 2) {
+                appendRoster(out, players);
+                shown++;
+            } else {
+                more++;
+            }
+        }
+        if (more > 0) {
+            out.append(grey(" +" + more));
         }
         return out;
     }

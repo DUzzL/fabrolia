@@ -1195,15 +1195,25 @@ public final class RegionCommand {
     private static MutableComponent islandName(RegionizedServer rs, com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland p) {
         MutableComponent name = InfoText.hover(
                 InfoText.text(com.axalotl.fabrolia.common.regions.IslandMetrics.label(rs, p), ChatFormatting.WHITE),
-                "handle " + com.axalotl.fabrolia.common.regions.IslandMetrics.handle(rs, p) + " · island #" + p.id + " gen " + p.gen);
+                "handle " + com.axalotl.fabrolia.common.regions.IslandMetrics.handle(rs, p) + " · island #" + p.id + " gen " + p.gen
+                        + clockNote(rs, p));
         return name.append(InfoText.text(" (" + InfoText.dimension(rs.level.dimension()) + ")",
                 InfoText.dimensionColor(rs.level.dimension())));
     }
 
-    /** The island's TPS, or "idle" for an island with nothing to tick. */
+    /** Hover line for the island clock's offset to the world clock, if any. */
+    private static String clockNote(RegionizedServer rs, com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland p) {
+        long behind = com.axalotl.fabrolia.common.regions.IslandMetrics.ticksBehind(rs, p);
+        return behind > 0
+                ? "\nIsland clock: " + InfoText.plural(behind, "tick", "ticks") + " behind the world clock"
+                  + "\n(ticks lost to past slow moments; not current lag)"
+                : "";
+    }
+
+    /** The island's TPS, or "paused" while the game is frozen. */
     private static MutableComponent islandTps(RegionizedServer rs, com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland p) {
-        return com.axalotl.fabrolia.common.regions.IslandMetrics.state(rs, p) == com.axalotl.fabrolia.common.regions.IslandMetrics.State.IDLE
-                ? InfoText.text("idle", ChatFormatting.GRAY)
+        return com.axalotl.fabrolia.common.regions.IslandMetrics.state(rs, p) == com.axalotl.fabrolia.common.regions.IslandMetrics.State.PAUSED
+                ? InfoText.text("paused", ChatFormatting.GRAY)
                 : InfoText.tps(com.axalotl.fabrolia.common.regions.IslandMetrics.actualTps(p), com.axalotl.fabrolia.common.regions.IslandMetrics.targetTps(rs, p));
     }
 
@@ -1270,11 +1280,6 @@ public final class RegionCommand {
                 InfoText.mspt(p.emaUnitNanos / 1_000_000.0, budgetMs, " avg"),
                 InfoText.mspt(p.maxUnitNanos / 1_000_000.0, budgetMs, " max"),
                 InfoText.text(InfoText.plural(p.cells.size(), "cell", "cells"), ChatFormatting.GRAY));
-        long behind = com.axalotl.fabrolia.common.regions.IslandMetrics.ticksBehind(rs, p);
-        if (behind > 2) {
-            out.append(InfoText.text(" · " + InfoText.plural(behind, "tick", "ticks") + " behind",
-                    ChatFormatting.YELLOW));
-        }
         String tag = com.axalotl.fabrolia.common.regions.IslandMetrics.pacingTag(rs, p);
         if (tag != null) {
             out.append(InfoText.text(" · " + tag, ChatFormatting.LIGHT_PURPLE));
@@ -1707,17 +1712,18 @@ public final class RegionCommand {
             default -> "average MSPT";
         };
         InfoText out = InfoText.titled("Top " + shown + " of " + rows.size() + " islands by " + by);
-        boolean anyIdle = false;
+        boolean anyLagging = false;
         for (int rank = 1; rank <= shown; rank++) {
             Object[] row = rows.get(rank - 1);
             var rs = (RegionizedServer) row[0];
             var p2 = (com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland) row[1];
-            anyIdle |= com.axalotl.fabrolia.common.regions.IslandMetrics.state(rs, p2) == com.axalotl.fabrolia.common.regions.IslandMetrics.State.IDLE;
+            anyLagging |= com.axalotl.fabrolia.common.regions.IslandMetrics.state(rs, p2) == com.axalotl.fabrolia.common.regions.IslandMetrics.State.LAGGING;
             out.line(InfoText.text(rank + ". ", ChatFormatting.GRAY).append(islandName(rs, p2)));
             out.detail(islandFigures(rs, p2));
         }
-        if (anyIdle) {
-            out.note("Idle = caught up with nothing to tick; no TPS there is expected, not lag.");
+        out.note("Healthy = within 10 % of its target TPS (20); Lagging = below that.");
+        if (anyLagging) {
+            out.note("A lagging island slows only itself: everything on it runs at its TPS.");
         }
         out.more("/fabrolia regions top 10 tps", "/fabrolia regions top verbose");
         src.sendSystemMessage(out.build());

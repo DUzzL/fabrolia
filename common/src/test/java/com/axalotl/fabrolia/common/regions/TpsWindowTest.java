@@ -80,6 +80,42 @@ class TpsWindowTest {
         assertEquals(0.0, window.value());
     }
 
+    @Test
+    void aFiveWindowSpanSmoothsASlowUnitPushingATickIntoTheNextSecond() {
+        // A 20 TPS island whose occasional 60-100 ms unit pushes one tick into
+        // the next second: single windows read 19 then 21 (production showed
+        // "20.8 TPS" next to "19.8"). Five windows stay within 0.25 of 20 and
+        // still refresh every second.
+        TpsWindow one = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, Double.NaN);
+        TpsWindow five = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, Double.NaN, 5);
+        int[] perSecond = {20, 19, 21, 20, 20, 21, 19, 20, 20, 19, 21};
+        long count = 0;
+        long now = 0;
+        one.update(count, now);
+        five.update(count, now);
+        for (int i = 0; i < perSecond.length; i++) {
+            count += perSecond[i];
+            now += TpsWindow.ONE_SECOND_NANOS;
+            assertTrue(one.update(count, now));
+            assertTrue(five.update(count, now), "the span still commits every window");
+            assertEquals(perSecond[i], one.value(), 1.0e-9);
+            if (i >= 4) assertEquals(20.0, five.value(), 0.25);
+        }
+    }
+
+    @Test
+    void aSpanStartsOverAfterACounterReset() {
+        TpsWindow five = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, Double.NaN, 5);
+        five.update(0, 0);
+        five.update(20, 1_000_000_000L);
+        five.update(40, 2_000_000_000L);
+        assertEquals(20.0, five.value(), 1.0e-9);
+        assertFalse(five.update(5, 3_000_000_000L));
+        assertTrue(Double.isNaN(five.value()));
+        assertTrue(five.update(15, 4_000_000_000L));
+        assertEquals(10.0, five.value(), 1.0e-9, "no point from before the reset may count");
+    }
+
     private static TpsWindow newWindow() {
         return new TpsWindow(TpsWindow.ONE_SECOND_NANOS, Double.NaN);
     }

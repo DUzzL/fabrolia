@@ -131,12 +131,14 @@ public final class IslandMetrics {
 
     /** Reader-side progress state of one island. */
     public enum State {
+        /** Within 10 % of its target rate. */
         HEALTHY("Healthy"),
+        /** Below 90 % of its target rate over the last seconds. */
         LAGGING("Lagging"),
         /** A unit has held the island's claim for over 3 s. */
         STALLED("Stalled"),
-        /** Caught up with nothing to tick: no units run, so 0 TPS is expected. */
-        IDLE("Idle"),
+        /** The game is frozen ({@code /tick freeze}): no ticks are expected. */
+        PAUSED("Paused"),
         /** No complete one-second TPS window yet (new island). */
         MEASURING("Measuring");
 
@@ -165,7 +167,19 @@ public final class IslandMetrics {
 
     /** The island's target rate (20 unless rated, sprinting or coupled). */
     public static double targetTps(RegionizedServer rs, IslandRegistry.PIsland p) {
-        return 1_000_000_000.0 / TemporalControl.effectiveTargetNanos(rs, p);
+        return 1_000_000_000.0 / targetNanos(rs, p);
+    }
+
+    /** The step the island's units actually roll by: its own target, or the
+     *  shared rate of its cross-dimension coupling (the same choice as
+     *  {@code IslandTickUnit.prepareCompletion}). */
+    static long targetNanos(RegionizedServer rs, IslandRegistry.PIsland p) {
+        CrossDimLinks.Coupling c = p.crossDimCoupling;
+        if (c != null) {
+            long shared = c.sharedTargetNanos;
+            if (shared > 0) return shared;
+        }
+        return TemporalControl.effectiveTargetNanos(rs, p);
     }
 
     /** Main thread only. */
@@ -173,41 +187,57 @@ public final class IslandMetrics {
         return classify(rs, p, actualTps(p));
     }
 
+    /**
+     * Judged on the current rate only. The island clock's distance to the
+     * level's game time ({@link #ticksBehind}) is NOT a lag signal: an island
+     * never makes up ticks it lost (AGENTS.md, known open items), so one slow
+     * second at startup leaves a permanent offset on a healthy 20 TPS island.
+     */
     static State classify(RegionizedServer rs, IslandRegistry.PIsland p, double tps) {
         long now = System.nanoTime();
         if (p.unitClaim.get() && p.claimSiteNanos != 0 && now - p.claimSiteNanos > 3_000_000_000L) {
             return State.STALLED;
         }
-        long behind = rs.level.getGameTime() - p.logicalTick;
-        if (behind > 40) return State.LAGGING;
         if (Double.isNaN(tps)) return State.MEASURING;
-        if (tps > 0.5 && tps < targetTps(rs, p) - 2.0) return State.LAGGING;
-        return tps < 0.5 && behind <= 2 ? State.IDLE : State.HEALTHY;
+        if (tps >= 0.9 * targetTps(rs, p)) return State.HEALTHY;
+        var server = RegionScheduler.getServer();
+        return server != null && server.tickRateManager().isFrozen() ? State.PAUSED : State.LAGGING;
     }
 
     /** "sprint", "pinned", "rate 10" or null for an island at the global rate. */
     public static String pacingTag(RegionizedServer rs, IslandRegistry.PIsland p) {
         if (TemporalControl.isSprinting(rs, p)) return "sprint";
         if (TemporalControl.isCoherent(rs, p)) return "pinned";
-        long targetNanos = TemporalControl.effectiveTargetNanos(rs, p);
-        return targetNanos != TemporalControl.globalIslandTargetNanos
-                ? String.format(java.util.Locale.ROOT, "rate %.1f", 1_000_000_000.0 / targetNanos)
-                : null;
+        long own = TemporalControl.effectiveTargetNanos(rs, p);
+        long targetNanos = targetNanos(rs, p);
+        if (targetNanos == TemporalControl.globalIslandTargetNanos) return null;
+        return String.format(java.util.Locale.ROOT, "rate %.1f", 1_000_000_000.0 / targetNanos)
+                + (targetNanos != own ? " (set on a portal-linked island)" : "");
     }
 
-    /** "linked with 1 island in the other dimension at 20.0 TPS", or null
-     *  when the island is not portal-coupled. Main thread only. */
+    /** "linked with 3 islands (2 Overworld, 1 Nether); all tick at 20.0 TPS",
+     *  or null when the island is not coupled. A coupling is a connected group:
+     *  two Overworld islands above one Nether island are coupled with each
+     *  other too. Main thread only. */
     public static String couplingSummary(IslandRegistry.PIsland p) {
         CrossDimLinks.Coupling c = p.crossDimCoupling;
         if (c == null) return null;
-        int partners = c.members.size() - 1;
+        int overworld = 0, nether = 0;
+        for (int i = 0; i < c.members.size(); i++) {
+            IslandRegistry.PIsland m = c.members.get(i);
+            if (m == p) continue;
+            if (m.level != null && m.level.dimension() == net.minecraft.world.level.Level.NETHER) nether++;
+            else overworld++;
+        }
+        int others = overworld + nether;
         double tps = c.sharedTargetNanos > 0 ? 1_000_000_000.0 / c.sharedTargetNanos : 20.0;
         return String.format(java.util.Locale.ROOT,
-                "linked through portals with %d island%s in the other dimension; both tick together at %.1f TPS",
-                partners, partners == 1 ? "" : "s", tps);
+                "linked with %d island%s (%d Overworld, %d Nether); all tick together at %.1f TPS",
+                others, others == 1 ? "" : "s", overworld, nether, tps);
     }
 
-    /** Ticks the island's clock is behind the level's game time. */
+    /** Ticks the island's clock is behind the level's game time: ticks it lost
+     *  to slow units since it formed, which it never makes up. Not current lag. */
     public static long ticksBehind(RegionizedServer rs, IslandRegistry.PIsland p) {
         return rs.level.getGameTime() - p.logicalTick;
     }

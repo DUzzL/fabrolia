@@ -1,3 +1,49 @@
+## 3.1.4-alpha (2026-10-16)
+
+Status: unit tests, Fabric/NeoForge builds and the artifact check pass. Display
+only; not yet seen in game.
+
+- Fix: `/fabrolia regions top` called nearly every island "Lagging" at a steady
+  19.8 TPS (production, 3.1.3, 110 islands). An island whose clock was more than
+  40 ticks behind the level's game time counted as lagging, but islands never make
+  up ticks they lost (known open item), so one slow moment, e.g. at a restart,
+  leaves a permanent offset of 60-130 ticks. The verdict now uses the current rate
+  only: Healthy at 90 % of the island's target or more (18 TPS at 20), Lagging
+  below, Stalled when a unit holds the island for over 3 s, Paused while the game
+  is frozen (`/tick freeze`; replaces "Idle", which only an empty TPS window
+  produced). The offset is no longer shown as "N ticks behind" in the figures;
+  hovering the island name explains it as the island clock's distance to the world
+  clock. The same verdict feeds the lagging count in `/fabrolia regions`.
+- Island and Main TPS average the last five seconds, refreshed every second. A unit
+  of 60-100 ms pushes one tick into the next second, so a one-second window read 19
+  and then 21 for a steady 20 TPS island ("20.8 TPS" in the same list); over five
+  seconds the step is ±0.2. HUD, Carpet `/log tps`, `here`, `list` and `top` all
+  read this value.
+- `regions top` explains the verdict below the list ("Healthy = within 10 % of its
+  target TPS").
+- Fix (cross-dimension coupling, `CrossDimLinks`): the phase heal no longer pulls
+  healthy linked islands into the past. When one member of a linked
+  Overworld/Nether group waited with a deadline 100+ ms overdue (a Main fence, a
+  busy pool), the heal saw the group as "more than two periods apart" and anchored
+  every member to that stale deadline. A healthy partner then ran an extra early
+  unit (briefly above 20 TPS) and was charged a missed deadline and ~105 ms of lag
+  it never had (reproduced with the real classes). The pacer fires an island at
+  `max(now, deadline)`, so an overdue deadline already means "due now": the heal
+  now measures the spread over `max(deadline, now)`, and no anchor is written in
+  the past (it is clamped to the moment of anchoring). No member fires later than
+  before and the cadence lock is unchanged; deadlines that really are more than two
+  periods apart are still re-phased. The portal transfer lane (`CrossDimArrivals`,
+  `NetherPortalTransfers`, `EndPlatformHandoff`), which carries items, mobs and
+  portal chunk-loader traffic, has no reference to the coupling and is untouched.
+  Three new tests; two of them fail on 3.1.3.
+- Cross-dimension coupling in the displays: an island's target TPS (colours,
+  Healthy/Lagging) is now the rate its units actually roll by, i.e. the coupling's
+  shared rate when it is portal-linked; a rate inherited from a linked island reads
+  `rate 10.0 (set on a portal-linked island)`. `regions here` counts the whole
+  linked group ("linked with 3 islands (2 Overworld, 1 Nether)"), not "1 island in
+  the other dimension". The HUD shows `Linked xN` and at most two partner rosters,
+  since a group can hold many islands.
+
 ## 3.1.3-alpha (2026-10-16)
 
 Status: unit tests, Fabric/NeoForge builds and the artifact check pass. Not tried

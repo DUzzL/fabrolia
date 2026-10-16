@@ -103,6 +103,17 @@ import java.util.Locale;
  * (the existing overload rule) and the phase offset shifts once, then holds;
  * {@link #mainTick}'s heal re-anchors the pair when the deadlines break more
  * than two periods apart (post-sprint, post-overrun).
+ *
+ * <h2>Overdue is "due now", never "far apart" (2026-10-16)</h2>
+ * The pacer fires an island at {@code max(now, nextDeadlineNanos)}, so a
+ * deadline in the past and "now" are the same obligation. The heal therefore
+ * measures the spread over {@code max(deadline, now)}, and an anchor is never
+ * written in the past. Before, a member that merely waited (a Main fence, a
+ * busy pool) with a deadline 100+ ms overdue made the group look "far apart";
+ * the anchor (its stale deadline) then pulled every healthy partner into the
+ * past, so they ran an extra early unit and took the overload branch of
+ * {@code complete()} (a missed deadline and lag they never had). Neither change
+ * moves when any member fires, and the cadence lock is unchanged.
  */
 public final class CrossDimLinks {
 
@@ -395,6 +406,7 @@ public final class CrossDimLinks {
             if (!c.anchored || shared <= 0 || c.members.size() < 2) {
                 continue;
             }
+            long now = System.nanoTime();
             long min = Long.MAX_VALUE;
             long max = Long.MIN_VALUE;
             for (int m = 0; m < c.members.size(); m++) {
@@ -402,6 +414,9 @@ public final class CrossDimLinks {
                 if (d == 0) {
                     continue;
                 }
+                // An overdue member is due now, not "far apart": it re-phases
+                // itself when its unit completes (the overload rule).
+                d = Math.max(d, now);
                 min = Math.min(min, d);
                 max = Math.max(max, d);
             }
@@ -542,8 +557,10 @@ public final class CrossDimLinks {
 
     /**
      * Write every member's {@code nextDeadlineNanos} from one shared anchor —
-     * the MINIMUM of the members' pending deadlines, so no member's obligation
-     * is ever postponed (linking can remove drift but never add latency), and
+     * the MINIMUM of the members' pending deadlines, clamped to "now", so no
+     * member's obligation is ever postponed (an overdue deadline already means
+     * "due now": the pacer fires at {@code max(now, deadline)}) and no member is
+     * pushed into the past (linking can remove drift but never add latency), and
      * bump every member's {@code pacingGen} so pre-link pacer entries go inert
      * (review D3). Write-safety: a member is written only while its claim is
      * held — either main already holds it (rebuild quiesce window) or we
@@ -592,6 +609,12 @@ public final class CrossDimLinks {
                 if (d != 0 && (anchor == 0 || d < anchor)) {
                     anchor = d;
                 }
+            }
+            // Never in the past: a stale deadline would make every partner
+            // "late" and charge it a missed deadline in complete().
+            long now = System.nanoTime();
+            if (anchor != 0 && anchor < now) {
+                anchor = now;
             }
             StringBuilder sb = new StringBuilder("CROSSDIM-ANCHOR members=[");
             for (int i = 0; i < members.length; i++) {

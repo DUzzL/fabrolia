@@ -147,7 +147,7 @@ final class InfoText {
             case HEALTHY -> ChatFormatting.GREEN;
             case LAGGING -> ChatFormatting.YELLOW;
             case STALLED -> ChatFormatting.RED;
-            case IDLE, MEASURING -> ChatFormatting.GRAY;
+            case PAUSED, MEASURING -> ChatFormatting.GRAY;
         };
         return text(state.label(), color);
     }

@@ -648,4 +648,116 @@ class CrossDimLinksTest {
         assertNull(neIsland(cellKey(0, 0)).crossDimCoupling);
     }
 
+
+    /**
+     * A coupling is a connected group, not a pair: Overworld islands up to about
+     * a thousand blocks apart that lie above one populated Nether cell (128x128
+     * Nether blocks) are coupled with each other through it, so a rate set on one
+     * of them applies to all. The displays report the group and the rate the
+     * units actually roll by.
+     */
+    @Test
+    void distantBasesAboveOneNetherCellFormOneGroupAndDisplaysShowIt() {
+        topo(owRs, 1_000, new long[]{cellKey(0, 0)}, new long[]{cellKey(3, 0)}, new long[]{cellKey(6, 0)});
+        topo(neRs, 1_000, new long[]{cellKey(0, 0)});
+        wall(1_000);
+        CrossDimLinks.onRebuild(owRs);
+        IslandRegistry.PIsland a = owIsland(cellKey(0, 0));
+        IslandRegistry.PIsland c = owIsland(cellKey(6, 0));
+        IslandRegistry.PIsland ne = neIsland(cellKey(0, 0));
+        assertNotNull(a.crossDimCoupling);
+        assertSame(a.crossDimCoupling, c.crossDimCoupling, "768 blocks apart, one group");
+        assertEquals(4, a.crossDimCoupling.members.size());
+        assertEquals("linked with 3 islands (2 Overworld, 1 Nether); all tick together at 20.0 TPS",
+                IslandMetrics.couplingSummary(a));
+        assertEquals("linked with 3 islands (3 Overworld, 0 Nether); all tick together at 20.0 TPS",
+                IslandMetrics.couplingSummary(ne));
+
+        TemporalControl.addRateSession(owRs, a, 10.0, "test-10tps");
+        CrossDimLinks.mainTick();
+        assertEquals(100_000_000L, c.crossDimCoupling.sharedTargetNanos,
+                "lower-TPS-wins over the whole group");
+        assertEquals(10.0, IslandMetrics.targetTps(owRs, c), 1.0e-9,
+                "the displayed target is the rate the island's units roll by");
+        assertEquals("rate 10.0 (set on a portal-linked island)", IslandMetrics.pacingTag(owRs, c));
+        assertEquals("rate 10.0", IslandMetrics.pacingTag(owRs, a));
+    }
+
+    /**
+     * 2026-10-16 review: a member that merely waits with an overdue deadline is
+     * due now, not "far apart". The phase heal used to anchor the group to that
+     * stale deadline, pulling the healthy partner 190 ms into the past: it ran an
+     * extra early unit and was charged a missed deadline and 105 ms of lag.
+     */
+    @Test
+    void healLeavesAHealthyPartnerAloneWhileAMemberIsMerelyOverdue() throws Exception {
+        standardIntersectingTopo();
+        wall(1_000);
+        CrossDimLinks.onRebuild(owRs);
+        IslandRegistry.PIsland ow = owIsland(cellKey(0, 0));
+        IslandRegistry.PIsland ne = neIsland(cellKey(0, 0));
+        long now = System.nanoTime();
+        long healthy = now + 40_000_000L;
+        ow.nextDeadlineNanos = healthy;
+        ne.nextDeadlineNanos = now - 150_000_000L; // overdue, waiting for a worker
+        long anchors = CrossDimLinks.anchorsApplied;
+        long gen = ow.pacingGen;
+
+        CrossDimLinks.mainTick();
+
+        assertEquals(anchors, CrossDimLinks.anchorsApplied, "no re-anchor for an overdue member");
+        assertEquals(healthy, ow.nextDeadlineNanos, "the healthy partner keeps its deadline");
+        assertEquals(gen, ow.pacingGen, "and its pacer entry");
+        long missed = ow.missedDeadlines;
+        invokeComplete(ow, System.nanoTime());
+        assertEquals(missed, ow.missedDeadlines, "no missed deadline charged to it");
+    }
+
+    /** An anchor is never written in the past: the overdue member stays due
+     *  (now), the healthy one is not made "late". */
+    @Test
+    void anAnchorIsNeverInThePast() throws Exception {
+        standardIntersectingTopo();
+        IslandRegistry.PIsland ow = owIsland(cellKey(0, 0));
+        IslandRegistry.PIsland ne = neIsland(cellKey(0, 0));
+        long before = System.nanoTime();
+        ow.nextDeadlineNanos = before + 40_000_000L;
+        ne.nextDeadlineNanos = before - 150_000_000L;
+
+        wall(1_000);
+        CrossDimLinks.onRebuild(owRs);
+        long after = System.nanoTime();
+
+        assertEquals(ow.nextDeadlineNanos, ne.nextDeadlineNanos, "one shared anchor");
+        assertTrue(ow.nextDeadlineNanos >= before && ow.nextDeadlineNanos <= after,
+                "anchored at the moment of linking, not 150 ms in the past");
+        assertTrue(ow.nextDeadlineNanos <= before + 40_000_000L,
+                "the healthy member's next unit is still never postponed");
+        long missed = ow.missedDeadlines;
+        long lag = ow.lagNanos;
+        invokeComplete(ow, System.nanoTime());
+        assertEquals(missed, ow.missedDeadlines);
+        assertEquals(lag, ow.lagNanos);
+    }
+
+    /** The heal still re-phases a group whose pending deadlines really are more
+     *  than two periods apart, to the earliest of them. */
+    @Test
+    void healStillRephasesDeadlinesThatAreReallyFarApart() {
+        standardIntersectingTopo();
+        wall(1_000);
+        CrossDimLinks.onRebuild(owRs);
+        IslandRegistry.PIsland ow = owIsland(cellKey(0, 0));
+        IslandRegistry.PIsland ne = neIsland(cellKey(0, 0));
+        long now = System.nanoTime();
+        ow.nextDeadlineNanos = now + 10_000_000L;
+        ne.nextDeadlineNanos = now + 400_000_000L;
+        long anchors = CrossDimLinks.anchorsApplied;
+
+        CrossDimLinks.mainTick();
+
+        assertEquals(anchors + 1, CrossDimLinks.anchorsApplied);
+        assertEquals(now + 10_000_000L, ow.nextDeadlineNanos);
+        assertEquals(now + 10_000_000L, ne.nextDeadlineNanos, "re-phased to the earliest");
+    }
 }
