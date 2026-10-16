@@ -419,8 +419,9 @@ public final class IslandRegistry {
         public volatile long maxUnitNanos;
         public volatile long unitsCompleted;
         // Reader-side TPS window state (main-thread command/HUD readers only).
-        // Cached so one reader never consumes/reset the sample for another.
-        final TpsWindow tpsWindow = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, 0.0);
+        // Cached so one reader never consumes/reset the sample for another;
+        // NaN until the first complete window (shown as "measuring").
+        final TpsWindow tpsWindow = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, Double.NaN);
 
         /** Per-source-clock-domain delivery chains (task #20): domain key →
          *  {lastSourceTick, lastDestTick}. Guarded by the pendingArrivals

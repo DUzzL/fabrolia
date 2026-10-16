@@ -158,7 +158,8 @@ public final class CarpetTpsLines {
         String[] labels = new String[n], tps = new String[n], mspt = new String[n];
         for (int i = 0; i < n; i++) {
             labels[i] = rows[i].label();
-            tps[i] = String.format(Locale.US, "%.1f", rows[i].tps());
+            // An island's first second has no complete window yet.
+            tps[i] = Double.isNaN(rows[i].tps()) ? "--" : String.format(Locale.US, "%.1f", rows[i].tps());
             mspt[i] = String.format(Locale.US, "%.1f", rows[i].mspt());
         }
         int labelColumn = columnWidth(widths(labels));
@@ -245,6 +246,7 @@ public final class CarpetTpsLines {
 
     /** The same four steps for the tick rate actually reached against the target rate. */
     static ChatFormatting tpsColor(double tps, double targetTps) {
+        if (Double.isNaN(tps)) return ChatFormatting.GRAY;
         if (tps >= 0.95 * targetTps) return ChatFormatting.DARK_GREEN;
         if (tps >= 0.8 * targetTps) return ChatFormatting.YELLOW;
         if (tps >= 0.5 * targetTps) return ChatFormatting.RED;

@@ -14,7 +14,7 @@ public final class IslandMetrics {
 
     private IslandMetrics() {}
 
-    /** Main thread only. */
+    /** Main thread only. NaN until the island's first complete window. */
     public static double actualTps(IslandRegistry.PIsland p) {
         p.tpsWindow.update(p.unitsCompleted, System.nanoTime());
         return p.tpsWindow.value();
@@ -22,7 +22,7 @@ public final class IslandMetrics {
 
     /** Human label (cached ~5s; recomputed on demand, never in the unit hot
      *  path). Priority: real players → players+bots → bots → Spawn →
-     *  Unowned@blockX,blockZ. Manual alias renders as "Alias [auto]". The
+     *  "No players @blockX,blockZ". Manual alias renders as "Alias [auto]". The
      *  label is DISPLAY ONLY — identity stays (dimension, id, gen, handle). */
     public static String label(RegionizedServer rs, IslandRegistry.PIsland p) {
         long now = System.nanoTime();
@@ -37,9 +37,11 @@ public final class IslandMetrics {
         return out;
     }
 
-    private static String autoLabel(RegionizedServer rs, IslandRegistry.PIsland p) {
-        java.util.ArrayList<String> real = new java.util.ArrayList<>(4);
-        java.util.ArrayList<String> bots = new java.util.ArrayList<>(4);
+    /** Online players standing on the island, real players first, then
+     *  Carpet bots. Main thread only. */
+    public static java.util.List<ServerPlayer> playersOn(RegionizedServer rs, IslandRegistry.PIsland p) {
+        java.util.ArrayList<ServerPlayer> real = new java.util.ArrayList<>(4);
+        java.util.ArrayList<ServerPlayer> bots = new java.util.ArrayList<>(4);
         var server = RegionScheduler.getServer();
         if (server != null) {
             for (ServerPlayer pl : server.getPlayerList().getPlayers()) {
@@ -47,13 +49,23 @@ public final class IslandMetrics {
                     continue;
                 }
                 if (rs.islandOwnerOfChunk(pl.chunkPosition().pack()) == p) {
-                    if (pl.getClass().getName().contains("Fake")) {
-                        bots.add(pl.getName().getString());
-                    } else {
-                        real.add(pl.getName().getString());
-                    }
+                    (isBot(pl) ? bots : real).add(pl);
                 }
             }
+        }
+        real.addAll(bots);
+        return real;
+    }
+
+    public static boolean isBot(ServerPlayer pl) {
+        return pl.getClass().getName().contains("Fake");
+    }
+
+    private static String autoLabel(RegionizedServer rs, IslandRegistry.PIsland p) {
+        java.util.ArrayList<String> real = new java.util.ArrayList<>(4);
+        java.util.ArrayList<String> bots = new java.util.ArrayList<>(4);
+        for (ServerPlayer pl : playersOn(rs, p)) {
+            (isBot(pl) ? bots : real).add(pl.getName().getString());
         }
         java.util.ArrayList<String> parts = new java.util.ArrayList<>(4);
         parts.addAll(real);
@@ -87,7 +99,7 @@ public final class IslandMetrics {
             int shift = grid == null ? 3 : grid.shift;
             int bx = (int) cell << (shift + 4);
             int bz = (int) (cell >>> 32) << (shift + 4);
-            return "Unowned@" + bx + "," + bz;
+            return "No players @" + bx + "," + bz;
         }
         return "Empty#" + p.id;
     }
@@ -117,42 +129,87 @@ public final class IslandMetrics {
         return null;
     }
 
-    /** Reader-side progress classification. */
-    private static String classify(RegionizedServer rs, IslandRegistry.PIsland p, double tps) {
+    /** Reader-side progress state of one island. */
+    public enum State {
+        HEALTHY("Healthy"),
+        LAGGING("Lagging"),
+        /** A unit has held the island's claim for over 3 s. */
+        STALLED("Stalled"),
+        /** Caught up with nothing to tick: no units run, so 0 TPS is expected. */
+        IDLE("Idle"),
+        /** No complete one-second TPS window yet (new island). */
+        MEASURING("Measuring");
+
+        private final String label;
+
+        State(String label) {
+            this.label = label;
+        }
+
+        public String label() {
+            return label;
+        }
+    }
+
+    /** Main thread only, once per second: keeps every async island's TPS
+     *  window warm, so a reader never sees the empty window of an island
+     *  nobody looked at before. */
+    static void sampleAll() {
+        for (RegionizedServer rs : RegionScheduler.allLevels()) {
+            if (!rs.asyncActive) continue;
+            for (IslandRegistry.PIsland p : rs.islandRegistry.islands()) {
+                actualTps(p);
+            }
+        }
+    }
+
+    /** The island's target rate (20 unless rated, sprinting or coupled). */
+    public static double targetTps(RegionizedServer rs, IslandRegistry.PIsland p) {
+        return 1_000_000_000.0 / TemporalControl.effectiveTargetNanos(rs, p);
+    }
+
+    /** Main thread only. */
+    public static State state(RegionizedServer rs, IslandRegistry.PIsland p) {
+        return classify(rs, p, actualTps(p));
+    }
+
+    static State classify(RegionizedServer rs, IslandRegistry.PIsland p, double tps) {
         long now = System.nanoTime();
         if (p.unitClaim.get() && p.claimSiteNanos != 0 && now - p.claimSiteNanos > 3_000_000_000L) {
-            return "Stalled";
+            return State.STALLED;
         }
         long behind = rs.level.getGameTime() - p.logicalTick;
-        long targetNanos = TemporalControl.effectiveTargetNanos(rs, p);
-        double target = 1_000_000_000.0 / targetNanos;
-        if (behind > 40 || (tps > 0.5 && tps < target - 2.0)) return "Lagging";
-        return tps < 0.5 && behind <= 2 ? "Idle" : "Healthy";
+        if (behind > 40) return State.LAGGING;
+        if (Double.isNaN(tps)) return State.MEASURING;
+        if (tps > 0.5 && tps < targetTps(rs, p) - 2.0) return State.LAGGING;
+        return tps < 0.5 && behind <= 2 ? State.IDLE : State.HEALTHY;
     }
 
-    /** Admin-facing default row: state, who/where, dimension, rates, cost,
-     *  size. Internal identifiers/clocks/counters live in {@link #row}
-     *  (the `top verbose` form). */
-    public static String adminRow(RegionizedServer rs, IslandRegistry.PIsland p, int rank) {
+    /** "sprint", "pinned", "rate 10" or null for an island at the global rate. */
+    public static String pacingTag(RegionizedServer rs, IslandRegistry.PIsland p) {
+        if (TemporalControl.isSprinting(rs, p)) return "sprint";
+        if (TemporalControl.isCoherent(rs, p)) return "pinned";
         long targetNanos = TemporalControl.effectiveTargetNanos(rs, p);
-        double tps = actualTps(p);
-        String state = classify(rs, p, tps);
-        String tag = TemporalControl.isSprinting(rs, p) ? " [sprint]"
-                : TemporalControl.isCoherent(rs, p) ? " [pinned]"
-                : targetNanos != TemporalControl.globalIslandTargetNanos ? " [rated]" : "";
-        String tpsStr = "Idle".equals(state)
-                ? String.format(java.util.Locale.ROOT, "idle/%.0f", 1_000_000_000.0 / targetNanos)
-                : String.format(java.util.Locale.ROOT, "%.1f/%.0f", tps, 1_000_000_000.0 / targetNanos);
+        return targetNanos != TemporalControl.globalIslandTargetNanos
+                ? String.format(java.util.Locale.ROOT, "rate %.1f", 1_000_000_000.0 / targetNanos)
+                : null;
+    }
+
+    /** "linked with 1 island in the other dimension at 20.0 TPS", or null
+     *  when the island is not portal-coupled. Main thread only. */
+    public static String couplingSummary(IslandRegistry.PIsland p) {
+        CrossDimLinks.Coupling c = p.crossDimCoupling;
+        if (c == null) return null;
+        int partners = c.members.size() - 1;
+        double tps = c.sharedTargetNanos > 0 ? 1_000_000_000.0 / c.sharedTargetNanos : 20.0;
         return String.format(java.util.Locale.ROOT,
-                "#%-2d %-8s %-24s %-11s %9s TPS  %5.2fms avg %5.2fms max  %d cells%s",
-                rank, state, trim(label(rs, p), 24),
-                rs.level.dimension().identifier().getPath(),
-                tpsStr, p.emaUnitNanos / 1_000_000.0, p.maxUnitNanos / 1_000_000.0,
-                p.cells.size(), tag);
+                "linked through portals with %d island%s in the other dimension; both tick together at %.1f TPS",
+                partners, partners == 1 ? "" : "s", tps);
     }
 
-    private static String trim(String s, int max) {
-        return s.length() <= max ? s : s.substring(0, max - 1) + "\u2026";
+    /** Ticks the island's clock is behind the level's game time. */
+    public static long ticksBehind(RegionizedServer rs, IslandRegistry.PIsland p) {
+        return rs.level.getGameTime() - p.logicalTick;
     }
 
     /** One tpstop/list row (the `top verbose` diagnostic form). */

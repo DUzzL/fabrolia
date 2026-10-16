@@ -1,3 +1,51 @@
+## 3.1.3-alpha (2026-10-16)
+
+Status: unit tests, Fabric/NeoForge builds and the artifact check pass. Not tried
+in game or on the 40-client stand (the change is display-only; no tick path changes
+apart from a once-per-second Main read of each island's unit counter).
+
+- Fix: island TPS was missing or 0. Each island's TPS window started at 0 and moved
+  only when a command or the HUD read it, so the first `/fabrolia regions top` or
+  `list` after an island formed (or that nobody had looked at) showed 0 TPS and
+  called the island "Idle". `TpsHud.tick` now samples every async island once per
+  second, with or without HUD subscribers, and an island without a complete
+  one-second window shows "measuring…" (HUD and Carpet `/log tps`: `--`), never 0.
+- Fix: info replies were sometimes not shown. They used `sendSuccess`, which Minecraft
+  drops for players while the `sendCommandFeedback` gamerule is off. Read-only
+  replies (`/fabrolia stats`, `stats entity`, `regions`, `regions list`/`top`,
+  status queries, `functions plan`/`fences`) now always show. Commands that change
+  a setting still announce it through `sendSuccess`.
+- Readable layout: `/fabrolia stats`, `stats entity`, `regions`, `regions list` and
+  `regions top` are now one message each, with a title, blank-line separated
+  sections and indented `key: value` lines. TPS and MSPT are coloured against their
+  target (green/yellow/red). The old `top` rows padded columns with spaces, which do
+  not line up in the chat's proportional font. An island is now two lines: its name
+  (hover for its rate/sprint handle) and its state, TPS, average/max MSPT, cells, lag
+  and pacing. `regions` shows Main TPS/MSPT, the island count with lagging/stalled
+  islands and the slowest island. Dimensions are named (Overworld, Nether, End);
+  `stats entity` says "parallel"/"main" instead of "fabrolia"/"sync". Suggested
+  follow-up commands are clickable.
+- New: `/fabrolia regions here` answers "what TPS does this spot run at" once,
+  without subscribing to the HUD: the island under the player (name, state, TPS,
+  MSPT, players on it, portal link) or, off any island, that the main thread runs
+  it at Main TPS. `/fabrolia regions player <name>` does the same for another
+  player (permission level 2, node `command.regions.player`).
+- New: `/fabrolia` and `/fabrolia help` list the commands the sender may run, each
+  with one line of purpose (clickable), plus what "island", "TPS" and "MSPT" mean.
+  Before, `/fabrolia` alone did nothing.
+- HUD (`/fabrolia regions tps`): values are coloured like Carpet's; the island is
+  named by its players (`Island [Alice Bob] 19.7 TPS 2.1 ms`, alias in front);
+  "GLOBAL", "SYNC" and "XDIM" read "Here: main thread", "Islands off" and
+  "Portal-linked".
+- `regions list` shows one line per island (all figures on hover) so a server with
+  many islands fits in the chat history; `stats entity` lists the top 10 types by
+  default. An island without players is labelled `No players @x,z` instead of
+  `Unowned@x,z` ("unowned" means a spot no island owns).
+- Unchanged: `/fabrolia regions top verbose` keeps its one-line-per-island diagnostic
+  rows; the stand drivers and the analysis docs parse them (` L=`, `island#id/gen`,
+  `[handle]`). An unknown `top` sort key is now rejected instead of silently
+  sorting by MSPT.
+
 ## 3.1.2-alpha (2026-10-13)
 
 Status: unit tests, Fabric/NeoForge builds and the artifact check pass. The

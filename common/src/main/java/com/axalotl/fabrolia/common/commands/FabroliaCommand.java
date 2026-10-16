@@ -11,7 +11,9 @@ public class FabroliaCommand {
     public final static Component prefix = Component.literal("§8[§f\uD83C\uDF00§8]§7 ");
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
-        LiteralArgumentBuilder<CommandSourceStack> main = literal("fabrolia");
+        LiteralArgumentBuilder<CommandSourceStack> main = literal("fabrolia")
+                .executes(ctx -> HelpCommand.show(ctx.getSource()));
+        main = main.then(literal("help").executes(ctx -> HelpCommand.show(ctx.getSource())));
         main = ConfigCommand.registerConfig(main);
         main = StatsCommand.registerStatus(main);
         main = RegionCommand.register(main);

@@ -5,6 +5,7 @@ import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.platform.PlatformPermission;
 import com.axalotl.fabrolia.common.platform.PlatformUtils;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
+import com.axalotl.fabrolia.common.regions.TpsHud;
 import com.axalotl.fabrolia.common.utils.TickStats;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
@@ -18,6 +19,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.EntityType;
 
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -40,7 +42,7 @@ public class StatsCommand {
                 })
                 .then(literal("entity")
                         .executes(cmdCtx -> {
-                            showEntityStats(cmdCtx.getSource(), 0, false, 0);
+                            showEntityStats(cmdCtx.getSource(), 10, false, 0);
                             return 1;
                         })
                         .then(argument("count", IntegerArgumentType.integer(1, 100))
@@ -63,10 +65,11 @@ public class StatsCommand {
 
     private static void startRecordingAndShow(CommandSourceStack source, int topCount, int ticks) {
         RegionScheduler.runSuccessBodyIfHealthy(() -> TickStats.startRecording(ticks));
-        RegionScheduler.runSuccessBodyIfHealthy(() -> source.sendSuccess(
-                () -> prefix.copy().append(Component.literal(
-                        "Recording entity ticks for " + ticks + " ticks...")
-                        .withStyle(ChatFormatting.YELLOW)), false));
+        RegionScheduler.runSuccessBodyIfHealthy(() -> source.sendSystemMessage(
+                prefix.copy().append(Component.literal(
+                        "Recording entity ticks for " + ticks + " ticks (about "
+                                + Math.max(1, ticks / 20) + " s)...")
+                        .withStyle(ChatFormatting.YELLOW))));
         pollUntilDone(source, topCount, ticks);
     }
 
@@ -100,53 +103,26 @@ public class StatsCommand {
             }
         }
 
-        int threads = getPoolSize();
+        var rate = server.tickRateManager();
+        InfoText out = InfoText.titled("Fabrolia stats");
+        out.line("Fabrolia", FabroliaConfig.disabled
+                ? InfoText.text("disabled", ChatFormatting.RED)
+                : InfoText.text("enabled", ChatFormatting.GREEN));
+        out.line("Main thread", InfoText.join(
+                InfoText.tps(TpsHud.mainTpsValue(), rate.tickrate()),
+                InfoText.mspt(server.getAverageTickTimeNanos() / 1_000_000.0, rate.millisecondsPerTick(), "")));
+        out.line("Entities", InfoText.text(InfoText.count(totalEntities), ChatFormatting.WHITE));
+        out.line("Threads", InfoText.text(String.valueOf(getPoolSize()), ChatFormatting.WHITE));
 
-        boolean enabled = !FabroliaConfig.disabled;
-        boolean fabroliaSpawn = FabroliaConfig.enableFabroliaSpawn;
-        boolean fabroliaRandomTicks = FabroliaConfig.enableFabroliaRandomTicks;
-        boolean fabroliaChunkSend = FabroliaConfig.enableFabroliaChunkSend;
-        boolean fabroliaDespawn = FabroliaConfig.enableFabroliaDespawn;
-        boolean vmpLoaded = PlatformUtils.isModLoaded("vmp");
-        boolean fabroliaVmpTracking = FabroliaConfig.enableFabroliaVmpTracking;
-
-        MutableComponent message = prefix.copy()
-                .append(Component.literal("Performance Statistics").withStyle(ChatFormatting.GOLD))
-
-                .append(Component.literal("\nStatus: ").withStyle(ChatFormatting.WHITE))
-                .append(Component.literal(enabled ? "Enabled" : "Disabled")
-                        .withStyle(enabled ? ChatFormatting.GREEN : ChatFormatting.RED))
-
-                .append(Component.literal("\nFabrolia Spawn: ").withStyle(ChatFormatting.WHITE))
-                .append(Component.literal(fabroliaSpawn ? "Enabled" : "Disabled")
-                        .withStyle(fabroliaSpawn ? ChatFormatting.GREEN : ChatFormatting.RED))
-
-                .append(Component.literal("\nFabrolia Random Ticks: ").withStyle(ChatFormatting.WHITE))
-                .append(Component.literal(fabroliaRandomTicks ? "Enabled" : "Disabled")
-                        .withStyle(fabroliaRandomTicks ? ChatFormatting.GREEN : ChatFormatting.RED))
-
-                .append(Component.literal("\nFabrolia Chunk Send: ").withStyle(ChatFormatting.WHITE))
-                .append(Component.literal(fabroliaChunkSend ? "Enabled" : "Disabled")
-                        .withStyle(fabroliaChunkSend ? ChatFormatting.GREEN : ChatFormatting.RED))
-                .append(Component.literal(" (legacy key, no effect)").withStyle(ChatFormatting.GRAY))
-
-                .append(Component.literal("\nFabrolia Despawn: ").withStyle(ChatFormatting.WHITE))
-                .append(Component.literal(fabroliaDespawn ? "Enabled" : "Disabled")
-                        .withStyle(fabroliaDespawn ? ChatFormatting.GREEN : ChatFormatting.RED));
-
-        if (vmpLoaded) {
-            message.append(Component.literal("\nFabrolia VMP Tracking: ").withStyle(ChatFormatting.WHITE))
-                   .append(Component.literal(fabroliaVmpTracking ? "Enabled" : "Disabled")
-                           .withStyle(fabroliaVmpTracking ? ChatFormatting.GREEN : ChatFormatting.RED));
+        out.section("Features");
+        out.line("Parallel spawning", InfoText.onOff(FabroliaConfig.enableFabroliaSpawn));
+        out.line("Parallel random ticks", InfoText.onOff(FabroliaConfig.enableFabroliaRandomTicks));
+        out.line("Parallel despawn", InfoText.onOff(FabroliaConfig.enableFabroliaDespawn));
+        if (PlatformUtils.isModLoaded("vmp")) {
+            out.line("VMP tracking", InfoText.onOff(FabroliaConfig.enableFabroliaVmpTracking));
         }
-
-        message.append(Component.literal("\nEntities: ").withStyle(ChatFormatting.WHITE))
-                .append(Component.literal(String.valueOf(totalEntities)).withStyle(ChatFormatting.GREEN))
-
-                .append(Component.literal("\nMax Threads: ").withStyle(ChatFormatting.WHITE))
-                .append(Component.literal(String.valueOf(threads)).withStyle(ChatFormatting.YELLOW));
-
-        source.sendSuccess(() -> message, false);
+        out.more("/fabrolia regions", "/fabrolia stats entity 10");
+        source.sendSystemMessage(out.build());
     }
 
     private static void showEntityStats(CommandSourceStack source, int topCount, boolean showTickStats, int ticks) {
@@ -167,11 +143,10 @@ public class StatsCommand {
             AtomicInteger totalEntities = new AtomicInteger(0);
             AtomicInteger totalFabroliaEntities = new AtomicInteger(0);
 
-            MutableComponent message = prefix.copy()
-                    .append(Component.literal("Entity Statistics").withStyle(ChatFormatting.GOLD));
+            InfoText out = InfoText.titled("Entity stats");
+            out.section("Per dimension");
 
             server.getAllLevels().forEach(world -> {
-                String worldName = world.dimensionTypeRegistration().getRegisteredName();
                 AtomicInteger worldCount = new AtomicInteger(0);
                 AtomicInteger fabroliaCount = new AtomicInteger(0);
 
@@ -198,18 +173,13 @@ public class StatsCommand {
                     }
                 });
 
-                message.append(Component.literal("\n" + worldName + ": ").withStyle(ChatFormatting.YELLOW))
-                        .append(Component.literal(String.valueOf(worldCount.get())).withStyle(ChatFormatting.GREEN))
-                        .append(Component.literal(" entities (").withStyle(ChatFormatting.GRAY))
-                        .append(Component.literal(String.valueOf(fabroliaCount.get())).withStyle(ChatFormatting.AQUA))
-                        .append(Component.literal(" fabrolia)").withStyle(ChatFormatting.GRAY));
+                out.line(InfoText.text(InfoText.dimension(world.dimension()),
+                                InfoText.dimensionColor(world.dimension())),
+                        entitySplit(worldCount.get(), fabroliaCount.get()));
             });
 
-            message.append(Component.literal("\nTotal Entities: ").withStyle(ChatFormatting.WHITE))
-                    .append(Component.literal(String.valueOf(totalEntities.get())).withStyle(ChatFormatting.GOLD))
-                    .append(Component.literal(" (").withStyle(ChatFormatting.GRAY))
-                    .append(Component.literal(String.valueOf(totalFabroliaEntities.get())).withStyle(ChatFormatting.AQUA))
-                    .append(Component.literal(" fabrolia)").withStyle(ChatFormatting.GRAY));
+            out.line("Total", entitySplit(totalEntities.get(), totalFabroliaEntities.get()));
+            out.note("parallel = ticked off the main thread; main = needs the main thread");
 
             if (showTickStats && ticks > 0) {
                 long syncCount = TickStats.getTotalSyncTicks();
@@ -224,28 +194,23 @@ public class StatsCommand {
                         : (TickStats.TOTAL_SYNC_TIME_NS.get() + TickStats.TOTAL_FABROLIA_TIME_NS.get())
                           / (double) TickStats.TOTAL_BATCH_WALL_NS.get();
 
-                message.append(Component.literal("\n\nTick Window: ").withStyle(ChatFormatting.GOLD))
-                        .append(Component.literal(ticks + " ticks").withStyle(ChatFormatting.YELLOW));
-
-                message.append(Component.literal("\nTotal entity ticks: ").withStyle(ChatFormatting.WHITE))
-                        .append(Component.literal(String.valueOf(syncCount + fabroliaCount)).withStyle(ChatFormatting.GOLD))
-                        .append(Component.literal(" (").withStyle(ChatFormatting.GRAY))
-                        .append(Component.literal(syncCount + " sync").withStyle(ChatFormatting.RED))
-                        .append(Component.literal(" + ").withStyle(ChatFormatting.GRAY))
-                        .append(Component.literal(fabroliaCount + " fabrolia").withStyle(ChatFormatting.AQUA))
-                        .append(Component.literal(String.format(", %.1f%% fabrolia", fabroliaShare)).withStyle(ChatFormatting.GRAY))
-                        .append(Component.literal(")").withStyle(ChatFormatting.GRAY));
-
-                message.append(Component.literal("\nAvg entity MSPT: ").withStyle(ChatFormatting.WHITE))
-                        .append(Component.literal(String.format("%.3f ms", totalMspt)).withStyle(ChatFormatting.GREEN));
-
-                message.append(Component.literal("\nBatch wall MSPT: ").withStyle(ChatFormatting.WHITE))
-                        .append(Component.literal(String.format("%.3f ms", wallMspt)).withStyle(ChatFormatting.GREEN))
-                        .append(Component.literal(String.format(" (pool=%d, speedup=%.2fx)", pool, speedup)).withStyle(ChatFormatting.GRAY));
+                out.section("Recorded " + ticks + " ticks");
+                out.line("Entity ticks", InfoText.join(
+                        InfoText.text(InfoText.count(syncCount + fabroliaCount), ChatFormatting.WHITE),
+                        InfoText.text(InfoText.count(fabroliaCount) + " parallel", ChatFormatting.AQUA),
+                        InfoText.text(InfoText.count(syncCount) + " main", ChatFormatting.RED),
+                        InfoText.text(String.format(Locale.ROOT, "%.1f%% parallel", fabroliaShare),
+                                ChatFormatting.GRAY)));
+                out.line("Entity time per tick", InfoText.text(
+                        String.format(Locale.ROOT, "%.3f ms", totalMspt), ChatFormatting.GREEN));
+                out.line("Wall time per tick", InfoText.join(
+                        InfoText.text(String.format(Locale.ROOT, "%.3f ms", wallMspt), ChatFormatting.GREEN),
+                        InfoText.text(String.format(Locale.ROOT, "%d threads, %.2fx speedup", pool, speedup),
+                                ChatFormatting.GRAY)));
             }
 
             if (topCount > 0 && !entityTypeCounts.isEmpty()) {
-                message.append(Component.literal("\n\nTop " + topCount + " Entity Types:").withStyle(ChatFormatting.GOLD));
+                out.section("Top " + Math.min(topCount, entityTypeCounts.size()) + " entity types");
 
                 final int[] rank = {1};
                 entityTypeCounts.entrySet().stream()
@@ -257,29 +222,42 @@ public class StatsCommand {
                             boolean isFabrolia = entityTypeFabrolia.getOrDefault(type, false);
 
                             Identifier id = BuiltInRegistries.ENTITY_TYPE.getKey(type);
-                            String name = id.getPath();
-
-                            message.append(Component.literal("\n" + rank[0] + ". ").withStyle(ChatFormatting.GRAY))
-                                    .append(Component.literal(name).withStyle(ChatFormatting.YELLOW))
-                                    .append(Component.literal(": ").withStyle(ChatFormatting.GRAY))
-                                    .append(Component.literal(String.valueOf(count)).withStyle(ChatFormatting.GREEN))
-                                    .append(Component.literal(" [").withStyle(ChatFormatting.DARK_GRAY))
-                                    .append(Component.literal(isFabrolia ? "fabrolia" : "sync")
-                                            .withStyle(isFabrolia ? ChatFormatting.AQUA : ChatFormatting.RED))
-                                    .append(Component.literal("]").withStyle(ChatFormatting.DARK_GRAY));
+                            MutableComponent row = InfoText.text(rank[0] + ". ", ChatFormatting.GRAY)
+                                    .append(InfoText.text(id.getPath(), ChatFormatting.WHITE))
+                                    .append(InfoText.text(": ", ChatFormatting.GRAY))
+                                    .append(InfoText.text(InfoText.count(count), ChatFormatting.WHITE))
+                                    .append(InfoText.text(" · ", ChatFormatting.DARK_GRAY))
+                                    .append(isFabrolia
+                                            ? InfoText.text("parallel", ChatFormatting.AQUA)
+                                            : InfoText.text("main", ChatFormatting.RED));
 
                             if (showTickStats && ticks > 0) {
                                 double mspt = TickStats.getMSPTForType(type, ticks);
-                                message.append(Component.literal(" "))
-                                        .append(Component.literal(String.format("%.3fms avg", mspt)).withStyle(ChatFormatting.GREEN));
+                                row.append(InfoText.text(" · ", ChatFormatting.DARK_GRAY))
+                                        .append(InfoText.text(String.format(Locale.ROOT, "%.3f ms/tick", mspt),
+                                                ChatFormatting.GREEN));
                             }
+                            out.line(row);
 
                             rank[0]++;
                         });
             }
+            if (!showTickStats) {
+                out.more("/fabrolia stats entity 10 200");
+                out.note("(the second number records entity tick times for that many ticks)");
+            }
             RegionScheduler.runSuccessBodyIfHealthy(() -> resetEntityTickStats());
             RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> source.sendSuccess(() -> message, false));
+                    () -> source.sendSystemMessage(out.build()));
         });
+    }
+
+    /** "1,234 · 1,200 parallel · 34 main". */
+    private static MutableComponent entitySplit(int total, int parallel) {
+        return InfoText.join(
+                InfoText.text(InfoText.count(total), ChatFormatting.WHITE),
+                InfoText.text(InfoText.count(parallel) + " parallel", ChatFormatting.AQUA),
+                InfoText.text(InfoText.count(total - parallel) + " main",
+                        total - parallel > 0 ? ChatFormatting.RED : ChatFormatting.GRAY));
     }
 }

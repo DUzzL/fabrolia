@@ -68,7 +68,9 @@ final class CommandMainPublicationFailStopWiringTest {
                 scan + 1);
         int reset = entity.indexOf("resetEntityTickStats()", resetCut);
         int replyCut = entity.indexOf("RegionScheduler.runSuccessBodyIfHealthy", reset + 1);
-        int reply = entity.indexOf("source.sendSuccess", replyCut);
+        // The reply is a system message: sendSuccess is dropped for players
+        // while the sendCommandFeedback gamerule is off.
+        int reply = entity.indexOf("source.sendSystemMessage", replyCut);
         assertTrue(entityPublishCut >= 0 && entityExecute > entityPublishCut
                         && scanEntry > entityExecute && scanCut > scanEntry && scan > scanCut
                         && resetCut > scan && reset > resetCut

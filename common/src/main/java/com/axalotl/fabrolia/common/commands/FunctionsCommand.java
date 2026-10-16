@@ -56,11 +56,11 @@ public final class FunctionsCommand {
     private static void print(CommandContext<CommandSourceStack> ctx, String title, List<String> lines) {
         LoggerFactory.getLogger("fabrolia").info("{}\n{}", title.toUpperCase(java.util.Locale.ROOT),
                 String.join("\n", lines));
-        ctx.getSource().sendSuccess(() -> prefix.copy()
-                .append(Component.literal(title).withStyle(ChatFormatting.WHITE)), false);
+        ctx.getSource().sendSystemMessage(prefix.copy()
+                .append(Component.literal(title).withStyle(ChatFormatting.WHITE)));
         for (String line : lines) {
-            ctx.getSource().sendSuccess(() -> Component.literal(line).withStyle(
-                    line.startsWith("  ") ? ChatFormatting.GRAY : ChatFormatting.GREEN), false);
+            ctx.getSource().sendSystemMessage(Component.literal(line).withStyle(
+                    line.startsWith("  ") ? ChatFormatting.GRAY : ChatFormatting.GREEN));
         }
     }
 }

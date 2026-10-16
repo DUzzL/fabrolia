@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * {@code /fabrolia regions tps}; an action-bar line updates once per
  * second with two metric groups:
  *
- * <pre>Main: 20.0 TPS / 4.8 MSPT | Island Alice: 19.7 TPS / 2.1 MSPT</pre>
+ * <pre>Main 20.0 TPS 4.8 ms | Island [Alice Bob] 19.7 TPS 2.1 ms</pre>
  *
  * Metric definitions: island MSPT = successful-unit EWMA from body start
  * to completion preparation (before arrival sealing/successor preparation).
@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * clamped, correct during sprint and rates above 20). Main TPS = Δoverworld
  * gameTime per real second; Main MSPT = the server's own average tick time
  * ({@code MinecraftServer#getAverageTickTimeNanos}).
- * Ownerless positions show GLOBAL explicitly — never a stale island line.
+ * Ownerless positions show "Here: main thread" explicitly — never a stale island line.
  *
  * <p>With Carpet installed, its {@code /log tps} tab footer also shows the
  * player's island ({@link CarpetTpsLines}). This action-bar HUD works without
@@ -71,6 +71,7 @@ public final class TpsHud {
         if (!mainSampleUpdated) {
             return;
         }
+        IslandMetrics.sampleAll();
         if (SUBSCRIBERS.isEmpty()) {
             return;
         }
@@ -117,7 +118,7 @@ public final class TpsHud {
      * <p>Package-private and keyed on the dimension rather than the player so the
      * mapping is testable without standing up a level.
      */
-    static net.minecraft.ChatFormatting dimColor(
+    public static net.minecraft.ChatFormatting dimColor(
             net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dim) {
         if (net.minecraft.world.level.Level.OVERWORLD.equals(dim)) {
             return net.minecraft.ChatFormatting.GREEN;
@@ -155,27 +156,36 @@ public final class TpsHud {
 
     private static Component buildLine(ServerPlayer p,
             java.util.IdentityHashMap<IslandRegistry.PIsland, java.util.List<ServerPlayer>> roster) {
-        net.minecraft.network.chat.MutableComponent out = Component.literal(String.format(
-                java.util.Locale.ROOT, "Main: %.1f TPS / %.1f MSPT", mainTps, mainEmaNanos / 1_000_000.0));
+        var rate = p.level().getServer().tickRateManager();
+        net.minecraft.network.chat.MutableComponent out = grey("Main ")
+                .append(tpsValue(mainTps, rate.tickrate()))
+                .append(grey(" "))
+                .append(msValue(mainEmaNanos / 1_000_000.0, rate.millisecondsPerTick()));
         if (!(p.level() instanceof ServerLevel sl)) {
             return out;
         }
         RegionizedServer rs = RegionScheduler.forLevel(sl);
         if (rs == null || !rs.asyncActive) {
-            out.append(Component.literal(" | Island: SYNC"));
+            out.append(grey(" | Islands off"));
             return out;
         }
         IslandRegistry.PIsland isl = rs.islandOwnerOfChunk(p.chunkPosition().pack());
         if (isl == null) {
-            out.append(Component.literal(" | Island: GLOBAL"));
+            out.append(grey(" | Here: main thread"));
             return out;
         }
-        out.append(Component.literal(String.format(java.util.Locale.ROOT,
-                " | Island %s: %.1f TPS / %.2f MSPT",
-                IslandMetrics.label(rs, isl),
-                IslandMetrics.actualTps(isl),
-                isl.emaUnitNanos / 1_000_000.0)));
+        // The roster always holds the viewer, so it names the island; a manual
+        // alias goes in front of it.
+        out.append(grey(" | Island"));
+        if (isl.alias != null) {
+            out.append(Component.literal(" " + isl.alias).withStyle(net.minecraft.ChatFormatting.WHITE));
+        }
         appendRoster(out, roster.get(isl));
+        double target = IslandMetrics.targetTps(rs, isl);
+        out.append(grey(" "))
+                .append(tpsValue(IslandMetrics.actualTps(isl), target))
+                .append(grey(" "))
+                .append(msValue(isl.emaUnitNanos / 1_000_000.0, 1000.0 / target));
 
         // Cross-dimension coupling (task #43). Standing at a portal farm the one
         // thing worth knowing is whether this half is actually locked to the
@@ -187,9 +197,8 @@ public final class TpsHud {
         if (c == null) {
             return out;
         }
-        out.append(Component.literal(String.format(java.util.Locale.ROOT,
-                " | XDIM: linked x%d @%.1f TPS",
-                c.members.size(),
+        out.append(grey(String.format(java.util.Locale.ROOT,
+                " | Portal-linked @%.1f TPS",
                 c.sharedTargetNanos > 0 ? 1_000_000_000.0 / c.sharedTargetNanos : 20.0)));
         // The partners' rosters — the whole point of the request: standing in the
         // Overworld half you see the Nether half's occupants (in red) and vice
@@ -203,5 +212,21 @@ public final class TpsHud {
             appendRoster(out, roster.get(m));
         }
         return out;
+    }
+
+    private static net.minecraft.network.chat.MutableComponent grey(String text) {
+        return Component.literal(text).withStyle(net.minecraft.ChatFormatting.GRAY);
+    }
+
+    /** "19.7 TPS" in Carpet's heat colours; "-- TPS" before the first window. */
+    private static net.minecraft.network.chat.MutableComponent tpsValue(double tps, double target) {
+        return Component.literal((Double.isNaN(tps) ? "--"
+                        : String.format(java.util.Locale.ROOT, "%.1f", tps)) + " TPS")
+                .withStyle(CarpetTpsLines.tpsColor(tps, target));
+    }
+
+    private static net.minecraft.network.chat.MutableComponent msValue(double ms, double budgetMs) {
+        return Component.literal(String.format(java.util.Locale.ROOT, "%.1f ms", ms))
+                .withStyle(CarpetTpsLines.msptColor(ms, budgetMs));
     }
 }

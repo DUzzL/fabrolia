@@ -34,8 +34,8 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 ```
 
 Jar: `fabric/build/libs/fabrolia-alpha_<major>.<minor>.<patch>.jar`; current build
-`fabrolia-alpha_3.1.2.jar` (metadata `3.1.2-alpha` in `gradle.properties`; minecart push-order
-fix on top of the 3.1.1 raid/POI fix), not yet stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
+`fabrolia-alpha_3.1.3.jar` (metadata `3.1.3-alpha` in `gradle.properties`; readable info
+commands and warm island TPS on top of the 3.1.2 minecart push-order fix), not yet stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
 which crashed on a mob killing an island player (fixed in 3.0.3); `3.0.3-alpha` ran from
 2026-10-11 12:58 CEST and lagged at 40 players (see `docs/PERF-ANALYSE-2026-10-11.md`).
 The owner's 2026-10-10 versioning rule supersedes the old fixed `0.2.38+alpha-26.3`:
@@ -60,7 +60,7 @@ classes of the real mod set: `tools/stand/stand.sh export exp-1 <jar>`, then
 (details, scenarios and how to read results: `docs/STAND.md`):
 
 ```bash
-tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.2.jar   # must print ALL PASS
+tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.3.jar   # must print ALL PASS
 tools/stand/stand.sh perf perf-1 <jar> 120 [--scenario items|pistons] [--heap]
 python3 tools/spark/frames.py <old>.sparkprofile <new>.sparkprofile
 ```
@@ -78,6 +78,7 @@ Every change touching runtime code: tests + `verify`. Threading/performance chan
 - Crash: read the first `fabrolia$…` frame and the `Suppressed:` traces (other threads
   that observed the same fatal). Find the code via `docs/CODEMAP.md` → "Where to look when".
 - In-game: `/fabrolia regions top verbose 100` (per-island TPS/MSPT/lag), `/fabrolia regions`,
+  `/fabrolia regions player <name>` (TPS where that player stands),
   Carpet `/log tps` (Main + Local island lines).
 
 ## Repository map

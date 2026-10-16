@@ -71,10 +71,14 @@ arguments and diagnostic commands.
 
 | Command | Purpose |
 | --- | --- |
-| `/fabrolia regions` | Show region and island status. |
-| `/fabrolia regions list` | List islands with TPS, MSPT and lag information. |
-| `/fabrolia regions top verbose 100` | Show detailed statistics for up to 100 of the heaviest islands. |
-| `/fabrolia regions tps` | Toggle the player's action-bar TPS HUD. |
+| `/fabrolia` or `/fabrolia help` | List the commands you may run, with the terms they use. |
+| `/fabrolia regions here` | Show the TPS of the spot you stand on: your island's, or Main's. |
+| `/fabrolia regions player <name>` | The same for another player (permission level 2). |
+| `/fabrolia regions` | Show Main TPS, island health and per-dimension totals. |
+| `/fabrolia regions list` | List every island on one line each (hover for all figures). |
+| `/fabrolia regions top [count] [mspt\|maxmspt\|lag\|tps]` | Show the slowest islands with TPS, MSPT, size and lag. |
+| `/fabrolia regions top verbose 100` | Show raw diagnostic rows for up to 100 of the heaviest islands. |
+| `/fabrolia regions tps` | Toggle the player's action-bar TPS display (Main and island). |
 | `/fabrolia regions on\|off\|toggle` | Control region threading. |
 | `/fabrolia regions async on\|off` | Enable or disable independent island ticking. |
 | `/fabrolia regions playerticks on\|off` | Enable or disable worker-owned player ticking. |
@@ -87,7 +91,8 @@ arguments and diagnostic commands.
 | `/fabrolia config toggle` | Toggle the mod's disabled state. |
 | `/fabrolia config synchronizedEntities` | List entity types configured for synchronized processing. |
 | `/fabrolia config synchronizedEntities add\|remove <entity>` | Change synchronized entity rules. |
-| `/fabrolia stats` | Show mod status, thread usage and entity statistics. |
+| `/fabrolia stats` | Show mod status, Main TPS and features. |
+| `/fabrolia stats entity [count] [ticks]` | Count entities per dimension and type; `ticks` also records their tick times. |
 
 In the table, `on|off` and similar alternatives mean choose one argument.
 With Carpet installed, `/log tps` also shows `Main` and `Local` tick information

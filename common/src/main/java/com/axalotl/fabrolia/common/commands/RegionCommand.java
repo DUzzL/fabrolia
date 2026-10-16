@@ -68,6 +68,12 @@ public final class RegionCommand {
                 .requires(PlatformPermission.require("command.regions", 0))
                 .executes(ctx -> { summary(ctx.getSource()); return 1; });
         regionsCmd.then(literal("list").executes(ctx -> islandList(ctx.getSource())));
+        // One-shot local TPS check (the HUD and Carpet's /log tps are subscriptions).
+        regionsCmd.then(literal("here").executes(ctx -> islandHere(ctx.getSource(), null)));
+        regionsCmd.then(literal("player").requires(PlatformPermission.require("command.regions.player", 2))
+                .then(Commands.argument("target", net.minecraft.commands.arguments.EntityArgument.player())
+                        .executes(ctx -> islandHere(ctx.getSource(),
+                                net.minecraft.commands.arguments.EntityArgument.getPlayer(ctx, "target")))));
         LiteralArgumentBuilder<CommandSourceStack> topCmd = literal("top")
                 .executes(ctx -> islandTop(ctx.getSource(), 10, "mspt", false))
                 .then(literal("verbose")
@@ -479,8 +485,9 @@ public final class RegionCommand {
                         return 0;
                     }
                     boolean on = com.axalotl.fabrolia.common.regions.TpsHud.toggle(player);
-                    send(ctx, "tps hud: ",
-                            on ? "subscribed (action bar)" : "unsubscribed", false);
+                    send(ctx, "TPS display: ",
+                            on ? "on: Main and island TPS now show above your hotbar (run again to hide)"
+                               : "off", false);
                     return 1;
                 }));
         regionsCmd.then(literal("on").requires(PlatformPermission.require("command.regions.toggle", 4))
@@ -1030,7 +1037,13 @@ public final class RegionCommand {
         MutableComponent message = prefix.copy()
                 .append(Component.literal(head).withStyle(ChatFormatting.WHITE))
                 .append(Component.literal(highlight).withStyle(ChatFormatting.GREEN));
-        ctx.getSource().sendSuccess(() -> message, broadcast);
+        if (broadcast) {
+            ctx.getSource().sendSuccess(() -> message, true);
+        } else {
+            // Read-only replies: sendSuccess is dropped for players while the
+            // sendCommandFeedback gamerule is off.
+            ctx.getSource().sendSystemMessage(message);
+        }
     }
 
     private static void send(CommandContext<CommandSourceStack> ctx, String head, String highlight, String suffix) {
@@ -1092,52 +1105,181 @@ public final class RegionCommand {
     }
 
     private static void summary(CommandSourceStack src) {
+        MinecraftServer server = src.getServer();
         boolean active = RegionScheduler.isActive();
-        MutableComponent msg = prefix.copy()
-                .append(Component.literal("Region scheduler ").withStyle(ChatFormatting.WHITE))
-                .append(Component.literal(active ? "ACTIVE" : "dormant")
-                        .withStyle(active ? ChatFormatting.GREEN : ChatFormatting.GRAY));
-
+        InfoText out = InfoText.titled("Fabrolia status");
+        out.line("Region threading", active
+                ? InfoText.join(InfoText.onOff(true),
+                        InfoText.text(InfoText.plural(RegionScheduler.workerCount(), "worker", "workers"),
+                                ChatFormatting.WHITE))
+                : InfoText.onOff(false));
+        out.line("Async islands", InfoText.onOff(active && RegionScheduler.anyAsyncActive()));
+        out.line("Players tick on their island", InfoText.onOff(FabroliaConfig.enablePlayerTickActor));
+        out.line("Island entities", InfoText.text(FabroliaConfig.islandEntityParallel
+                ? "parallel" : "vanilla order (serial)", ChatFormatting.WHITE));
+        out.line("Main thread", mainTick(server));
         if (!active) {
-            msg.append(Component.literal("  (config=" + (FabroliaConfig.enableRegionThreading ? "on" : "off")
-                    + " — enable with /fabrolia regions on)").withStyle(ChatFormatting.DARK_GRAY));
-            final MutableComponent dormant = msg;
-            src.sendSuccess(() -> dormant, false);
+            out.note("Region threading is off: the whole server ticks on the main thread.");
+            out.more("/fabrolia regions on", "/fabrolia stats");
+            src.sendSystemMessage(out.build());
             return;
         }
 
-        RegionGrid grid = RegionScheduler.grid();
-        int cellChunks = grid != null ? 1 << grid.shift : 1 << RegionGrid.DEFAULT_SHIFT;
-        msg.append(Component.literal("  " + RegionScheduler.workerCount() + " workers · grid "
-                + cellChunks + "×" + cellChunks
-                + " chunks · serial entities per region").withStyle(ChatFormatting.GRAY));
-
-        long totalRegions = 0;
-        long totalEntities = 0;
-        for (ServerLevel lvl : src.getServer().getAllLevels()) {
+        int islands = 0, lagging = 0, stalled = 0;
+        RegionizedServer slowestLevel = null;
+        com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland slowest = null;
+        long slowestNanos = -1;
+        long totalRegions = 0, totalEntities = 0;
+        out.section("Dimensions");
+        for (ServerLevel lvl : server.getAllLevels()) {
             RegionizedServer rs = RegionScheduler.forLevel(lvl);
             if (rs == null) continue;
             List<Region> regions = rs.snapshot();
-            if (regions.isEmpty()) continue;
             long entities = 0;
-            int nonEmpty = 0;
-            for (Region r : regions) {
-                long c = r.entityCount.get();
-                entities += c;
-                if (c > 0) nonEmpty++;
+            for (Region r : regions) entities += r.entityCount.get();
+            int levelIslands = 0;
+            if (rs.asyncActive) {
+                for (var p : rs.islandRegistry.islands()) {
+                    levelIslands++;
+                    switch (com.axalotl.fabrolia.common.regions.IslandMetrics.state(rs, p)) {
+                        case LAGGING -> lagging++;
+                        case STALLED -> stalled++;
+                        default -> { }
+                    }
+                    long ema = p.emaUnitNanos;
+                    if (ema > slowestNanos) {
+                        slowestNanos = ema;
+                        slowest = p;
+                        slowestLevel = rs;
+                    }
+                }
             }
+            islands += levelIslands;
             totalRegions += regions.size();
             totalEntities += entities;
-            msg.append(Component.literal("\n  " + lvl.dimension().identifier() + ": ").withStyle(ChatFormatting.WHITE))
-                    .append(Component.literal(regions.size() + " regions").withStyle(ChatFormatting.AQUA))
-                    .append(Component.literal(" · " + nonEmpty + " non-empty · ").withStyle(ChatFormatting.GRAY))
-                    .append(Component.literal(entities + " entities").withStyle(ChatFormatting.GOLD));
+            out.line(InfoText.join(
+                    InfoText.text(InfoText.dimension(lvl.dimension()), InfoText.dimensionColor(lvl.dimension())),
+                    InfoText.text(InfoText.plural(levelIslands, "island", "islands"), ChatFormatting.WHITE),
+                    InfoText.text(InfoText.plural(regions.size(), "region", "regions"), ChatFormatting.WHITE),
+                    InfoText.text(InfoText.plural(entities, "entity", "entities"), ChatFormatting.WHITE)));
         }
-        msg.append(Component.literal("\nTotal: ").withStyle(ChatFormatting.WHITE))
-                .append(Component.literal(totalRegions + " regions · " + totalEntities + " entities")
-                        .withStyle(ChatFormatting.YELLOW));
-        final MutableComponent finalMsg = msg;
-        src.sendSuccess(() -> finalMsg, false);
+        out.line("Total", InfoText.join(
+                InfoText.text(InfoText.plural(totalRegions, "region", "regions"), ChatFormatting.WHITE),
+                InfoText.text(InfoText.plural(totalEntities, "entity", "entities"), ChatFormatting.WHITE)));
+
+        if (RegionScheduler.anyAsyncActive()) {
+            out.section("Islands");
+            out.line("Count", InfoText.join(
+                    InfoText.text(InfoText.count(islands), ChatFormatting.WHITE),
+                    InfoText.text(lagging + " lagging", lagging > 0 ? ChatFormatting.YELLOW : ChatFormatting.GREEN),
+                    InfoText.text(stalled + " stalled", stalled > 0 ? ChatFormatting.RED : ChatFormatting.GREEN)));
+            if (slowest != null) {
+                out.line("Slowest", islandName(slowestLevel, slowest));
+                out.detail(islandFigures(slowestLevel, slowest));
+            }
+        }
+        out.more("/fabrolia regions top", "/fabrolia regions list", "/fabrolia stats entity");
+        src.sendSystemMessage(out.build());
+    }
+
+    /** "20.0 TPS · 4.8 ms" for the server thread, against its tick rate. */
+    private static MutableComponent mainTick(MinecraftServer server) {
+        var rate = server.tickRateManager();
+        return InfoText.join(
+                InfoText.tps(com.axalotl.fabrolia.common.regions.TpsHud.mainTpsValue(), rate.tickrate()),
+                InfoText.mspt(server.getAverageTickTimeNanos() / 1_000_000.0,
+                        rate.millisecondsPerTick(), ""));
+    }
+
+    /** Island label plus its dimension; hover shows the handle for rate/sprint. */
+    private static MutableComponent islandName(RegionizedServer rs, com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland p) {
+        MutableComponent name = InfoText.hover(
+                InfoText.text(com.axalotl.fabrolia.common.regions.IslandMetrics.label(rs, p), ChatFormatting.WHITE),
+                "handle " + com.axalotl.fabrolia.common.regions.IslandMetrics.handle(rs, p) + " · island #" + p.id + " gen " + p.gen);
+        return name.append(InfoText.text(" (" + InfoText.dimension(rs.level.dimension()) + ")",
+                InfoText.dimensionColor(rs.level.dimension())));
+    }
+
+    /** The island's TPS, or "idle" for an island with nothing to tick. */
+    private static MutableComponent islandTps(RegionizedServer rs, com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland p) {
+        return com.axalotl.fabrolia.common.regions.IslandMetrics.state(rs, p) == com.axalotl.fabrolia.common.regions.IslandMetrics.State.IDLE
+                ? InfoText.text("idle", ChatFormatting.GRAY)
+                : InfoText.tps(com.axalotl.fabrolia.common.regions.IslandMetrics.actualTps(p), com.axalotl.fabrolia.common.regions.IslandMetrics.targetTps(rs, p));
+    }
+
+    /** {@code regions here} / {@code regions player <name>}: the TPS of the place a
+     *  player stands, whether an island or the main thread runs it, and why. */
+    private static int islandHere(CommandSourceStack src, ServerPlayer target) {
+        ServerPlayer pl = target;
+        if (pl == null) {
+            try {
+                pl = src.getPlayerOrException();
+            } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+                src.sendFailure(prefix.copy().append(Component.literal(
+                        "Run this as a player, or use /fabrolia regions player <name>")
+                        .withStyle(ChatFormatting.RED)));
+                return 0;
+            }
+        }
+        MinecraftServer server = src.getServer();
+        ServerLevel lvl = pl.level();
+        InfoText out = InfoText.titled(target == null ? "TPS where you are"
+                : "TPS where " + pl.getName().getString() + " is");
+        RegionizedServer rs = RegionScheduler.forLevel(lvl);
+        boolean async = rs != null && rs.asyncActive;
+        var isl = async ? rs.islandOwnerOfChunk(pl.chunkPosition().pack()) : null;
+        if (isl == null) {
+            out.line("Ticked by", InfoText.join(
+                    InfoText.text("main thread", ChatFormatting.WHITE),
+                    InfoText.text(InfoText.dimension(lvl.dimension()), InfoText.dimensionColor(lvl.dimension()))));
+            out.line("TPS here", mainTick(server));
+            out.note(async
+                    ? "No island owns this spot, so the main thread ticks it at Main TPS."
+                    : "Async islands are off: the whole dimension ticks at Main TPS.");
+        } else {
+            out.line("Island", islandName(rs, isl));
+            out.line("TPS here", islandFigures(rs, isl));
+            java.util.List<ServerPlayer> players = com.axalotl.fabrolia.common.regions.IslandMetrics.playersOn(rs, isl);
+            StringBuilder names = new StringBuilder();
+            for (int i = 0; i < players.size() && i < 8; i++) {
+                if (i > 0) names.append(", ");
+                names.append(players.get(i).getName().getString());
+            }
+            if (players.size() > 8) names.append(" +").append(players.size() - 8);
+            out.line("Players on it", InfoText.text(names.isEmpty() ? "none" : names.toString(),
+                    ChatFormatting.WHITE));
+            String coupling = com.axalotl.fabrolia.common.regions.IslandMetrics.couplingSummary(isl);
+            if (coupling != null) {
+                out.line("Portal link", InfoText.text(coupling, ChatFormatting.WHITE));
+            }
+            out.line("Main thread", mainTick(server));
+            out.note("This island ticks on its own thread: its TPS is the speed of everything here");
+            out.note("(farms, redstone, mobs). Main TPS covers the rest and the global systems.");
+        }
+        out.more("/fabrolia regions tps", "/fabrolia regions top");
+        src.sendSystemMessage(out.build());
+        return 1;
+    }
+
+    /** "Healthy · 19.9 TPS · 3.2 ms avg · 12.4 ms max · 14 cells", then lag and pacing notes. */
+    private static MutableComponent islandFigures(RegionizedServer rs, com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland p) {
+        double budgetMs = 1000.0 / com.axalotl.fabrolia.common.regions.IslandMetrics.targetTps(rs, p);
+        MutableComponent out = InfoText.join(
+                InfoText.state(com.axalotl.fabrolia.common.regions.IslandMetrics.state(rs, p)),
+                islandTps(rs, p),
+                InfoText.mspt(p.emaUnitNanos / 1_000_000.0, budgetMs, " avg"),
+                InfoText.mspt(p.maxUnitNanos / 1_000_000.0, budgetMs, " max"),
+                InfoText.text(InfoText.plural(p.cells.size(), "cell", "cells"), ChatFormatting.GRAY));
+        long behind = com.axalotl.fabrolia.common.regions.IslandMetrics.ticksBehind(rs, p);
+        if (behind > 2) {
+            out.append(InfoText.text(" · " + InfoText.plural(behind, "tick", "ticks") + " behind",
+                    ChatFormatting.YELLOW));
+        }
+        String tag = com.axalotl.fabrolia.common.regions.IslandMetrics.pacingTag(rs, p);
+        if (tag != null) {
+            out.append(InfoText.text(" · " + tag, ChatFormatting.LIGHT_PURPLE));
+        }
+        return out;
     }
 
     private static void list(CommandSourceStack src) {
@@ -1344,23 +1486,72 @@ public final class RegionCommand {
 
     // ---- temporal control / profiling (2026-07-14) ----------------------
 
+    /** Every async island, grouped by dimension, heaviest first. */
     private static int islandList(net.minecraft.commands.CommandSourceStack src) {
+        InfoText out = InfoText.titled("Islands");
         int n = 0;
         for (net.minecraft.server.level.ServerLevel lvl : src.getServer().getAllLevels()) {
             var rs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(lvl);
             if (rs == null || !rs.asyncActive) continue;
-            int rank = 0;
-            for (var p2 : rs.islandRegistry.islands()) {
-                src.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                        com.axalotl.fabrolia.common.regions.IslandMetrics.row(rs, p2, ++rank)));
+            var islands = sortedIslands(rs, "mspt");
+            if (islands.isEmpty()) continue;
+            out.section(InfoText.dimension(lvl.dimension()) + " (" + islands.size() + ")");
+            for (var p2 : islands) {
+                // One line per island so large servers fit in the chat history;
+                // the full figures are on hover and in /fabrolia regions top.
+                out.line(islandName(rs, p2).append(InfoText.text(" · ", ChatFormatting.DARK_GRAY))
+                        .append(InfoText.hover(islandTps(rs, p2), islandFigures(rs, p2).getString()))
+                        .append(InfoText.text(" · ", ChatFormatting.DARK_GRAY))
+                        .append(InfoText.mspt(p2.emaUnitNanos / 1_000_000.0,
+                                1000.0 / com.axalotl.fabrolia.common.regions.IslandMetrics.targetTps(rs, p2), " avg")));
                 n++;
             }
-            src.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "temporal: " + com.axalotl.fabrolia.common.regions.TemporalControl.status(rs)));
+            String pacing = pacingSessions(rs);
+            if (pacing != null) out.note(pacing);
         }
-        if (n == 0) src.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                "no async islands (async off?)"));
+        if (n == 0) {
+            out.line(InfoText.text("No async islands are running (async islands off?).", ChatFormatting.GRAY));
+            out.more("/fabrolia regions");
+        } else {
+            out.note("Hover a name for its handle, the TPS for all figures.");
+            out.more("/fabrolia regions top", "/fabrolia regions top verbose");
+        }
+        src.sendSystemMessage(out.build());
         return n;
+    }
+
+    /** The level's islands sorted by a snapshot key (never by live fields:
+     *  TimSort contract, RegionizedServer:1528 crash, 2026-07-17). */
+    private static List<com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland> sortedIslands(RegionizedServer rs, String sort) {
+        var list = new java.util.ArrayList<>(rs.islandRegistry.islands());
+        java.util.IdentityHashMap<Object, Long> key = new java.util.IdentityHashMap<>();
+        for (var p2 : list) key.put(p2, sortKey(p2, sort));
+        boolean asc = "tps".equals(sort); // lowest tps first = the problems
+        list.sort((a, b) -> asc ? Long.compare(key.get(a), key.get(b))
+                : Long.compare(key.get(b), key.get(a)));
+        return list;
+    }
+
+    private static long sortKey(com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland p2, String sort) {
+        return switch (sort) {
+            case "maxmspt" -> p2.maxUnitNanos;
+            case "lag" -> p2.lagNanos;
+            case "tps" -> {
+                // Not yet measured sorts last, not as "0 TPS" first.
+                double tps = com.axalotl.fabrolia.common.regions.IslandMetrics.actualTps(p2);
+                yield Double.isNaN(tps) ? Long.MAX_VALUE : (long) (tps * 1000);
+            }
+            default -> p2.emaUnitNanos; // mspt
+        };
+    }
+
+    /** The level's active rate/sprint/pin sessions as one line, or null. */
+    private static String pacingSessions(RegionizedServer rs) {
+        StringBuilder sb = new StringBuilder();
+        for (var sn : rs.temporalSessions) {
+            sb.append(sb.isEmpty() ? "Pacing sessions: " : "; ").append(sn.label);
+        }
+        return sb.isEmpty() ? null : sb.toString();
     }
 
     /** Operator preference: applied live at the next level-tick HEAD (the
@@ -1473,6 +1664,11 @@ public final class RegionCommand {
 
     private static int islandTop(net.minecraft.commands.CommandSourceStack src, int count,
                                  String sort, boolean verbose) {
+        if (!java.util.Set.of("mspt", "maxmspt", "lag", "tps").contains(sort)) {
+            src.sendFailure(prefix.copy().append(Component.literal(
+                    "Unknown sort '" + sort + "': use mspt, maxmspt, lag or tps").withStyle(ChatFormatting.RED)));
+            return 0;
+        }
         java.util.ArrayList<Object[]> rows = new java.util.ArrayList<>();
         for (net.minecraft.server.level.ServerLevel lvl : src.getServer().getAllLevels()) {
             var rs = com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(lvl);
@@ -1480,45 +1676,52 @@ public final class RegionCommand {
             for (var p2 : rs.islandRegistry.islands()) rows.add(new Object[]{rs, p2});
         }
         if (rows.isEmpty()) {
-            src.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "no async islands active"));
+            InfoText none = InfoText.titled("Islands")
+                    .line(InfoText.text("No async islands are running (async islands off?).", ChatFormatting.GRAY))
+                    .more("/fabrolia regions");
+            src.sendSystemMessage(none.build());
             return 0;
         }
         // Sort keys are SNAPSHOTS (TimSort contract: never compare live
         // volatile fields — RegionizedServer:1528 crash, 2026-07-17).
         java.util.IdentityHashMap<Object, Long> key = new java.util.IdentityHashMap<>();
-        for (Object[] row : rows) {
-            var p2 = (com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland) row[1];
-            var rs = (com.axalotl.fabrolia.common.regions.RegionizedServer) row[0];
-            long k = switch (sort) {
-                case "maxmspt" -> p2.maxUnitNanos;
-                case "lag" -> p2.lagNanos;
-                case "tps" -> (long) (com.axalotl.fabrolia.common.regions.IslandMetrics.actualTps(p2) * 1000);
-                default -> p2.emaUnitNanos; // mspt
-            };
-            key.put(row, k);
-        }
+        for (Object[] row : rows) key.put(row, sortKey((com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland) row[1], sort));
         boolean asc = "tps".equals(sort); // lowest tps first = the problems
         rows.sort((a, b) -> asc ? Long.compare(key.get(a), key.get(b))
                 : Long.compare(key.get(b), key.get(a)));
-        int rank = 0;
+        int shown = Math.min(count, rows.size());
+        if (verbose) {
+            // Diagnostic form, one plain line per island: the stand drivers and the
+            // analysis docs read these rows (" L=", "island#id/gen", "[handle]").
+            for (int rank = 1; rank <= shown; rank++) {
+                Object[] row = rows.get(rank - 1);
+                src.sendSystemMessage(Component.literal(com.axalotl.fabrolia.common.regions.IslandMetrics.row(
+                        (RegionizedServer) row[0], (com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland) row[1], rank)));
+            }
+            return shown;
+        }
+        String by = switch (sort) {
+            case "maxmspt" -> "max MSPT";
+            case "lag" -> "lag";
+            case "tps" -> "lowest TPS";
+            default -> "average MSPT";
+        };
+        InfoText out = InfoText.titled("Top " + shown + " of " + rows.size() + " islands by " + by);
         boolean anyIdle = false;
-        for (Object[] row : rows) {
-            if (rank >= count) break;
-            var rs = (com.axalotl.fabrolia.common.regions.RegionizedServer) row[0];
+        for (int rank = 1; rank <= shown; rank++) {
+            Object[] row = rows.get(rank - 1);
+            var rs = (RegionizedServer) row[0];
             var p2 = (com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland) row[1];
-            rank++;
-            String line = verbose
-                    ? com.axalotl.fabrolia.common.regions.IslandMetrics.row(rs, p2, rank)
-                    : com.axalotl.fabrolia.common.regions.IslandMetrics.adminRow(rs, p2, rank);
-            if (!verbose && line.contains(" Idle ")) anyIdle = true;
-            src.sendSystemMessage(net.minecraft.network.chat.Component.literal(line));
+            anyIdle |= com.axalotl.fabrolia.common.regions.IslandMetrics.state(rs, p2) == com.axalotl.fabrolia.common.regions.IslandMetrics.State.IDLE;
+            out.line(InfoText.text(rank + ". ", ChatFormatting.GRAY).append(islandName(rs, p2)));
+            out.detail(islandFigures(rs, p2));
         }
         if (anyIdle) {
-            src.sendSystemMessage(net.minecraft.network.chat.Component.literal(
-                    "(Idle = caught up with nothing to tick; 0 TPS there is expected, not lag)"));
+            out.note("Idle = caught up with nothing to tick; no TPS there is expected, not lag.");
         }
-        return rank;
+        out.more("/fabrolia regions top 10 tps", "/fabrolia regions top verbose");
+        src.sendSystemMessage(out.build());
+        return shown;
     }
 
     public static int tickRateIslandHere(

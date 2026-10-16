@@ -150,7 +150,7 @@ final class CommandEntityCatchEdgeWiringTest {
         int tpsSyntax = source.indexOf(
                 "catch (com.mojang.brigadier.exceptions.CommandSyntaxException", tpsLookup);
         int tpsToggle = source.indexOf("TpsHud.toggle(player)", tpsSyntax);
-        int tpsSend = source.indexOf("on ? \"subscribed (action bar)\"", tpsToggle);
+        int tpsSend = source.indexOf("on ? \"on: Main and island TPS", tpsToggle);
         assertTrue(tps >= 0 && tpsLookup > tps && tpsSyntax > tpsLookup
                         && tpsToggle > tpsSyntax && tpsSend > tpsToggle,
                 "TPS HUD may translate only the pre-body player lookup refusal; mutation and "
