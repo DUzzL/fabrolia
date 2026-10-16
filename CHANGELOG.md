@@ -1,3 +1,48 @@
+## 3.1.5-alpha (2026-10-17)
+
+Status: unit tests, Fabric/NeoForge builds and the artifact check pass. The Omen
+fix is verified with the original farm world and a real protocol client (both
+with Lithium). Late raid losses still need investigation; this is not a complete
+farm-parity certification. The 40-client stand has not been run.
+
+- Fix: Bad Omen survives its conversion to Raid Omen again, as in vanilla
+  (production report 2026-10-16: Lemon_Iced's self-sustaining raid farm is slow on
+  the server and at full rate in singleplayer). `BadOmenMobEffect` inserts Raid
+  Omen into the player's effect map and returns false; vanilla's `HashMap`
+  iterator then throws from `remove()`, `LivingEntity.tickEffects` catches it and
+  Bad Omen stays. The farm depends on that: one bottle starts a raid every ~30 s
+  for the rest of its 100 minutes. Fabrolia's thread-safe `EffectMap` removed the
+  expiring effect after an insertion by design, so every conversion consumed the
+  Bad Omen and the farm started one raid per bottle. Measured over 5 minutes with
+  the same world and corrected client: vanilla 8 raids and 152 pillagers, 3.1.3
+  1 raid and 34 pillagers, 3.1.5 8 raids and 169 pillagers (parallel: 8 and 166).
+  The one 3.1.3 raid ran normally to victory.
+- `EffectMap`'s monitor-owned iterator now keeps `HashMap`'s fail-fast contract:
+  after a structural change both `next()` and `remove()` throw and the current key
+  stays; `remove()` removes by key. Unowned readers keep the weakly consistent
+  `ConcurrentHashMap` traversal; writers still take the monitor.
+- Local original-world checks: the initial 10-minute runs triggered 18 raids in
+  vanilla and 18 with 3.1.5 (17 with parallel island entities); the subsequent
+  9-minute pair triggered 15 each. Combat-rate claims from these runs were
+  withdrawn: the protocol client pinned the saved player position above the
+  floor, intermittently disabling sweep attacks. The client now stands on the
+  actual floor and the probe records accepted attacks and sweeps. Bell POI
+  releases also occur in vanilla; they are not evidence of a Fabrolia clock bug.
+- Corrected 9-minute runs: all 542 accepted attacks sweep in vanilla and both
+  3.1.5 modes, with 392/371/368 pillager kills. Both Fabrolia runs still lose six
+  raids during a bell-claim gap, including a new raid at ~5 % of its countdown;
+  vanilla relocates to another occupied workstation and loses none in this run.
+  The phase of the gap relative to the moving workstations remains under review.
+  A controlled six-tick absence of the bell and fallback workstation also stops
+  a vanilla raid at ~6 %; the vanilla loss rule is preserved.
+- Tests: `EffectMapTest` and `LivingEntityEffectIterationTest` compare the same
+  turns against vanilla's `HashMap` (including Bad Omen → Raid Omen over two
+  ticks); the new comparisons fail on 3.1.4. Two tests that pinned the deviation
+  were replaced. 1480 tests pass, 8 optional skip.
+- New tool `tools/raid-farm-ab/`: original farm worlds on a local server with a
+  real protocol client and an observational probe mod. Details:
+  [`docs/RAID-FARM-OMEN-2026-10-17.md`](docs/RAID-FARM-OMEN-2026-10-17.md).
+
 ## 3.1.4-alpha (2026-10-16)
 
 Status: unit tests, Fabric/NeoForge builds and the artifact check pass. Display

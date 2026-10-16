@@ -17,7 +17,7 @@ behaviour is described by the requirements, architecture and [changelog](../CHAN
 | Topic | Review or result |
 | --- | --- |
 | General bugs and crash fixes | [Code review](CODE-REVIEW-2026-10-08.md), [critical fixes](CRITICAL-FIXES-2026-10-08.md) |
-| Raids | [Farm review](RAID-FARM-REVIEW-2026-10-09.md), [Vanilla ticket parity](RAID-TICKET-FIX-2026-10-09.md) |
+| Raids | [Farm review](RAID-FARM-REVIEW-2026-10-09.md), [Vanilla ticket parity](RAID-TICKET-FIX-2026-10-09.md), [Bad Omen kept on conversion (self-sustaining farm)](RAID-FARM-OMEN-2026-10-17.md) |
 | TNT and world eaters | [Code review](TNT-CODE-REVIEW-2026-10-10.md), [fixes and verification](TNT-FIX-2026-10-10.md) |
 | MSPT | [Production profile analysis](MSPT-ANALYSE-2026-10-10.md) |
 | Production log | [Full-day log review and diagnostic fixes](LOG-REVIEW-2026-10-11.md) |

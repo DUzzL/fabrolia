@@ -25,9 +25,10 @@ import java.util.*;
 @Mixin(value = LivingEntity.class)
 public abstract class LivingEntityMixin extends Entity {
 
-    // Owned iteration expires the current registration even when its callback
-    // inserts another effect, then stops before visiting the new registration.
-    // Removed/replaced registrations must never receive stale expiration callbacks.
+    // Owned iteration keeps vanilla's HashMap contract: when an effect's tick
+    // adds or removes another effect, remove()/next() throw, tickEffects' catch
+    // ends the turn and the current effect stays (Bad Omen survives its Raid
+    // Omen conversion; raid farms rely on it).
     // Keep remote reads nonblocking: a callback can query an entity whose own
     // tick holds its mutation monitor on another region worker.
     @Shadow

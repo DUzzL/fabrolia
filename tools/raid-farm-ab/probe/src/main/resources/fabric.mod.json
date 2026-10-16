@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "raidprobe",
+  "version": "1.0.0",
+  "name": "Raid Probe (local diagnostics)",
+  "environment": "*",
+  "mixins": ["raidprobe.mixins.json"],
+  "depends": { "fabricloader": "*" }
+}

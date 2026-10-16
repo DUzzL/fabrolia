@@ -24,9 +24,11 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -42,52 +44,58 @@ class LivingEntityEffectIterationTest {
         Bootstrap.bootStrap();
     }
 
-    @Test
-    void convertingEffectExpiresOnceAndReplacementKeepsItsFullOwnTickCountdown() throws Exception {
-        Fixture fixture = new Fixture();
-        CountingEffect source = new CountingEffect(MobEffects.BAD_OMEN, 1);
-        CountingEffect destination = new CountingEffect(MobEffects.RAID_OMEN, 600);
-        // Same structural path as BadOmenMobEffect: insert the successor before
-        // tickServer returns false. No world/player substitutes choose the cursor.
+    /**
+     * Same structural path as BadOmenMobEffect: insert the successor before
+     * tickServer returns false. Vanilla's HashMap then throws from
+     * iterator.remove(), tickEffects swallows it and the source stays one more
+     * tick; raid farms rely on it (Bad Omen survives its Raid Omen conversion).
+     */
+    private static List<String> conversionTrace(Fixture fixture) throws Exception {
+        CountingEffect source = new CountingEffect("source", MobEffects.BAD_OMEN, 1);
+        CountingEffect destination = new CountingEffect("destination", MobEffects.RAID_OMEN, 600);
         source.beforeTick = () -> fixture.effects.put(destination.getEffect(), destination);
         fixture.effects.put(source.getEffect(), source);
-
-        fixture.tick();
-
-        assertFalse(fixture.subject.hasEffect(source.getEffect()));
-        assertEquals(List.of(source), fixture.subject.removed);
-        assertEquals(Map.of(destination.getEffect(), destination), fixture.effects);
-        assertEquals(600, destination.getDuration());
-        assertEquals(0, destination.ticks);
-        for (int remaining = 599; remaining > 0; remaining--) {
+        List<String> trace = new ArrayList<>();
+        for (int tick = 1; tick <= 602; tick++) {
             fixture.tick();
-            assertSame(destination, fixture.subject.getEffect(destination.getEffect()));
-            assertEquals(remaining, destination.getDuration());
+            trace.add(tick + " " + fixture.describe() + " ticks=" + source.ticks + "/" + destination.ticks);
         }
-        fixture.tick();
-        assertTrue(fixture.effects.isEmpty());
-        assertEquals(600, destination.ticks);
-        assertEquals(1, source.ticks, "conversion must not refresh the successor every tick");
-        assertEquals(List.of(source, destination), fixture.subject.removed);
+        return trace;
     }
 
     @Test
-    void replacementOfExpiringRegistrationIsNotRemovedByItsOldTick() throws Exception {
-        Fixture fixture = new Fixture();
-        CountingEffect old = new CountingEffect(MobEffects.INVISIBILITY, 1);
-        CountingEffect replacement = new CountingEffect(old.getEffect(), 2);
+    void convertingEffectFollowsVanillaHashMapIteration() throws Exception {
+        Fixture fabrolia = new Fixture();
+        List<String> expected = conversionTrace(new Fixture(true));
+        assertEquals(expected, conversionTrace(fabrolia));
+        assertTrue(expected.get(0).contains("bad_omen=source:0") && expected.get(0).contains("removed=[]"),
+                "the conversion tick keeps the source: " + expected.get(0));
+        assertTrue(expected.get(1).contains("removed=[source]"), expected.get(1));
+        assertTrue(fabrolia.effects.isEmpty());
+        assertEquals(List.of("source", "destination"), fabrolia.removedLabels());
+    }
+
+    private static List<String> selfReplacementTrace(Fixture fixture) throws Exception {
+        CountingEffect old = new CountingEffect("old", MobEffects.INVISIBILITY, 1);
+        CountingEffect replacement = new CountingEffect("replacement", old.getEffect(), 2);
         old.beforeTick = () -> fixture.effects.put(old.getEffect(), replacement);
         fixture.effects.put(old.getEffect(), old);
+        List<String> trace = new ArrayList<>();
+        for (int tick = 1; tick <= 3; tick++) {
+            fixture.tick();
+            trace.add(tick + " " + fixture.describe() + " ticks=" + old.ticks + "/" + replacement.ticks);
+        }
+        return trace;
+    }
 
-        fixture.tick();
-
-        assertSame(replacement, fixture.subject.getEffect(old.getEffect()));
-        assertEquals(2, replacement.getDuration());
-        assertTrue(fixture.subject.removed.isEmpty(),
-                "the old expiration cannot notify removal of a replacement registration");
-        fixture.tick();
-        fixture.tick();
-        assertEquals(List.of(replacement), fixture.subject.removed);
+    @Test
+    void expiringEffectRemovesItsKeyLikeVanillaEvenAfterReplacingItsValue() throws Exception {
+        // HashMap.put on an existing key is not structural, and HashIterator.remove
+        // removes by key: vanilla drops the replacement and reports the old instance.
+        Fixture fabrolia = new Fixture();
+        assertEquals(selfReplacementTrace(new Fixture(true)), selfReplacementTrace(fabrolia));
+        assertTrue(fabrolia.effects.isEmpty());
+        assertEquals(List.of("old"), fabrolia.removedLabels());
     }
 
     @Test
@@ -273,8 +281,13 @@ class LivingEntityEffectIterationTest {
         final Map<Holder<MobEffect>, MobEffectInstance> effects;
         final Method tickWrapper;
 
-        @SuppressWarnings("unchecked")
         Fixture() throws Exception {
+            this(false);
+        }
+
+        /** @param vanillaMap substitute vanilla's HashMap as the reference for differential tests */
+        @SuppressWarnings("unchecked")
+        Fixture(boolean vanillaMap) throws Exception {
             sun.misc.Unsafe unsafe = (sun.misc.Unsafe) field(sun.misc.Unsafe.class, "theUnsafe").get(null);
             TestLevel level = (TestLevel) unsafe.allocateInstance(TestLevel.class);
             EntityType<?> type = (EntityType<?>) unsafe.allocateInstance(EntityType.class);
@@ -282,7 +295,7 @@ class LivingEntityEffectIterationTest {
                     net.minecraft.world.entity.EntityDimensions.fixed(0.6F, 1.8F));
             // Run the real field initializers: this test must not choose a map or monitor itself.
             storage = new MixinStorage(type, level);
-            effects = (Map<Holder<MobEffect>, MobEffectInstance>)
+            effects = vanillaMap ? new HashMap<>() : (Map<Holder<MobEffect>, MobEffectInstance>)
                     field(LivingEntityMixin.class, "activeEffects").get(storage);
             subject = (Subject) unsafe.allocateInstance(Subject.class);
             subject.testLevel = level;
@@ -304,12 +317,28 @@ class LivingEntityEffectIterationTest {
                 throw new AssertionError(failure.getCause());
             }
         }
+
+        String describe() {
+            TreeMap<String, String> registered = new TreeMap<>();
+            effects.forEach((effect, instance) -> registered.put(effect.getRegisteredName().replace("minecraft:", ""),
+                    ((CountingEffect) instance).label + ":" + instance.getDuration()));
+            return "effects=" + registered + " removed=" + removedLabels();
+        }
+
+        List<String> removedLabels() {
+            return subject.removed.stream().map(effect -> ((CountingEffect) effect).label).toList();
+        }
     }
 
     private static final class CountingEffect extends MobEffectInstance {
+        final String label;
         int ticks;
         Runnable beforeTick;
-        CountingEffect(Holder<MobEffect> effect, int duration) { super(effect, duration); }
+        CountingEffect(Holder<MobEffect> effect, int duration) { this(effect.getRegisteredName(), effect, duration); }
+        CountingEffect(String label, Holder<MobEffect> effect, int duration) {
+            super(effect, duration);
+            this.label = label;
+        }
         @Override
         public boolean tickServer(ServerLevel level, LivingEntity entity, Runnable onUpdate) {
             ticks++;

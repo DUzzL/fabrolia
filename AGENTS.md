@@ -34,8 +34,8 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 ```
 
 Jar: `fabric/build/libs/fabrolia-alpha_<major>.<minor>.<patch>.jar`; current build
-`fabrolia-alpha_3.1.4.jar` (metadata `3.1.4-alpha` in `gradle.properties`; island health
-judged on the current rate, on top of the 3.1.3 readable info commands), not yet stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
+`fabrolia-alpha_3.1.5.jar` (metadata `3.1.5-alpha` in `gradle.properties`; Bad Omen survives
+its Raid Omen conversion again, on top of the 3.1.4 island health display), not yet stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
 which crashed on a mob killing an island player (fixed in 3.0.3); `3.0.3-alpha` ran from
 2026-10-11 12:58 CEST and lagged at 40 players (see `docs/PERF-ANALYSE-2026-10-11.md`).
 The owner's 2026-10-10 versioning rule supersedes the old fixed `0.2.38+alpha-26.3`:
@@ -60,13 +60,28 @@ classes of the real mod set: `tools/stand/stand.sh export exp-1 <jar>`, then
 (details, scenarios and how to read results: `docs/STAND.md`):
 
 ```bash
-tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.4.jar   # must print ALL PASS
+tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.5.jar   # must print ALL PASS
 tools/stand/stand.sh perf perf-1 <jar> 120 [--scenario items|pistons] [--heap]
 python3 tools/spark/frames.py <old>.sparkprofile <new>.sparkprofile
 ```
 
 Every change touching runtime code: tests + `verify`. Threading/performance changes: also
 `perf` on the old and new jar with the same scenario.
+
+A farm reported as broken or slow: get its original world and compare vanilla with
+Fabrolia on a local server operated by a real protocol client (`tools/raid-farm-ab/`,
+works on Windows; Carpet bots tick at a different point than real players).
+For the 2026-10-17 self-sustaining raid-farm investigation, start at
+`docs/RAID-FARM-OMEN-2026-10-17.md`. The old protocol client pinned the saved
+player Y above the floor and could suppress every sweep attack, including in
+vanilla; compare accepted attacks, ground state and actual sweeps before
+attributing missing kills to the parallel mode. Bell POI releases also occurred
+in vanilla; the clock-aware comparison did not establish an island-clock bug.
+With the corrected client, 3.1.5 starts raids like vanilla, but the 9-minute
+natural runs still had six late losses in both island entity modes versus none
+in that vanilla run. The controlled absence of the bell and fallback workstation
+also stops a vanilla raid at ~6 %. Next investigate the phase of the bell release
+relative to reclaiming (0,143,18), not a grace period around the vanilla loss rule.
 
 ## Diagnose production
 

@@ -1,0 +1,19 @@
+plugins {
+    id 'net.fabricmc.fabric-loom' version '1.17-SNAPSHOT'
+}
+
+version = '1.0.0'
+group = 'raidprobe'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:26.3"
+    implementation "net.fabricmc:fabric-loader:0.19.5"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+}

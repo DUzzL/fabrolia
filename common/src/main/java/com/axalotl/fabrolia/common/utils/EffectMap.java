@@ -21,8 +21,11 @@ import java.util.function.Predicate;
 
 /**
  * Effect mutations share the entity tick's monitor without locking remote readers.
- * Monitor-owned traversal stops before its next element after structural reentry,
- * but an insertion does not cancel expiration of the still-current effect.
+ * Monitor-owned traversal keeps vanilla's HashMap fail-fast contract: after a
+ * structural change (an effect added or removed by the current effect's tick),
+ * both next() and remove() throw ConcurrentModificationException. Vanilla
+ * tickEffects catches it, ends the turn and keeps the current effect; farms
+ * depend on that (Bad Omen survives its own Raid Omen conversion).
  * Unowned readers retain ConcurrentHashMap's weak traversal.
  * Values are live references, not snapshots of mutable effect-instance fields.
  */
@@ -30,7 +33,6 @@ public final class EffectMap<K, V> extends AbstractMap<K, V> implements Concurre
     private final ConcurrentHashMap<K, V> backing = new ConcurrentHashMap<>();
     // Only writers and monitor-owned iterators access this field.
     private long structuralRevision;
-    private long removalRevision;
     private volatile Set<K> keys;
     private volatile Collection<V> values;
     private volatile Set<Entry<K, V>> entries;
@@ -60,20 +62,14 @@ public final class EffectMap<K, V> extends AbstractMap<K, V> implements Concurre
     @Override
     public synchronized V remove(Object key) {
         V previous = backing.remove(key);
-        if (previous != null) {
-            structuralRevision++;
-            removalRevision++;
-        }
+        if (previous != null) structuralRevision++;
         return previous;
     }
 
     @Override
     public synchronized boolean remove(Object key, Object value) {
         boolean removed = backing.remove(key, value);
-        if (removed) {
-            structuralRevision++;
-            removalRevision++;
-        }
+        if (removed) structuralRevision++;
         return removed;
     }
 
@@ -82,7 +78,6 @@ public final class EffectMap<K, V> extends AbstractMap<K, V> implements Concurre
         if (!backing.isEmpty()) {
             backing.clear();
             structuralRevision++;
-            removalRevision++;
         }
     }
 
@@ -139,10 +134,7 @@ public final class EffectMap<K, V> extends AbstractMap<K, V> implements Concurre
     }
 
     private void recordPresenceChange(boolean before, boolean after) {
-        if (before != after) {
-            structuralRevision++;
-            if (before) removalRevision++;
-        }
+        if (before != after) structuralRevision++;
     }
 
     @Override
@@ -169,12 +161,8 @@ public final class EffectMap<K, V> extends AbstractMap<K, V> implements Concurre
     private abstract class GuardedIterator<T> implements Iterator<T> {
         final boolean owned = Thread.holdsLock(EffectMap.this);
         long expectedRevision = owned ? structuralRevision : 0;
-        long expectedRemovalRevision = owned ? removalRevision : 0;
         K lastKey;
-        V lastValue;
         boolean removable;
-
-        V removalValue() { return lastValue; }
 
         final void checkRevision() {
             if (owned && expectedRevision != structuralRevision) throw new ConcurrentModificationException();
@@ -183,34 +171,24 @@ public final class EffectMap<K, V> extends AbstractMap<K, V> implements Concurre
         @Override public final void remove() {
             synchronized (EffectMap.this) {
                 if (!removable) throw new IllegalStateException();
-                boolean reentered = owned && expectedRevision != structuralRevision;
-                // An insertion during tickServer must not retain the expiring old
-                // effect. A removal may have removed/reinserted even the SAME value:
-                // that is a new registration, not this cursor's expiration.
-                if (owned && (expectedRemovalRevision != removalRevision
-                        || backing.get(lastKey) != removalValue())) {
-                    throw new ConcurrentModificationException();
-                }
+                // HashMap.HashIterator.remove: a structural change since this
+                // cursor last synchronised throws and keeps the current key.
+                // Vanilla tickEffects swallows the exception, so an effect whose
+                // tick installed another one (Bad Omen -> Raid Omen) stays.
+                checkRevision();
                 EffectMap.this.remove(lastKey);
-                if (owned) {
-                    expectedRemovalRevision = removalRevision;
-                    // Still abort before another element after reentry: an effect
-                    // installed by this tick starts counting down on the next tick.
-                    if (!reentered) expectedRevision = structuralRevision;
-                }
+                if (owned) expectedRevision = structuralRevision;
                 removable = false;
             }
         }
     }
 
-    // Only the owned cursor needs the current registration identity.
     private final class KeyIterator extends GuardedIterator<K> {
         private final Iterator<K> iterator = backing.keySet().iterator();
         @Override public boolean hasNext() { return iterator.hasNext(); }
         @Override public K next() {
             checkRevision();
             lastKey = iterator.next();
-            if (owned) lastValue = backing.get(lastKey);
             removable = true;
             return lastKey;
         }
@@ -246,7 +224,6 @@ public final class EffectMap<K, V> extends AbstractMap<K, V> implements Concurre
             // Owned traversal observes nonstructural value replacements, like HashMap.
             V value = owned ? backing.get(key) : nextValue;
             lastKey = key;
-            lastValue = value;
             removable = true;
             advance();
             return project(key, value);
@@ -258,11 +235,9 @@ public final class EffectMap<K, V> extends AbstractMap<K, V> implements Concurre
         @Override V project(K key, V value) { return value; }
     }
     private final class EntryIterator extends ProjectedIterator<Entry<K, V>> {
-        private WriteThroughEntry lastEntry;
         @Override Entry<K, V> project(K key, V value) {
-            return lastEntry = new WriteThroughEntry(key, value);
+            return new WriteThroughEntry(key, value);
         }
-        @Override V removalValue() { return lastEntry.value; }
     }
     private final class WriteThroughEntry implements Entry<K, V> {
         private final K key;
