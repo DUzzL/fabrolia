@@ -189,3 +189,29 @@ a Vanilla reference must contain only Fabric API, Carpet and optionally spark.
 four powered loops with 160 mixed carts. Compare old/new profiles with
 `tools/spark/frames.py`. This focused fixture supplements the full production
 modpack's 40-client `verify` and matched `perf`; it does not replace them.
+
+### Nether portal transport and autonomous chunkloaders
+
+`portal-parity-driver.py` uses the same world-free Fabric template on Windows
+or Linux, but builds actual Overworld/Nether portals and physical observer /
+dropper loaders. A real protocol client stays far away; all bootstrap forceload
+tickets are removed before the measurement. It checks bidirectional mob and
+item transfers, continued loading, shared 10/20 TPS changes, exact item
+conservation and chunk unload after the clocks stop.
+
+```bash
+python tools/stand/portal-parity-driver.py build/portal-van \
+  --template TEMPLATE --mods FABRIC_API_JAR CARPET_JAR \
+  --java JAVA25 --server-port 26600
+python tools/stand/portal-parity-driver.py build/portal-candidate \
+  --template TEMPLATE --mods FABRIC_API_JAR CARPET_JAR LITHIUM_JAR \
+  --jar fabric/build/libs/fabrolia-alpha_3.1.6.jar --mode parallel \
+  --java JAVA25 --server-port 26610 --stress
+```
+
+`--mode serial` checks the vanilla-order island entity lane. `--stress` adds
+200 ms artificial unit cost to one coupled member for eight seconds, then
+requires recovery. Add the same Spark jar to both old/new `--mods` lists and
+use `--profile` for a capture of the initial steady workload. Each run needs
+a fresh directory and an unused adjacent RCON port. Results and limits:
+[2026-10-17 portal-loader review](PORTAL-LOADER-REVIEW-2026-10-17.md).

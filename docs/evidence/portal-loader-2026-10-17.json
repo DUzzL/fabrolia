@@ -1,0 +1,1717 @@
+{
+  "reviewed_commits": [
+    "87da3ff",
+    "a550b3e",
+    "0cdd1dd"
+  ],
+  "source_chat_sha256": "f40490002af5d757de4eba65fbe0297f8d847b24e11f6fa9e9b8cd358a2d458e",
+  "driver": {
+    "path": "tools/stand/portal-parity-driver.py",
+    "sha256": "8cee9a2a5e6b83372dcbe27fb43443390513c612559d73021fc452fce073120a"
+  },
+  "campaigns": [
+    {
+      "status": "PASS",
+      "fixture": "portal-parity-v2",
+      "driver_sha256": "8cee9a2a5e6b83372dcbe27fb43443390513c612559d73021fc452fce073120a",
+      "vanilla_reference": true,
+      "jar_sha256": null,
+      "mod_sha256": {
+        "fabric-api-0.163.0+26.3.jar": "4969f5197ebedaf681cc913e4258c8bd17ccb98029db52a29e9b48e998267a2d",
+        "fabric-carpet-26.3+v260915.jar": "7c40b93e807ed914064176898037117097446c6cc76e6a80a856c8bf7f7659f9"
+      },
+      "java_version": "openjdk version \"25.0.4.1\" 2026-08-18 LTS\nOpenJDK Runtime Environment Temurin-25.0.4.1+1 (build 25.0.4.1+1-LTS)\nOpenJDK 64-Bit Server VM Temurin-25.0.4.1+1 (build 25.0.4.1+1-LTS, mixed mode, sharing)",
+      "minecraft_version": "26.3",
+      "fabric_loader_version": "0.19.5",
+      "mode": "parallel",
+      "stress": false,
+      "mob_transfers": {
+        "overworld_to_nether": 8,
+        "nether_to_overworld": 8
+      },
+      "force_load_tickets_removed": true,
+      "observer_position": "PortalProbe has the following entity data: [0.5d, 80.0d, 0.5d]",
+      "initial_stock_each_direction": 1152,
+      "item_conservation": {
+        "expected": 2304,
+        "actual": 2304
+      },
+      "samples": [
+        {
+          "phase": "autonomous_start",
+          "time": 8.769,
+          "sites": {
+            "overworld": {
+              "source": 1138,
+              "received": 9,
+              "loose": 4
+            },
+            "the_nether": {
+              "source": 1138,
+              "received": 11,
+              "loose": 4
+            }
+          }
+        },
+        {
+          "phase": "autonomous_25s",
+          "time": 34.039,
+          "sites": {
+            "overworld": {
+              "source": 1054,
+              "received": 69,
+              "loose": 28
+            },
+            "the_nether": {
+              "source": 1054,
+              "received": 60,
+              "loose": 39
+            }
+          }
+        },
+        {
+          "phase": "autonomous_50s",
+          "time": 59.279,
+          "sites": {
+            "overworld": {
+              "source": 970,
+              "received": 129,
+              "loose": 53
+            },
+            "the_nether": {
+              "source": 970,
+              "received": 114,
+              "loose": 69
+            }
+          }
+        },
+        {
+          "phase": "clocks_stopped",
+          "time": 64.525,
+          "sites": {
+            "overworld": {
+              "source": 968,
+              "received": 131,
+              "loose": 53
+            },
+            "the_nether": {
+              "source": 968,
+              "received": 116,
+              "loose": 68
+            }
+          }
+        }
+      ],
+      "ticket_expired_after_clocks_stop": {
+        "overworld": true,
+        "the_nether": true
+      },
+      "returncode": 0,
+      "crash_reports": [],
+      "runtime_errors": [],
+      "name": "final-vanilla",
+      "raw_report": "build\\portal-parity\\final-vanilla\\portal-parity-report.json",
+      "raw_report_sha256": "b41b3f01f50d131737d42cb933162b224ddd9921c7ec16e75022c8f18bc6f49c",
+      "console_sha256": "3ec02cff190041c2d7738dabb276c20dbb014d7aa59499b903cff0b015a3ea3a",
+      "direction_conservation": {
+        "overworld_to_the_nether": {
+          "sent": 184,
+          "arrived": 184
+        },
+        "the_nether_to_overworld": {
+          "sent": 184,
+          "arrived": 184
+        }
+      },
+      "final_inventory_receipts": [
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 65 4096 Items",
+          "out": "4095, 65, 4096 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 1b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 2b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 3b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 4b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 5b, id: \"minecraft:glowstone_dust\"}, {count: 56, Slot: 6b, id: \"minecraft:glowstone_dust\"}, {count: 39, Slot: 7b, id: \"minecraft:glowstone_dust\"}, {count: 45, Slot: 8b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 66 4096 Items",
+          "out": "4095, 66, 4096 has the following block data: [{count: 1, Slot: 0b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 67 4096 Items",
+          "out": "4095, 67, 4096 has the following block data: [{count: 59, Slot: 2b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 3b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 4b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 5b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 6b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 7b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 8b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4097 64 4096 Items",
+          "out": "4097, 64, 4096 has the following block data: []"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4097 64 4097 Items",
+          "out": "4097, 64, 4097 has the following block data: []"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4098 64 4096 Items",
+          "out": "4098, 64, 4096 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:quartz\"}, {count: 50, Slot: 1b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4098 64 4097 Items",
+          "out": "4098, 64, 4097 has the following block data: [{count: 17, Slot: 0b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 65 512 Items",
+          "out": "511, 65, 512 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:quartz\"}, {count: 64, Slot: 1b, id: \"minecraft:quartz\"}, {count: 64, Slot: 2b, id: \"minecraft:quartz\"}, {count: 64, Slot: 3b, id: \"minecraft:quartz\"}, {count: 64, Slot: 4b, id: \"minecraft:quartz\"}, {count: 64, Slot: 5b, id: \"minecraft:quartz\"}, {count: 47, Slot: 6b, id: \"minecraft:quartz\"}, {count: 45, Slot: 7b, id: \"minecraft:quartz\"}, {count: 48, Slot: 8b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 66 512 Items",
+          "out": "511, 66, 512 has the following block data: [{count: 1, Slot: 0b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 67 512 Items",
+          "out": "511, 67, 512 has the following block data: [{count: 59, Slot: 2b, id: \"minecraft:quartz\"}, {count: 64, Slot: 3b, id: \"minecraft:quartz\"}, {count: 64, Slot: 4b, id: \"minecraft:quartz\"}, {count: 64, Slot: 5b, id: \"minecraft:quartz\"}, {count: 64, Slot: 6b, id: \"minecraft:quartz\"}, {count: 64, Slot: 7b, id: \"minecraft:quartz\"}, {count: 64, Slot: 8b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 513 64 512 Items",
+          "out": "513, 64, 512 has the following block data: []"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 513 64 513 Items",
+          "out": "513, 64, 513 has the following block data: []"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 514 64 512 Items",
+          "out": "514, 64, 512 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:glowstone_dust\"}, {count: 37, Slot: 1b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 514 64 513 Items",
+          "out": "514, 64, 513 has the following block data: [{count: 15, Slot: 0b, id: \"minecraft:glowstone_dust\"}]"
+        }
+      ],
+      "setup_receipts": [
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run forceload query",
+          "out": "No force loaded chunks were found in minecraft:overworld"
+        },
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run forceload query",
+          "out": "No force loaded chunks were found in minecraft:the_nether"
+        }
+      ],
+      "mob_receipts": [
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run execute as @e[tag=from_overworld,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)Added 1 to [portal_test] for mobs (now 8)"
+        },
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run execute as @e[tag=from_the_nether,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)Added 1 to [portal_test] for mobs (now 8)"
+        }
+      ]
+    },
+    {
+      "status": "PASS",
+      "fixture": "portal-parity-v2",
+      "driver_sha256": "8cee9a2a5e6b83372dcbe27fb43443390513c612559d73021fc452fce073120a",
+      "vanilla_reference": false,
+      "jar_sha256": "0700d63fbfdc7dacac2337b22dd14e99c7fce806b71394af794d9248c2306950",
+      "mod_sha256": {
+        "fabric-api-0.163.0+26.3.jar": "4969f5197ebedaf681cc913e4258c8bd17ccb98029db52a29e9b48e998267a2d",
+        "fabric-carpet-26.3+v260915.jar": "7c40b93e807ed914064176898037117097446c6cc76e6a80a856c8bf7f7659f9",
+        "fabrolia-alpha_3.1.3.jar": "0700d63fbfdc7dacac2337b22dd14e99c7fce806b71394af794d9248c2306950"
+      },
+      "java_version": "openjdk version \"25.0.4.1\" 2026-08-18 LTS\nOpenJDK Runtime Environment Temurin-25.0.4.1+1 (build 25.0.4.1+1-LTS)\nOpenJDK 64-Bit Server VM Temurin-25.0.4.1+1 (build 25.0.4.1+1-LTS, mixed mode, sharing)",
+      "minecraft_version": "26.3",
+      "fabric_loader_version": "0.19.5",
+      "mode": "parallel",
+      "stress": true,
+      "stress_member": "ow-3g3",
+      "mob_transfers": {
+        "overworld_to_nether": 8,
+        "nether_to_overworld": 8
+      },
+      "force_load_tickets_removed": true,
+      "observer_position": "PortalProbe has the following entity data: [0.5d, 80.0d, 0.5d]",
+      "initial_stock_each_direction": 1152,
+      "item_conservation": {
+        "expected": 2304,
+        "actual": 2304
+      },
+      "samples": [
+        {
+          "phase": "autonomous_start",
+          "time": 10.677,
+          "sites": {
+            "overworld": {
+              "source": 1138,
+              "received": 7,
+              "loose": 6
+            },
+            "the_nether": {
+              "source": 1138,
+              "received": 9,
+              "loose": 6
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=150t lastSeen=150t ago COUPLED sharedTps=20.0 anchored Δdeadline=0.00ms ΔL=-21",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=173 gt=224 ev=0/0 tps=20.0/20.0 mspt=3.66 max=20.83 lag=0ms missed=2#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=179 gt=224 ev=0/0 tps=20.0/20.0 mspt=1.27 max=2.78 lag=0ms missed=3#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=194 gt=224 ev=0/0 tps=20.0/20.0 mspt=1.16 max=4.23 lag=0ms missed=0"
+        },
+        {
+          "phase": "autonomous_25s",
+          "time": 36.014,
+          "sites": {
+            "overworld": {
+              "source": 1054,
+              "received": 63,
+              "loose": 35
+            },
+            "the_nether": {
+              "source": 1053,
+              "received": 72,
+              "loose": 28
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=657t lastSeen=657t ago COUPLED sharedTps=20.0 anchored Δdeadline=0.00ms ΔL=-21",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=680 gt=731 ev=0/0 tps=20.0/20.0 mspt=1.05 max=2.44 lag=0ms missed=2#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=686 gt=731 ev=0/0 tps=20.0/20.0 mspt=0.75 max=0.87 lag=0ms missed=3#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=701 gt=731 ev=0/0 tps=20.0/20.0 mspt=0.58 max=0.88 lag=0ms missed=0"
+        },
+        {
+          "phase": "autonomous_50s",
+          "time": 61.331,
+          "sites": {
+            "overworld": {
+              "source": 969,
+              "received": 119,
+              "loose": 63
+            },
+            "the_nether": {
+              "source": 969,
+              "received": 132,
+              "loose": 51
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1163t lastSeen=1163t ago COUPLED sharedTps=20.0 anchored Δdeadline=0.00ms ΔL=-21",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1186 gt=1237 ev=0/0 tps=20.0/20.0 mspt=0.66 max=1.03 lag=0ms missed=2#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1192 gt=1237 ev=0/0 tps=20.0/20.0 mspt=0.62 max=0.67 lag=0ms missed=3#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=1207 gt=1237 ev=0/0 tps=20.0/20.0 mspt=0.41 max=0.65 lag=0ms missed=0"
+        },
+        {
+          "phase": "overworld_200ms_overload",
+          "time": 69.654,
+          "sites": {
+            "overworld": {
+              "source": 961,
+              "received": 137,
+              "loose": 72
+            },
+            "the_nether": {
+              "source": 941,
+              "received": 141,
+              "loose": 52
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=17(+130 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1401t lastSeen=1401t ago COUPLED sharedTps=20.0 anchored Δdeadline=149.87ms ΔL=-144",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1246 gt=1477 ev=0/0 tps=4.9/20.0 mspt=201.54 max=201.28 lag=12124ms missed=62#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1388 gt=1477 ev=0/0 tps=8.8/20.0 mspt=0.49 max=0.82 lag=1514ms missed=23#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=1390 gt=1477 ev=0/0 tps=8.8/20.0 mspt=0.34 max=0.50 lag=1760ms missed=25"
+        },
+        {
+          "phase": "overload_recovered",
+          "time": 82.135,
+          "sites": {
+            "overworld": {
+              "source": 931,
+              "received": 158,
+              "loose": 83
+            },
+            "the_nether": {
+              "source": 911,
+              "received": 159,
+              "loose": 62
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=20(+135 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1578t lastSeen=1578t ago COUPLED sharedTps=20.0 anchored Δdeadline=-0.17ms ΔL=-144",
+          "islands": "#1 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1557 gt=1652 ev=0/0 tps=20.0/20.0 mspt=0.63 max=1.05 lag=0ms missed=25#2 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1414 gt=1652 ev=0/0 tps=20.0/20.0 mspt=0.57 max=14.51 lag=4521ms missed=64#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=1558 gt=1652 ev=0/0 tps=20.0/20.0 mspt=0.36 max=0.80 lag=0ms missed=27"
+        },
+        {
+          "phase": "shared_rate_10",
+          "time": 102.401,
+          "sites": {
+            "overworld": {
+              "source": 897,
+              "received": 178,
+              "loose": 97
+            },
+            "the_nether": {
+              "source": 877,
+              "received": 181,
+              "loose": 74
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=20(+135 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1983t lastSeen=1983t ago COUPLED sharedTps=10.0 anchored Δdeadline=-0.17ms ΔL=-144",
+          "islands": "#1 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1962 gt=2058 ev=0/0 tps=20.0/20.0 mspt=0.60 max=0.75 lag=0ms missed=25#2 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1617 gt=2058 ev=0/0 tps=10.5/10.0 mspt=0.52 max=0.77 lag=0ms missed=64 RATE-OVERRIDE#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=1761 gt=2058 ev=0/0 tps=10.5/20.0 mspt=0.31 max=0.43 lag=0ms missed=27"
+        },
+        {
+          "phase": "shared_rate_restored",
+          "time": 117.672,
+          "sites": {
+            "overworld": {
+              "source": 847,
+              "received": 211,
+              "loose": 114
+            },
+            "the_nether": {
+              "source": 826,
+              "received": 216,
+              "loose": 90
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=20(+135 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=2288t lastSeen=2288t ago COUPLED sharedTps=20.0 anchored Δdeadline=-0.17ms ΔL=-144",
+          "islands": "#1 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=2267 gt=2362 ev=0/0 tps=20.0/20.0 mspt=0.52 max=0.65 lag=0ms missed=25#2 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1921 gt=2362 ev=0/0 tps=20.0/20.0 mspt=0.48 max=0.91 lag=0ms missed=64#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=2065 gt=2362 ev=0/0 tps=20.0/20.0 mspt=0.25 max=0.44 lag=0ms missed=27"
+        },
+        {
+          "phase": "clocks_stopped",
+          "time": 122.911,
+          "sites": {
+            "overworld": {
+              "source": 844,
+              "received": 213,
+              "loose": 114
+            },
+            "the_nether": {
+              "source": 825,
+              "received": 218,
+              "loose": 90
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=20(+135 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=2368t lastSeen=2368t ago COUPLED sharedTps=20.0 anchored Δdeadline=-0.17ms ΔL=-144",
+          "islands": "#1 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=2347 gt=2442 ev=0/0 tps=10.5/20.0 mspt=0.53 max=0.76 lag=0ms missed=25#2 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=2001 gt=2442 ev=0/0 tps=10.5/20.0 mspt=0.38 max=0.64 lag=0ms missed=64#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=2145 gt=2442 ev=0/0 tps=10.5/20.0 mspt=0.19 max=0.30 lag=0ms missed=27"
+        }
+      ],
+      "ticket_expired_after_clocks_stop": {
+        "overworld": true,
+        "the_nether": true
+      },
+      "returncode": 0,
+      "crash_reports": [],
+      "runtime_errors": [],
+      "name": "final-baseline313",
+      "raw_report": "build\\portal-parity\\final-baseline313\\portal-parity-report.json",
+      "raw_report_sha256": "5775d7084823c0343c85be6ee4a65465492eec869302b9a8e32710fc04293d9b",
+      "console_sha256": "c5b07417083f5e5f5529d6424a0924771109859c7c2a0fadc4d257c2a074b590",
+      "direction_conservation": {
+        "overworld_to_the_nether": {
+          "sent": 308,
+          "arrived": 308
+        },
+        "the_nether_to_overworld": {
+          "sent": 327,
+          "arrived": 327
+        }
+      },
+      "final_inventory_receipts": [
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 65 4096 Items",
+          "out": "4095, 65, 4096 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 1b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 2b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 3b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 4b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 5b, id: \"minecraft:glowstone_dust\"}, {count: 40, Slot: 6b, id: \"minecraft:glowstone_dust\"}, {count: 33, Slot: 7b, id: \"minecraft:glowstone_dust\"}, {count: 25, Slot: 8b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 66 4096 Items",
+          "out": "4095, 66, 4096 has the following block data: [{count: 1, Slot: 0b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 67 4096 Items",
+          "out": "4095, 67, 4096 has the following block data: [{count: 41, Slot: 3b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 4b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 5b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 6b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 7b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 8b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4097 64 4096 Items",
+          "out": "4097, 64, 4096 has the following block data: []"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4097 64 4097 Items",
+          "out": "4097, 64, 4097 has the following block data: []"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4098 64 4096 Items",
+          "out": "4098, 64, 4096 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:quartz\"}, {count: 64, Slot: 1b, id: \"minecraft:quartz\"}, {count: 63, Slot: 2b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4098 64 4097 Items",
+          "out": "4098, 64, 4097 has the following block data: [{count: 22, Slot: 0b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 65 512 Items",
+          "out": "511, 65, 512 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:quartz\"}, {count: 64, Slot: 1b, id: \"minecraft:quartz\"}, {count: 64, Slot: 2b, id: \"minecraft:quartz\"}, {count: 64, Slot: 3b, id: \"minecraft:quartz\"}, {count: 64, Slot: 4b, id: \"minecraft:quartz\"}, {count: 55, Slot: 5b, id: \"minecraft:quartz\"}, {count: 28, Slot: 6b, id: \"minecraft:quartz\"}, {count: 40, Slot: 7b, id: \"minecraft:quartz\"}, {count: 33, Slot: 8b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 66 512 Items",
+          "out": "511, 66, 512 has the following block data: [{count: 1, Slot: 0b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 67 512 Items",
+          "out": "511, 67, 512 has the following block data: [{count: 28, Slot: 3b, id: \"minecraft:quartz\"}, {count: 64, Slot: 4b, id: \"minecraft:quartz\"}, {count: 64, Slot: 5b, id: \"minecraft:quartz\"}, {count: 64, Slot: 6b, id: \"minecraft:quartz\"}, {count: 64, Slot: 7b, id: \"minecraft:quartz\"}, {count: 64, Slot: 8b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 513 64 512 Items",
+          "out": "513, 64, 512 has the following block data: []"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 513 64 513 Items",
+          "out": "513, 64, 513 has the following block data: []"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 514 64 512 Items",
+          "out": "514, 64, 512 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 1b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 2b, id: \"minecraft:glowstone_dust\"}, {count: 2, Slot: 3b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 514 64 513 Items",
+          "out": "514, 64, 513 has the following block data: [{count: 24, Slot: 0b, id: \"minecraft:glowstone_dust\"}]"
+        }
+      ],
+      "setup_receipts": [
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run forceload query",
+          "out": "No force loaded chunks were found in minecraft:overworld"
+        },
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run forceload query",
+          "out": "No force loaded chunks were found in minecraft:the_nether"
+        }
+      ],
+      "mob_receipts": [
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run execute as @e[tag=from_overworld,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)"
+        },
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run execute as @e[tag=from_overworld,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)Added 1 to [portal_test] for mobs (now 8)"
+        },
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run execute as @e[tag=from_the_nether,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)Added 1 to [portal_test] for mobs (now 8)"
+        }
+      ]
+    },
+    {
+      "status": "PASS",
+      "fixture": "portal-parity-v2",
+      "driver_sha256": "8cee9a2a5e6b83372dcbe27fb43443390513c612559d73021fc452fce073120a",
+      "vanilla_reference": false,
+      "jar_sha256": "fd5034dc6fd6b7910881a7a7a820fb2f8b6e4379b7ef1816497d6ca45d453aea",
+      "mod_sha256": {
+        "fabric-api-0.163.0+26.3.jar": "4969f5197ebedaf681cc913e4258c8bd17ccb98029db52a29e9b48e998267a2d",
+        "fabric-carpet-26.3+v260915.jar": "7c40b93e807ed914064176898037117097446c6cc76e6a80a856c8bf7f7659f9",
+        "fabrolia-alpha_3.1.4.jar": "fd5034dc6fd6b7910881a7a7a820fb2f8b6e4379b7ef1816497d6ca45d453aea"
+      },
+      "java_version": "openjdk version \"25.0.4.1\" 2026-08-18 LTS\nOpenJDK Runtime Environment Temurin-25.0.4.1+1 (build 25.0.4.1+1-LTS)\nOpenJDK 64-Bit Server VM Temurin-25.0.4.1+1 (build 25.0.4.1+1-LTS, mixed mode, sharing)",
+      "minecraft_version": "26.3",
+      "fabric_loader_version": "0.19.5",
+      "mode": "parallel",
+      "stress": true,
+      "stress_member": "ow-3g3",
+      "mob_transfers": {
+        "overworld_to_nether": 8,
+        "nether_to_overworld": 8
+      },
+      "force_load_tickets_removed": true,
+      "observer_position": "PortalProbe has the following entity data: [0.5d, 80.0d, 0.5d]",
+      "initial_stock_each_direction": 1152,
+      "item_conservation": {
+        "expected": 2304,
+        "actual": 2304
+      },
+      "samples": [
+        {
+          "phase": "autonomous_start",
+          "time": 9.653,
+          "sites": {
+            "overworld": {
+              "source": 1137,
+              "received": 9,
+              "loose": 5
+            },
+            "the_nether": {
+              "source": 1138,
+              "received": 9,
+              "loose": 6
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=143t lastSeen=143t ago COUPLED sharedTps=20.0 anchored Δdeadline=2.69ms ΔL=-16",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=162 gt=203 ev=0/0 tps=19.7/20.0 mspt=3.06 max=17.21 lag=0ms missed=3#2 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=178 gt=203 ev=0/0 tps=20.0/20.0 mspt=1.46 max=3.76 lag=0ms missed=1#3 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=166 gt=203 ev=0/0 tps=20.3/20.0 mspt=1.42 max=2.43 lag=0ms missed=2"
+        },
+        {
+          "phase": "autonomous_25s",
+          "time": 34.974,
+          "sites": {
+            "overworld": {
+              "source": 1054,
+              "received": 63,
+              "loose": 35
+            },
+            "the_nether": {
+              "source": 1054,
+              "received": 60,
+              "loose": 39
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=650t lastSeen=650t ago COUPLED sharedTps=20.0 anchored Δdeadline=2.69ms ΔL=-16",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=669 gt=709 ev=0/0 tps=20.0/20.0 mspt=1.03 max=3.69 lag=0ms missed=3#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=673 gt=709 ev=0/0 tps=20.0/20.0 mspt=0.71 max=1.01 lag=0ms missed=2#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=685 gt=709 ev=0/0 tps=20.0/20.0 mspt=0.57 max=0.99 lag=0ms missed=1"
+        },
+        {
+          "phase": "autonomous_50s",
+          "time": 60.3,
+          "sites": {
+            "overworld": {
+              "source": 969,
+              "received": 114,
+              "loose": 68
+            },
+            "the_nether": {
+              "source": 970,
+              "received": 118,
+              "loose": 65
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1154t lastSeen=1154t ago COUPLED sharedTps=20.0 anchored Δdeadline=2.69ms ΔL=-16",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1173 gt=1213 ev=0/0 tps=20.0/20.0 mspt=0.76 max=3.84 lag=0ms missed=3#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1177 gt=1213 ev=0/0 tps=20.0/20.0 mspt=0.56 max=0.60 lag=0ms missed=2#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=1189 gt=1213 ev=0/0 tps=20.0/20.0 mspt=0.43 max=0.56 lag=0ms missed=1"
+        },
+        {
+          "phase": "overworld_200ms_overload",
+          "time": 68.522,
+          "sites": {
+            "overworld": {
+              "source": 962,
+              "received": 130,
+              "loose": 78
+            },
+            "the_nether": {
+              "source": 941,
+              "received": 125,
+              "loose": 68
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1385t lastSeen=1385t ago COUPLED sharedTps=20.0 anchored Δdeadline=151.33ms ΔL=-144",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1230 gt=1446 ev=0/0 tps=5.0/20.0 mspt=201.86 max=201.29 lag=8827ms missed=60#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1372 gt=1446 ev=0/0 tps=12.8/20.0 mspt=0.54 max=0.68 lag=1100ms missed=20#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=1375 gt=1446 ev=0/0 tps=11.8/20.0 mspt=0.41 max=0.71 lag=1313ms missed=22"
+        },
+        {
+          "phase": "overload_recovered",
+          "time": 80.436,
+          "sites": {
+            "overworld": {
+              "source": 932,
+              "received": 154,
+              "loose": 86
+            },
+            "the_nether": {
+              "source": 911,
+              "received": 144,
+              "loose": 77
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1558t lastSeen=1558t ago COUPLED sharedTps=20.0 anchored Δdeadline=-5.15ms ΔL=-146",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1397 gt=1618 ev=0/0 tps=20.0/20.0 mspt=0.73 max=14.70 lag=977ms missed=61#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1540 gt=1618 ev=0/0 tps=20.0/20.0 mspt=0.45 max=0.61 lag=0ms missed=21#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=1543 gt=1618 ev=0/0 tps=20.0/20.0 mspt=0.33 max=0.58 lag=0ms missed=23"
+        },
+        {
+          "phase": "shared_rate_10",
+          "time": 100.746,
+          "sites": {
+            "overworld": {
+              "source": 898,
+              "received": 176,
+              "loose": 100
+            },
+            "the_nether": {
+              "source": 877,
+              "received": 167,
+              "loose": 88
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1963t lastSeen=1963t ago COUPLED sharedTps=10.0 anchored Δdeadline=-5.15ms ΔL=-146",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1600 gt=2023 ev=0/0 tps=10.0/10.0 mspt=0.75 max=1.19 lag=0ms missed=61 RATE-OVERRIDE#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1945 gt=2023 ev=0/0 tps=20.0/20.0 mspt=0.46 max=0.51 lag=0ms missed=21#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=1746 gt=2023 ev=0/0 tps=10.0/20.0 mspt=0.28 max=0.40 lag=0ms missed=23"
+        },
+        {
+          "phase": "shared_rate_restored",
+          "time": 115.986,
+          "sites": {
+            "overworld": {
+              "source": 847,
+              "received": 208,
+              "loose": 117
+            },
+            "the_nether": {
+              "source": 826,
+              "received": 199,
+              "loose": 107
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=2266t lastSeen=2266t ago COUPLED sharedTps=20.0 anchored Δdeadline=-5.15ms ΔL=-146",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1902 gt=2326 ev=0/0 tps=20.0/20.0 mspt=1.19 max=3.33 lag=0ms missed=61#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=2248 gt=2326 ev=0/0 tps=20.0/20.0 mspt=0.43 max=0.53 lag=0ms missed=21#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=2048 gt=2326 ev=0/0 tps=20.0/20.0 mspt=0.29 max=0.38 lag=0ms missed=23"
+        },
+        {
+          "phase": "clocks_stopped",
+          "time": 121.125,
+          "sites": {
+            "overworld": {
+              "source": 846,
+              "received": 210,
+              "loose": 117
+            },
+            "the_nether": {
+              "source": 825,
+              "received": 201,
+              "loose": 105
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-3g3 <-> ne-1g4 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=2347t lastSeen=2347t ago COUPLED sharedTps=20.0 anchored Δdeadline=-5.15ms ΔL=-146",
+          "islands": "#1 No players @3968,4096 [ow-3g3] minecraft:overworld island#3/gen3 cells=4+12h L=1983 gt=2406 ev=0/0 tps=18.8/20.0 mspt=0.65 max=0.97 lag=0ms missed=61#2 PortalProbe [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=2329 gt=2406 ev=0/0 tps=18.8/20.0 mspt=0.43 max=0.50 lag=0ms missed=21#3 No players @384,384 [ne-1g4] minecraft:the_nether island#1/gen4 cells=4+12h L=2129 gt=2406 ev=0/0 tps=18.8/20.0 mspt=0.18 max=0.21 lag=0ms missed=23"
+        }
+      ],
+      "ticket_expired_after_clocks_stop": {
+        "overworld": true,
+        "the_nether": true
+      },
+      "returncode": 0,
+      "crash_reports": [],
+      "runtime_errors": [],
+      "name": "final-claude314",
+      "raw_report": "build\\portal-parity\\final-claude314\\portal-parity-report.json",
+      "raw_report_sha256": "ff92fc2400aa3492cc1fdee6eccfd29e90a363aef446c2fc8247adf027ae7937",
+      "console_sha256": "7fbc4c7dd7331d297ad6ff12bc1c2791e9cec5691a79532c4ffa821f4fe10f74",
+      "direction_conservation": {
+        "overworld_to_the_nether": {
+          "sent": 306,
+          "arrived": 306
+        },
+        "the_nether_to_overworld": {
+          "sent": 327,
+          "arrived": 327
+        }
+      },
+      "final_inventory_receipts": [
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 65 4096 Items",
+          "out": "4095, 65, 4096 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 1b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 2b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 3b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 4b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 5b, id: \"minecraft:glowstone_dust\"}, {count: 45, Slot: 6b, id: \"minecraft:glowstone_dust\"}, {count: 27, Slot: 7b, id: \"minecraft:glowstone_dust\"}, {count: 28, Slot: 8b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 66 4096 Items",
+          "out": "4095, 66, 4096 has the following block data: [{count: 1, Slot: 0b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 67 4096 Items",
+          "out": "4095, 67, 4096 has the following block data: [{count: 41, Slot: 3b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 4b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 5b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 6b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 7b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 8b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4097 64 4096 Items",
+          "out": "4097, 64, 4096 has the following block data: []"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4097 64 4097 Items",
+          "out": "4097, 64, 4097 has the following block data: []"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4098 64 4096 Items",
+          "out": "4098, 64, 4096 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:quartz\"}, {count: 64, Slot: 1b, id: \"minecraft:quartz\"}, {count: 62, Slot: 2b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4098 64 4097 Items",
+          "out": "4098, 64, 4097 has the following block data: [{count: 20, Slot: 0b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 65 512 Items",
+          "out": "511, 65, 512 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:quartz\"}, {count: 64, Slot: 1b, id: \"minecraft:quartz\"}, {count: 64, Slot: 2b, id: \"minecraft:quartz\"}, {count: 64, Slot: 3b, id: \"minecraft:quartz\"}, {count: 64, Slot: 4b, id: \"minecraft:quartz\"}, {count: 60, Slot: 5b, id: \"minecraft:quartz\"}, {count: 35, Slot: 6b, id: \"minecraft:quartz\"}, {count: 28, Slot: 7b, id: \"minecraft:quartz\"}, {count: 33, Slot: 8b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 66 512 Items",
+          "out": "511, 66, 512 has the following block data: [{count: 1, Slot: 0b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 67 512 Items",
+          "out": "511, 67, 512 has the following block data: [{count: 28, Slot: 3b, id: \"minecraft:quartz\"}, {count: 64, Slot: 4b, id: \"minecraft:quartz\"}, {count: 64, Slot: 5b, id: \"minecraft:quartz\"}, {count: 64, Slot: 6b, id: \"minecraft:quartz\"}, {count: 64, Slot: 7b, id: \"minecraft:quartz\"}, {count: 64, Slot: 8b, id: \"minecraft:quartz\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 513 64 512 Items",
+          "out": "513, 64, 512 has the following block data: []"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 513 64 513 Items",
+          "out": "513, 64, 513 has the following block data: []"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 514 64 512 Items",
+          "out": "514, 64, 512 has the following block data: [{count: 64, Slot: 0b, id: \"minecraft:glowstone_dust\"}, {count: 64, Slot: 1b, id: \"minecraft:glowstone_dust\"}, {count: 58, Slot: 2b, id: \"minecraft:glowstone_dust\"}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 514 64 513 Items",
+          "out": "514, 64, 513 has the following block data: [{count: 15, Slot: 0b, id: \"minecraft:glowstone_dust\"}]"
+        }
+      ],
+      "setup_receipts": [
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run forceload query",
+          "out": "No force loaded chunks were found in minecraft:overworld"
+        },
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run forceload query",
+          "out": "No force loaded chunks were found in minecraft:the_nether"
+        }
+      ],
+      "mob_receipts": [
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run execute as @e[tag=from_overworld,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)Added 1 to [portal_test] for mobs (now 8)"
+        },
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run execute as @e[tag=from_the_nether,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)"
+        },
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run execute as @e[tag=from_the_nether,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)Added 1 to [portal_test] for mobs (now 8)"
+        }
+      ]
+    },
+    {
+      "status": "PASS",
+      "fixture": "portal-parity-v2",
+      "driver_sha256": "8cee9a2a5e6b83372dcbe27fb43443390513c612559d73021fc452fce073120a",
+      "vanilla_reference": false,
+      "jar_sha256": "133fff29ce71f44e1e657c79639b9a4fb99bd69e553fd0aae32ca354c36dd898",
+      "mod_sha256": {
+        "fabric-api-0.163.0+26.3.jar": "4969f5197ebedaf681cc913e4258c8bd17ccb98029db52a29e9b48e998267a2d",
+        "fabric-carpet-26.3+v260915.jar": "7c40b93e807ed914064176898037117097446c6cc76e6a80a856c8bf7f7659f9",
+        "fabrolia-alpha_3.1.6.jar": "133fff29ce71f44e1e657c79639b9a4fb99bd69e553fd0aae32ca354c36dd898",
+        "lithium-fabric-0.26.2+mc26.3.jar": "0be5b17ef9f6e9244cd07b24b227553a73aec0cf93158cf28099f3094c167f1b"
+      },
+      "java_version": "openjdk version \"25.0.4.1\" 2026-08-18 LTS\nOpenJDK Runtime Environment Temurin-25.0.4.1+1 (build 25.0.4.1+1-LTS)\nOpenJDK 64-Bit Server VM Temurin-25.0.4.1+1 (build 25.0.4.1+1-LTS, mixed mode, sharing)",
+      "minecraft_version": "26.3",
+      "fabric_loader_version": "0.19.5",
+      "mode": "parallel",
+      "stress": true,
+      "stress_member": "ow-2g2",
+      "mob_transfers": {
+        "overworld_to_nether": 8,
+        "nether_to_overworld": 8
+      },
+      "force_load_tickets_removed": true,
+      "observer_position": "PortalProbe has the following entity data: [0.5d, 80.0d, 0.5d]",
+      "initial_stock_each_direction": 1152,
+      "item_conservation": {
+        "expected": 2304,
+        "actual": 2304
+      },
+      "samples": [
+        {
+          "phase": "autonomous_start",
+          "time": 10.801,
+          "sites": {
+            "overworld": {
+              "source": 1137,
+              "received": 8,
+              "loose": 5
+            },
+            "the_nether": {
+              "source": 1138,
+              "received": 10,
+              "loose": 4
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=154t lastSeen=154t ago COUPLED sharedTps=20.0 anchored Δdeadline=9.42ms ΔL=-24",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=166 gt=225 ev=0/0 tps=19.4/20.0 mspt=2.57 max=12.44 lag=0ms missed=3#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=171 gt=225 ev=0/0 tps=20.0/20.0 mspt=1.25 max=6.42 lag=0ms missed=3#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=190 gt=225 ev=0/0 tps=20.0/20.0 mspt=1.23 max=4.22 lag=0ms missed=2"
+        },
+        {
+          "phase": "autonomous_25s",
+          "time": 36.064,
+          "sites": {
+            "overworld": {
+              "source": 1053,
+              "received": 65,
+              "loose": 33
+            },
+            "the_nether": {
+              "source": 1054,
+              "received": 64,
+              "loose": 35
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=660t lastSeen=660t ago COUPLED sharedTps=20.0 anchored Δdeadline=9.42ms ΔL=-24",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=672 gt=731 ev=0/0 tps=20.0/20.0 mspt=1.05 max=1.87 lag=0ms missed=3#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=677 gt=731 ev=0/0 tps=20.0/20.0 mspt=0.63 max=0.83 lag=0ms missed=3#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=697 gt=731 ev=0/0 tps=20.0/20.0 mspt=0.45 max=0.99 lag=0ms missed=2"
+        },
+        {
+          "phase": "autonomous_50s",
+          "time": 61.366,
+          "sites": {
+            "overworld": {
+              "source": 969,
+              "received": 121,
+              "loose": 61
+            },
+            "the_nether": {
+              "source": 970,
+              "received": 123,
+              "loose": 60
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1164t lastSeen=1164t ago COUPLED sharedTps=20.0 anchored Δdeadline=-40.58ms ΔL=-25",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1177 gt=1235 ev=0/0 tps=20.0/20.0 mspt=0.94 max=1.06 lag=0ms missed=3#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=1181 gt=1235 ev=0/0 tps=20.0/20.0 mspt=0.58 max=0.66 lag=0ms missed=3#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=1201 gt=1235 ev=0/0 tps=20.0/20.0 mspt=0.41 max=0.59 lag=0ms missed=2"
+        },
+        {
+          "phase": "overworld_200ms_overload",
+          "time": 69.596,
+          "sites": {
+            "overworld": {
+              "source": 961,
+              "received": 137,
+              "loose": 72
+            },
+            "the_nether": {
+              "source": 941,
+              "received": 133,
+              "loose": 60
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1419t lastSeen=1419t ago COUPLED sharedTps=20.0 anchored Δdeadline=150.74ms ΔL=-151",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1241 gt=1492 ev=0/0 tps=5.0/20.0 mspt=201.56 max=201.81 lag=9892ms missed=67#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=1387 gt=1492 ev=0/0 tps=10.3/20.0 mspt=0.53 max=0.79 lag=1576ms missed=27#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=1391 gt=1492 ev=0/0 tps=9.3/20.0 mspt=0.23 max=0.50 lag=1752ms missed=32"
+        },
+        {
+          "phase": "overload_recovered",
+          "time": 82.921,
+          "sites": {
+            "overworld": {
+              "source": 930,
+              "received": 156,
+              "loose": 86
+            },
+            "the_nether": {
+              "source": 910,
+              "received": 151,
+              "loose": 70
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1596t lastSeen=1596t ago COUPLED sharedTps=20.0 anchored Δdeadline=-5.24ms ΔL=-152",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1407 gt=1667 ev=0/0 tps=20.0/20.0 mspt=0.95 max=14.95 lag=2094ms missed=68#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=1555 gt=1667 ev=0/0 tps=20.0/20.0 mspt=0.60 max=0.82 lag=0ms missed=29#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=1559 gt=1667 ev=0/0 tps=20.0/20.0 mspt=0.43 max=0.54 lag=0ms missed=34"
+        },
+        {
+          "phase": "shared_rate_10",
+          "time": 103.166,
+          "sites": {
+            "overworld": {
+              "source": 896,
+              "received": 181,
+              "loose": 95
+            },
+            "the_nether": {
+              "source": 876,
+              "received": 174,
+              "loose": 82
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=2001t lastSeen=2001t ago COUPLED sharedTps=10.0 anchored Δdeadline=-5.24ms ΔL=-152",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1611 gt=2073 ev=0/0 tps=10.1/10.0 mspt=0.66 max=1.44 lag=0ms missed=68 RATE-OVERRIDE#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=1961 gt=2073 ev=0/0 tps=20.0/20.0 mspt=0.53 max=0.58 lag=0ms missed=29#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=1763 gt=2073 ev=0/0 tps=10.1/20.0 mspt=0.32 max=0.43 lag=0ms missed=34"
+        },
+        {
+          "phase": "shared_rate_restored",
+          "time": 118.455,
+          "sites": {
+            "overworld": {
+              "source": 846,
+              "received": 214,
+              "loose": 112
+            },
+            "the_nether": {
+              "source": 826,
+              "received": 209,
+              "loose": 99
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=2307t lastSeen=2307t ago COUPLED sharedTps=20.0 anchored Δdeadline=-5.24ms ΔL=-152",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1915 gt=2378 ev=0/0 tps=20.0/20.0 mspt=0.53 max=1.93 lag=0ms missed=68#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=2266 gt=2378 ev=0/0 tps=20.0/20.0 mspt=0.41 max=0.54 lag=0ms missed=29#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=2067 gt=2378 ev=0/0 tps=20.0/20.0 mspt=0.27 max=0.38 lag=0ms missed=34"
+        },
+        {
+          "phase": "clocks_stopped",
+          "time": 123.708,
+          "sites": {
+            "overworld": {
+              "source": 844,
+              "received": 217,
+              "loose": 111
+            },
+            "the_nether": {
+              "source": 824,
+              "received": 211,
+              "loose": 97
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+1 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=2387t lastSeen=2387t ago COUPLED sharedTps=20.0 anchored Δdeadline=-5.24ms ΔL=-152",
+          "islands": "#1 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=2347 gt=2458 ev=0/0 tps=17.3/20.0 mspt=0.44 max=0.64 lag=0ms missed=29#2 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1996 gt=2458 ev=0/0 tps=17.3/20.0 mspt=0.38 max=0.54 lag=0ms missed=68#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=2148 gt=2458 ev=0/0 tps=17.3/20.0 mspt=0.17 max=0.20 lag=0ms missed=34"
+        }
+      ],
+      "ticket_expired_after_clocks_stop": {
+        "overworld": true,
+        "the_nether": true
+      },
+      "returncode": 0,
+      "crash_reports": [],
+      "runtime_errors": [],
+      "name": "final-current316-parallel",
+      "raw_report": "build\\portal-parity\\final-current316-parallel\\portal-parity-report.json",
+      "raw_report_sha256": "03cfba461e5f011c32d4dc33f705c64a7d57e36d11716b13c1ec9e9674160045",
+      "console_sha256": "407fab80ef2067410f32036863eed5c40c099c7bad6fe04382fcfecb067493c8",
+      "direction_conservation": {
+        "overworld_to_the_nether": {
+          "sent": 308,
+          "arrived": 308
+        },
+        "the_nether_to_overworld": {
+          "sent": 328,
+          "arrived": 328
+        }
+      },
+      "final_inventory_receipts": [
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 65 4096 Items",
+          "out": "4095, 65, 4096 has the following block data: [{Slot: 0b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 1b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 2b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 3b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 4b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 5b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 6b, id: \"minecraft:glowstone_dust\", count: 33}, {Slot: 7b, id: \"minecraft:glowstone_dust\", count: 34}, {Slot: 8b, id: \"minecraft:glowstone_dust\", count: 32}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 66 4096 Items",
+          "out": "4095, 66, 4096 has the following block data: [{Slot: 0b, id: \"minecraft:glowstone_dust\", count: 1}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 67 4096 Items",
+          "out": "4095, 67, 4096 has the following block data: [{Slot: 3b, id: \"minecraft:glowstone_dust\", count: 40}, {Slot: 4b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 5b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 6b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 7b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 8b, id: \"minecraft:glowstone_dust\", count: 64}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4097 64 4096 Items",
+          "out": "4097, 64, 4096 has the following block data: []"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4097 64 4097 Items",
+          "out": "4097, 64, 4097 has the following block data: []"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4098 64 4096 Items",
+          "out": "4098, 64, 4096 has the following block data: [{Slot: 0b, id: \"minecraft:quartz\", count: 64}, {Slot: 1b, id: \"minecraft:quartz\", count: 64}, {Slot: 2b, id: \"minecraft:quartz\", count: 64}, {Slot: 3b, id: \"minecraft:quartz\", count: 4}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4098 64 4097 Items",
+          "out": "4098, 64, 4097 has the following block data: [{Slot: 0b, id: \"minecraft:quartz\", count: 21}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 65 512 Items",
+          "out": "511, 65, 512 has the following block data: [{Slot: 0b, id: \"minecraft:quartz\", count: 64}, {Slot: 1b, id: \"minecraft:quartz\", count: 64}, {Slot: 2b, id: \"minecraft:quartz\", count: 64}, {Slot: 3b, id: \"minecraft:quartz\", count: 64}, {Slot: 4b, id: \"minecraft:quartz\", count: 64}, {Slot: 5b, id: \"minecraft:quartz\", count: 64}, {Slot: 6b, id: \"minecraft:quartz\", count: 37}, {Slot: 7b, id: \"minecraft:quartz\", count: 17}, {Slot: 8b, id: \"minecraft:quartz\", count: 37}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 66 512 Items",
+          "out": "511, 66, 512 has the following block data: [{Slot: 0b, id: \"minecraft:quartz\", count: 2}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 67 512 Items",
+          "out": "511, 67, 512 has the following block data: [{Slot: 3b, id: \"minecraft:quartz\", count: 27}, {Slot: 4b, id: \"minecraft:quartz\", count: 64}, {Slot: 5b, id: \"minecraft:quartz\", count: 64}, {Slot: 6b, id: \"minecraft:quartz\", count: 64}, {Slot: 7b, id: \"minecraft:quartz\", count: 64}, {Slot: 8b, id: \"minecraft:quartz\", count: 64}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 513 64 512 Items",
+          "out": "513, 64, 512 has the following block data: []"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 513 64 513 Items",
+          "out": "513, 64, 513 has the following block data: []"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 514 64 512 Items",
+          "out": "514, 64, 512 has the following block data: [{Slot: 0b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 1b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 2b, id: \"minecraft:glowstone_dust\", count: 62}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 514 64 513 Items",
+          "out": "514, 64, 513 has the following block data: [{Slot: 0b, id: \"minecraft:glowstone_dust\", count: 21}]"
+        }
+      ],
+      "setup_receipts": [
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run forceload query",
+          "out": "No force loaded chunks were found in minecraft:overworld"
+        },
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run forceload query",
+          "out": "No force loaded chunks were found in minecraft:the_nether"
+        }
+      ],
+      "mob_receipts": [
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run execute as @e[tag=from_overworld,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)Added 1 to [portal_test] for mobs (now 8)"
+        },
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run execute as @e[tag=from_the_nether,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)"
+        },
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run execute as @e[tag=from_the_nether,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)Added 1 to [portal_test] for mobs (now 8)"
+        }
+      ]
+    },
+    {
+      "status": "PASS",
+      "fixture": "portal-parity-v2",
+      "driver_sha256": "8cee9a2a5e6b83372dcbe27fb43443390513c612559d73021fc452fce073120a",
+      "vanilla_reference": false,
+      "jar_sha256": "133fff29ce71f44e1e657c79639b9a4fb99bd69e553fd0aae32ca354c36dd898",
+      "mod_sha256": {
+        "fabric-api-0.163.0+26.3.jar": "4969f5197ebedaf681cc913e4258c8bd17ccb98029db52a29e9b48e998267a2d",
+        "fabric-carpet-26.3+v260915.jar": "7c40b93e807ed914064176898037117097446c6cc76e6a80a856c8bf7f7659f9",
+        "fabrolia-alpha_3.1.6.jar": "133fff29ce71f44e1e657c79639b9a4fb99bd69e553fd0aae32ca354c36dd898",
+        "lithium-fabric-0.26.2+mc26.3.jar": "0be5b17ef9f6e9244cd07b24b227553a73aec0cf93158cf28099f3094c167f1b"
+      },
+      "java_version": "openjdk version \"25.0.4.1\" 2026-08-18 LTS\nOpenJDK Runtime Environment Temurin-25.0.4.1+1 (build 25.0.4.1+1-LTS)\nOpenJDK 64-Bit Server VM Temurin-25.0.4.1+1 (build 25.0.4.1+1-LTS, mixed mode, sharing)",
+      "minecraft_version": "26.3",
+      "fabric_loader_version": "0.19.5",
+      "mode": "serial",
+      "stress": true,
+      "stress_member": "ow-2g2",
+      "mob_transfers": {
+        "overworld_to_nether": 8,
+        "nether_to_overworld": 8
+      },
+      "force_load_tickets_removed": true,
+      "observer_position": "PortalProbe has the following entity data: [0.5d, 80.0d, 0.5d]",
+      "initial_stock_each_direction": 1152,
+      "item_conservation": {
+        "expected": 2304,
+        "actual": 2304
+      },
+      "samples": [
+        {
+          "phase": "autonomous_start",
+          "time": 10.565,
+          "sites": {
+            "overworld": {
+              "source": 1138,
+              "received": 10,
+              "loose": 3
+            },
+            "the_nether": {
+              "source": 1138,
+              "received": 10,
+              "loose": 3
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=153t lastSeen=153t ago COUPLED sharedTps=20.0 anchored Δdeadline=5.10ms ΔL=-17",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=168 gt=221 ev=0/0 tps=19.8/20.0 mspt=3.13 max=13.82 lag=0ms missed=3#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=174 gt=221 ev=0/0 tps=20.2/20.0 mspt=1.14 max=2.96 lag=0ms missed=2#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=185 gt=221 ev=0/0 tps=19.8/20.0 mspt=0.96 max=3.23 lag=0ms missed=1"
+        },
+        {
+          "phase": "autonomous_25s",
+          "time": 35.842,
+          "sites": {
+            "overworld": {
+              "source": 1054,
+              "received": 72,
+              "loose": 25
+            },
+            "the_nether": {
+              "source": 1054,
+              "received": 65,
+              "loose": 33
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=656t lastSeen=656t ago COUPLED sharedTps=20.0 anchored Δdeadline=5.10ms ΔL=-17",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=671 gt=725 ev=0/0 tps=20.0/20.0 mspt=1.19 max=1.92 lag=0ms missed=3#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=678 gt=725 ev=0/0 tps=20.0/20.0 mspt=0.61 max=0.73 lag=0ms missed=2#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=688 gt=725 ev=0/0 tps=20.0/20.0 mspt=0.40 max=0.64 lag=0ms missed=1"
+        },
+        {
+          "phase": "autonomous_50s",
+          "time": 61.017,
+          "sites": {
+            "overworld": {
+              "source": 969,
+              "received": 124,
+              "loose": 58
+            },
+            "the_nether": {
+              "source": 970,
+              "received": 123,
+              "loose": 60
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1162t lastSeen=1162t ago COUPLED sharedTps=20.0 anchored Δdeadline=5.10ms ΔL=-17",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1177 gt=1230 ev=0/0 tps=20.0/20.0 mspt=0.70 max=0.90 lag=0ms missed=3#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=1183 gt=1230 ev=0/0 tps=20.0/20.0 mspt=0.57 max=0.71 lag=0ms missed=2#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=1194 gt=1230 ev=0/0 tps=20.0/20.0 mspt=0.34 max=0.53 lag=0ms missed=1"
+        },
+        {
+          "phase": "overworld_200ms_overload",
+          "time": 69.325,
+          "sites": {
+            "overworld": {
+              "source": 962,
+              "received": 141,
+              "loose": 65
+            },
+            "the_nether": {
+              "source": 943,
+              "received": 132,
+              "loose": 61
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1392t lastSeen=1392t ago COUPLED sharedTps=20.0 anchored Δdeadline=149.27ms ΔL=-131",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1235 gt=1464 ev=0/0 tps=5.1/20.0 mspt=202.04 max=202.52 lag=8953ms missed=61#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=1380 gt=1464 ev=0/0 tps=13.4/20.0 mspt=0.49 max=0.89 lag=976ms missed=20#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=1367 gt=1464 ev=0/0 tps=12.6/20.0 mspt=0.24 max=0.45 lag=1314ms missed=27"
+        },
+        {
+          "phase": "overload_recovered",
+          "time": 81.382,
+          "sites": {
+            "overworld": {
+              "source": 932,
+              "received": 165,
+              "loose": 74
+            },
+            "the_nether": {
+              "source": 913,
+              "received": 149,
+              "loose": 70
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1568t lastSeen=1568t ago COUPLED sharedTps=20.0 anchored Δdeadline=-2.62ms ΔL=-134",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1401 gt=1637 ev=0/0 tps=20.0/20.0 mspt=0.73 max=15.02 lag=1116ms missed=62#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=1548 gt=1637 ev=0/0 tps=20.0/20.0 mspt=0.58 max=0.97 lag=0ms missed=22#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=1535 gt=1637 ev=0/0 tps=20.0/20.0 mspt=0.38 max=0.94 lag=0ms missed=29"
+        },
+        {
+          "phase": "shared_rate_10",
+          "time": 101.618,
+          "sites": {
+            "overworld": {
+              "source": 898,
+              "received": 189,
+              "loose": 84
+            },
+            "the_nether": {
+              "source": 879,
+              "received": 171,
+              "loose": 83
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=1973t lastSeen=1973t ago COUPLED sharedTps=10.0 anchored Δdeadline=-2.62ms ΔL=-134",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1604 gt=2041 ev=0/0 tps=9.9/10.0 mspt=0.52 max=1.07 lag=0ms missed=62 RATE-OVERRIDE#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=1953 gt=2041 ev=0/0 tps=20.0/20.0 mspt=0.52 max=0.65 lag=0ms missed=22#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=1738 gt=2041 ev=0/0 tps=9.9/20.0 mspt=0.29 max=0.39 lag=0ms missed=29"
+        },
+        {
+          "phase": "shared_rate_restored",
+          "time": 116.858,
+          "sites": {
+            "overworld": {
+              "source": 848,
+              "received": 223,
+              "loose": 100
+            },
+            "the_nether": {
+              "source": 829,
+              "received": 203,
+              "loose": 102
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=2278t lastSeen=2278t ago COUPLED sharedTps=20.0 anchored Δdeadline=-2.62ms ΔL=-134",
+          "islands": "#1 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1908 gt=2346 ev=0/0 tps=20.0/20.0 mspt=1.17 max=3.23 lag=0ms missed=62#2 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=2257 gt=2346 ev=0/0 tps=20.0/20.0 mspt=0.65 max=1.35 lag=0ms missed=22#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=2042 gt=2346 ev=0/0 tps=20.0/20.0 mspt=0.40 max=0.70 lag=0ms missed=29"
+        },
+        {
+          "phase": "clocks_stopped",
+          "time": 122.101,
+          "sites": {
+            "overworld": {
+              "source": 846,
+              "received": 224,
+              "loose": 101
+            },
+            "the_nether": {
+              "source": 827,
+              "received": 205,
+              "loose": 101
+            }
+          },
+          "coupling": "§8[§f🌀§8]§7 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=1 formed=1 dropped=0 anchors=1(+3 deferred) suspended=0 refusedEntries=0 endRefusals=1\n  ow-2g2 <-> ne-1g3 cells∩=4[(3,3) (4,3) (4,4) (3,4)] age=2358t lastSeen=2358t ago COUPLED sharedTps=20.0 anchored Δdeadline=-2.62ms ΔL=-134",
+          "islands": "#1 PortalProbe [ow-1g1] minecraft:overworld island#1/gen1 cells=4+12h L=2338 gt=2426 ev=0/0 tps=16.7/20.0 mspt=0.46 max=0.62 lag=0ms missed=22#2 No players @3968,4096 [ow-2g2] minecraft:overworld island#2/gen2 cells=4+12h L=1989 gt=2426 ev=0/0 tps=16.7/20.0 mspt=0.34 max=1.38 lag=0ms missed=62#3 No players @384,384 [ne-1g3] minecraft:the_nether island#1/gen3 cells=4+12h L=2123 gt=2426 ev=0/0 tps=16.7/20.0 mspt=0.16 max=0.27 lag=0ms missed=29"
+        }
+      ],
+      "ticket_expired_after_clocks_stop": {
+        "overworld": true,
+        "the_nether": true
+      },
+      "returncode": 0,
+      "crash_reports": [],
+      "runtime_errors": [],
+      "name": "final-current316-serial",
+      "raw_report": "build\\portal-parity\\final-current316-serial\\portal-parity-report.json",
+      "raw_report_sha256": "0e7f02c9aab7e65da4f8b3d872408b620da2b8e543fdb41fa77e93b2a4e8617a",
+      "console_sha256": "b2f228d4768a9a464876778532fc74588ef1b1e45509e30477952f0f762e2ad1",
+      "direction_conservation": {
+        "overworld_to_the_nether": {
+          "sent": 306,
+          "arrived": 306
+        },
+        "the_nether_to_overworld": {
+          "sent": 325,
+          "arrived": 325
+        }
+      },
+      "final_inventory_receipts": [
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 65 4096 Items",
+          "out": "4095, 65, 4096 has the following block data: [{Slot: 0b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 1b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 2b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 3b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 4b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 5b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 6b, id: \"minecraft:glowstone_dust\", count: 37}, {Slot: 7b, id: \"minecraft:glowstone_dust\", count: 31}, {Slot: 8b, id: \"minecraft:glowstone_dust\", count: 31}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 66 4096 Items",
+          "out": "4095, 66, 4096 has the following block data: [{Slot: 0b, id: \"minecraft:glowstone_dust\", count: 1}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "source",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4095 67 4096 Items",
+          "out": "4095, 67, 4096 has the following block data: [{Slot: 3b, id: \"minecraft:glowstone_dust\", count: 42}, {Slot: 4b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 5b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 6b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 7b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 8b, id: \"minecraft:glowstone_dust\", count: 64}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4097 64 4096 Items",
+          "out": "4097, 64, 4096 has the following block data: []"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4097 64 4097 Items",
+          "out": "4097, 64, 4097 has the following block data: []"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4098 64 4096 Items",
+          "out": "4098, 64, 4096 has the following block data: [{Slot: 0b, id: \"minecraft:quartz\", count: 64}, {Slot: 1b, id: \"minecraft:quartz\", count: 64}, {Slot: 2b, id: \"minecraft:quartz\", count: 64}, {Slot: 3b, id: \"minecraft:quartz\", count: 9}]"
+        },
+        {
+          "dimension": "overworld",
+          "kind": "destination",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run data get block 4098 64 4097 Items",
+          "out": "4098, 64, 4097 has the following block data: [{Slot: 0b, id: \"minecraft:quartz\", count: 23}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 65 512 Items",
+          "out": "511, 65, 512 has the following block data: [{Slot: 0b, id: \"minecraft:quartz\", count: 64}, {Slot: 1b, id: \"minecraft:quartz\", count: 64}, {Slot: 2b, id: \"minecraft:quartz\", count: 64}, {Slot: 3b, id: \"minecraft:quartz\", count: 64}, {Slot: 4b, id: \"minecraft:quartz\", count: 64}, {Slot: 5b, id: \"minecraft:quartz\", count: 64}, {Slot: 6b, id: \"minecraft:quartz\", count: 35}, {Slot: 7b, id: \"minecraft:quartz\", count: 39}, {Slot: 8b, id: \"minecraft:quartz\", count: 19}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 66 512 Items",
+          "out": "511, 66, 512 has the following block data: [{Slot: 0b, id: \"minecraft:quartz\", count: 1}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "source",
+          "expected_item": "minecraft:quartz",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 511 67 512 Items",
+          "out": "511, 67, 512 has the following block data: [{Slot: 3b, id: \"minecraft:quartz\", count: 29}, {Slot: 4b, id: \"minecraft:quartz\", count: 64}, {Slot: 5b, id: \"minecraft:quartz\", count: 64}, {Slot: 6b, id: \"minecraft:quartz\", count: 64}, {Slot: 7b, id: \"minecraft:quartz\", count: 64}, {Slot: 8b, id: \"minecraft:quartz\", count: 64}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 513 64 512 Items",
+          "out": "513, 64, 512 has the following block data: []"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 513 64 513 Items",
+          "out": "513, 64, 513 has the following block data: []"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 514 64 512 Items",
+          "out": "514, 64, 512 has the following block data: [{Slot: 0b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 1b, id: \"minecraft:glowstone_dust\", count: 64}, {Slot: 2b, id: \"minecraft:glowstone_dust\", count: 61}]"
+        },
+        {
+          "dimension": "the_nether",
+          "kind": "destination",
+          "expected_item": "minecraft:glowstone_dust",
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run data get block 514 64 513 Items",
+          "out": "514, 64, 513 has the following block data: [{Slot: 0b, id: \"minecraft:glowstone_dust\", count: 16}]"
+        }
+      ],
+      "setup_receipts": [
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run forceload query",
+          "out": "No force loaded chunks were found in minecraft:overworld"
+        },
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run forceload query",
+          "out": "No force loaded chunks were found in minecraft:the_nether"
+        }
+      ],
+      "mob_receipts": [
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run execute as @e[tag=from_overworld,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)"
+        },
+        {
+          "command": "execute in minecraft:the_nether positioned 512 65 512 run execute as @e[tag=from_overworld,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)Added 1 to [portal_test] for mobs (now 8)"
+        },
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run execute as @e[tag=from_the_nether,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)"
+        },
+        {
+          "command": "execute in minecraft:overworld positioned 4096 65 4096 run execute as @e[tag=from_the_nether,distance=..24] run scoreboard players add mobs portal_test 1",
+          "out": "Added 1 to [portal_test] for mobs (now 1)Added 1 to [portal_test] for mobs (now 2)Added 1 to [portal_test] for mobs (now 3)Added 1 to [portal_test] for mobs (now 4)Added 1 to [portal_test] for mobs (now 5)Added 1 to [portal_test] for mobs (now 6)Added 1 to [portal_test] for mobs (now 7)Added 1 to [portal_test] for mobs (now 8)"
+        }
+      ]
+    }
+  ],
+  "preliminary_campaigns": [
+    {
+      "name": "baseline313-stress",
+      "status": "FAIL",
+      "error": "AssertionError('Stress hook id aliases an Overworld island')",
+      "report_sha256": "db45ed98ae3a30a51ea605ebdd271a2c2e28a214edb476761670aaf9c60366bb",
+      "included_in_final_results": false,
+      "note": "Fixture development: not a final frozen-inventory campaign. Raw evidence retained."
+    },
+    {
+      "name": "baseline313-stress2",
+      "status": "PASS",
+      "error": null,
+      "report_sha256": "35269805b649dd603724f9c3b1bab73f50da81bebd2f19e8e47fc19331f8b466",
+      "included_in_final_results": false,
+      "note": "Fixture development: not a final frozen-inventory campaign. Raw evidence retained."
+    },
+    {
+      "name": "claude314-1",
+      "status": "FAIL",
+      "error": "ConnectionAbortedError('Native server sent DISCONNECT')",
+      "report_sha256": "503993342dd9fd0473971688796bc86299be50f00e7192d48248c7296536000b",
+      "included_in_final_results": false,
+      "note": "Fixture development: not a final frozen-inventory campaign. Raw evidence retained."
+    },
+    {
+      "name": "claude314-2",
+      "status": "FAIL",
+      "error": null,
+      "report_sha256": "2ad170f711366a703bf4488b9ef83f64f37da13adadd17eac6d62c64f6088458",
+      "included_in_final_results": false,
+      "note": "Fixture development: not a final frozen-inventory campaign. Raw evidence retained."
+    },
+    {
+      "name": "claude314-stress",
+      "status": "PASS",
+      "error": null,
+      "report_sha256": "7d3a38b58784a85829570d32171bcce1a1a26f3253227a0139d91a09d86a2c61",
+      "included_in_final_results": false,
+      "note": "Fixture development: not a final frozen-inventory campaign. Raw evidence retained."
+    },
+    {
+      "name": "current316-parallel",
+      "status": "PASS",
+      "error": null,
+      "report_sha256": "c291bee6582197c0cc3c8022b6611c61e4b47a97c3fd1d9e1070de101a780741",
+      "included_in_final_results": false,
+      "note": "Fixture development: not a final frozen-inventory campaign. Raw evidence retained."
+    },
+    {
+      "name": "current316-serial",
+      "status": "FAIL",
+      "error": "AssertionError('Items lost or duplicated: 2303 != 2304')",
+      "report_sha256": "29145bdc4d36ca326e5985165e2c132b972fe4c3c4afa0c3037bb7c9d964230d",
+      "included_in_final_results": false,
+      "note": "Fixture development: not a final frozen-inventory campaign. Raw evidence retained."
+    },
+    {
+      "name": "vanilla-1",
+      "status": "FAIL",
+      "error": "RuntimeError('Server exited: 0')",
+      "report_sha256": "18b165dc0c1705792395b1dbf0d45a961f4e308f50151b3f9a7a385d2a77b86c",
+      "included_in_final_results": false,
+      "note": "Fixture development: not a final frozen-inventory campaign. Raw evidence retained."
+    },
+    {
+      "name": "vanilla-2",
+      "status": "FAIL",
+      "error": "AssertionError('Items lost or duplicated: 2432 != 2304')",
+      "report_sha256": "768d9a02c8bf1255b659da812ecfe6511cefdd658964cf31387eef4c40c80915",
+      "included_in_final_results": false,
+      "note": "Fixture development: not a final frozen-inventory campaign. Raw evidence retained."
+    },
+    {
+      "name": "vanilla-3",
+      "status": "PASS",
+      "error": null,
+      "report_sha256": "4a5327badb745477b21c1a0a662a1b65e058f96c0adce9d6ecf2e02702396a10",
+      "included_in_final_results": false,
+      "note": "Fixture development: not a final frozen-inventory campaign. Raw evidence retained."
+    }
+  ],
+  "profiles": [
+    {
+      "campaign": "baseline313-stress2",
+      "path": "build\\portal-parity\\baseline313-stress2\\server\\config\\spark\\profile-2026-10-17_09.35.58.sparkprofile",
+      "sha256": "0c59bc3290670f66a0bb82d81334c0ae0b5ad71318d1f21734a43cca7c70c856",
+      "engine": "JAVA",
+      "seconds": 50.455,
+      "scope": "Initial 50-second physical loader workload, before the overload/rate phases.",
+      "main_inclusive_ms_per_second": {
+        "CrossDimLinks.mainTick": 0.07927856505797246,
+        "CrossDimLinks.mainTickInner": 0.07927856505797246,
+        "CrossDimLinks.refreshCouplings": 0.07927856505797246,
+        "CrossDimLinks.tryAnchor": 0.0,
+        "TpsHud.tick": 0.0,
+        "IslandMetrics.sampleAll": 0.0,
+        "TpsWindow.update": 0.0
+      }
+    },
+    {
+      "campaign": "claude314-stress",
+      "path": "build\\portal-parity\\claude314-stress\\server\\config\\spark\\profile-2026-10-17_09.34.58.sparkprofile",
+      "sha256": "021340fb2b117c13d48abbb147f4b35d3f75a1c60847c449704bb3ab57b0404d",
+      "engine": "JAVA",
+      "seconds": 50.651,
+      "scope": "Initial 50-second physical loader workload, before the overload/rate phases.",
+      "main_inclusive_ms_per_second": {
+        "CrossDimLinks.mainTick": 0.07897178732897672,
+        "CrossDimLinks.mainTickInner": 0.07897178732897672,
+        "CrossDimLinks.refreshCouplings": 0.0,
+        "CrossDimLinks.tryAnchor": 0.0,
+        "TpsHud.tick": 0.0,
+        "IslandMetrics.sampleAll": 0.0,
+        "TpsWindow.update": 0.0
+      }
+    }
+  ],
+  "validation": {
+    "tests_total": 1494,
+    "tests_passed": 1486,
+    "skipped": 8,
+    "failures": 0,
+    "fresh_tests_log": "build\\portal-review-final-build.out",
+    "fresh_tests_log_sha256": "41b63d9995253b17ad5d88d6cea1d199f39a2f2d9574017913206ce6025fe176",
+    "build_log": "build\\portal-review-final-build.out",
+    "build_log_sha256": "41b63d9995253b17ad5d88d6cea1d199f39a2f2d9574017913206ce6025fe176",
+    "full_production_stand": "NOT RUN: production inputs and WSL unavailable",
+    "gradle_exit_code": 0
+  },
+  "limitations": [
+    "Local mechanism fixture, no arbitrary farm yield guarantee.",
+    "Production modpack, 40-client stand and long-duration operation not verified.",
+    "Java sampler frame totals are sampled wall time, not CPU time."
+  ],
+  "non_atomic_count_diagnosis": {
+    "campaign": "current316-serial",
+    "raw_snapshot_total": 2303,
+    "saved_world_totals": {
+      "minecraft:glowstone_dust": 1152,
+      "minecraft:quartz": 1152
+    },
+    "saved_world_total": 2304,
+    "changed_inventory": {
+      "dimension": "overworld",
+      "pos": [
+        4095,
+        65,
+        4096
+      ],
+      "last_rcon_count": 483,
+      "saved_nbt_count": 484
+    },
+    "audit_path": "build\\portal-serial-nbt-audit.json",
+    "audit_sha256": "8673aaa0b7ca26fb89297480b98beb4ae4fbd8307d6b1e491f94427e78ba683a",
+    "nbt_parser_path": "build/portal_nbt_audit.py",
+    "nbt_parser_sha256": "4133d2b134d7450784f8db29a91449ff7c5909766af4f66ef00a0625d0bcc32a",
+    "nbt_files_sha256": {
+      "dimensions\\minecraft\\the_nether\\entities\\r.1.0.mca": "c3c52ecb1ab0e97c14c44f564d2ae7cd0701abda36ec14711a9c54bba0d4d47e",
+      "dimensions\\minecraft\\the_nether\\entities\\r.1.1.mca": "22ceec97e47c545e59a1639bdedcd742cd3edd7608cfb664899e7e06c67bd8b4",
+      "dimensions\\minecraft\\the_nether\\poi\\r.1.1.mca": "128f9a8e908b0b8731ef7675930aa44dcd05f136e33b90f2fa44e54c4289eae8",
+      "dimensions\\minecraft\\the_nether\\region\\r.0.0.mca": "6f9f3e8e0d6bce0946f96353af3ea61bfc3c2d1b2cbcba94f6a40d3e54872df2",
+      "dimensions\\minecraft\\the_nether\\region\\r.0.1.mca": "6bcf8a23972e2c2525d45393d0e6ebff94241eec099f51a86582dd6705dc5848",
+      "dimensions\\minecraft\\the_nether\\region\\r.1.0.mca": "4d8af54cb6ddb5f915cd3f319d770f55e312151b1ef4700dd3e61635a39afbf1",
+      "dimensions\\minecraft\\the_nether\\region\\r.1.1.mca": "7b3f4ef20795ea20639fede88cc58c39d72433ad6507eb9b5772f5b99866fc5c",
+      "dimensions\\minecraft\\overworld\\entities\\r.7.7.mca": "aebc35dfa54d4b5194ea913a166dd10b5a99f88d4c9a8e205a3aa9bb84eb7bc9",
+      "dimensions\\minecraft\\overworld\\entities\\r.8.7.mca": "9a93964909e9fe1afec91e0cb2cc381fa4100d278780a36a5f76e40ece62e32f",
+      "dimensions\\minecraft\\overworld\\entities\\r.8.8.mca": "e681bcb80d580c0abe5c187fb7a502f0af18160b6d8d856a38622234572b494b",
+      "dimensions\\minecraft\\overworld\\poi\\r.7.7.mca": "5cc7609bfc4d5702c2f2c59e17e5fa7c88626a92ee7237f6b36fca573bfbf018",
+      "dimensions\\minecraft\\overworld\\poi\\r.7.8.mca": "6ad735d715719504179e4659c57eeafcf14817b96168c8bc8a9a13cd7710a945",
+      "dimensions\\minecraft\\overworld\\poi\\r.8.7.mca": "d920680f9a6338d34e7f09e9c44259c690fda1d0b79da2b8b5a3b1d176204888",
+      "dimensions\\minecraft\\overworld\\poi\\r.8.8.mca": "e8e44920060028378fe179d0afcfb8a9eebbc20d94b259e9f1351ff59a06f9be",
+      "dimensions\\minecraft\\overworld\\region\\r.-1.-1.mca": "d44352d4dc34cdaf18de2b83a7d2de9a3095b49772492f45ed4fb1a53f131242",
+      "dimensions\\minecraft\\overworld\\region\\r.-1.0.mca": "ffa3433d94aad0b6654177f3262300dd392675305d5c35946df14c6f2e069788",
+      "dimensions\\minecraft\\overworld\\region\\r.0.-1.mca": "83e31550c7508bd03aac6ff0ac9f7ce416654f4f5166264c3184d60b160a1625",
+      "dimensions\\minecraft\\overworld\\region\\r.0.0.mca": "25e484d44c66fb07946b92ce556f85620ac8dbe827e4653ce8f0bbe2d12748d6",
+      "dimensions\\minecraft\\overworld\\region\\r.7.7.mca": "55cf57bd95859fd7041dd3b04b42ae8efd292d54151e6a3ec9627c89ec3df7b3",
+      "dimensions\\minecraft\\overworld\\region\\r.7.8.mca": "b5921b94207c4fe50e59e2cafb249280aeacb042f19c639ff69c212a41f79275",
+      "dimensions\\minecraft\\overworld\\region\\r.8.7.mca": "1ab73b63e4774bf473c6017ffdec26e15701cfd1c3edfa6e2d0dda2aca233271",
+      "dimensions\\minecraft\\overworld\\region\\r.8.8.mca": "669788a7ea7f2c8a86960187ff38a6db1ef1c3e935a1cb1a2584fcfef172d5a6"
+    },
+    "resolution": "Freeze simulation before final inventory reads; all final campaigns use v2."
+  }
+}

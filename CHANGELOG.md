@@ -32,6 +32,13 @@ locally. The 40-client production stand has not been run.
   victories without losses; the unchanged 3.1.5 repeats seven losses. All
   completed raids have eight waves. A saved-world restart matches vanilla's
   three initial losses and one immediate unstarted stop, then continues waves.
+- Additional local validation: physical Nether portal loaders pass against
+  vanilla, 3.1.3, 3.1.4 and 3.1.6 with Lithium in both entity modes. Eight mobs
+  cross each way, item stocks remain exactly 2304/2304, slow-member/rate changes
+  recover and both portal chunks unload after shutdown of the clocks. This
+  reviews the 3.1.4 coupling correction without changing runtime code; the
+  inherited `top verbose` target-rate display defect is documented separately.
+  See [portal-loader review](docs/PORTAL-LOADER-REVIEW-2026-10-17.md).
 
 ## 3.1.5-alpha (2026-10-17)
 
