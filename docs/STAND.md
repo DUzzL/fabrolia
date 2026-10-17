@@ -205,13 +205,15 @@ python tools/stand/portal-parity-driver.py build/portal-van \
   --java JAVA25 --server-port 26600
 python tools/stand/portal-parity-driver.py build/portal-candidate \
   --template TEMPLATE --mods FABRIC_API_JAR CARPET_JAR LITHIUM_JAR \
-  --jar fabric/build/libs/fabrolia-alpha_3.1.6.jar --mode parallel \
-  --java JAVA25 --server-port 26610 --stress
+  --jar fabric/build/libs/fabrolia-alpha_3.1.7.jar --mode parallel \
+  --java JAVA25 --server-port 26610 --stress --expect-shared-target
 ```
 
 `--mode serial` checks the vanilla-order island entity lane. `--stress` adds
 200 ms artificial unit cost to one coupled member for eight seconds, then
-requires recovery. Add the same Spark jar to both old/new `--mods` lists and
+requires recovery. `--expect-shared-target` checks the target TPS and override
+marker in both verbose rows after the 10/20 TPS transitions (3.1.7+).
+Add the same Spark jar to both old/new `--mods` lists and
 use `--profile` for a capture of the initial steady workload. Each run needs
 a fresh directory and an unused adjacent RCON port. Results and limits:
 [2026-10-17 portal-loader review](PORTAL-LOADER-REVIEW-2026-10-17.md).

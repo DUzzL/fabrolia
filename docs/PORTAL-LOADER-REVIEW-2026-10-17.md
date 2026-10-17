@@ -28,13 +28,16 @@ Coupling-Objekt, aber die Taktung bestimmt natürlich, wann die beteiligten
 Chunks und Entities ticken. Deshalb genügt der unveränderte Quelltext der
 Portalstrecke allein nicht als Funktionsnachweis.
 
-Ein verbleibender **Anzeigefehler** wurde zur Laufzeit bestätigt:
-`IslandMetrics.row` verwendet für `top verbose` noch
+Ein **Anzeigefehler in 3.1.4 bis 3.1.6** wurde zur Laufzeit bestätigt:
+`IslandMetrics.row` verwendete für `top verbose`
 `TemporalControl.effectiveTargetNanos` statt der gemeinsamen Zielrate.
 Bei `rate 10` auf der Overworld-Hälfte zeigt der Nether-Partner deshalb
 `tps=10.0/20.0`, obwohl er korrekt mit 10 TPS tickt und `crossdim` korrekt
 `sharedTps=10.0` meldet. Die normalen Info-/HUD-Zeilen verwenden bereits
-`IslandMetrics.targetTps`. Dieser Review ändert keinen Runtime-Code.
+`IslandMetrics.targetTps`. Der anschließende Fix in **3.1.7** verwendet nun
+auch für die ausführliche Zeile `targetNanos(rs, p)`, einschließlich der
+Markierung `RATE-OVERRIDE`. Der ergänzte Verhaltenstest prüft die tatsächliche
+Formatierung bei geerbten 10 TPS und nach der Rückkehr auf 20 TPS.
 
 Die großen geometrischen Kopplungsgruppen bestehen weiterhin: Eine
 Nether-Zelle kann mehrere Overworld-Inseln verbinden. Ein Rate-Befehl wirkt
@@ -122,7 +125,23 @@ weiterhin nicht aufgeholt und nicht durch Umschreiben ihrer Uhr verborgen.
 
 Im getesteten Aufbau beeinträchtigt die Taktkorrektur weder Portaltransfers
 noch den autonomen Chunkloader. Eine weitere Runtime-Korrektur ergibt sich
-daraus nicht. Der oben beschriebene Anzeigefehler bleibt als separater Befund.
+daraus nicht. Der oben beschriebene Anzeigefehler wurde anschließend in 3.1.7
+behoben; die ursprünglichen fünf Vergleichsläufe und ihre Hashes bleiben als
+historische Nachweise erhalten.
+
+## Nachprüfung des Anzeigefixes in 3.1.7
+
+Der abschließende Serverlauf `display317` verwendet Lithium und
+`--expect-shared-target`. Beide gekoppelten Zeilen zeigen nach `rate 10`
+korrekt `10.0/10.0` und `RATE-OVERRIDE`; nach dem Zurückstellen korrekt
+20 Ziel-TPS ohne Markierung. Mob-Transfers, alle 2304 Items und das Entladen
+beider Farm-Chunks bestehen erneut. Der Server stoppt ohne Runtime-Fehler.
+
+1486 Tests bestehen, acht optionale werden übersprungen; Fabric-/NeoForge-Build
+und Fabric-Artefaktprüfung bestehen. Im Vergleich zum getesteten 3.1.6-Jar
+ändert sich ausschließlich `IslandMetrics.class`; die übrigen 905 Klassen
+sind bytegleich. Nachweise, beide Jar-Hashes und die tatsächlichen Zeilen:
+[`verbose-target-2026-10-17.json`](evidence/verbose-target-2026-10-17.json).
 
 ## Nachweise und Grenzen
 

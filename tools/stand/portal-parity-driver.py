@@ -193,12 +193,16 @@ class PortalFixture(base.Fixture):
             slow = self.snapshot('shared_rate_10')
             if 'COUPLED sharedTps=10.0 anchored' not in slow['coupling']:
                 raise AssertionError('Slowest-member rate was not shared')
+            if self.args.expect_shared_target:
+                self.check_verbose_targets(slow, handles[-1], 10, True)
             for dim, *_ in SITES:
                 if slow['sites'][dim]['received'] <= end['sites'][dim]['received']:
                     raise AssertionError('Portal transport stopped at shared rate 10')
             self.command(f'fabrolia regions rate handle {handles[-1][0]} 20')
             self.sleep_checked(15)
-            self.snapshot('shared_rate_restored')
+            restored = self.snapshot('shared_rate_restored')
+            if self.args.expect_shared_target:
+                self.check_verbose_targets(restored, handles[-1], 20, False)
         # Stop both clocks. Pending entities are allowed to complete before
         # conservation is measured. Commands here only address already loaded
         # chunks; the later expiry observations use `if loaded` alone.
@@ -224,6 +228,17 @@ class PortalFixture(base.Fixture):
         if not all(expired.values()):
             raise AssertionError('Portal chunks retained after final ticket: ' + str(expired))
 
+    def check_verbose_targets(self, sample, handles, target, override):
+        rows = re.split(r'(?=#\d+ )', sample['islands'])
+        for handle in handles:
+            row = next((row for row in rows if f'[{handle}]' in row), None)
+            if row is None or not re.search(rf'tps=[^ /]+/{target}\.0 mspt=', row):
+                raise AssertionError(f'{handle}: verbose target is not {target}: {row}')
+            if ('RATE-OVERRIDE' in row) != override:
+                raise AssertionError(f'{handle}: wrong verbose override marker: {row}')
+        self.report.setdefault('verbose_target_checks', []).append(
+            {'phase': sample['phase'], 'handles': list(handles), 'target': target, 'override': override})
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -236,7 +251,11 @@ def main():
     p.add_argument('--server-port', type=int, required=True)
     p.add_argument('--profile', action='store_true', help='Requires a Spark jar in --mods')
     p.add_argument('--stress', action='store_true', help='Exercise one overdue linked island for eight seconds')
+    p.add_argument('--expect-shared-target', action='store_true',
+                   help='Require both verbose rows to show the shared target and override marker')
     a = p.parse_args()
+    if a.expect_shared_target and not a.jar:
+        p.error('--expect-shared-target requires --jar')
     a.rcon_port, a.heap, a.launcher, a.boot_timeout, a.suite = a.server_port + 1, '3G', 'fabric-server-launch.jar', 240, 'portals'
     run, server, settings = base.build_run(a)
     settings.update({'allow-nether': 'true', 'level-seed': '732647', 'pause-when-empty-seconds': '-1',
@@ -245,7 +264,8 @@ def main():
     (server / 'server.properties').write_text(''.join(k + '=' + v + '\n' for k, v in settings.items()))
     f = PortalFixture(a, run, server, settings)
     f.report.update(clock='physical observer clock; wall time', fixture='portal-parity-v2',
-                    stress=a.stress, profile=a.profile, driver_sha256=base.sha256(Path(__file__)))
+                    stress=a.stress, profile=a.profile, expect_shared_target=a.expect_shared_target,
+                    driver_sha256=base.sha256(Path(__file__)))
     try:
         f.launch()
         f.setup()

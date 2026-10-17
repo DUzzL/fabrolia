@@ -673,7 +673,7 @@ class CrossDimLinksTest {
         assertEquals("linked with 3 islands (3 Overworld, 0 Nether); all tick together at 20.0 TPS",
                 IslandMetrics.couplingSummary(ne));
 
-        TemporalControl.addRateSession(owRs, a, 10.0, "test-10tps");
+        var rate = TemporalControl.addRateSession(owRs, a, 10.0, "test-10tps");
         CrossDimLinks.mainTick();
         assertEquals(100_000_000L, c.crossDimCoupling.sharedTargetNanos,
                 "lower-TPS-wins over the whole group");
@@ -681,6 +681,18 @@ class CrossDimLinksTest {
                 "the displayed target is the rate the island's units roll by");
         assertEquals("rate 10.0 (set on a portal-linked island)", IslandMetrics.pacingTag(owRs, c));
         assertEquals("rate 10.0", IslandMetrics.pacingTag(owRs, a));
+        String inheritedRow = IslandMetrics.row(neRs, ne, 1);
+        assertTrue(inheritedRow.contains("/10.0 mspt="),
+                "verbose diagnostics must show the shared target on the Nether partner");
+        assertTrue(inheritedRow.endsWith(" RATE-OVERRIDE"));
+
+        owRs.temporalSessions.remove(rate);
+        TemporalControl.addRateSession(owRs, a, 20.0, "test-20tps");
+        CrossDimLinks.mainTick();
+        String restoredRow = IslandMetrics.row(neRs, ne, 1);
+        assertTrue(restoredRow.contains("/20.0 mspt="));
+        assertFalse(restoredRow.contains("RATE-OVERRIDE"),
+                "the inherited override marker must clear when the group returns to the global rate");
     }
 
     /**

@@ -1,3 +1,18 @@
+## 3.1.7-alpha (2026-10-17)
+
+Status: 1486 tests pass (8 optional skip), Fabric/NeoForge builds and artifact
+checks pass. The local portal-loader run validates both verbose rows at 10/20
+TPS, item conservation and ticket expiry. The production stand is still pending.
+
+- Fix: `/fabrolia regions top verbose` reports the shared target TPS for
+  portal-linked islands. At a shared 10 TPS, the Nether partner now shows
+  `tps=10.0/10.0` and `RATE-OVERRIDE`; both return to the global target and
+  clear the marker when the group is restored to 20 TPS. The diagnostic uses
+  the same target resolver as the regular info and HUD displays.
+- Regression coverage checks the actual formatted row when the partner inherits
+  a rate and when the override is removed. The physical portal-loader driver
+  can also validate both verbose rows with `--expect-shared-target`.
+
 ## 3.1.6-alpha (2026-10-17)
 
 Status: 1486 tests pass (8 optional skip), Fabric/NeoForge builds and the Fabric

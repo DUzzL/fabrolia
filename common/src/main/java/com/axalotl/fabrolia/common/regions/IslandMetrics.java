@@ -244,7 +244,7 @@ public final class IslandMetrics {
 
     /** One tpstop/list row (the `top verbose` diagnostic form). */
     public static String row(RegionizedServer rs, IslandRegistry.PIsland p, int rank) {
-        long targetNanos = TemporalControl.effectiveTargetNanos(rs, p);
+        long targetNanos = targetNanos(rs, p);
         return String.format(java.util.Locale.ROOT,
                 "#%d %s [%s] %s island#%d/gen%d cells=%d+%dh L=%d gt=%d ev=%d/%d tps=%.1f/%.1f mspt=%.2f max=%.2f lag=%dms missed=%d%s%s",
                 rank, label(rs, p), handle(rs, p), rs.level.dimension().identifier(), p.id, p.gen,

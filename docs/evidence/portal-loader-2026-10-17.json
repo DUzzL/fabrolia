@@ -6,6 +6,7 @@
   ],
   "source_chat_sha256": "f40490002af5d757de4eba65fbe0297f8d847b24e11f6fa9e9b8cd358a2d458e",
   "driver": {
+    "source_commit": "318e2fa",
     "path": "tools/stand/portal-parity-driver.py",
     "sha256": "8cee9a2a5e6b83372dcbe27fb43443390513c612559d73021fc452fce073120a"
   },
