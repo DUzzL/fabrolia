@@ -1,3 +1,38 @@
+## 3.1.6-alpha (2026-10-17)
+
+Status: 1486 tests pass (8 optional skip), Fabric/NeoForge builds and the Fabric
+artifact check pass. Original-world runs and a matched saved-world restart pass
+locally. The 40-client production stand has not been run.
+
+- Fix: stacked raids select and tick in vanilla's native registry order again.
+  `getNearbyRaid` keeps the first raid at an equal distance. The striped
+  concurrent registry changed that tie, and island ticks separately used an
+  unordered subscription set. This changed villagers' `raid`/`pre_raid`
+  activity and the timing of the farm's bell release relative to its moving
+  workstations. The corrected original-world runs relocate to the fallback
+  village as vanilla does, instead of losing the overlapping raids.
+- The registry publishes immutable native-table clones with vanilla's initial
+  size; the codec constructor installs it before inserting saved raids. Island
+  subscriptions still decide ownership, while a private native cursor decides
+  tick order and iterator removal, copying only on an actual cleanup. Registry
+  monitors cover structural operations, never raid/world callbacks. Independent
+  islands keep their cadence.
+- Match vanilla's stopped-raid cleanup boundary: a raid stopped during its tick
+  remains registered until the next raid phase, including across a topology
+  handoff. Stale Main subscriptions to removed raids are still cleaned up.
+  Missing villages still cause vanilla's immediate STOP/LOSS; no grace,
+  forced POI claim, artificial raid ticket or clock change is introduced.
+- Regression coverage compares the actual Minecraft lookup with the published
+  lookup, table growth/removal/reuse, concurrent island registration/cleanup,
+  dispatch order and the next-phase cleanup subscription. Details and runtime
+  evidence: [raid registry parity](docs/RAID-REGISTRY-PARITY-2026-10-17.md).
+- Final jar: fresh serial run (8 min) 13 raids, 86 waves, 7 victories, no loss or
+  early stop; parallel (12 min) 21 raids, 146 waves, 14 victories, no loss or
+  early stop. The 12-minute vanilla reference has 21 raids, 141 waves and 14
+  victories without losses; the unchanged 3.1.5 repeats seven losses. All
+  completed raids have eight waves. A saved-world restart matches vanilla's
+  three initial losses and one immediate unstarted stop, then continues waves.
+
 ## 3.1.5-alpha (2026-10-17)
 
 Status: unit tests, Fabric/NeoForge builds and the artifact check pass. The Omen

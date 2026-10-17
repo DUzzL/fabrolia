@@ -34,8 +34,9 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 ```
 
 Jar: `fabric/build/libs/fabrolia-alpha_<major>.<minor>.<patch>.jar`; current build
-`fabrolia-alpha_3.1.5.jar` (metadata `3.1.5-alpha` in `gradle.properties`; Bad Omen survives
-its Raid Omen conversion again, on top of the 3.1.4 island health display), not yet stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
+`fabrolia-alpha_3.1.6.jar` (metadata `3.1.6-alpha` in `gradle.properties`; vanilla
+raid registry/tick order and stopped-raid cleanup, on top of the 3.1.5 Omen fix),
+not yet production-stand-verified. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
 which crashed on a mob killing an island player (fixed in 3.0.3); `3.0.3-alpha` ran from
 2026-10-11 12:58 CEST and lagged at 40 players (see `docs/PERF-ANALYSE-2026-10-11.md`).
 The owner's 2026-10-10 versioning rule supersedes the old fixed `0.2.38+alpha-26.3`:
@@ -60,7 +61,7 @@ classes of the real mod set: `tools/stand/stand.sh export exp-1 <jar>`, then
 (details, scenarios and how to read results: `docs/STAND.md`):
 
 ```bash
-tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.5.jar   # must print ALL PASS
+tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.6.jar   # must print ALL PASS
 tools/stand/stand.sh perf perf-1 <jar> 120 [--scenario items|pistons] [--heap]
 python3 tools/spark/frames.py <old>.sparkprofile <new>.sparkprofile
 ```
@@ -77,11 +78,12 @@ player Y above the floor and could suppress every sweep attack, including in
 vanilla; compare accepted attacks, ground state and actual sweeps before
 attributing missing kills to the parallel mode. Bell POI releases also occurred
 in vanilla; the clock-aware comparison did not establish an island-clock bug.
-With the corrected client, 3.1.5 starts raids like vanilla, but the 9-minute
-natural runs still had six late losses in both island entity modes versus none
-in that vanilla run. The controlled absence of the bell and fallback workstation
-also stops a vanilla raid at ~6 %. Next investigate the phase of the bell release
-relative to reclaiming (0,143,18), not a grace period around the vanilla loss rule.
+The remaining 3.1.5 losses came from non-vanilla registry/tick encounter order:
+equal-distance stacked raids choose the first entry and steer villager activity.
+3.1.6 preserves the native table and island raid order, including next-phase
+stopped cleanup. See `docs/RAID-REGISTRY-PARITY-2026-10-17.md` for the natural
+bell-gap relocation checks and jar hashes. The controlled absence of both bell
+and fallback workstation still stops a vanilla raid at ~6 %; preserve that rule.
 
 ## Diagnose production
 

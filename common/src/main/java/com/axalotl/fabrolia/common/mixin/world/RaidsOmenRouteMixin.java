@@ -1,6 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.world;
 
-import com.axalotl.fabrolia.api.fastutil.Int2ObjectConcurrentHashMap;
+import com.axalotl.fabrolia.common.utils.CopyOnWriteInt2ObjectMap;
 import com.axalotl.fabrolia.common.regions.RaidIslandDispatch;
 import com.axalotl.fabrolia.common.regions.RaidOwnerAccess;
 import com.axalotl.fabrolia.common.regions.RaidOwnership;
@@ -10,6 +10,7 @@ import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.Hash;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -32,6 +33,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.objectweb.asm.Opcodes;
 
 import java.util.List;
 
@@ -41,13 +43,16 @@ public abstract class RaidsOmenRouteMixin implements RaidRegistryAccess {
     @Shadow @Final @Mutable private Int2ObjectMap<Raid> raidMap;
     @Shadow private int nextId;
 
-    // The codec constructor must publish its populated registry too.
-    @Inject(method = "<init>*", at = @At("RETURN"), require = 2)
+    // Install before the codec constructor inserts saved raids. Copying an
+    // already populated concurrent map would inherit its different tie order.
+    @Inject(method = "<init>*", at = @At(value = "FIELD",
+            target = "Lnet/minecraft/world/entity/raid/Raids;raidMap:Lit/unimi/dsi/fastutil/ints/Int2ObjectMap;",
+            opcode = Opcodes.PUTFIELD, shift = At.Shift.AFTER), require = 2)
     private void fabrolia$publishRegistry(CallbackInfo ci) {
-        // Safety must not depend on the optional global collection transformer.
-        if (!(raidMap instanceof Int2ObjectConcurrentHashMap<?>)) {
-            raidMap = new Int2ObjectConcurrentHashMap<>(raidMap);
-        }
+        if (!raidMap.isEmpty()) throw new IllegalStateException("Raid registry must be installed before population");
+        // Same table size, insertions and iterator removals as vanilla. Equal
+        // distances in getNearbyRaid select the first table entry, not any raid.
+        raidMap = new CopyOnWriteInt2ObjectMap<>(Hash.DEFAULT_INITIAL_SIZE);
     }
 
     @WrapMethod(method = "createOrExtendRaid")
@@ -164,15 +169,13 @@ public abstract class RaidsOmenRouteMixin implements RaidRegistryAccess {
     }
 
     @Override
-    public void fabrolia$removeStoppedRaid(Raid raid) {
-        synchronized (this) {
-            for (Int2ObjectMap.Entry<Raid> entry : raidMap.int2ObjectEntrySet()) {
-                if (entry.getValue() == raid) {
-                    raidMap.remove(entry.getIntKey(), raid);
-                    break;
-                }
-            }
-        }
-        ((Raids) (Object) this).setDirty();
+    @SuppressWarnings("unchecked")
+    public java.util.Iterator<Raid> fabrolia$raidIterator() {
+        return ((CopyOnWriteInt2ObjectMap<Raid>) raidMap).mutableValuesIterator(this);
+    }
+
+    @Override
+    public boolean fabrolia$isRegistered(Raid raid) {
+        return raidMap.containsValue(raid);
     }
 }

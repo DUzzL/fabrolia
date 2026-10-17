@@ -402,6 +402,10 @@ class RegionPreparationRoutedCommandTest {
                 BlockPos center = new BlockPos(3 * cellBlocks, 64, 0);
                 TestRaid live = new TestRaid(center, false);
                 TestRaid stopped = new TestRaid(center, true);
+                TestRaids registry = new TestRaids();
+                registry.entries.put(1, live);
+                registry.entries.put(2, stopped);
+                ((CommandLevel) f.level).raids = registry;
                 RaidIslandDispatch.assign(f.island, live);
                 RaidIslandDispatch.assign(f.island, stopped);
                 assertTrue(IslandCommands.quiesceAllExcept(null));
@@ -416,6 +420,37 @@ class RegionPreparationRoutedCommandTest {
                     RaidIslandDispatch.service(f.runtime, next, f.level);
                     assertEquals(1, live.ticks);
                     assertEquals(0, stopped.ticks);
+                    assertEquals(List.of(live), new java.util.ArrayList<>(registry.entries.values()));
+                    live.stopDuringTick = true;
+                    RaidIslandDispatch.service(f.runtime, next, f.level);
+                    assertEquals(2, live.ticks);
+                    assertTrue(registry.entries.containsValue(live), "a stop during tick is removed next phase");
+                    assertTrue(next.assignedRaids.contains(live), "keep the next phase's cleanup subscription");
+                    RaidIslandDispatch.service(f.runtime, next, f.level);
+                    assertEquals(2, live.ticks, "the stopped body must not tick again");
+                    assertTrue(registry.entries.isEmpty());
+                    assertTrue(next.assignedRaids.isEmpty());
+                    // A delayed Main dispatch may still publish its old map
+                    // snapshot after the owner has removed this registration.
+                    RaidIslandDispatch.assign(next, live);
+                    RaidIslandDispatch.service(f.runtime, next, f.level);
+                    assertEquals(2, live.ticks);
+                    assertTrue(next.assignedRaids.isEmpty(), "prune removed raids that the registry cursor cannot visit");
+
+                    List<TestRaid> actualOrder = new java.util.ArrayList<>();
+                    List<TestRaid> added = new java.util.ArrayList<>();
+                    for (int id = 2531; id < 2545; id++) {
+                        TestRaid raid = new TestRaid(center, false);
+                        raid.order = actualOrder;
+                        registry.entries.put(id, raid);
+                        added.add(raid);
+                    }
+                    java.util.Collections.reverse(added);
+                    for (TestRaid raid : added) RaidIslandDispatch.assign(next, raid);
+                    List<net.minecraft.world.entity.raid.Raid> expectedOrder =
+                            new java.util.ArrayList<>(registry.entries.values());
+                    RaidIslandDispatch.service(f.runtime, next, f.level);
+                    assertEquals(expectedOrder, actualOrder, "tick in registry order, independent of subscription order");
                 } finally {
                     IslandCommands.releaseAllExcept();
                 }
@@ -427,8 +462,10 @@ class RegionPreparationRoutedCommandTest {
 
     private static final class TestRaid extends net.minecraft.world.entity.raid.Raid
             implements RaidOwnerAccess {
-        private final View view;
+        private View view;
         int ticks;
+        boolean stopDuringTick;
+        List<TestRaid> order;
 
         TestRaid(BlockPos center, boolean stopped) {
             super(center, net.minecraft.world.Difficulty.NORMAL);
@@ -439,13 +476,35 @@ class RegionPreparationRoutedCommandTest {
         public View fabrolia$raidView() { return view; }
 
         @Override
+        public boolean isStopped() { return view.stopped(); }
+
+        @Override
         public boolean fabrolia$absorbOmenIfEligible(net.minecraft.server.level.ServerPlayer player,
                                                     net.minecraft.world.effect.MobEffectInstance effect) {
             throw new UnsupportedOperationException("omen mutation is outside this scheduling fixture");
         }
 
         @Override
-        public void tick(ServerLevel level) { ticks++; }
+        public void tick(ServerLevel level) {
+            ticks++;
+            if (order != null) order.add(this);
+            if (stopDuringTick) view = new View(view.center(), false, true);
+        }
+    }
+
+    private static final class TestRaids extends net.minecraft.world.entity.raid.Raids implements RaidRegistryAccess {
+        final com.axalotl.fabrolia.common.utils.CopyOnWriteInt2ObjectMap<net.minecraft.world.entity.raid.Raid> entries =
+                new com.axalotl.fabrolia.common.utils.CopyOnWriteInt2ObjectMap<>(16);
+
+        @Override
+        public java.util.Iterator<net.minecraft.world.entity.raid.Raid> fabrolia$raidIterator() {
+            return entries.mutableValuesIterator();
+        }
+
+        @Override
+        public boolean fabrolia$isRegistered(net.minecraft.world.entity.raid.Raid raid) {
+            return entries.containsValue(raid);
+        }
     }
 
     @Test
@@ -572,6 +631,7 @@ class RegionPreparationRoutedCommandTest {
     /** Only environmental inputs are substituted; command parsing/execution stays vanilla. */
     private static final class CommandLevel extends ServerLevel {
         GameRules rules;
+        TestRaids raids;
         boolean commandBlocksEnabled;
 
         private CommandLevel() {
@@ -587,6 +647,9 @@ class RegionPreparationRoutedCommandTest {
 
         @Override
         public GameRules getGameRules() { return rules; }
+
+        @Override
+        public net.minecraft.world.entity.raid.Raids getRaids() { return raids; }
     }
 
     private static void exercise(RuntimeException commandFailure) throws Exception {

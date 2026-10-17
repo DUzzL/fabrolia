@@ -1,6 +1,7 @@
 package com.axalotl.fabrolia.common.utils;
 
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -18,6 +19,141 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CopyOnWriteInt2ObjectMapTest {
+
+    @Test
+    void firstCleanupAfterAReadOnlyPrefixKeepsTheNativeIteratorPosition() {
+        Int2ObjectMap<Integer> vanilla = new Int2ObjectOpenHashMap<>();
+        CopyOnWriteInt2ObjectMap<Integer> published = new CopyOnWriteInt2ObjectMap<>(16);
+        for (int key = 0; key < 200; key++) {
+            vanilla.put(key, Integer.valueOf(key));
+            published.put(key, Integer.valueOf(key));
+        }
+        var nativeCursor = vanilla.values().iterator();
+        var cursor = published.mutableValuesIterator();
+        int visited = 0;
+        while (nativeCursor.hasNext()) {
+            assertEquals(nativeCursor.next(), cursor.next());
+            if (++visited > 63 && visited % 3 == 0) {
+                nativeCursor.remove();
+                cursor.remove();
+            }
+            assertEquals(new ArrayList<>(vanilla.values()), new ArrayList<>(published.values()));
+        }
+        assertFalse(cursor.hasNext());
+    }
+
+    @Test
+    void simultaneousOwnerCleanupNeverOverwritesAnotherOwnersNewRegistrations() throws Exception {
+        CopyOnWriteInt2ObjectMap<Integer> map = new CopyOnWriteInt2ObjectMap<>(16);
+        for (int id = 0; id < 400; id++) map.put(id, Integer.valueOf(id));
+        var admittedValues = map.values();
+        var captured = new java.util.concurrent.CyclicBarrier(4);
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(4)) {
+            List<java.util.concurrent.Future<?>> results = new ArrayList<>();
+            for (int owner = 0; owner < 4; owner++) {
+                int lane = owner;
+                results.add(workers.submit(() -> {
+                    var cursor = map.mutableValuesIterator();
+                    captured.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                    while (cursor.hasNext()) {
+                        int value = cursor.next();
+                        if (value % 4 != lane) continue;
+                        cursor.remove();
+                        map.put(value + 1000, Integer.valueOf(value + 1000));
+                    }
+                    return null;
+                }));
+            }
+            for (var result : results) result.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        assertEquals(400, admittedValues.size(), "published reader snapshots stay immutable");
+        assertTrue(admittedValues.contains(0));
+        assertEquals(400, map.size());
+        for (int id = 0; id < 400; id++) {
+            assertFalse(map.containsKey(id));
+            assertEquals(id + 1000, map.get(id + 1000));
+        }
+    }
+
+    @Test
+    void lifecycleCursorPreservesOtherIslandsRegistrationsAndReplacements() {
+        CopyOnWriteInt2ObjectMap<Object> map = new CopyOnWriteInt2ObjectMap<>(16);
+        Object first = new Object();
+        Object second = new Object();
+        map.put(1, first);
+        map.put(2, second);
+        var cursor = map.mutableValuesIterator();
+        Object admitted = cursor.next();
+        int key = admitted == first ? 1 : 2;
+        Object replacement = new Object();
+        Object foreign = new Object();
+        map.put(key, replacement);
+        map.put(99, foreign);
+        cursor.remove();
+        assertSame(replacement, map.get(key), "cleanup must not remove a replacement registration");
+        assertSame(foreign, map.get(99));
+        Object remaining = cursor.next();
+        cursor.remove();
+        assertFalse(map.containsValue(remaining));
+        assertEquals(2, map.size(), "publishing a later removal must retain both outside writes");
+        assertSame(replacement, map.get(key));
+        assertSame(foreign, map.get(99));
+        assertFalse(cursor.hasNext(), "a phase does not admit newly registered values midway");
+    }
+
+    @Test
+    void stoppedRaidIteratorRemovalsRetainNativeOrderAndTableCapacity() {
+        Int2ObjectMap<Object> vanilla = new Int2ObjectOpenHashMap<>();
+        CopyOnWriteInt2ObjectMap<Object> published = new CopyOnWriteInt2ObjectMap<>(16);
+        for (int key = 0; key < 200; key++) {
+            Object raid = new Object();
+            vanilla.put(key, raid);
+            published.put(key, raid);
+        }
+        var iterator = vanilla.values().iterator();
+        var publishedIterator = published.mutableValuesIterator();
+        while (iterator.hasNext()) {
+            Object raid = iterator.next();
+            assertSame(raid, publishedIterator.next());
+            iterator.remove();
+            publishedIterator.remove();
+            assertFalse(published.removeValueIdentity(raid));
+            assertEquals(new ArrayList<>(vanilla.values()), new ArrayList<>(published.values()));
+        }
+        // Iterator cleanup does not shrink like keyed removal. Future inserts
+        // must still encounter the same slots, even after an empty registry.
+        for (int key = 2531; key < 2600; key++) {
+            Object raid = new Object();
+            vanilla.put(key, raid);
+            published.put(key, raid);
+            assertEquals(new ArrayList<>(vanilla.values()), new ArrayList<>(published.values()));
+        }
+    }
+
+    @Test
+    void encounterOrderMatchesTheVanillaTableAcrossResizesAndRemovals() {
+        Int2ObjectMap<Integer> vanilla = new Int2ObjectOpenHashMap<>();
+        Int2ObjectMap<Integer> published = new CopyOnWriteInt2ObjectMap<>(16);
+        // A raid tie keeps the FIRST encountered active raid; identical key/value
+        // contents alone do not preserve village AI's raid/pre_raid selection.
+        for (int key = 2531; key < 2660; key++) {
+            vanilla.put(key, Integer.valueOf(key));
+            published.put(key, Integer.valueOf(key));
+            assertEquals(new ArrayList<>(vanilla.values()), new ArrayList<>(published.values()), "insert " + key);
+        }
+        for (int key = 2531; key < 2660; key += 2) {
+            vanilla.remove(key);
+            published.remove(key);
+            assertEquals(new ArrayList<>(vanilla.values()), new ArrayList<>(published.values()), "remove " + key);
+        }
+        vanilla.clear();
+        published.clear();
+        for (int key = 2560; key < 2600; key++) {
+            vanilla.put(key, Integer.valueOf(key));
+            published.put(key, Integer.valueOf(key));
+            assertEquals(new ArrayList<>(vanilla.values()), new ArrayList<>(published.values()), "after clear " + key);
+        }
+    }
 
     @Test
     void mapOperationsFollowTheInt2ObjectMapContract() {

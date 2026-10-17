@@ -1,5 +1,11 @@
 # Raid-Farm: Bad Omen bleibt bei der Umwandlung erhalten (17.10.2026)
 
+Fortsetzung: Die unten noch offenen 3.1.5-Unterschiede bei späten Dorf-Lücken
+wurden auf die abweichende Raid-Registry- und Tick-Reihenfolge zurückgeführt.
+3.1.6 korrigiert diese; Ursache, Tests und neue Originalläufe stehen in
+[Raid-Reihenfolge und Dorf-Verlegung](RAID-REGISTRY-PARITY-2026-10-17.md).
+Dieser Bericht bewahrt die vorherigen Diagnose- und Kontrollläufe.
+
 ## Bericht
 
 Produktion, 16.10.2026, Fabrolia 3.1.3: Lemon_Iced's „11k–25k Self-Sustaining Raid

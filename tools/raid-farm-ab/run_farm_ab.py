@@ -8,6 +8,7 @@ farm world, Carpet (only to flip the farm lever), Fabric API, Lithium, the
 observational probe mod (tools/raid-farm-ab/probe) and optionally Fabrolia.
 """
 import argparse
+import hashlib
 import json
 import shutil
 import socket
@@ -39,14 +40,22 @@ p.add_argument('--port', type=int, required=True)
 p.add_argument('--minutes', type=float, default=20)
 p.add_argument('--fabrolia', type=Path)
 p.add_argument('--parallel', action='store_true')
+p.add_argument('--disabled', action='store_true', help='Load Fabrolia with its global kill switch on; isolate non-scheduler mixins')
+p.add_argument('--resume', action='store_true', help='Use a saved running farm; preserve its already enabled lever')
 p.add_argument('--attack-interval', type=int, default=20)
 p.add_argument('--world', type=Path, required=True, help='output of prepare_world.py')
 p.add_argument('--template', type=Path, required=True,
                help='Fabric 26.3 server dir: fabric-server-launch.jar, server.jar, libraries/')
 p.add_argument('--carpet', type=Path, required=True)
 p.add_argument('--fabric-api', type=Path, required=True)
-p.add_argument('--lithium', type=Path, required=True)
+p.add_argument('--lithium', type=Path, help='Optional; omit for the Minecraft AI reference without Lithium changes')
+p.add_argument('--spark', type=Path, help='Optional all-thread Spark profile during the same farm scenario')
+p.add_argument('--profile-from', type=int, default=180, help='Seconds of operator warmup before profiling')
+p.add_argument('--profile-for', type=int, default=120, help='Seconds to profile (rounded up to a sample interval)')
 a = p.parse_args()
+if a.spark and (a.profile_from < 0 or a.profile_for <= 0
+                or a.minutes * 60 < a.profile_from + a.profile_for + 30):
+    p.error('profiling needs nonnegative warmup, positive duration and 30 seconds before the run ends')
 
 RUN = REPO / 'build' / 'raid-farm-ab' / a.name
 if RUN.exists():
@@ -56,7 +65,7 @@ if not PROBE.exists():
 shutil.copytree(a.template, RUN)
 mods = RUN / 'mods'
 mods.mkdir(exist_ok=True)
-for source in [a.carpet, a.fabric_api, a.lithium, PROBE]:
+for source in [a.carpet, a.fabric_api, PROBE] + ([a.lithium] if a.lithium else []) + ([a.spark] if a.spark else []):
     shutil.copy2(source, mods / source.name)
 if a.fabrolia:
     shutil.copy2(a.fabrolia, mods / a.fabrolia.name)
@@ -73,12 +82,26 @@ RCON_PASS = 'raid-ab-local-only'
 (RUN / 'config').mkdir(exist_ok=True)
 if a.fabrolia:
     (RUN / 'config' / 'fabrolia.toml').write_text(
-        'asyncIslands = true\nenableRegionThreading = true\nenablePlayerTickActor = true\n'
-        'regionWorkerCount = 4\nislandEntityParallel = %s\n' % str(a.parallel).lower())
+        'disabled = %s\nasyncIslands = %s\nenableRegionThreading = %s\nenablePlayerTickActor = %s\n'
+        'regionWorkerCount = 4\nislandEntityParallel = %s\n' %
+        ((str(a.disabled).lower(),) + (str(not a.disabled).lower(),) * 3 + (str(a.parallel).lower(),)))
 
 report = {'name': a.name, 'fabrolia': str(a.fabrolia) if a.fabrolia else None, 'parallel': a.parallel,
+          'disabled': a.disabled,
+          'resume': a.resume,
+          'lithium': str(a.lithium) if a.lithium else None,
+          'spark': str(a.spark) if a.spark else None,
           'minutes': a.minutes, 'attack_interval': a.attack_interval, 'samples': [], 'commands': [],
           'operator': {}}
+world_manifest = hashlib.sha256()
+world_files = 0
+for path in sorted(a.world.rglob('*')):
+    if not path.is_file() or path.name in ('session.lock', 'desktop.ini'):
+        continue
+    relative = path.relative_to(a.world).as_posix()
+    world_manifest.update(relative.encode('utf-8') + b'\0' + hashlib.sha256(path.read_bytes()).digest())
+    world_files += 1
+report['world_input'] = {'path': str(a.world), 'files': world_files, 'manifest_sha256': world_manifest.hexdigest()}
 proc = None
 T0 = time.monotonic()
 
@@ -223,23 +246,24 @@ try:
                     'scoreboard objectives add kw minecraft.killed:minecraft.witch',
                     'scoreboard objectives add bott minecraft.used:minecraft.ominous_bottle']:
         ex(command)
-    if a.fabrolia:
+    if a.fabrolia and not a.disabled:
         ex('fabrolia regions async on')
         ex('fabrolia regions islandentities ' + ('parallel' if a.parallel else 'vanilla'))
     # Farm switch: a helper bot flips the lever on the redstone lamp like a player.
-    ex('player Lever spawn at 2.975 76.0 14.05 facing 0 0 in minecraft:overworld in survival')
-    time.sleep(3)
-    lever = ''
-    for aim_y in ('78.6', '78.5', '78.7'):
-        ex('player Lever look at 2.5 %s 15.75' % aim_y)
-        ex('player Lever use once')
-        time.sleep(1)
-        lever = ex('execute if block 2 78 15 minecraft:lever[powered=true]')
-        if 'passed' in lever:
-            break
-    if 'passed' not in lever:
+    if not a.resume:
+        ex('player Lever spawn at 2.975 76.0 14.05 facing 0 0 in minecraft:overworld in survival')
+        time.sleep(3)
+        lever = ''
+        for aim_y in ('78.6', '78.5', '78.7'):
+            ex('player Lever look at 2.5 %s 15.75' % aim_y)
+            ex('player Lever use once')
+            time.sleep(1)
+            lever = ex('execute if block 2 78 15 minecraft:lever[powered=true]')
+            if 'passed' in lever:
+                break
+        ex('player Lever kill')
+    if not a.resume and 'passed' not in lever:
         raise RuntimeError('farm lever did not switch on: ' + lever)
-    ex('player Lever kill')
     time.sleep(2)
     # The operator: a real protocol client.
     client = wireclient.WireClient('Sora', a.port)
@@ -253,15 +277,24 @@ try:
     wait_for(joined, 120)
     ex('tp Sora %s %s %s %s %s' % (SPOT + ROT))
     time.sleep(1)
+    if a.resume:
+        wait_for(lambda: 'passed' in ex('execute if loaded 2 78 15', record=False), 60)
+        lever = ex('execute if block 2 78 15 minecraft:lever[powered=true]')
+        if 'passed' not in lever:
+            raise RuntimeError('saved farm lever is not enabled: ' + lever)
     ex('item replace entity Sora weapon.mainhand with minecraft:diamond_sword[minecraft:enchantments={'
        '"minecraft:sharpness":5,"minecraft:sweeping_edge":3,"minecraft:looting":3,"minecraft:unbreaking":3,'
        '"minecraft:mending":1}]')
     ex('item replace entity Sora weapon.offhand with minecraft:ominous_bottle[minecraft:ominous_bottle_amplifier=1] 64')
     # "Consume one ominous bottle": the bottle's exact Bad Omen II (120000 ticks, no particles).
     ex('effect give Sora minecraft:bad_omen 6000 1 true')
+    report['initial_scores'] = {obj: score(obj) for obj in ('rtrig', 'rwin', 'kp', 'kv', 'ke', 'kw', 'bott')}
     operator = Operator(client, a.attack_interval)
     operator.start()
-    end = time.monotonic() + a.minutes * 60
+    operated_at = time.monotonic()
+    end = operated_at + a.minutes * 60
+    profile_started = None
+    profile_done = False
     refills = 0
     while time.monotonic() < end:
         time.sleep(30)
@@ -269,6 +302,18 @@ try:
             raise client.error
         if operator.error:
             raise operator.error
+        if a.spark and not profile_done:
+            now = time.monotonic()
+            if profile_started is None and now - operated_at >= a.profile_from:
+                report['profile_start'] = ex('spark profiler start --thread * --interval 4')
+                profile_started = now
+            elif profile_started is not None and now - profile_started >= a.profile_for:
+                report['profile_stop'] = ex('spark profiler stop --save-to-file')
+                wait_for(lambda: list((RUN / 'config' / 'spark').glob('*.sparkprofile')), 60)
+                report['profile_seconds'] = round(time.monotonic() - profile_started, 1)
+                report['spark_profiles'] = [str(path.relative_to(RUN))
+                                           for path in (RUN / 'config' / 'spark').glob('*.sparkprofile')]
+                profile_done = True
         offhand = ex('data get entity Sora equipment.offhand.count', record=False)
         try:
             count = int(offhand.split('data: ')[1].strip())

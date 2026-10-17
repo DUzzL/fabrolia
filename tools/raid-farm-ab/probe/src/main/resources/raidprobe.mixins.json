@@ -14,7 +14,9 @@
     "BrainProbeMixin",
     "GoToPotentialJobSiteProbeMixin",
     "VillagerReleaseProbeMixin",
-    "PlayerAttackProbeMixin"
+    "PlayerAttackProbeMixin",
+    "AcquirePoiProbeMixin",
+    "RaidsRegistryProbeMixin"
   ],
   "injectors": { "defaultRequire": 1 }
 }

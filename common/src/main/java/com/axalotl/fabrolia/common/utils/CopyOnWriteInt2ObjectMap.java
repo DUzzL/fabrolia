@@ -5,10 +5,13 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectFunction;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectArraySet;
+import it.unimi.dsi.fastutil.objects.ObjectCollection;
+import it.unimi.dsi.fastutil.objects.ObjectCollections;
 import it.unimi.dsi.fastutil.objects.ObjectSet;
 import it.unimi.dsi.fastutil.objects.ObjectSets;
 
 import java.util.Map;
+import java.util.Iterator;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.IntFunction;
@@ -16,7 +19,7 @@ import java.util.function.IntFunction;
 /**
  * Small thread-safe {@link Int2ObjectMap} for per-object tables that hold a
  * handful of entries and are read far more often than written (the per-chunk
- * game-event listener registries: at most one entry per section).
+ * game-event listener registries: at most one entry per section; level raids).
  *
  * <p>Reads, including a {@code computeIfAbsent} that finds its key, are
  * lock-free on an immutable snapshot published through a volatile field.
@@ -24,9 +27,11 @@ import java.util.function.IntFunction;
  * {@code compute}, {@code merge}, … in both the primitive and the boxed
  * {@link Map} form), runs under this map's monitor and publishes a fresh copy,
  * so a compound operation is atomic against every other mutation. Iteration
- * walks one snapshot through immutable entries. An empty map costs one object
+ * walks one snapshot through immutable entries. A default-constructed empty map costs one object
  * and one shared empty table — the segmented concurrent map it replaces
  * allocated ~38 KB per chunk.
+ * Table clones retain native fastutil encounter order; copying through a map
+ * constructor would rehash and change equal-distance raid selection.
  */
 public final class CopyOnWriteInt2ObjectMap<V> extends AbstractInt2ObjectMap<V> {
 
@@ -34,6 +39,13 @@ public final class CopyOnWriteInt2ObjectMap<V> extends AbstractInt2ObjectMap<V> 
 
     @SuppressWarnings("unchecked")
     private volatile Int2ObjectOpenHashMap<V> snapshot = (Int2ObjectOpenHashMap<V>) EMPTY;
+
+    public CopyOnWriteInt2ObjectMap() {}
+
+    /** Keep the same initial hash-table layout as a vanilla registry of this size. */
+    public CopyOnWriteInt2ObjectMap(int expectedSize) {
+        snapshot = new Int2ObjectOpenHashMap<>(expectedSize);
+    }
 
     @Override
     public V get(int key) {
@@ -55,6 +67,11 @@ public final class CopyOnWriteInt2ObjectMap<V> extends AbstractInt2ObjectMap<V> 
     }
 
     @Override
+    public boolean containsValue(Object value) {
+        return snapshot.containsValue(value);
+    }
+
+    @Override
     public int size() {
         return snapshot.size();
     }
@@ -62,6 +79,73 @@ public final class CopyOnWriteInt2ObjectMap<V> extends AbstractInt2ObjectMap<V> 
     @Override
     public boolean isEmpty() {
         return snapshot.isEmpty();
+    }
+
+    /** Read-only values from exactly one published table, in its native order. */
+    @Override
+    public ObjectCollection<V> values() {
+        return ObjectCollections.unmodifiable(snapshot.values());
+    }
+
+    /**
+     * A private native cursor for an owner's lifecycle phase. Removals publish
+     * clones of its working table, preserving even fastutil's wrapped-key
+     * iterator cleanup across several removals in the same phase. No map lock
+     * is held while the caller runs a value's callbacks.
+     *
+     * <p>Another island may register/remove a different value between steps.
+     * In that case this cursor retains its admitted snapshot and removes only
+     * the matching identity from the current table, without overwriting the
+     * other island's changes. Independent island phases have no global order.
+     */
+    public Iterator<V> mutableValuesIterator() {
+        return mutableValuesIterator(this);
+    }
+
+    /** A registry's selection/publication monitor precedes the map monitor on removal. */
+    public Iterator<V> mutableValuesIterator(Object registryMonitor) {
+        Int2ObjectOpenHashMap<V> admitted = snapshot;
+        return new Iterator<>() {
+            private Int2ObjectOpenHashMap<V> expected = admitted;
+            private Int2ObjectOpenHashMap<V> working;
+            private Iterator<V> cursor = admitted.values().iterator();
+            private int visited;
+            private V current;
+            private boolean removable;
+
+            @Override public boolean hasNext() { return cursor.hasNext(); }
+
+            @Override public V next() {
+                current = cursor.next();
+                if (working == null) visited++;
+                removable = true;
+                return current;
+            }
+
+            @Override public void remove() {
+                if (!removable) throw new IllegalStateException();
+                synchronized (registryMonitor) {
+                    synchronized (CopyOnWriteInt2ObjectMap.this) {
+                        if (working == null) {
+                            // Most raid phases only read. Clone only on their
+                            // first cleanup and replay the unchanged prefix to
+                            // recover the exact native iterator position.
+                            working = admitted.clone();
+                            cursor = working.values().iterator();
+                            for (int i = 0; i < visited; i++) cursor.next();
+                        }
+                        cursor.remove();
+                        if (snapshot == expected) {
+                            snapshot = working.clone();
+                            expected = snapshot;
+                        } else {
+                            removeValueIdentity(current);
+                        }
+                    }
+                }
+                removable = false;
+            }
+        };
     }
 
     /** One snapshot, as immutable entries: a published table is never written. */
@@ -79,7 +163,7 @@ public final class CopyOnWriteInt2ObjectMap<V> extends AbstractInt2ObjectMap<V> 
 
     @Override
     public synchronized V put(int key, V value) {
-        Int2ObjectOpenHashMap<V> next = new Int2ObjectOpenHashMap<>(snapshot);
+        Int2ObjectOpenHashMap<V> next = snapshot.clone();
         boolean had = next.containsKey(key);
         V previous = next.put(key, value);
         snapshot = next;
@@ -90,28 +174,48 @@ public final class CopyOnWriteInt2ObjectMap<V> extends AbstractInt2ObjectMap<V> 
     public synchronized V remove(int key) {
         Int2ObjectOpenHashMap<V> current = snapshot;
         if (!current.containsKey(key)) return this.defRetValue;
-        Int2ObjectOpenHashMap<V> next = new Int2ObjectOpenHashMap<>(current);
+        Int2ObjectOpenHashMap<V> next = current.clone();
         V previous = next.remove(key);
         snapshot = next;
         return previous;
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public synchronized void clear() {
-        snapshot = (Int2ObjectOpenHashMap<V>) EMPTY;
+        if (snapshot.isEmpty()) return;
+        Int2ObjectOpenHashMap<V> next = snapshot.clone();
+        next.clear();
+        snapshot = next;
+    }
+
+    /**
+     * Native iterator removal, including its non-shrinking table semantics.
+     * Raids removes a stopped registration through its values iterator; a
+     * keyed removal or rebuilding the table can change the next raid tie.
+     */
+    public synchronized boolean removeValueIdentity(Object value) {
+        Int2ObjectOpenHashMap<V> next = snapshot.clone();
+        var iterator = next.int2ObjectEntrySet().iterator();
+        while (iterator.hasNext()) {
+            if (iterator.next().getValue() == value) {
+                iterator.remove();
+                snapshot = next;
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
     public synchronized void putAll(Map<? extends Integer, ? extends V> m) {
-        Int2ObjectOpenHashMap<V> next = new Int2ObjectOpenHashMap<>(snapshot);
+        Int2ObjectOpenHashMap<V> next = snapshot.clone();
         next.putAll(m);
         snapshot = next;
     }
 
     @Override
     public synchronized void replaceAll(BiFunction<? super Integer, ? super V, ? extends V> function) {
-        Int2ObjectOpenHashMap<V> next = new Int2ObjectOpenHashMap<>(snapshot);
+        Int2ObjectOpenHashMap<V> next = snapshot.clone();
         next.replaceAll(function);
         snapshot = next;
     }

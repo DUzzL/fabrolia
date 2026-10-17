@@ -59,6 +59,13 @@ def summarize(directory):
     return {
         'run': directory.name, 'status': report.get('status'),
         'minutes': report.get('minutes'), 'parallel': report.get('parallel'),
+        'disabled': report.get('disabled', False), 'lithium': report.get('lithium'),
+        'resume': report.get('resume', False),
+        'score_delta': {key: (sample.get(key) or 0) - (value or 0)
+                        for key, value in report.get('initial_scores', {}).items()},
+        'registry_decodes': [line for line in lines if ' REGISTRY_DECODE ' in line],
+        'world_input': report.get('world_input'),
+        'spark_profiles': report.get('spark_profiles'), 'profile_seconds': report.get('profile_seconds'),
         'scoreboard': {key: sample.get(key) for key in ('rtrig', 'rwin', 'kp', 'kv', 'ke', 'kw', 'bott')},
         'five_minute_sample': None if five_minute is None else {
             'client_ticks': five_minute['op']['ticks'],

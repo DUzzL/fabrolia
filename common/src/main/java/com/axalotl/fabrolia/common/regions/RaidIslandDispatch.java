@@ -71,9 +71,16 @@ public final class RaidIslandDispatch {
     /** One fence for every unowned raid of this level tick, in map order. */
     public static void tickOnMainFenced(ServerLevel level, java.util.List<Raid> raids) {
         RaidOwnership.runMainFenced(() -> {
-            for (int i = 0, n = raids.size(); i < n; i++) {
-                Raid raid = raids.get(i);
-                RegionScheduler.runSuccessBodyIfHealthy(() -> tickOwned(level, raid));
+            var iterator = ((RaidRegistryAccess) level.getRaids()).fabrolia$raidIterator();
+            while (iterator.hasNext()) {
+                Raid raid = iterator.next();
+                if (!raids.contains(raid)) continue;
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    if (!tickOwned(level, raid)) {
+                        iterator.remove();
+                        level.getRaids().setDirty();
+                    }
+                });
             }
         });
     }
@@ -110,22 +117,21 @@ public final class RaidIslandDispatch {
         if (raids == null || !runtime.asyncActive) return;
         for (Raid raid : raids) {
             RaidOwnerAccess.View view = ((RaidOwnerAccess) raid).fabrolia$raidView();
-            if (view.stopped()) continue;
             IslandRegistry.PIsland owner =
                     runtime.islandOwnerOfChunk(ChunkPos.pack(view.center()));
             if (owner != null && !owner.retired) assign(owner, raid);
         }
     }
 
-    private static void tickOwned(ServerLevel level, Raid raid) {
+    private static boolean tickOwned(ServerLevel level, Raid raid) {
         if (!level.getGameRules().get(GameRules.RAIDS)) raid.stop();
         if (raid.isStopped()) {
-            ((RaidRegistryAccess) level.getRaids()).fabrolia$removeStoppedRaid(raid);
+            return false;
         } else {
             raid.tick(level);
-            if (((RaidOwnerAccess) raid).fabrolia$raidView().stopped()) {
-                ((RaidRegistryAccess) level.getRaids()).fabrolia$removeStoppedRaid(raid);
-            }
+            // Vanilla removes only a raid already stopped at this phase's head.
+            // A stop during tick remains registered until the next raid phase.
+            return true;
         }
     }
 
@@ -133,12 +139,33 @@ public final class RaidIslandDispatch {
      *  assigned raid ONCE per unit; drops stopped or migrated-away raids
      *  (ownership re-resolved against the live topology). */
     public static void service(RegionizedServer rs, IslandRegistry.PIsland island, ServerLevel level) {
-        for (Raid raid : island.assignedRaids) {
+        if (island.assignedRaids.isEmpty()) {
+            RegionScheduler.commitSuccessIfHealthy(() -> {});
+            return;
+        }
+        var iterator = ((RaidRegistryAccess) level.getRaids()).fabrolia$raidIterator();
+        while (iterator.hasNext()) {
+            Raid raid = iterator.next();
+            if (!island.assignedRaids.contains(raid)) continue;
             // One admitted raid owns its vanilla tick and stale-set cleanup.
             // The receipt surfaces peer W before the iterator may reach a
             // successor raid; no tick is skipped and no body is replayed.
             RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> serviceOneRaidEntered(rs, island, level, raid));
+                    () -> serviceOneRaidEntered(rs, island, level, raid, iterator));
+        }
+        // Main can finish dispatching an older registry snapshot after the
+        // owner has removed a stopped raid. Native-order iteration no longer
+        // visits that stale subscription, so retain the old set loop's cleanup.
+        // Only stopped publications need a membership scan; active raid ticks
+        // stay O(registry size), rather than scanning the map per subscription.
+        for (Raid raid : island.assignedRaids) {
+            if (((RaidOwnerAccess) raid).fabrolia$raidView().stopped()) {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    if (!((RaidRegistryAccess) level.getRaids()).fabrolia$isRegistered(raid)) {
+                        island.assignedRaids.remove(raid);
+                    }
+                });
+            }
         }
         // The empty iteration and the gap after its last receipt still need a
         // normal-return linearization point before the caller enters its next
@@ -148,17 +175,22 @@ public final class RaidIslandDispatch {
 
     private static void serviceOneRaidEntered(
             RegionizedServer rs, IslandRegistry.PIsland island,
-            ServerLevel level, Raid raid) {
+            ServerLevel level, Raid raid, java.util.Iterator<Raid> iterator) {
         RaidOwnerAccess.View view = ((RaidOwnerAccess) raid).fabrolia$raidView();
         IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(ChunkPos.pack(view.center()));
+        boolean registered = true;
         if (owner == island && !island.retired) {
-            tickOwned(level, raid);
+            registered = tickOwned(level, raid);
+            if (!registered) {
+                iterator.remove();
+                level.getRaids().setDirty();
+            }
             view = ((RaidOwnerAccess) raid).fabrolia$raidView();
             owner = rs.islandOwnerOfChunk(ChunkPos.pack(view.center()));
         }
-        if (view.stopped() || owner != island || island.retired) {
+        if (!registered || owner != island || island.retired) {
             island.assignedRaids.remove(raid);
-            if (!view.stopped() && owner != null && !owner.retired && owner != island) {
+            if (registered && owner != null && !owner.retired && owner != island) {
                 assign(owner, raid);
             }
         }
