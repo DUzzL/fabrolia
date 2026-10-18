@@ -1901,6 +1901,7 @@ class RegionWorkerPoolPlayerLaneTest {
             Class<?> type = Class.forName(RegionScheduler.class.getName() + "$MainSyncTask");
             var constructor = type.getDeclaredConstructor(
                     net.minecraft.world.entity.Entity.class,
+                    net.minecraft.world.entity.Entity.class,
                     RegionWorkerPool.ExternalPermit.class,
                     java.util.function.BooleanSupplier.class,
                     Runnable.class,
@@ -1912,7 +1913,7 @@ class RegionWorkerPoolPlayerLaneTest {
                 admissionRuns.incrementAndGet();
                 return true;
             };
-            return constructor.newInstance(null, permit, admission,
+            return constructor.newInstance(null, null, permit, admission,
                     (Runnable) completionRuns::incrementAndGet, false, false, System.nanoTime());
         } catch (ReflectiveOperationException reflectionFailure) {
             throw new AssertionError(reflectionFailure);

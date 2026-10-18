@@ -623,6 +623,25 @@ public final class ParallelProcessor {
      * and success metrics occur only if the complete guarded body succeeded.
      */
     public static void tickEntityVanillaGuarded(ServerLevel world, Entity entity, boolean fabrolia) {
+        tickVanillaGuarded(world, entity, fabrolia,
+                () -> world.guardEntityTick(world::tickNonPassenger, entity));
+    }
+
+    /**
+     * The same boundary for a passenger subtree whose body a region worker handed
+     * to physical Main ({@link RegionScheduler#deferForeignPlayerPassenger}):
+     * vanilla's passenger tick under its own "Ticking entity" report.
+     */
+    public static void tickPassengerVanillaGuarded(ServerLevel world, Entity vehicle,
+                                                   Entity passenger, boolean fabrolia) {
+        tickVanillaGuarded(world, passenger, fabrolia, () -> world.guardEntityTick(
+                p -> ((com.axalotl.fabrolia.common.mixin.world.ServerLevelTickPassengerInvoker) world)
+                        .fabrolia$tickPassenger(vehicle, p),
+                passenger));
+    }
+
+    private static void tickVanillaGuarded(ServerLevel world, Entity entity, boolean fabrolia,
+                                           Runnable guardedBody) {
         if (((TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return;
         long start = System.nanoTime();
         boolean prevInTick = IN_ENTITY_TICK.get();
@@ -630,7 +649,7 @@ public final class ParallelProcessor {
         Throwable failure = null;
         try {
             RegionScheduler.throwWorkerFailureIfAny();
-            world.guardEntityTick(world::tickNonPassenger, entity);
+            guardedBody.run();
             // The guarded body can return normally after a peer has already
             // selected the generation-wide W.  Metrics and portal publication
             // are success-only tails, so observe W before either becomes visible.

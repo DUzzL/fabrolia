@@ -389,6 +389,9 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         if (vehicle.getRemovalReason() == null && entity.getRemovalReason() == null
                 && (com.axalotl.fabrolia.common.regions.NetherPortalTransfers.isSourceMutationBlocked(vehicle)
                 || com.axalotl.fabrolia.common.regions.NetherPortalTransfers.isSourceMutationBlocked(entity))) return;
+        // A subtree with a player this region worker does not own (attached by the
+        // vehicle's own tick after the root visit chose this lane) ticks on Main.
+        if (RegionScheduler.deferForeignPlayerPassenger(vehicle, entity)) return;
         ParallelProcessor.TickGuard guard = (ParallelProcessor.TickGuard) entity;
         boolean inheritedReservation = com.axalotl.fabrolia.common.regions
                 .RegionalPlayerEntityTicksV2.ownsReservedEntityTick(entity);

@@ -1470,7 +1470,14 @@ public final class RegionScheduler {
     private static final java.util.concurrent.ConcurrentLinkedDeque<MainSyncTask> MAIN_SYNC =
             new java.util.concurrent.ConcurrentLinkedDeque<>();
 
-    private record MainSyncTask(Entity entity, RegionWorkerPool.ExternalPermit permit,
+    /**
+     * One Main-owned entity body. {@code vehicle} is null for a root (vanilla's
+     * guarded entity loop: checkDespawn, then tickNonPassenger); otherwise
+     * {@code entity} is a passenger subtree of {@code vehicle} that a region
+     * worker handed over ({@link #deferForeignPlayerPassenger}) and the body is
+     * vanilla's tickPassenger, which has no checkDespawn.
+     */
+    private record MainSyncTask(Entity entity, Entity vehicle, RegionWorkerPool.ExternalPermit permit,
                                 BooleanSupplier admission, Runnable completion,
                                 boolean vanillaGuarded, boolean allIslandsFenced,
                                 long publishedNanos) implements Runnable {
@@ -1482,6 +1489,14 @@ public final class RegionScheduler {
                 throw new IllegalStateException("MAIN_SYNC entity left its claimed server level");
             }
             if (((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return;
+            if (vehicle != null) {
+                // Remounted or dismounted since the hand-over: its current vehicle's
+                // passenger loop (or its own root visit) owns this tick now.
+                if (entity.getVehicle() != vehicle) return;
+                IslandFunctionHead.runMainSyncEntityPass(entity, mainClaimOwnerOf(entity), level.getServer());
+                ParallelProcessor.tickPassengerVanillaGuarded(level, vehicle, entity, false);
+                return;
+            }
             // Per-tick datapack roots for an entity no function pass took since
             // its last tick (Main-owned players; Main ticks lagging their island).
             IslandFunctionHead.runMainSyncEntityPass(entity, mainClaimOwnerOf(entity), level.getServer());
@@ -1494,7 +1509,41 @@ public final class RegionScheduler {
     }
 
     static void queueMainSyncTick(Entity e) {
-        queueMainSyncTick(e, () -> true, null, false, false);
+        queueMainSyncTick(e, null, () -> true, null, false, false);
+    }
+
+    /**
+     * A region worker reached vanilla's passenger loop for a subtree that carries
+     * a player this thread does not own (2026-10-18 production crash: a minecart
+     * picked up a horse with its rider during its own island tick, and the loop
+     * then ticked the Main-owned rider on the worker). The root visit routes every
+     * player tree to MAIN_SYNC before its tick, but the vehicle's own tick can
+     * attach such a subtree after that decision. The subtree's tick then moves to
+     * MAIN_SYNC in the same tick, under its island's claim, like a tree that was
+     * ridden at visit time; from the next tick on its root visit routes the whole
+     * tree. Only the place of the subtree's tick within the tick changes.
+     *
+     * @return true when the subtree was handed to Main; the caller must not tick it
+     */
+    public static boolean deferForeignPlayerPassenger(Entity vehicle, Entity passenger) {
+        if (!(Thread.currentThread() instanceof RegionWorkerThread)
+                || !containsForeignPlayer(passenger)) {
+            return false;
+        }
+        queueMainSyncTick(passenger, vehicle, () -> true, null, false, false);
+        return true;
+    }
+
+    /** A ServerPlayer in the subtree whose state the current thread may not mutate. */
+    private static boolean containsForeignPlayer(Entity entity) {
+        if (entity instanceof net.minecraft.server.level.ServerPlayer player
+                && !PlayerTurnOwnership.currentThreadOwns(player)) {
+            return true;
+        }
+        for (Entity passenger : entity.getPassengers()) {
+            if (containsForeignPlayer(passenger)) return true;
+        }
+        return false;
     }
 
     /**
@@ -1505,7 +1554,7 @@ public final class RegionScheduler {
      */
     static void queueMainSyncGuardedTick(Entity e, BooleanSupplier admission,
                                          Runnable completion) {
-        queueMainSyncTick(e, admission, completion, true, false);
+        queueMainSyncTick(e, null, admission, completion, true, false);
     }
 
     /**
@@ -1515,7 +1564,7 @@ public final class RegionScheduler {
      */
     static void queueMainSyncFencedTick(Entity e, BooleanSupplier admission,
                                         Runnable completion) {
-        queueMainSyncTick(e, admission, completion, false, true);
+        queueMainSyncTick(e, null, admission, completion, false, true);
     }
 
     /**
@@ -1527,7 +1576,7 @@ public final class RegionScheduler {
      * body is fail-stop and must not publish a success transition from that
      * completion edge.
      */
-    private static void queueMainSyncTick(Entity e, BooleanSupplier admission,
+    private static void queueMainSyncTick(Entity e, Entity vehicle, BooleanSupplier admission,
                                           Runnable completion, boolean vanillaGuarded,
                                           boolean allIslandsFenced) {
         if (admission == null) throw new NullPointerException("admission");
@@ -1536,7 +1585,7 @@ public final class RegionScheduler {
             throw new IllegalStateException("MAIN_SYNC publication without a live region pool");
         }
         if (!owner.publishExternalRoot(permit ->
-                MAIN_SYNC.add(new MainSyncTask(e, permit, admission, completion,
+                MAIN_SYNC.add(new MainSyncTask(e, vehicle, permit, admission, completion,
                         vanillaGuarded, allIslandsFenced, System.nanoTime())))) {
             throw new IllegalStateException("MAIN_SYNC publication rejected by worker-pool lifecycle");
         }

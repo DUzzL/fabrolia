@@ -331,7 +331,12 @@ public abstract class FunctionPartition {
 
         @Override
         public boolean owns(Entity e) {
-            return e == root || e.getRootVehicle() == root;
+            // root's passenger subtree; root itself rides a vehicle when it is a
+            // passenger subtree handed over by a region worker
+            for (Entity v = e; v != null; v = v.getVehicle()) {
+                if (v == root) return true;
+            }
+            return false;
         }
 
         @Override

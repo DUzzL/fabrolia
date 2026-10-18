@@ -1,3 +1,35 @@
+## 3.1.8-alpha (2026-10-18)
+
+Status: 1499 tests pass (8 optional skip), Fabric/NeoForge builds and the Fabric
+artifact check pass. The 40-client stand (`verify`) has not been run.
+
+- Fix: production crash 2026-10-18 15:21 (server time, UTC−4, 43 players):
+  `PlayerAdvancements.flushDirty(true) off the player's owner thread` for a
+  rider on `Fabrolia-Region-Worker-13`, session phase MAIN, reached through two
+  nested `tickPassenger` frames. A vehicle ticking on its island, such as a moving
+  minecart, picked up a mob that a player was riding. Vanilla's passenger loop
+  then ticked the Main-owned rider on the worker. The root visit routes player
+  trees to MAIN_SYNC before their tick, but the vehicle's own tick attached the
+  subtree after that decision. The lifecycle lease skips the rider by design,
+  because ordinary MAIN players have no island body to exclude. Riders are never
+  A5-owned, so this rider always belonged to Main.
+- `fabrolia$guardTickPassenger` now hands such a subtree to MAIN_SYNC before it
+  takes the tick lease. The condition is a ServerPlayer in the subtree that the
+  region worker does not own, the same authority `flushDirty` checks. Main runs
+  vanilla's `tickPassenger(vehicle, passenger)` in the same tick, under its
+  island's claim and its own "Ticking entity" crash boundary. It skips the body
+  if the passenger has been remounted or has dismounted since the handover. From
+  the next tick on, the root visit routes the whole tree to MAIN_SYNC, as before.
+  The MAIN_SYNC function pass of a passenger subtree owns that subtree, not the
+  vehicle above it.
+- Accepted timing deviation: only in the tick in which the pickup happens, the
+  picked-up subtree ticks on Main after the island's entity pass, instead of
+  directly after its new vehicle. This is the lane every player-ridden tree
+  already takes. Vanilla's tick count per entity is unchanged.
+- Regression coverage: `ForeignPlayerPassengerDeferralTest` (hand-over before
+  the lease, ownership authority, passenger body without checkDespawn, no
+  hand-over off region workers, subtree ownership of the function pass).
+
 ## 3.1.7-alpha (2026-10-17)
 
 Status: 1486 tests pass (8 optional skip), Fabric/NeoForge builds and artifact

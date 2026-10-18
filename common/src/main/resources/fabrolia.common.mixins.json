@@ -236,6 +236,7 @@
     "world.ServerLevelPortalPreparationMixin",
     "world.ServerLevelNearestPlayerMixin",
     "world.ServerLevelThreadNeighborUpdaterMixin",
+    "world.ServerLevelTickPassengerInvoker",
     "world.SleepWakeMixin",
     "world.TargetingConditionsAccessor",
     "world.TicketStorageMixin",
