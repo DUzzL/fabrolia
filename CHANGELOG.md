@@ -1,3 +1,26 @@
+## 3.1.9-alpha (2026-10-19)
+
+Status: 1502 tests pass (8 optional skip), Fabric/NeoForge builds and the Fabric
+artifact check pass. The 40-client stand (`verify`) has not been run.
+
+- Fix: the region access detector reported a cross-region write as `UNSAFE
+  … (target running)` whenever any thread held the target region, including
+  the writing worker itself. The serial island entity pass claims every region
+  of its island on its own worker. A write across a region border inside the
+  same island is vanilla behaviour, and it is not concurrent. The production log
+  of 2026-10-18 shows 8 such reports between 10:33 and 10:38 server time: a bat
+  stepping on redstone ore, a wind charge toggling trapdoors and a player
+  breaking a block. None of them crossed an island: the log has no
+  `CROSS-DOMAIN` report, and that check fails closed. These reports used up the
+  detector's budget of 8 stack logs 28 minutes after start, so a real concurrent
+  write later that day would not have been logged.
+- `UNSAFE` (log and `crossUNSAFE` counter) now means a claim held by another
+  thread, and the message names that thread. The cross-domain check and its
+  fail-closed path are unchanged.
+- Regression coverage: `RegionAccessDetectorTest` classifies a write into a
+  region held by the writer (not unsafe), by another thread (unsafe) and into an
+  idle region (not unsafe).
+
 ## 3.1.8-alpha (2026-10-18)
 
 Status: 1499 tests pass (8 optional skip), Fabric/NeoForge builds and the Fabric

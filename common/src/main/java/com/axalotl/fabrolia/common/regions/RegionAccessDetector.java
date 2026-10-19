@@ -24,8 +24,10 @@ public final class RegionAccessDetector {
 
     private static final AtomicLong IN_REGION = new AtomicLong();
     private static final AtomicLong CROSS_REGION = new AtomicLong();
-    /** Cross-region write while the TARGET region was concurrently claimed —
-     *  the actually-dangerous case. With the color gate on this MUST be 0. */
+    /** Cross-region write while ANOTHER thread claimed the TARGET region —
+     *  the actually-dangerous case. With the color gate on this MUST be 0.
+     *  A claim held by the writer itself is not concurrent: the serial island
+     *  entity pass claims every region of its island on its own worker. */
     private static final AtomicLong CROSS_UNSAFE = new AtomicLong();
     private static final AtomicLong OFF_WORKER = new AtomicLong();
     /** A7 islands mode: writes that left the writer's TIMELINE — landed in a
@@ -90,7 +92,8 @@ public final class RegionAccessDetector {
         }
         CROSS_REGION.incrementAndGet();
         Region target = rs.regionizer().peekByGridKey(writeKey);
-        boolean unsafeCross = target != null && target.currentWorker() != null;
+        Thread holder = target != null ? target.currentWorker() : null;
+        boolean unsafeCross = holder != null && holder != t;
         if (unsafeCross) {
             CROSS_UNSAFE.incrementAndGet();
         }
@@ -106,8 +109,8 @@ public final class RegionAccessDetector {
         // Stack-log only the UNSAFE class: a cross write into an idle
         // neighbor is legal vanilla behavior under the color discipline.
         if (unsafeCross && LOGGED.get() < MAX_STACK_LOGS && LOGGED.incrementAndGet() <= MAX_STACK_LOGS) {
-            LOGGER.warn("[region-access] UNSAFE cross-region write @ {} from region {} on {} (target running)",
-                    pos.toShortString(), Long.toHexString(r.gridKey), t.getName(),
+            LOGGER.warn("[region-access] UNSAFE cross-region write @ {} from region {} on {} (target running on {})",
+                    pos.toShortString(), Long.toHexString(r.gridKey), t.getName(), holder.getName(),
                     new Throwable("write origin"));
         }
     }
