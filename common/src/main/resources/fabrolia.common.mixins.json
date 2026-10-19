@@ -140,6 +140,7 @@
     "network.ServerCommonPacketListenerPlayerTickFlushMixin",
     "network.ServerCommonPacketListenerIslandDisconnectMixin",
     "network.PacketProcessorPlayerTickMixin",
+    "network.PacketProcessorAccessor",
     "network.ConnectionIslandPlayerMixin",
     "server.BlockableEventLoopMainWaitGuardMixin",
     "server.ChunkMapMixin",

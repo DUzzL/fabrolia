@@ -430,7 +430,7 @@ public final class AsyncIslandPacketContinuations {
     /** Unknown-to-the-vanilla-policy in-process packet; exact lookup => MAIN_FIFO. */
     private record MainContinuationPacket(ContinuationOwner owner, String operation,
                                           Runnable continuation)
-            implements Packet<ServerGamePacketListenerImpl> {
+            implements Packet<ServerGamePacketListenerImpl>, InProcessListenerPacket {
 
         @Override
         public PacketType<? extends Packet<ServerGamePacketListenerImpl>> type() {
@@ -447,7 +447,7 @@ public final class AsyncIslandPacketContinuations {
 
     private record ChatSessionPublicationPacket(ChatSessionOwner owner,
                                                  Runnable continuation)
-            implements Packet<ServerGamePacketListenerImpl> {
+            implements Packet<ServerGamePacketListenerImpl>, InProcessListenerPacket {
         @Override
         public PacketType<? extends Packet<ServerGamePacketListenerImpl>> type() {
             return CHAT_SESSION_TYPE;
@@ -461,7 +461,7 @@ public final class AsyncIslandPacketContinuations {
 
     /** Separate fail-closed marker which can only be consumed by its tagged task. */
     private static final class MainCommandContinuationPacket
-            implements Packet<ServerGamePacketListenerImpl> {
+            implements Packet<ServerGamePacketListenerImpl>, InProcessListenerPacket {
         private final ContinuationOwner owner;
         @SuppressWarnings("unused")
         private final String operation;

@@ -1590,8 +1590,13 @@ public final class ChunkDelivery {
                                     ? "waiting for chunk load/generation (server-side, not a delivery stall)"
                                     : "loaded but never selected — batch quota/unacked-cap starvation";
                         }
-                        case REQUESTED -> "leased to owner mailbox past the 1s escalation bound — "
-                                + "escalation is not firing (actionable)";
+                        // selectCandidate escalates a REQUESTED record past the 1s
+                        // bound whenever it reaches it; the distance-ordered pass
+                        // stops at the batch quota (and does not run while the
+                        // unacked cap pauses the sender), so a far record waits
+                        // while nearer chunks fill every batch, as in vanilla.
+                        case REQUESTED -> "leased to owner mailbox, not reselected since — "
+                                + "batch quota/unacked-cap starvation (escalates on reselection)";
                         case READY -> "sealed payload awaiting batch quota (unacked cap or quota starvation)";
                         case RESERVED -> "stuck inside a batch transaction (actionable)";
                         default -> "unexpected pending state";

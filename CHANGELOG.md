@@ -1,3 +1,40 @@
+## 3.1.10-alpha (2026-10-19)
+
+Status: 1507 tests pass (8 optional skip), Fabric/NeoForge builds and the Fabric
+artifact check pass. The 40-client stand (`verify`) has not been run.
+
+- Fix: three of the five production stops between 2026-10-16 and 2026-10-18
+  aborted `stopServer` with `A5 accepted Main entity ordinal lost its live
+  region pool` before the world was saved. Fabrolia stops its region pool in
+  SERVER_STOPPING. Vanilla 26.3 then closes its `PacketProcessor` as the first
+  statement of `stopServer` and handles no queued play packet afterwards. A
+  queued A5 Main ingress drain still ran during chunk unloading. It handled the
+  packets of players whose channel was still open at `removeAll` (WorldEdit
+  reported "Currently invalid"), then tried to publish their owed entity
+  ordinal to the stopped pool.
+- A5 now applies vanilla's two gates for a queued decoded packet where it handles
+  one, on the island replay and in the Main ingress drain: a closed processor
+  handles nothing, and `shouldHandleMessage` skips a listener that no longer
+  accepts messages (disconnected, or waiting for the configuration switch). The
+  early block-ack sequence rejection follows the same gates, because vanilla
+  checks the sequence inside the handler. In-process entries (Main, command and
+  chat continuations, routed mutations) keep their own lifetime rules; they model
+  server-executor work, which vanilla still runs while stopping. Once
+  `stopServer` has begun, an owed Main entity ordinal retires without a body and
+  the FIFO continues, because vanilla runs no further tick.
+- Diagnostics: the chunk-delivery liveness report called a REQUESTED record
+  older than 10 s "escalation is not firing (actionable)". `selectCandidate`
+  escalates such a record whenever it reaches it, but the distance-ordered pass
+  stops at the batch quota and pauses at the unacked cap. In 835 of 920
+  production reports, the sender had enqueued a batch less than 1 s earlier.
+  The report now reads "not reselected since — batch quota/unacked-cap
+  starvation".
+- Log review of 2026-10-16 to 2026-10-19 with all findings, including two open
+  ones: no save after a Fabrolia fatal, and a vanilla watchdog kill at sustained
+  Main TPS below 4. See [log review](docs/LOG-REVIEW-2026-10-19.md).
+- Regression coverage: `A5ShutdownIngressTest`; `PacketFailureContainmentTest`
+  listeners now answer `shouldHandleMessage` like a connected listener.
+
 ## 3.1.9-alpha (2026-10-19)
 
 Status: 1502 tests pass (8 optional skip), Fabric/NeoForge builds and the Fabric

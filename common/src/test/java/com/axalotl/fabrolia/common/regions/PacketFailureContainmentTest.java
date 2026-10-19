@@ -51,6 +51,8 @@ final class PacketFailureContainmentTest {
                         recorder.reported.add((Exception) args[1]);
                         return null;
                     }
+                    // A connected listener: vanilla's queued-packet gate admits it.
+                    if (method.getName().equals("shouldHandleMessage")) return true;
                     throw new UnsupportedOperationException(method.getName());
                 });
         recorder.packet = (Packet) Proxy.newProxyInstance(
@@ -104,6 +106,8 @@ final class PacketFailureContainmentTest {
                         }),
                 (PacketListener) Proxy.newProxyInstance(PacketListener.class.getClassLoader(),
                         new Class<?>[] {PacketListener.class}, (proxy, method, args) -> {
+                            // A connected listener: vanilla's queued-packet gate admits it.
+                            if (method.getName().equals("shouldHandleMessage")) return true;
                             recorder.reported.add(new IllegalStateException(method.getName()));
                             return null;
                         })));

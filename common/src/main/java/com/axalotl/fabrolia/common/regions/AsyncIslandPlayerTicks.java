@@ -291,7 +291,7 @@ public final class AsyncIslandPlayerTicks {
                                         ServerPlayer expectedPlayer,
                                         String operation,
                                         RoutedPlayerMutation mutation)
-            implements Packet<ServerGamePacketListenerImpl> {
+            implements Packet<ServerGamePacketListenerImpl>, InProcessListenerPacket {
 
         @Override
         public PacketType<? extends Packet<ServerGamePacketListenerImpl>> type() {
@@ -3554,6 +3554,10 @@ public final class AsyncIslandPlayerTicks {
      */
     @SuppressWarnings({"rawtypes", "unchecked"})
     static void handle(Packet packet, PacketListener listener) {
+        if (!vanillaHandlesQueuedPacket(packet, listener)) {
+            LOGGER.debug("Ignoring packet due to disconnection: {}", packet);
+            return;
+        }
         try {
             packet.handle(listener);
         } catch (RunningOnDifferentThreadException wrongThread) {
@@ -3562,6 +3566,31 @@ public final class AsyncIslandPlayerTicks {
             if (!vanillaContainsPacketFailure(failure)) throw failure;
             listener.onPacketError(packet, failure);
         }
+    }
+
+    /**
+     * The two gates vanilla applies to a queued decoded packet: a closed processor
+     * (stopServer) handles nothing, and {@code ListenerAndPacket.handle} skips a
+     * listener that stopped accepting messages (disconnected, or waiting for the
+     * configuration switch). The A5 FIFOs defer the same packets, so the gates apply
+     * where they are handled. In-process entries keep their own lifetime rules.
+     */
+    static boolean vanillaHandlesQueuedPacket(Packet<?> packet, PacketListener listener) {
+        return packet instanceof InProcessListenerPacket
+                || !vanillaPacketIngressClosed(listener) && listener.shouldHandleMessage(packet);
+    }
+
+    /**
+     * True once {@code stopServer} has closed vanilla's packet processor (its first
+     * statement): from then on vanilla handles no queued play packet and runs no
+     * further server tick.
+     */
+    static boolean vanillaPacketIngressClosed(PacketListener listener) {
+        return listener instanceof com.axalotl.fabrolia.common.mixin.network
+                .ServerCommonPacketListenerAccessor common
+                && common.fabrolia$getServer() != null
+                && ((com.axalotl.fabrolia.common.mixin.network.PacketProcessorAccessor)
+                        common.fabrolia$getServer().packetProcessor()).fabrolia$isClosed();
     }
 
     public static boolean vanillaContainsPacketFailure(Exception failure) {
@@ -5517,6 +5546,26 @@ public final class AsyncIslandPlayerTicks {
                                         "A5 Main entity ordinal overlapped a packet handler")));
                         break;
                     }
+                    if (vanillaPacketIngressClosed(listener)) {
+                        // stopServer has begun and vanilla runs no further tick: the
+                        // owed ordinal retires without a body (the region pool that
+                        // would have run it is already stopped) and the FIFO goes on.
+                        try {
+                            if (state.mainIngress.peekFirst() != inbound
+                                    || state.mainEntityFallbackPending
+                                    || state.activeMainEntityFallback != null) {
+                                throw new IllegalStateException(
+                                        "A5 Main entity ordinal shutdown retirement lost its FIFO boundary");
+                            }
+                            state.mainIngress.pollFirst();
+                            accountMainEntityOrdinalCompletionLocked(state, inbound);
+                        } catch (Throwable retirementFailure) {
+                            failure = publishFatalFailure(merge(
+                                    failure, retirementFailure));
+                            break;
+                        }
+                        continue;
+                    }
                     try {
                         if (state.mainIngress.peekFirst() != inbound
                                 || state.mainEntityFallbackPending
@@ -5590,7 +5639,8 @@ public final class AsyncIslandPlayerTicks {
                 };
                 if (inbound.listenerTick == null
                         && hasInvalidBlockAckSequence(inbound.packet)
-                        && listener.hasClientLoaded()) {
+                        && listener.hasClientLoaded()
+                        && vanillaHandlesQueuedPacket(inbound.packet, inbound.listener)) {
                     // Match PacketProcessor's connection-local rejection, before
                     // admitting packet.handle (including block-break mutation).
                     // Entered handlers report like PacketProcessor through handle().

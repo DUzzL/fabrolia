@@ -21,7 +21,7 @@ behaviour is described by the requirements, architecture and [changelog](../CHAN
 | Portal farms and chunkloaders | [3.1.4 coupling review and real portal-loader comparison](PORTAL-LOADER-REVIEW-2026-10-17.md) |
 | TNT and world eaters | [Code review](TNT-CODE-REVIEW-2026-10-10.md), [fixes and verification](TNT-FIX-2026-10-10.md) |
 | MSPT | [Production profile analysis](MSPT-ANALYSE-2026-10-10.md) |
-| Production log | [Full-day log review and diagnostic fixes](LOG-REVIEW-2026-10-11.md) |
+| Production log | [Full-day log review and diagnostic fixes](LOG-REVIEW-2026-10-11.md), [16–19 Oct logs: unsaved stops, watchdog and diagnostics](LOG-REVIEW-2026-10-19.md) |
 | Performance | [Main lag at 40 players: island units and Main waits (2026-10-11)](PERF-ANALYSE-2026-10-11.md) |
 | Alpha 3.0.0 | [Build and cleanup verification](ALPHA-3.0.0-RELEASE.md) |
 | C2ME strand recovery | [Known C2ME issue](C2ME-FLAG_BROKEN-STRAND.md) |
