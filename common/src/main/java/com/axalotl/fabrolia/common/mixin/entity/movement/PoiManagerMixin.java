@@ -110,10 +110,19 @@ public class PoiManagerMixin {
                 .flatMap(record -> PoiStripes.takeTicketAtomically((FabroliaPoiLoadGate) self, record));
     }
 
+    /**
+     * Vanilla callers check the POI ({@code Villager#releasePoi} → {@code getType},
+     * {@code ValidateNearbyPoi} → {@code exists}) before {@code release}, outside
+     * this stripe. Another island removing the POI in between (block broken) made
+     * {@code PoiSection#release} throw "POI never registered" → fail-stop. Serially
+     * that removal precedes the caller's check and nothing is released, so a
+     * record gone under the stripe answers {@code false}.
+     */
     @WrapMethod(method = "release")
     private boolean fabrolia$syncRelease(BlockPos pos, Operation<Boolean> original) {
+        PoiManager self = (PoiManager) (Object) this;
         return PoiStripes.mutateColumn((FabroliaPoiLoadGate) this, pos.getX() >> 4, pos.getZ() >> 4,
-                () -> original.call(pos));
+                () -> self.exists(pos, type -> true) && original.call(pos));
     }
 
     /**
