@@ -490,16 +490,22 @@ LOG_ERROR = re.compile(r'/(?:ERROR|FATAL)\]|^\d{4}-\d\d-\d\dT\S+Z .*? (?:ERROR|F
 # probes. A vanilla NeoForge run without Fabrolia logs the same lines.
 APPENDER_NOISE = re.compile(r'ERROR An exception occurred processing Appender DebugFile')
 NETTY_NATIVE = re.compile(r'io\.netty\.channel\.(?:epoll|kqueue)\.Native')
+# Windows only: OSHI (vanilla's system report) probes the registry's performance
+# counters at startup; on a machine whose Perflib counters are damaged it logs this ERROR
+# in vanilla as well. It names the host, not the server.
+WINDOWS_PERFLIB = re.compile(r'Unable to locate English counter names in registry Perflib')
 
 
 def unexpected_log_errors(text):
-    """ERROR/FATAL log lines other than the proven NeoForge appender noise."""
+    """ERROR/FATAL log lines other than the proven NeoForge appender and Windows Perflib noise."""
     lines = text.splitlines()
     found = []
     for i, line in enumerate(lines):
         if not LOG_ERROR.search(line):
             continue
         if APPENDER_NOISE.search(line) and any(NETTY_NATIVE.search(l) for l in lines[i + 1:i + 4]):
+            continue
+        if WINDOWS_PERFLIB.search(line):
             continue
         found.append(line)
     return found
