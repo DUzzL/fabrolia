@@ -4414,6 +4414,10 @@ public final class RegionizedServer {
             RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
             return;
         }
+        if (TntExplosionFootprint.explosiveTreeLeavesIsland(this, region, e)) {
+            RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
+            return;
+        }
         if (ParallelProcessor.usesEndGateway(e)) {
             RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
             return;
