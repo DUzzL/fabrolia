@@ -545,20 +545,24 @@ class PlayerTickV2WiringTest {
                 internal(RegionalPlayerEntityTicksV2.class), "mergeFailure");
         int recordMismatch = callIndexAfter(finishAndClear,
                 coordinator.name + "$LevelBatch", "fail", mergeMismatch);
-        int removeOwn = callIndex(finishAndClear, "java/lang/ThreadLocal", "remove");
         JumpInsnNode ownContextBranch = firstJumpBetween(finishAndClear, Opcodes.IF_ACMPEQ,
                 installedContext, mergeMismatch);
         int mismatchReturn = opcodeIndexAfter(finishAndClear, Opcodes.ARETURN, recordMismatch);
         assertNotNull(ownContextBranch,
                 "identity match must branch around the sticky foreign-context failure path");
         int ownContextTarget = instructionIndex(finishAndClear, ownContextBranch.label);
+        // The own context is cleared with set(null): TICK_CONTEXT is read on every
+        // entity tick, and a removed entry would be re-created by that read.
+        int removeOwn = callIndexAfter(finishAndClear, "java/lang/ThreadLocal", "set",
+                ownContextTarget - 1);
         assertTrue(contextFinish >= 0 && installedContext > contextFinish
                         && mergeMismatch > installedContext && recordMismatch > mergeMismatch
                         && mismatchReturn > recordMismatch && ownContextTarget > mismatchReturn
                         && removeOwn >= ownContextTarget,
                 "foreign replacement must merge diagnostics, select W, and return W without "
                         + "clobbering it; own context removes");
-        assertEquals(1, callCount(finishAndClear, "java/lang/ThreadLocal", "remove"));
+        assertEquals(1, callCount(finishAndClear, "java/lang/ThreadLocal", "set"));
+        assertEquals(0, callCount(finishAndClear, "java/lang/ThreadLocal", "remove"));
 
         MethodNode retireCandidate = method(readClass(levelBatchType), "retireCandidate",
                 "(Lcom/axalotl/fabrolia/common/regions/PlayerTickPhase$Claim;)V");
@@ -570,7 +574,7 @@ class PlayerTickV2WiringTest {
                 "candidate/tree identity may retire only after its exact lease is no longer live");
         assertTrue(calls(method(coordinator, "finishPlayerEntityBody",
                         "(Lnet/minecraft/world/entity/Entity;)V"),
-                "java/lang/ThreadLocal", "remove"),
+                "java/lang/ThreadLocal", "set"),
                 "the direct-consumer scope must close instead of stamping the whole wall phase");
 
         ClassNode regionizer = readClass(RegionizedServer.class);

@@ -1,0 +1,943 @@
+{
+ "loader": "neoforge",
+ "jar": "fabrolia-neoforge-alpha_3.1.13.jar",
+ "checks": [
+  {
+   "check": "server started with Fabrolia loaded",
+   "ok": true,
+   "detail": "11.6"
+  },
+  {
+   "check": "player Near1 joined",
+   "ok": true,
+   "detail": "(6.5, 97.0, -4.5, 0.0, 0.0)"
+  },
+  {
+   "check": "player Near2 joined",
+   "ok": true,
+   "detail": "(10.5, 98.0, -1.5, 0.0, 0.0)"
+  },
+  {
+   "check": "player FarA joined",
+   "ok": true,
+   "detail": "(8.5, 111.0, 3.5, 0.0, 0.0)"
+  },
+  {
+   "check": "player FarB joined",
+   "ok": true,
+   "detail": "(1.5, 99.0, 4.5, 0.0, 0.0)"
+  },
+  {
+   "check": "player Near1 received chunks",
+   "ok": true,
+   "detail": "296"
+  },
+  {
+   "check": "player Near2 received chunks",
+   "ok": true,
+   "detail": "303"
+  },
+  {
+   "check": "player FarA received chunks",
+   "ok": true,
+   "detail": "294"
+  },
+  {
+   "check": "player FarB received chunks",
+   "ok": true,
+   "detail": "265"
+  },
+  {
+   "check": "synchronous mode: async islands are off",
+   "ok": true,
+   "detail": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Fabrolia status\n  Region threading: on \u00b7 14 workers\n  Async islands: off\n  Players tick on their island: off\n  Island entities: vanilla order (serial)\n  Main thread: 20.0 TPS \u00b7 17.6 ms\n\nDimensions\n  Overworld \u00b7 0 islands \u00b7 30 regions \u00b7 145 entities\n  End \u00b7 0 islands \u00b7 0 regions \u00b7 0 entities\n  Nether \u00b7 0 islands \u00b7 0 regions \u00b7 0 entities\n  Total: 30 regions \u00b7 145 entities\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions list \u00b7 /fabrolia stats entity\n"
+  },
+  {
+   "check": "synchronous mode: player actor is off",
+   "ok": true,
+   "detail": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Fabrolia status\n  Region threading: on \u00b7 14 workers\n  Async islands: off\n  Players tick on their island: off\n  Island entities: vanilla order (serial)\n  Main thread: 20.0 TPS \u00b7 17.6 ms\n\nDimensions\n  Overworld \u00b7 0 islands \u00b7 30 regions \u00b7 145 entities\n  End \u00b7 0 islands \u00b7 0 regions \u00b7 0 entities\n  Nether \u00b7 0 islands \u00b7 0 regions \u00b7 0 entities\n  Total: 30 regions \u00b7 145 entities\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions list \u00b7 /fabrolia stats entity\n"
+  },
+  {
+   "check": "synchronous mode: area of Near1 ticks at full speed",
+   "ok": true,
+   "detail": "20.09 TPS"
+  },
+  {
+   "check": "synchronous mode: area of Near2 ticks at full speed",
+   "ok": true,
+   "detail": "20.01 TPS"
+  },
+  {
+   "check": "synchronous mode: area of FarA ticks at full speed",
+   "ok": true,
+   "detail": "19.99 TPS"
+  },
+  {
+   "check": "synchronous mode: area of FarB ticks at full speed",
+   "ok": true,
+   "detail": "19.99 TPS"
+  },
+  {
+   "check": "async mode: islands formed",
+   "ok": true,
+   "detail": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Islands\n\nOverworld (3)\n  Near1+Near2 (Overworld) \u00b7 20.0 TPS \u00b7 4.0 ms avg\n  FarA (Overworld) \u00b7 20.0 TPS \u00b7 2.3 ms avg\n  FarB (Overworld) \u00b7 20.0 TPS \u00b7 2.1 ms avg\n  Hover a name for its handle, the TPS for all figures.\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions top verbose\n"
+  },
+  {
+   "check": "async mode: area of Near1 ticks at full speed",
+   "ok": true,
+   "detail": "20.00 TPS"
+  },
+  {
+   "check": "async mode: area of Near2 ticks at full speed",
+   "ok": true,
+   "detail": "20.00 TPS"
+  },
+  {
+   "check": "async mode: area of FarA ticks at full speed",
+   "ok": true,
+   "detail": "20.00 TPS"
+  },
+  {
+   "check": "async mode: area of FarB ticks at full speed",
+   "ok": true,
+   "detail": "20.00 TPS"
+  },
+  {
+   "check": "regions player Near1 answers",
+   "ok": true,
+   "detail": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 TPS where Near1 is\n  Island: Near1+Near2 (Overworld)\n  TPS here: Healthy \u00b7 20.0 TPS \u00b7 3.6 ms avg \u00b7 4.2 ms max \u00b7 16 cells\n  Players on it: Near1, Near2\n  Main thread: 20.0 TPS \u00b7 1.0 ms\n  Th"
+  },
+  {
+   "check": "regions player Near2 answers",
+   "ok": true,
+   "detail": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 TPS where Near2 is\n  Island: Near1+Near2 (Overworld)\n  TPS here: Healthy \u00b7 20.0 TPS \u00b7 3.6 ms avg \u00b7 4.2 ms max \u00b7 16 cells\n  Players on it: Near1, Near2\n  Main thread: 20.0 TPS \u00b7 1.0 ms\n  Th"
+  },
+  {
+   "check": "regions player FarA answers",
+   "ok": true,
+   "detail": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 TPS where FarA is\n  Island: FarA (Overworld)\n  TPS here: Healthy \u00b7 20.0 TPS \u00b7 2.1 ms avg \u00b7 4.3 ms max \u00b7 9 cells\n  Players on it: FarA\n  Main thread: 20.0 TPS \u00b7 1.0 ms\n  This island ticks o"
+  },
+  {
+   "check": "regions player FarB answers",
+   "ok": true,
+   "detail": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 TPS where FarB is\n  Island: FarB (Overworld)\n  TPS here: Healthy \u00b7 20.0 TPS \u00b7 1.8 ms avg \u00b7 2.6 ms max \u00b7 9 cells\n  Players on it: FarB\n  Main thread: 20.0 TPS \u00b7 1.0 ms\n  This island ticks o"
+  },
+  {
+   "check": "teleport island->island accepted by client",
+   "ok": true,
+   "detail": "3"
+  },
+  {
+   "check": "nether round trip",
+   "ok": true,
+   "detail": "FarB has the following entity data: \"minecraft:overworld\"\n"
+  },
+  {
+   "check": "area ticks after dimension round trip",
+   "ok": true,
+   "detail": "20.00 TPS"
+  },
+  {
+   "check": "parallel island entities: still full speed",
+   "ok": true,
+   "detail": "20.00 TPS"
+  },
+  {
+   "check": "player Near1 still connected",
+   "ok": true,
+   "detail": "None"
+  },
+  {
+   "check": "player Near2 still connected",
+   "ok": true,
+   "detail": "None"
+  },
+  {
+   "check": "player FarA still connected",
+   "ok": true,
+   "detail": "None"
+  },
+  {
+   "check": "player FarB still connected",
+   "ok": true,
+   "detail": "None"
+  },
+  {
+   "check": "clean stop (exit code 0)",
+   "ok": true,
+   "detail": "0"
+  },
+  {
+   "check": "world saved on stop",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "player Near1 joined",
+   "ok": true,
+   "detail": "(16.5, 150.0, 0.5, 0.0, 0.0)"
+  },
+  {
+   "check": "player Near2 joined",
+   "ok": true,
+   "detail": "(40.5, 150.0, 24.5, 0.0, 0.0)"
+  },
+  {
+   "check": "player FarA joined",
+   "ok": true,
+   "detail": "(-3007.5, 150.0, 3012.5, 0.0, 0.0)"
+  },
+  {
+   "check": "player FarB joined",
+   "ok": true,
+   "detail": "(-3007.5, 150.0, 3008.5, 0.0, 0.0)"
+  },
+  {
+   "check": "entities persisted across restart",
+   "ok": true,
+   "detail": "81 -> 81"
+  },
+  {
+   "check": "async islands active after restart",
+   "ok": true,
+   "detail": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Islands\n\nOverworld (2)\n  Near1+Near2 (Overworld) \u00b7 20.2 TPS \u00b7 4.6 ms avg\n  FarB+FarA (Overworld) \u00b7 20.2 TPS \u00b7 2.1 ms avg\n  Hover a name for its handle, the TPS for all figures.\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions top verbose\n"
+  },
+  {
+   "check": "second clean stop",
+   "ok": true,
+   "detail": "0"
+  },
+  {
+   "check": "no crash reports",
+   "ok": true,
+   "detail": "[]"
+  }
+ ],
+ "commands": [
+  {
+   "command": "fabrolia",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Fabrolia commands\n\nCheck performance\n  /fabrolia regions here \u2014 TPS of the spot you stand on\n  /fabrolia regions tps \u2014 live Main + island TPS above the hotbar (on/off)\n  /fabrolia regions \u2014 server overview: Main TPS, islands, dimensions\n  /fabrolia regions top \u2014 the slowest islands with their figures\n  /fabrolia regions list \u2014 every island, one line each\n  /fabrolia stats \u2014 mod status and features\n  /fabrolia stats entity \u2014 entity counts per dimension and type\n  /fabrolia regions player  \u2014 TPS where another player is\n\nAdministration\n  /fabrolia regions top verbose \u2014 raw island rows for diagnosis\n  /fabrolia regions islandentities \u2014 entity order on islands (vanilla/parallel)\n  /fabrolia regions playerticks \u2014 players tick on their island (on/off)\n  /fabrolia regions rate here  \u2014 slow down or speed up the island you stand on\n  /fabrolia functions plan \u2014 how datapack functions are split\n  /fabrolia config reload \u2014 reload config/fabrolia.toml\n\nTerms\n  Island: nearby loaded chunks that tick together on their own thread\n  TPS: ticks per second; 20 is full speed\n  MSPT / ms: time one tick takes; under 50 ms keeps up with 20 TPS\n  Click a command to put it into the chat.\n"
+  },
+  {
+   "command": "fabrolia help",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Fabrolia commands\n\nCheck performance\n  /fabrolia regions here \u2014 TPS of the spot you stand on\n  /fabrolia regions tps \u2014 live Main + island TPS above the hotbar (on/off)\n  /fabrolia regions \u2014 server overview: Main TPS, islands, dimensions\n  /fabrolia regions top \u2014 the slowest islands with their figures\n  /fabrolia regions list \u2014 every island, one line each\n  /fabrolia stats \u2014 mod status and features\n  /fabrolia stats entity \u2014 entity counts per dimension and type\n  /fabrolia regions player  \u2014 TPS where another player is\n\nAdministration\n  /fabrolia regions top verbose \u2014 raw island rows for diagnosis\n  /fabrolia regions islandentities \u2014 entity order on islands (vanilla/parallel)\n  /fabrolia regions playerticks \u2014 players tick on their island (on/off)\n  /fabrolia regions rate here  \u2014 slow down or speed up the island you stand on\n  /fabrolia functions plan \u2014 how datapack functions are split\n  /fabrolia config reload \u2014 reload config/fabrolia.toml\n\nTerms\n  Island: nearby loaded chunks that tick together on their own thread\n  TPS: ticks per second; 20 is full speed\n  MSPT / ms: time one tick takes; under 50 ms keeps up with 20 TPS\n  Click a command to put it into the chat.\n"
+  },
+  {
+   "command": "fabrolia stats",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Fabrolia stats\n  Fabrolia: enabled\n  Main thread: 20.0 TPS \u00b7 36.5 ms\n  Entities: 0\n  Threads: 16\n\nFeatures\n  Parallel spawning: on\n  Parallel random ticks: on\n  Parallel despawn: on\n\n  More: /fabrolia regions \u00b7 /fabrolia stats entity 10\n"
+  },
+  {
+   "command": "fabrolia regions",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Fabrolia status\n  Region threading: on \u00b7 14 workers\n  Async islands: on\n  Players tick on their island: on\n  Island entities: vanilla order (serial)\n  Main thread: 20.0 TPS \u00b7 39.7 ms\n\nDimensions\n  Overworld \u00b7 1 island \u00b7 1 region \u00b7 0 entities\n  End \u00b7 0 islands \u00b7 0 regions \u00b7 0 entities\n  Nether \u00b7 0 islands \u00b7 0 regions \u00b7 0 entities\n  Total: 1 region \u00b7 0 entities\n\nIslands\n  Count: 1 \u00b7 0 lagging \u00b7 0 stalled\n  Slowest: Spawn (Overworld)\n     Measuring \u00b7 measuring\u2026 \u00b7 22.4 ms avg \u00b7 29.3 ms max \u00b7 1 cell\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions list \u00b7 /fabrolia stats entity\n"
+  },
+  {
+   "command": "fabrolia regions playerticks off",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 regional player entity ticks: off \u2014 island player ownership and the synchronous exact actor are disabled; players return to MAIN_SYNC at the next safe boundary; saved for restart\n"
+  },
+  {
+   "command": "fabrolia regions async off",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 async islands: OFF (applies at next tick; saved as the boot default)\n"
+  },
+  {
+   "command": "gamerule spawn_mobs false",
+   "out": "Game rule spawn_mobs is now set to false\n"
+  },
+  {
+   "command": "gamerule advance_weather false",
+   "out": "Game rule advance_weather is now set to false\n"
+  },
+  {
+   "command": "tp Near1 16 150 0",
+   "out": "Teleported Near1 to 16.500000, 150.000000, 0.500000\n"
+  },
+  {
+   "command": "tp Near2 40 150 24",
+   "out": "Teleported Near2 to 40.500000, 150.000000, 24.500000\n"
+  },
+  {
+   "command": "tp FarA 3008 150 3008",
+   "out": "Teleported FarA to 3008.500000, 150.000000, 3008.500000\n"
+  },
+  {
+   "command": "tp FarB -3008 150 3008",
+   "out": "Teleported FarB to -3007.500000, 150.000000, 3008.500000\n"
+  },
+  {
+   "command": "fill 8 140 -8 24 140 8 minecraft:grass_block",
+   "out": "Successfully filled 289 block(s)\n"
+  },
+  {
+   "command": "setblock 16 200 0 minecraft:observer[facing=east]",
+   "out": "Changed the block at 16, 200, 0\n"
+  },
+  {
+   "command": "setblock 17 200 0 minecraft:observer[facing=west]",
+   "out": "Changed the block at 17, 200, 0\n"
+  },
+  {
+   "command": "summon minecraft:cow 10 141 -6",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 13 141 -6",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 16 141 -6",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 19 141 -6",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 22 141 -6",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 10 141 -3",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 13 141 -3",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 16 141 -3",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 19 141 -3",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 22 141 -3",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 10 141 0",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 13 141 0",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 16 141 0",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 19 141 0",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 22 141 0",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 10 141 3",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 13 141 3",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 16 141 3",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 19 141 3",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 22 141 3",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "fill 32 140 16 48 140 32 minecraft:grass_block",
+   "out": "Successfully filled 289 block(s)\n"
+  },
+  {
+   "command": "setblock 40 200 24 minecraft:observer[facing=east]",
+   "out": "Changed the block at 40, 200, 24\n"
+  },
+  {
+   "command": "setblock 41 200 24 minecraft:observer[facing=west]",
+   "out": "Changed the block at 41, 200, 24\n"
+  },
+  {
+   "command": "summon minecraft:cow 34 141 18",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 37 141 18",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 40 141 18",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 43 141 18",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 46 141 18",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 34 141 21",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 37 141 21",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 40 141 21",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 43 141 21",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 46 141 21",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 34 141 24",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 37 141 24",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 40 141 24",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 43 141 24",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 46 141 24",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 34 141 27",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 37 141 27",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 40 141 27",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 43 141 27",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 46 141 27",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "fill 3000 140 3000 3016 140 3016 minecraft:grass_block",
+   "out": "Successfully filled 289 block(s)\n"
+  },
+  {
+   "command": "setblock 3008 200 3008 minecraft:observer[facing=east]",
+   "out": "Changed the block at 3008, 200, 3008\n"
+  },
+  {
+   "command": "setblock 3009 200 3008 minecraft:observer[facing=west]",
+   "out": "Changed the block at 3009, 200, 3008\n"
+  },
+  {
+   "command": "summon minecraft:cow 3002 141 3002",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 3005 141 3002",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 3008 141 3002",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 3011 141 3002",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 3014 141 3002",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 3002 141 3005",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 3005 141 3005",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 3008 141 3005",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 3011 141 3005",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 3014 141 3005",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 3002 141 3008",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 3005 141 3008",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 3008 141 3008",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 3011 141 3008",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 3014 141 3008",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 3002 141 3011",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow 3005 141 3011",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep 3008 141 3011",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken 3011 141 3011",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager 3014 141 3011",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "fill -3016 140 3000 -3000 140 3016 minecraft:grass_block",
+   "out": "Successfully filled 289 block(s)\n"
+  },
+  {
+   "command": "setblock -3008 200 3008 minecraft:observer[facing=east]",
+   "out": "Changed the block at -3008, 200, 3008\n"
+  },
+  {
+   "command": "setblock -3007 200 3008 minecraft:observer[facing=west]",
+   "out": "Changed the block at -3007, 200, 3008\n"
+  },
+  {
+   "command": "summon minecraft:cow -3014 141 3002",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep -3011 141 3002",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken -3008 141 3002",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager -3005 141 3002",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow -3002 141 3002",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep -3014 141 3005",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken -3011 141 3005",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager -3008 141 3005",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow -3005 141 3005",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep -3002 141 3005",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken -3014 141 3008",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager -3011 141 3008",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow -3008 141 3008",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep -3005 141 3008",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken -3002 141 3008",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager -3014 141 3011",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "summon minecraft:cow -3011 141 3011",
+   "out": "Summoned new Cow\n"
+  },
+  {
+   "command": "summon minecraft:sheep -3008 141 3011",
+   "out": "Summoned new Sheep\n"
+  },
+  {
+   "command": "summon minecraft:chicken -3005 141 3011",
+   "out": "Summoned new Chicken\n"
+  },
+  {
+   "command": "summon minecraft:villager -3002 141 3011",
+   "out": "Summoned new Villager\n"
+  },
+  {
+   "command": "fabrolia regions",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Fabrolia status\n  Region threading: on \u00b7 14 workers\n  Async islands: off\n  Players tick on their island: off\n  Island entities: vanilla order (serial)\n  Main thread: 20.0 TPS \u00b7 17.6 ms\n\nDimensions\n  Overworld \u00b7 0 islands \u00b7 30 regions \u00b7 145 entities\n  End \u00b7 0 islands \u00b7 0 regions \u00b7 0 entities\n  Nether \u00b7 0 islands \u00b7 0 regions \u00b7 0 entities\n  Total: 30 regions \u00b7 145 entities\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions list \u00b7 /fabrolia stats entity\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:item]",
+   "out": "Test passed. Count: 101\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:falling_block]",
+   "out": "Test passed. Count: 70\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:chest_minecart]",
+   "out": "Test passed. Count: 35\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:cow]",
+   "out": "Test passed. Count: 20\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:sheep]",
+   "out": "Test passed. Count: 20\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:chicken]",
+   "out": "Test passed. Count: 20\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:villager]",
+   "out": "Test passed. Count: 20\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:egg]",
+   "out": "Test failed\n"
+  },
+  {
+   "command": "fabrolia regions async on",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 async islands: ON (applies at next tick; saved as the boot default)\n"
+  },
+  {
+   "command": "fabrolia regions playerticks on",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 regional player entity ticks: ON \u2014 supported real players and exact Carpet fake players are owned by their autonomous island; island-safe packets, entity tick and real listener/tickPlayer use the island FIFO; block use runs on Main; saved and restored automatically after restart\n"
+  },
+  {
+   "command": "fabrolia regions list",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Islands\n\nOverworld (3)\n  Near1+Near2 (Overworld) \u00b7 20.0 TPS \u00b7 4.0 ms avg\n  FarA (Overworld) \u00b7 20.0 TPS \u00b7 2.3 ms avg\n  FarB (Overworld) \u00b7 20.0 TPS \u00b7 2.1 ms avg\n  Hover a name for its handle, the TPS for all figures.\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions top verbose\n"
+  },
+  {
+   "command": "fabrolia regions player Near1",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 TPS where Near1 is\n  Island: Near1+Near2 (Overworld)\n  TPS here: Healthy \u00b7 20.0 TPS \u00b7 3.6 ms avg \u00b7 4.2 ms max \u00b7 16 cells\n  Players on it: Near1, Near2\n  Main thread: 20.0 TPS \u00b7 1.0 ms\n  This island ticks on its own thread: its TPS is the speed of everything here\n  (farms, redstone, mobs). Main TPS covers the rest and the global systems.\n\n  More: /fabrolia regions tps \u00b7 /fabrolia regions top\n"
+  },
+  {
+   "command": "fabrolia regions player Near2",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 TPS where Near2 is\n  Island: Near1+Near2 (Overworld)\n  TPS here: Healthy \u00b7 20.0 TPS \u00b7 3.6 ms avg \u00b7 4.2 ms max \u00b7 16 cells\n  Players on it: Near1, Near2\n  Main thread: 20.0 TPS \u00b7 1.0 ms\n  This island ticks on its own thread: its TPS is the speed of everything here\n  (farms, redstone, mobs). Main TPS covers the rest and the global systems.\n\n  More: /fabrolia regions tps \u00b7 /fabrolia regions top\n"
+  },
+  {
+   "command": "fabrolia regions player FarA",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 TPS where FarA is\n  Island: FarA (Overworld)\n  TPS here: Healthy \u00b7 20.0 TPS \u00b7 2.1 ms avg \u00b7 4.3 ms max \u00b7 9 cells\n  Players on it: FarA\n  Main thread: 20.0 TPS \u00b7 1.0 ms\n  This island ticks on its own thread: its TPS is the speed of everything here\n  (farms, redstone, mobs). Main TPS covers the rest and the global systems.\n\n  More: /fabrolia regions tps \u00b7 /fabrolia regions top\n"
+  },
+  {
+   "command": "fabrolia regions player FarB",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 TPS where FarB is\n  Island: FarB (Overworld)\n  TPS here: Healthy \u00b7 20.0 TPS \u00b7 1.8 ms avg \u00b7 2.6 ms max \u00b7 9 cells\n  Players on it: FarB\n  Main thread: 20.0 TPS \u00b7 1.0 ms\n  This island ticks on its own thread: its TPS is the speed of everything here\n  (farms, redstone, mobs). Main TPS covers the rest and the global systems.\n\n  More: /fabrolia regions tps \u00b7 /fabrolia regions top\n"
+  },
+  {
+   "command": "fabrolia regions top",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Top 3 of 3 islands by average MSPT\n  1. Near1+Near2 (Overworld)\n     Healthy \u00b7 20.0 TPS \u00b7 3.6 ms avg \u00b7 4.2 ms max \u00b7 16 cells\n  2. FarA (Overworld)\n     Healthy \u00b7 20.0 TPS \u00b7 2.1 ms avg \u00b7 4.3 ms max \u00b7 9 cells\n  3. FarB (Overworld)\n     Healthy \u00b7 20.0 TPS \u00b7 1.8 ms avg \u00b7 2.6 ms max \u00b7 9 cells\n  Healthy = within 10 % of its target TPS (20); Lagging = below that.\n\n  More: /fabrolia regions top 10 tps \u00b7 /fabrolia regions top verbose\n"
+  },
+  {
+   "command": "fabrolia regions top 5 tps",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Top 3 of 3 islands by lowest TPS\n  1. FarA (Overworld)\n     Healthy \u00b7 20.0 TPS \u00b7 2.1 ms avg \u00b7 4.3 ms max \u00b7 9 cells\n  2. FarB (Overworld)\n     Healthy \u00b7 20.0 TPS \u00b7 1.8 ms avg \u00b7 2.6 ms max \u00b7 9 cells\n  3. Near1+Near2 (Overworld)\n     Healthy \u00b7 20.0 TPS \u00b7 3.6 ms avg \u00b7 4.2 ms max \u00b7 16 cells\n  Healthy = within 10 % of its target TPS (20); Lagging = below that.\n\n  More: /fabrolia regions top 10 tps \u00b7 /fabrolia regions top verbose\n"
+  },
+  {
+   "command": "fabrolia regions top verbose 100",
+   "out": "#1 Near1+Near2 [ow-2g2] minecraft:overworld island#2/gen2 cells=16+20h L=1642 gt=1643 ev=0/0 tps=20.0/20.0 mspt=3.59 max=4.17 lag=0ms missed=0\n#2 FarA [ow-3g3] minecraft:overworld island#3/gen3 cells=9+16h L=1642 gt=1643 ev=0/0 tps=20.0/20.0 mspt=2.13 max=4.30 lag=0ms missed=0\n#3 FarB [ow-4g4] minecraft:overworld island#4/gen4 cells=9+16h L=1642 gt=1643 ev=0/0 tps=20.0/20.0 mspt=1.81 max=2.60 lag=0ms missed=0\n"
+  },
+  {
+   "command": "fabrolia regions crossdim",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 crossdim coupling: ON pair=minecraft:overworld=minecraft:the_nether grace=100t | links=0 formed=0 dropped=0 anchors=0(+0 deferred) suspended=0 refusedEntries=0 endRefusals=3\n  no links\n"
+  },
+  {
+   "command": "fabrolia regions islandentities",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 island entity phase: vanilla (one serial pass per island in insertion order)\n"
+  },
+  {
+   "command": "fabrolia regions playerticks",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 regional player entity ticks v2: ON (saved=on; single runtime gate, effective; venue=autonomous island owner (real early+listener late; exact Carpet combined); islandEarly=2960, islandLate=2960, carpetCombined=0, packets=3116/3120, mainFallbacks=0, terminalPreBody=0, replacementPreBody=0, postPhysicsHandoffs=0, failures=0; eligibleOnline=4/4)\n"
+  },
+  {
+   "command": "fabrolia stats entity",
+   "out": ""
+  },
+  {
+   "command": "fabrolia stats entity 10 20",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Entity stats\n\nPer dimension\n  Overworld: 352 \u00b7 348 parallel \u00b7 4 main\n  End: 0 \u00b7 0 parallel \u00b7 0 main\n  Nether: 0 \u00b7 0 parallel \u00b7 0 main\n  Total: 352 \u00b7 348 parallel \u00b7 4 main\n  parallel = ticked off the main thread; main = needs the main thread\n\nTop 10 entity types\n  1. falling_block: 115 \u00b7 parallel\n  2. item: 108 \u00b7 parallel\n  3. chest_minecart: 35 \u00b7 parallel\n  4. sheep: 20 \u00b7 parallel\n  5. cow: 20 \u00b7 parallel\n  6. chicken: 20 \u00b7 parallel\n  7. villager: 20 \u00b7 parallel\n  8. bee: 8 \u00b7 parallel\n  9. player: 4 \u00b7 main\n  10. cushion: 2 \u00b7 parallel\n\n  More: /fabrolia stats entity 10 200\n  (the second number records entity tick times for that many ticks)\n\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Recording entity ticks for 20 ticks (about 1 s)...\n"
+  },
+  {
+   "command": "fabrolia config synchronizedEntities",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Synchronized Entities: \n- minecraft:tnt\n- minecraft:experience_orb\n- minecraft:item\n\n"
+  },
+  {
+   "command": "fabrolia functions plan",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 function plan\nno per-tick roots\n"
+  },
+  {
+   "command": "tick query",
+   "out": "The game is running normally\nTarget tick rate: 20.0 per second.\nAverage time per tick: 1.0ms (Target: 50.0ms)\nPercentiles: P50: 1.0ms P95: 1.4ms P99: 2.3ms. Sample: 100\n"
+  },
+  {
+   "command": "tp FarA -3008 150 3012",
+   "out": "Teleported FarA to -3007.500000, 150.000000, 3012.500000\n"
+  },
+  {
+   "command": "execute in minecraft:the_nether run tp FarB 0 100 0",
+   "out": "Teleported FarB to 0.500000, 100.000000, 0.500000\n"
+  },
+  {
+   "command": "execute in minecraft:overworld run tp FarB -3008 150 3008",
+   "out": "Teleported FarB to -3007.500000, 150.000000, 3008.500000\n"
+  },
+  {
+   "command": "execute as FarB run data get entity @s Dimension",
+   "out": "FarB has the following entity data: \"minecraft:overworld\"\n"
+  },
+  {
+   "command": "fabrolia regions islandentities parallel",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 island entity phase: parallel \u2014 island regions tick their entities in parallel under the ColorGate; islands holding primed TNT or any minecart stay serial (from their next unit)\n"
+  },
+  {
+   "command": "fabrolia regions islandentities vanilla",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 island entity phase: vanilla \u2014 each island ticks its entities in one serial pass in insertion order (from its next unit)\n"
+  },
+  {
+   "command": "execute if entity @e[type=!minecraft:player,type=!minecraft:item,type=!minecraft:falling_block]",
+   "out": "Test passed. Count: 81\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:item]",
+   "out": "Test passed. Count: 91\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:falling_block]",
+   "out": "Test passed. Count: 44\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:chest_minecart]",
+   "out": "Test passed. Count: 16\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:cow]",
+   "out": "Test passed. Count: 15\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:sheep]",
+   "out": "Test passed. Count: 15\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:chicken]",
+   "out": "Test passed. Count: 15\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:villager]",
+   "out": "Test passed. Count: 15\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:egg]",
+   "out": "Test failed\n"
+  },
+  {
+   "command": "save-all flush",
+   "out": "Saving the game (this may take a moment!)\nSaved the game\n"
+  },
+  {
+   "command": "execute if entity @e[type=!minecraft:player,type=!minecraft:item,type=!minecraft:falling_block]",
+   "out": "Test passed. Count: 81\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:item]",
+   "out": "Test passed. Count: 91\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:falling_block]",
+   "out": "Test passed. Count: 44\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:chest_minecart]",
+   "out": "Test passed. Count: 16\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:cow]",
+   "out": "Test passed. Count: 15\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:sheep]",
+   "out": "Test passed. Count: 15\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:chicken]",
+   "out": "Test passed. Count: 15\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:villager]",
+   "out": "Test passed. Count: 15\n"
+  },
+  {
+   "command": "execute if entity @e[type=minecraft:egg]",
+   "out": "Test failed\n"
+  },
+  {
+   "command": "fabrolia stats",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Fabrolia stats\n  Fabrolia: enabled\n  Main thread: 20.0 TPS \u00b7 2.6 ms\n  Entities: 220\n  Threads: 16\n\nFeatures\n  Parallel spawning: on\n  Parallel random ticks: on\n  Parallel despawn: on\n\n  More: /fabrolia regions \u00b7 /fabrolia stats entity 10\n"
+  },
+  {
+   "command": "fabrolia regions list",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Islands\n\nOverworld (2)\n  Near1+Near2 (Overworld) \u00b7 20.2 TPS \u00b7 4.6 ms avg\n  FarB+FarA (Overworld) \u00b7 20.2 TPS \u00b7 2.1 ms avg\n  Hover a name for its handle, the TPS for all figures.\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions top verbose\n"
+  }
+ ],
+ "completed": true,
+ "boot_seconds": 11.6,
+ "regions_sync": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Fabrolia status\n  Region threading: on \u00b7 14 workers\n  Async islands: off\n  Players tick on their island: off\n  Island entities: vanilla order (serial)\n  Main thread: 20.0 TPS \u00b7 17.6 ms\n\nDimensions\n  Overworld \u00b7 0 islands \u00b7 30 regions \u00b7 145 entities\n  End \u00b7 0 islands \u00b7 0 regions \u00b7 0 entities\n  Nether \u00b7 0 islands \u00b7 0 regions \u00b7 0 entities\n  Total: 30 regions \u00b7 145 entities\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions list \u00b7 /fabrolia stats entity\n",
+ "census_after_setup": {
+  "item": 101,
+  "falling_block": 70,
+  "chest_minecart": 35,
+  "cow": 20,
+  "sheep": 20,
+  "chicken": 20,
+  "villager": 20,
+  "egg": 0
+ },
+ "island_list": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Islands\n\nOverworld (3)\n  Near1+Near2 (Overworld) \u00b7 20.0 TPS \u00b7 4.0 ms avg\n  FarA (Overworld) \u00b7 20.0 TPS \u00b7 2.3 ms avg\n  FarB (Overworld) \u00b7 20.0 TPS \u00b7 2.1 ms avg\n  Hover a name for its handle, the TPS for all figures.\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions top verbose\n",
+ "census_before_stop": {
+  "item": 91,
+  "falling_block": 44,
+  "chest_minecart": 16,
+  "cow": 15,
+  "sheep": 15,
+  "chicken": 15,
+  "villager": 15,
+  "egg": 0
+ },
+ "log_errors_run1": [
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: com/ishland/c2me/rewrites/chunksystem/common/statuses/ReadFromDisk (java.lang.ClassNotFoundException: com.ishland.c2me.rewrites.chunksystem.common.statuses.ReadFromDisk)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: com/ishland/c2me/rewrites/chunksystem/common/TheChunkSystem (java.lang.ClassNotFoundException: com.ishland.c2me.rewrites.chunksystem.common.TheChunkSystem)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: com/ishland/flowsched/scheduler/ItemHolder (java.lang.ClassNotFoundException: com.ishland.flowsched.scheduler.ItemHolder)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: com/ishland/c2me/rewrites/chunksystem/common/NewChunkHolderVanillaInterface (java.lang.ClassNotFoundException: com.ishland.c2me.rewrites.chunksystem.common.NewChunkHolderVanillaInterface)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/tracking/entity/SectionedEntityMovementTracker (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.tracking.entity.SectionedEntityMovementTracker)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/util/deduplication/LithiumInterner (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.util.deduplication.LithiumInterner)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/world/chunk/ChunkStatusTracker (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.world.chunk.ChunkStatusTracker)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/block/entity/SleepUntilTimeBlockEntityTickInvoker (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.block.entity.SleepUntilTimeBlockEntityTickInvoker)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/world/GameEventDispatcherStorage (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.world.GameEventDispatcherStorage)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/util/collections/ReferenceMaskedList (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.util.collections.ReferenceMaskedList)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: com/ishland/vmp/common/maps/AreaMap (java.lang.ClassNotFoundException: com.ishland.vmp.common.maps.AreaMap)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: com/ishland/vmp/common/chunkwatching/AreaPlayerChunkWatchingManager (java.lang.ClassNotFoundException: com.ishland.vmp.common.chunkwatching.AreaPlayerChunkWatchingManager)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: com/ishland/vmp/common/playerwatching/NearbyEntityTracking (java.lang.ClassNotFoundException: com.ishland.vmp.common.playerwatching.NearbyEntityTracking)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: carpet/patches/EntityPlayerMPFake (java.lang.ClassNotFoundException: carpet.patches.EntityPlayerMPFake)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: carpet/helpers/EntityPlayerActionPack$ActionType$2 (java.lang.ClassNotFoundException: carpet.helpers.EntityPlayerActionPack$ActionType$2)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: carpet/commands/PlayerCommand (java.lang.ClassNotFoundException: carpet.commands.PlayerCommand)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: carpet/commands/SpawnCommand (java.lang.ClassNotFoundException: carpet.commands.SpawnCommand)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: carpet/utils/SpawnReporter (java.lang.ClassNotFoundException: carpet.utils.SpawnReporter)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: carpet/script/value/ThreadValue (java.lang.ClassNotFoundException: carpet.script.value.ThreadValue)",
+  "[02:54:28] [main/WARN] [mixin/]: Error loading class: fi/dy/masa/servux/dataproviders/StructureDataProvider (java.lang.ClassNotFoundException: fi.dy.masa.servux.dataproviders.StructureDataProvider)",
+  "2026-10-25T00:54:35.890702600Z Server thread ERROR An exception occurred processing Appender DebugFile",
+  "org.apache.logging.log4j.core.appender.AppenderLoggingException: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.kqueue.Native",
+  "Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.IllegalStateException: Only supported on OSX/BSD [in thread \"Server thread\"]",
+  "2026-10-25T00:54:35.904461100Z Server thread ERROR An exception occurred processing Appender DebugFile",
+  "org.apache.logging.log4j.core.appender.AppenderLoggingException: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.epoll.Native",
+  "Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.IllegalStateException: Only supported on Linux [in thread \"Server thread\"]"
+ ],
+ "reboot_seconds": 10.6,
+ "census_after_restart": {
+  "item": 91,
+  "falling_block": 44,
+  "chest_minecart": 16,
+  "cow": 15,
+  "sheep": 15,
+  "chicken": 15,
+  "villager": 15,
+  "egg": 0
+ },
+ "stats_after_restart": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Fabrolia stats\n  Fabrolia: enabled\n  Main thread: 20.0 TPS \u00b7 2.6 ms\n  Entities: 220\n  Threads: 16\n\nFeatures\n  Parallel spawning: on\n  Parallel random ticks: on\n  Parallel despawn: on\n\n  More: /fabrolia regions \u00b7 /fabrolia stats entity 10\n",
+ "log_errors_run2": [
+  "[02:56:41] [main/WARN] [mixin/]: Error loading class: com/ishland/c2me/rewrites/chunksystem/common/statuses/ReadFromDisk (java.lang.ClassNotFoundException: com.ishland.c2me.rewrites.chunksystem.common.statuses.ReadFromDisk)",
+  "[02:56:41] [main/WARN] [mixin/]: Error loading class: com/ishland/c2me/rewrites/chunksystem/common/TheChunkSystem (java.lang.ClassNotFoundException: com.ishland.c2me.rewrites.chunksystem.common.TheChunkSystem)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: com/ishland/flowsched/scheduler/ItemHolder (java.lang.ClassNotFoundException: com.ishland.flowsched.scheduler.ItemHolder)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: com/ishland/c2me/rewrites/chunksystem/common/NewChunkHolderVanillaInterface (java.lang.ClassNotFoundException: com.ishland.c2me.rewrites.chunksystem.common.NewChunkHolderVanillaInterface)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/tracking/entity/SectionedEntityMovementTracker (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.tracking.entity.SectionedEntityMovementTracker)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/util/deduplication/LithiumInterner (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.util.deduplication.LithiumInterner)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/world/chunk/ChunkStatusTracker (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.world.chunk.ChunkStatusTracker)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/block/entity/SleepUntilTimeBlockEntityTickInvoker (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.block.entity.SleepUntilTimeBlockEntityTickInvoker)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/world/GameEventDispatcherStorage (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.world.GameEventDispatcherStorage)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: net/caffeinemc/mods/lithium/common/util/collections/ReferenceMaskedList (java.lang.ClassNotFoundException: net.caffeinemc.mods.lithium.common.util.collections.ReferenceMaskedList)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: com/ishland/vmp/common/maps/AreaMap (java.lang.ClassNotFoundException: com.ishland.vmp.common.maps.AreaMap)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: com/ishland/vmp/common/chunkwatching/AreaPlayerChunkWatchingManager (java.lang.ClassNotFoundException: com.ishland.vmp.common.chunkwatching.AreaPlayerChunkWatchingManager)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: com/ishland/vmp/common/playerwatching/NearbyEntityTracking (java.lang.ClassNotFoundException: com.ishland.vmp.common.playerwatching.NearbyEntityTracking)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: carpet/patches/EntityPlayerMPFake (java.lang.ClassNotFoundException: carpet.patches.EntityPlayerMPFake)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: carpet/helpers/EntityPlayerActionPack$ActionType$2 (java.lang.ClassNotFoundException: carpet.helpers.EntityPlayerActionPack$ActionType$2)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: carpet/commands/PlayerCommand (java.lang.ClassNotFoundException: carpet.commands.PlayerCommand)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: carpet/commands/SpawnCommand (java.lang.ClassNotFoundException: carpet.commands.SpawnCommand)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: carpet/utils/SpawnReporter (java.lang.ClassNotFoundException: carpet.utils.SpawnReporter)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: carpet/script/value/ThreadValue (java.lang.ClassNotFoundException: carpet.script.value.ThreadValue)",
+  "[02:56:42] [main/WARN] [mixin/]: Error loading class: fi/dy/masa/servux/dataproviders/StructureDataProvider (java.lang.ClassNotFoundException: fi.dy.masa.servux.dataproviders.StructureDataProvider)",
+  "2026-10-25T00:56:50.057804700Z Server thread ERROR An exception occurred processing Appender DebugFile",
+  "org.apache.logging.log4j.core.appender.AppenderLoggingException: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.kqueue.Native",
+  "Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.IllegalStateException: Only supported on OSX/BSD [in thread \"Server thread\"]",
+  "2026-10-25T00:56:50.069012Z Server thread ERROR An exception occurred processing Appender DebugFile",
+  "org.apache.logging.log4j.core.appender.AppenderLoggingException: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.epoll.Native",
+  "Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.IllegalStateException: Only supported on Linux [in thread \"Server thread\"]"
+ ],
+ "passed": true
+}

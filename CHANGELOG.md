@@ -1,3 +1,132 @@
+## 3.1.13-alpha (2026-10-25)
+
+Candidate; validation and review evidence are recorded in
+[the review handoff](docs/reviews/2026-10-25/folia-performance/README.md).
+Production stand verification is still pending.
+
+Local validation: 1511 tests pass, 8 optional skip (1519 total), both loader
+builds pass, and 42 function checks pass on each loader. A fresh matched 8-GB
+mob benchmark uses 18.94 % less process CPU at about 20 TPS. The synchronous
+Fabric function run logged one `RETAINED CLAIM` error, which the claim-forensics
+fix below identifies as a false report; the function tests and the benchmark ran
+before that diagnostics-only fix. This is not a production release clearance.
+
+- Performance: scheduled-tick discovery indexes occupied scheduler chunks by
+  region cell instead of probing all 64 possible chunks on each pass. The
+  indexed snapshot keeps the previous X-then-Z chunk encounter order: loaded
+  ticks from different chunks can have equal priority and sub-tick order, so
+  feeding their containers in hash order could change redstone/fluid execution.
+- Performance: hot ThreadLocal scopes retain their empty slots with `set(null)`
+  after use, and island game-time lookup checks the thread type first. Context
+  objects are still cleared at scope exit.
+- Performance: incremental saves apply vanilla's side-effect-free refusal
+  checks before acquiring island ownership and a success-body permit. Chunks
+  that can be saved still enter the existing owned save path.
+- Cleanup: remove the unreachable legacy spawn-census scan/precompute path and
+  its diagnostics/version counter. Its internal switch was always true and
+  never configured by either loader. The incremental ledger, 256-tick audit,
+  vanilla createState when parallel spawning is disabled, and native weighted
+  local-cap seed remain in use. The fan-out failure gate now has one concrete
+  implementation.
+- Validation tooling: the local function test explicitly switches async islands
+  and island player ticks off before testing the synchronous mode. Previously
+  both sections used async mode after the 3.1.11 default changed.
+- Fix: the heal loop's `RETAINED CLAIM` forensic reported live claims as
+  retained. It took the holder's published `currentRegion` as proof of work,
+  but `stealOne` never publishes it and the island entity phase publishes only
+  one of the regions it holds; and it matched sightings by the stamp
+  generation, which unstamped claims and a thread re-claiming the region share.
+  Every acquisition now has its own sequence number, a stamped claim without
+  its release stamp counts as working, and only one acquisition seen outside
+  any claim body over three sightings and at least 1 s is reported, with the
+  values of one validated snapshot. Diagnostics only: claims, ownership and
+  `currentRegion` are unchanged.
+
+## 3.1.12-alpha (2026-10-24)
+
+Status: 1516 tests pass (8 optional skip), Fabric/NeoForge builds and the Fabric
+artifact check pass. On Windows (no 40-client stand): `tools/bench/functest.py`
+all checks pass on Fabric and NeoForge; natural spawning at night with VMP, one bot on land
+and one over deep ocean (two islands), keeps each player's area at 70–74
+monsters, the same as Vanilla + VMP (land mean 71.3 vs 72.2 over 3 minutes).
+
+Background: a player reported groups of ~50 extra hostile mobs behind a tunnel
+bore that already carried 80–85 mobs. The review in
+[docs/reviews/2026-10-24/mob-cap](docs/reviews/2026-10-24/mob-cap/README.md)
+found two ways the per-player local mob cap could undercount; both are fixed.
+Neither was reproduced in the original world, so whether one of them caused
+that report is still open.
+
+- Fix: the per-player local mob cap could miss a whole chunk of mobs for one
+  island spawn pass. Fabrolia removed vanilla's propagation step from the
+  spawn-proximity readers, so a worker could read the player-distance tracker
+  while Main was propagating a move, or before it had. A level increase
+  passes through "not near any player", so a chunk one chunk from the player
+  read as definitely far. The local-cap seed cached that empty player list
+  for the whole pass, dropped every mob of the chunk from the player's
+  count, and the pass could spawn up to the cap again (probe: 80 seeded
+  mobs, spawning still allowed). `hasPlayersNearby` now gives a definite
+  answer only when the tracker is settled (no write in flight, no queued
+  update, unchanged write epoch around the read). Otherwise it answers
+  DEFAULT, for which vanilla checks every player exactly, including mod hooks
+  such as Vanish. Nether-portal piglin spawning reads the same answer.
+- Fix: the local-cap seed picked players with vanilla `getPlayersNear`, while
+  approval and the post-spawn `addMob` use the installed rule. VMP overwrites
+  both with its own player index, and a player that the seed skipped counted
+  as "under cap" (vanilla treats a near player without counts that way). The
+  seed now goes through the installed `addMob` once per chunk and category
+  and adds the remaining copies to exactly the counts that call touched.
+- Fix: the 256-tick census audit could leave a live mob in the spawn index
+  with no census contribution until the next audit (12.8 s). The purge
+  removed the index entry and cleared the ledger in two steps, and a
+  worker's section add could re-insert the mob in between. Index membership
+  and the ledger flag now change in one transaction per entity, with the
+  purge re-checking the entity under that lock. The legacy census purge
+  (`fabroliaIncrementalSpawnCensus = false`) uses the same transaction and
+  no longer leaves a purged mob's contribution in the island ledger.
+- Performance: Main's Java shadow seed of the native local-cap arena replayed
+  one `addMob` per mob each tick. It now replays one per occupied chunk and
+  category. With async islands Main only seeds the global lane, so the effect
+  is largest in synchronous mode. With VMP installed the island seed now uses
+  VMP's player index instead of building and copying a full player list for
+  each chunk. Neither change has been measured on the stand.
+
+## 3.1.11-alpha (2026-10-23)
+
+Status: 1507 tests pass (8 optional skip), Fabric/NeoForge builds and the Fabric
+artifact check pass. Release check on Windows (no 40-client stand): dedicated
+server and singleplayer on Fabric and NeoForge 26.3.0.95, see
+[the benchmark and release check](docs/BENCHMARK.md).
+
+- Fix (NeoForge only): the server crashed on leaf decay with
+  `NullPointerException … BlockDropsEvent.getDrops() is null`. NeoForge collects
+  the drops of `Block.dropResources` in the static field `Block.capturedDrops`.
+  Fabrolia's dropResources monitor is per region, so two regions dropping at once
+  shared that field: one call took both calls' drops, the other got `null`.
+  Reproduced in seconds with the default configuration (random_tick_speed 300,
+  four islands of decaying leaves); 3 minutes without error after the fix.
+- Fix (NeoForge only): NeoForge's block-snapshot capture of an item use
+  (`Level.captureBlockSnapshots`, `capturedBlockSnapshots`,
+  `restoringBlockSnapshots`) is per level. While a player placed a block, the
+  writes of every other island of that dimension were captured into the
+  player's unsynchronized snapshot list, lost `onPlace`, and were replayed (or
+  reverted, when a place event was cancelled) by a thread that does not own
+  their chunks. The stress run logged `NullPointerException: at index 2` from
+  `BlockEvent.EntityMultiPlaceEvent` and lost the placement. Both capture states
+  are now per thread (`neoforge.world.BlockSnapshotCapture`,
+  `neoforge.mixin.world.*`), which is exactly what single-threaded NeoForge
+  captures. Fabric has no such global state.
+- Async islands and island-owned player ticks are on by default
+  (`asyncIslands`, `enablePlayerTickActor`), the configuration the production
+  server runs. Without them the mob benchmark ran on about one core, like
+  vanilla. A saved `false` in an existing `config/fabrolia.toml` is kept.
+- The region scheduler's start message and the mod metadata now point to this
+  repository's issue tracker (`fabric.mod.json` contact, `neoforge.mods.toml`
+  issueTrackerURL/displayURL).
+- README rewritten for players and server owners, independent of versions;
+  benchmark against Vanilla, Lithium, C2ME, Paper and Folia in
+  [docs/BENCHMARK.md](docs/BENCHMARK.md).
+
 ## 3.1.10-alpha (2026-10-19)
 
 Status: 1507 tests pass (8 optional skip), Fabric/NeoForge builds and the Fabric

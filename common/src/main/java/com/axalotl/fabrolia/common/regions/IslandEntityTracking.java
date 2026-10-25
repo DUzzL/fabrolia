@@ -543,7 +543,7 @@ public final class IslandEntityTracking {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         }
         try {
-            PAIRING_COMMIT.remove();
+            PAIRING_COMMIT.set(null);
         } catch (Throwable cleanup) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
                     mergeFailure(failure, cleanup));
@@ -1453,7 +1453,7 @@ public final class IslandEntityTracking {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         }
         try {
-            POST_PHYSICS_CROSSING_PUBLISHING.remove();
+            POST_PHYSICS_CROSSING_PUBLISHING.set(null);
         } catch (Throwable cleanup) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
                     mergeFailure(failure, cleanup));
@@ -1481,7 +1481,7 @@ public final class IslandEntityTracking {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         }
         try {
-            PUBLISHING.remove();
+            PUBLISHING.set(null);
         } catch (Throwable cleanup) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
                     mergeFailure(failure, cleanup));

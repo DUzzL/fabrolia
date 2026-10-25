@@ -192,6 +192,54 @@ final class LocalCapArenaAtomicAdmissionTest {
         assertEquals(1, provider.frees.get());
     }
 
+    /** Main's shadow seed arrives one entry per mob, grouped by chunk then
+     *  category; each run must become ONE weighted seed step (one real addMob
+     *  instead of one per mob), in order, without merging separated runs. */
+    @Test
+    void shadowSeedCollapsesEachRunIntoOneWeightedStep() throws Exception {
+        Calculator calculator = new Calculator();
+        long a = new ChunkPos(1, 2).pack();
+        long b = new ChunkPos(-3, 4).pack();
+        int monster = MobCategory.MONSTER.ordinal();
+        int creature = MobCategory.CREATURE.ordinal();
+        long[] chunks = {a, a, a, a, b, a, 99L};
+        int[] cats = {monster, monster, monster, creature, monster, monster, monster};
+
+        calculator.fabrolia$seedJavaShadow(chunks, cats, 6);
+
+        assertEquals(List.of(
+                List.of(a, (long) monster, 3L),
+                List.of(a, (long) creature, 1L),
+                List.of(b, (long) monster, 1L),
+                List.of(a, (long) monster, 1L)), calculator.seedSteps,
+                "entries past n must be ignored and only adjacent equal entries merge");
+    }
+
+    /** The weighted seed replays copies onto exactly the counts the one real
+     *  addMob incremented, and keeps native routing out while it records. */
+    @Test
+    void seedRecordingCapturesOnlyItsOwnIncrements() {
+        var first = new net.minecraft.world.level.LocalMobCapCalculator.MobCounts();
+        var second = new net.minecraft.world.level.LocalMobCapCalculator.MobCounts();
+        LocalCapSeedBridge.recordSeedIncrement(first);
+
+        var touched = LocalCapSeedBridge.beginSeedRecording();
+        try {
+            assertEquals(Boolean.TRUE, LocalCapSeedBridge.SEED_BYPASS.get());
+            assertTrue(touched.isEmpty(), "an increment outside a seed step must not be recorded");
+            LocalCapSeedBridge.recordSeedIncrement(first);
+            LocalCapSeedBridge.recordSeedIncrement(second);
+            assertThrows(IllegalStateException.class, LocalCapSeedBridge::beginSeedRecording);
+        } finally {
+            LocalCapSeedBridge.endSeedRecording();
+        }
+        LocalCapSeedBridge.recordSeedIncrement(second);
+
+        assertEquals(List.of(first, second), touched);
+        assertNull(LocalCapSeedBridge.SEED_BYPASS.get());
+        touched.clear();
+    }
+
     private static LocalCapBridge.Arena allocate(LocalCapBridge.Provider provider) {
         return new LocalCapBridge.Arena(provider, provider.buildArena(null, new long[0], new int[0], 0));
     }
@@ -270,6 +318,10 @@ final class LocalCapArenaAtomicAdmissionTest {
 
     private static final class Calculator extends LocalMobCapCalculatorMixin {
         int nearQueries;
+        final java.util.ArrayList<List<Long>> seedSteps = new java.util.ArrayList<>();
+        @Override public void fabrolia$addMobs(long packedChunk, int categoryOrdinal, int count) {
+            seedSteps.add(List.of(packedChunk, (long) categoryOrdinal, (long) count));
+        }
         Calculator() throws Exception {
             Field counts = LocalMobCapCalculatorMixin.class.getDeclaredField("playerMobCounts");
             counts.setAccessible(true);

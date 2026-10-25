@@ -12,4 +12,10 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
  */
 public interface FabroliaMobCountsView {
     AtomicIntegerArray fabrolia$countsArray();
+
+    /** Equivalent to {@code copies} further {@code add(category)} calls on this
+     *  player's counts — the replay half of the count-weighted seed, after one
+     *  real {@code addMob} has chosen the players. */
+    default void fabrolia$addCopies(int categoryOrdinal, int copies) {
+    }
 }

@@ -19,26 +19,10 @@ import net.minecraft.world.level.NaturalSpawner;
 import net.minecraft.world.level.PotentialCalculator;
 import net.minecraft.world.level.biome.MobSpawnSettings;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.ForkJoinTask;
-import java.util.concurrent.RecursiveAction;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.LockSupport;
-import java.util.function.Supplier;
-
 public final class ParallelSpawnHelper {
 
-    private static final int SPAWN_GRAIN = 256;
     private static final MobCategory[] CATEGORIES = MobCategory.values();
     private static final int CATEGORY_COUNT = CATEGORIES.length;
-    private static final int MISC_ORDINAL = MobCategory.MISC.ordinal();
-
-    private static Entity[] entityBuf = new Entity[1024];
 
     private static boolean fabrolia$localCapLogged = false;
     private static boolean fabrolia$reservationDeclineLogged = false;
@@ -96,34 +80,16 @@ public final class ParallelSpawnHelper {
     private static int[] fabrolia$mobCatBuf = new int[1024];
 
     /** Ask the registered {@link LocalCapBridge} provider (Oxidizium, when present + enabled) to
-     *  build this tick's LOCAL-cap arena — SEEDED with the merged initial-mob entries in one
-     *  native pass (the per-entry addMob replay on main was 4.1% of the server thread at 51
-     *  players) — and attach its handle to {@code localMobCap}, so canSpawn/addMob route to the
+     *  build this tick's LOCAL-cap arena — SEEDED with the census' per-chunk mob counts in one
+     *  native pass — and attach its handle to {@code localMobCap}, so canSpawn/addMob route to the
      *  provider instead of the concurrent maps. The GLOBAL cap is untouched (stays vanilla
-     *  Java — ServerCore multiplier / phantom wrap). The provider owns all Rust marshalling.
+     *  Java — ServerCore multiplier / phantom wrap). The provider owns all Rust marshalling;
+     *  the native ABI receives one primitive entry per mob, in chunk-table/category order.
      *
      *  @return true if the arena is active AND consumed the initial mobs — the caller must
      *          then SKIP its Java replay (counting them twice would halve the local cap). */
-    private static boolean fabrolia$buildLocalCapArena(ServerLevel level, LocalMobCapCalculator localMobCap,
-                                                    List<MobCapEntry> initialMobs) {
-        return fabrolia$buildLocalCapArenaSeed(
-                level, localMobCap, initialMobs, null, 0);
-    }
-
-    /** Incremental-census seed: retain the compact per-chunk weights until the
-     * provider and reservation-capability gates have both accepted the arena.
-     * The native ABI still receives one primitive entry per mob, in the exact
-     * same chunk-table/category/count order as the former MobCapEntry expansion. */
-    private static boolean fabrolia$buildLocalCapArenaWeighted(
+    private static boolean fabrolia$buildLocalCapArena(
             ServerLevel level, LocalMobCapCalculator localMobCap,
-            Long2ObjectOpenHashMap<int[]> weightedSeed, int weightedCount) {
-        return fabrolia$buildLocalCapArenaSeed(
-                level, localMobCap, null, weightedSeed, weightedCount);
-    }
-
-    private static boolean fabrolia$buildLocalCapArenaSeed(
-            ServerLevel level, LocalMobCapCalculator localMobCap,
-            List<MobCapEntry> initialMobs,
             Long2ObjectOpenHashMap<int[]> weightedSeed, int weightedCount) {
         if (level == null || localMobCap == null) {
             RegionScheduler.commitSuccessIfHealthy(() -> {});
@@ -169,11 +135,7 @@ public final class ParallelSpawnHelper {
         long[][] chunkBuffer = new long[1][];
         int[][] categoryBuffer = new int[1][];
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            boolean listSeed = initialMobs != null;
-            if (listSeed == (weightedSeed != null)) {
-                throw new IllegalStateException("local-cap seed must have exactly one representation");
-            }
-            int n = listSeed ? initialMobs.size() : weightedCount;
+            int n = weightedCount;
             if (n < 0) {
                 throw new IllegalStateException("negative local-cap seed count " + n);
             }
@@ -191,53 +153,42 @@ public final class ParallelSpawnHelper {
         int n = count[0];
         long[] chunks = chunkBuffer[0];
         int[] cats = categoryBuffer[0];
-        if (initialMobs != null) {
-            for (int i = 0; i < n; i++) {
-                int entryIndex = i;
-                RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                    MobCapEntry e = initialMobs.get(entryIndex);
-                    chunks[entryIndex] = e.chunkPos().pack();
-                    cats[entryIndex] = e.category().ordinal();
-                });
-            }
-        } else {
-            int[] written = new int[1];
-            for (var it = weightedSeed.long2ObjectEntrySet().fastIterator(); it.hasNext(); ) {
-                var entry = it.next();
-                // One occupied chunk is one atomic pure-marshalling body. A peer
-                // W either precedes this chunk or observes the complete chunk;
-                // no native/provider state exists until all chunks validate.
-                RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                    long chunkKey = entry.getLongKey();
-                    int[] mobs = entry.getValue();
-                    if (mobs == null || mobs.length < CATEGORY_COUNT) {
-                        throw new IllegalStateException(
-                                "invalid weighted local-cap vector for chunk " + chunkKey);
-                    }
-                    int cursor = written[0];
-                    for (int category = 0; category < CATEGORY_COUNT; category++) {
-                        int copies = mobs[category];
-                        if (copies < 0 || copies > n - cursor) {
-                            throw new IllegalStateException(
-                                    "invalid weighted local-cap count " + copies
-                                            + " for chunk " + chunkKey
-                                            + " category " + category);
-                        }
-                        int end = cursor + copies;
-                        java.util.Arrays.fill(chunks, cursor, end, chunkKey);
-                        java.util.Arrays.fill(cats, cursor, end, category);
-                        cursor = end;
-                    }
-                    written[0] = cursor;
-                });
-            }
+        int[] written = new int[1];
+        for (var it = weightedSeed.long2ObjectEntrySet().fastIterator(); it.hasNext(); ) {
+            var entry = it.next();
+            // One occupied chunk is one atomic pure-marshalling body. A peer
+            // W either precedes this chunk or observes the complete chunk;
+            // no native/provider state exists until all chunks validate.
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                if (written[0] != n) {
+                long chunkKey = entry.getLongKey();
+                int[] mobs = entry.getValue();
+                if (mobs == null || mobs.length < CATEGORY_COUNT) {
                     throw new IllegalStateException(
-                            "weighted local-cap seed mismatch " + written[0] + "/" + n);
+                            "invalid weighted local-cap vector for chunk " + chunkKey);
                 }
+                int cursor = written[0];
+                for (int category = 0; category < CATEGORY_COUNT; category++) {
+                    int copies = mobs[category];
+                    if (copies < 0 || copies > n - cursor) {
+                        throw new IllegalStateException(
+                                "invalid weighted local-cap count " + copies
+                                        + " for chunk " + chunkKey
+                                        + " category " + category);
+                    }
+                    int end = cursor + copies;
+                    java.util.Arrays.fill(chunks, cursor, end, chunkKey);
+                    java.util.Arrays.fill(cats, cursor, end, category);
+                    cursor = end;
+                }
+                written[0] = cursor;
             });
         }
+        RegionScheduler.runSuccessBodyIfHealthy(() -> {
+            if (written[0] != n) {
+                throw new IllegalStateException(
+                        "weighted local-cap seed mismatch " + written[0] + "/" + n);
+            }
+        });
 
         FabroliaLocalCapView[] viewSlot = new FabroliaLocalCapView[1];
         RegionScheduler.runSuccessBodyIfHealthy(
@@ -331,167 +282,11 @@ public final class ParallelSpawnHelper {
         }
     }
 
-    public static final class BatchResult {
-        final int[] counts = new int[CATEGORY_COUNT];
-        final List<ChargeEntry> charges;
-        final List<MobCapEntry> mobCaps;
-
-        BatchResult(int sizeHint) {
-            this.charges = new ArrayList<>(Math.max(16, sizeHint >> 2));
-            this.mobCaps = new ArrayList<>(Math.max(16, sizeHint >> 1));
-        }
-
-        void absorb(BatchResult other) {
-            for (int i = 0; i < CATEGORY_COUNT; i++) {
-                this.counts[i] += other.counts[i];
-            }
-            this.charges.addAll(other.charges);
-            this.mobCaps.addAll(other.mobCaps);
-        }
-    }
-
     public record ChargeEntry(BlockPos pos, double charge) {}
-    public record MobCapEntry(ChunkPos chunkPos, MobCategory category) {}
-
-    /** Tick-head precompute submitted to the pool; membership changes invalidate it. */
-    private record Pre(long version, PrecomputeTask task) {}
-
-    private static final java.util.concurrent.ConcurrentHashMap<ServerLevel, Pre> PRECOMPUTE =
-            new java.util.concurrent.ConcurrentHashMap<>();
-
-    static SpawnFanoutGate fabrolia$newSpawnFanoutGate() {
-        return new SpawnFailureGate();
-    }
-
-    private static void fabrolia$awaitPrecomputeQuiescence(PrecomputeTask task) {
-        boolean interrupted = Thread.interrupted();
-        try {
-            while (!task.completion.isDone()) {
-                if (Thread.interrupted()) interrupted = true;
-                try {
-                    RegionScheduler.throwWorkerFailureIfAny();
-                } catch (Throwable fatal) {
-                    task.gate.publishFailure(fatal);
-                    task.cancelBeforeRun();
-                }
-                LockSupport.parkNanos("Fabrolia spawn-precompute quiescence", 25_000L);
-            }
-        } finally {
-            if (interrupted) Thread.currentThread().interrupt();
-        }
-    }
-
-    private static BatchResult fabrolia$awaitPrecompute(PrecomputeTask task) {
-        fabrolia$awaitPrecomputeQuiescence(task);
-        Throwable failure = task.gate.failureOrNull();
-        if (failure != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
-        RegionScheduler.throwWorkerFailureIfAny();
-        return task.result;
-    }
-
-    private static void fabrolia$discardPrecompute(Pre pre) {
-        if (pre != null) {
-            pre.task().cancelBeforeRun();
-            fabrolia$awaitPrecompute(pre.task());
-        }
-    }
-
-    public static void precompute(ServerLevel level, NaturalSpawner.ChunkGetter getter) {
-        if (level == null) return;
-        fabrolia$discardPrecompute(PRECOMPUTE.remove(level));
-        if (FabroliaConfig.fabroliaIncrementalSpawnCensus) return;
-        ExecutorService exec = ParallelProcessor.executor;
-        if (getter == null || exec == null || exec.isShutdown()) return;
-
-        Collection<Entity> idx = SpawnIndex.getEntities(level);
-        if (idx.isEmpty()) return;
-        long version = SpawnIndex.version();
-        SpawnFailureGate gate = new SpawnFailureGate();
-        PrecomputeTask task = new PrecomputeTask(gate, () -> {
-            ArrayList<Entity> live = new ArrayList<>(idx.size() + 64);
-            for (Entity e : idx) {
-                RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                    if (e == null || e.isRemoved() || fabrolia$deadCorpse(level, e)
-                            || !fabrolia$inSectionsTolerant(level, e)) return;
-                    live.add(e);
-                });
-            }
-            Entity[][] snapshot = new Entity[1][];
-            RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> snapshot[0] = live.toArray(Entity[]::new));
-            return collect(level, snapshot[0], snapshot[0].length, getter);
-        });
-        Pre pre = new Pre(version, task);
-        Pre displaced = PRECOMPUTE.put(level, pre);
-        if (displaced != null) {
-            PRECOMPUTE.remove(level, pre);
-            task.cancelBeforeRun();
-            fabrolia$discardPrecompute(displaced);
-            throw new IllegalStateException("spawn precompute slot changed during publication");
-        }
-        try {
-            task.gate.runNext(() -> exec.execute(task));
-        } catch (Throwable publicationFailure) {
-            Throwable winner = task.gate.publishFailure(publicationFailure);
-            task.cancelBeforeRun();
-            PRECOMPUTE.remove(level, pre);
-            fabrolia$awaitPrecomputeQuiescence(task);
-            Throwable authoritative = task.gate.failureOrNull();
-            ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(
-                    authoritative == null ? winner : authoritative);
-        }
-    }
-
-    /** The serial tail shared by both paths: potential charges + per-chunk mob caps. */
-    private static NaturalSpawner.SpawnState finishState(ServerLevel level,
-                                                         int spawnableChunkCount,
-                                                         BatchResult merged,
-                                                         LocalMobCapCalculator localMobCap) {
-        PotentialCalculator[] potentialSlot = new PotentialCalculator[1];
-        RegionScheduler.runSuccessBodyIfHealthy(
-                () -> potentialSlot[0] = new PotentialCalculator());
-        PotentialCalculator potential = potentialSlot[0];
-        for (int i = 0, m = merged.charges.size(); i < m; i++) {
-            ChargeEntry c = merged.charges.get(i);
-            // Each potential replay is a separate vanilla body.  The terminal
-            // permit observes a peer W before this loop may enter the next one.
-            RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> potential.addCharge(c.pos(), c.charge()));
-        }
-        // Arena path: the provider seeds the local counts from merged.mobCaps in ONE native
-        // pass during build (bit-exact addMob equivalent — same near-player predicate). The
-        // Java replay below runs ONLY when the arena explicitly declined before
-        // ownership (no provider / disabled / buildArena returned 0) — running
-        // both would double-count and halve the local cap. A provider Throwable
-        // after entry is terminal and never selects this path.
-        boolean arenaSeeded = RegionScheduler.callSuccessBooleanIfHealthy(
-                () -> fabrolia$buildLocalCapArena(level, localMobCap, merged.mobCaps));
-        if (!arenaSeeded) {
-            for (int i = 0, m = merged.mobCaps.size(); i < m; i++) {
-                MobCapEntry m2 = merged.mobCaps.get(i);
-                RegionScheduler.runSuccessBodyIfHealthy(
-                        () -> localMobCap.addMob(m2.chunkPos(), m2.category()));
-            }
-        }
-        NaturalSpawner.SpawnState[] result = new NaturalSpawner.SpawnState[1];
-        RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            Object2IntOpenHashMap<MobCategory> countsMap =
-                    new Object2IntOpenHashMap<>(CATEGORY_COUNT);
-            for (int i = 0; i < CATEGORY_COUNT; i++) {
-                int c = merged.counts[i];
-                if (c != 0) countsMap.put(CATEGORIES[i], c);
-            }
-            result[0] = new NaturalSpawner.SpawnState(
-                    spawnableChunkCount, countsMap, potential, localMobCap);
-        });
-        return result[0];
-    }
-
-    /** Full per-level teardown (level unload, both loaders): precompute slot,
+    /** Full per-level teardown (level unload, both loaders): census ledger,
      *  spawn index, and the native arena — each retained the ServerLevel (and
      *  the arena its off-heap allocation) forever with dynamic dimensions. */
     public static void onLevelUnload(ServerLevel level) {
-        fabrolia$discardPrecompute(PRECOMPUTE.remove(level));
         SpawnCensus.clearLevel(level);
         com.axalotl.fabrolia.common.parallelised.utils.SpawnIndex.clearLevel(level);
         ((FabroliaThreadNeighborUpdaters) level).fabrolia$releaseThreadNeighborUpdaters();
@@ -504,116 +299,6 @@ public final class ParallelSpawnHelper {
         // registries hold the level inside their value records.
         com.axalotl.fabrolia.common.regions.ChunkDelivery.dropLevelCache(level);
         com.axalotl.fabrolia.common.regions.NetherPortalTransfers.onLevelUnload(level);
-    }
-
-    public static NaturalSpawner.SpawnState buildState(int spawnableChunkCount, ServerLevel level, NaturalSpawner.ChunkGetter chunkGetter, LocalMobCapCalculator localMobCap) {
-        RegionScheduler.throwWorkerFailureIfAny();
-        // Prefer the incremental SpawnIndex — bypasses the level-wide entity walk
-        // (4.14% of server thread in R5FaKJnHJg). chunkGetter.query inside
-        // computeRange still filters out non-ticking chunks at observation time,
-        // so extra entries cost only their live chunk lookup.
-
-        // INCREMENTAL CENSUS (task #21): O(occupied chunks × categories) reduce
-        // over event-maintained counts — no entity traversal, no pool submission,
-        // no main-thread wait. The scan below remains as the config-gated legacy path.
-        if (FabroliaConfig.fabroliaIncrementalSpawnCensus) {
-            // Discard the legacy precompute after a runtime config flip.
-            Pre[] displaced = new Pre[1];
-            RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> displaced[0] = PRECOMPUTE.remove(level));
-            fabrolia$discardPrecompute(displaced[0]);
-            return fabrolia$buildStateIncremental(level, spawnableChunkCount, chunkGetter, localMobCap);
-        }
-
-        // The LOCAL-cap arena (provider, e.g. Oxidizium) is built inside finishState — it
-        // needs the MERGED initial-mob list to seed the counts in one native pass. All
-        // canSpawn/addMob traffic starts after finishState attaches the handle.
-
-        // Tick-head precompute: bit-identical when the membership version held.
-        Pre[] preSlot = new Pre[1];
-        RegionScheduler.runSuccessBodyIfHealthy(
-                () -> preSlot[0] = PRECOMPUTE.remove(level));
-        Pre pre = preSlot[0];
-        // Every 256 ticks force the inline path: it PURGES stale index
-        // entries (removed / section-absent) that the precompute only
-        // filters — without this cadence the set's strong refs grow for
-        // the whole session under region mode (precompute serves ~every
-        // tick there).
-        if (pre != null) {
-            boolean candidate = RegionScheduler.callSuccessBooleanIfHealthy(
-                    () -> (level.getGameTime() & 255) != 0
-                            && pre.version() == SpawnIndex.version());
-            if (!candidate) {
-                RegionScheduler.runSuccessBodyIfHealthy(pre.task()::cancelBeforeRun);
-            }
-            BatchResult merged = fabrolia$awaitPrecompute(pre.task());
-            boolean stillCandidate = candidate
-                    && RegionScheduler.callSuccessBooleanIfHealthy(
-                    () -> pre.version() == SpawnIndex.version());
-            if (stillCandidate) {
-                NaturalSpawner.SpawnState result = finishState(
-                        level, spawnableChunkCount, merged, localMobCap);
-                RegionScheduler.commitSuccessIfHealthy(
-                        SpawnCensusDiag.CENSUS_PRE::incrementAndGet);
-                return result;
-            }
-        }
-
-        // Ground-truth resync at the forced-inline tick (task #32): re-add any
-        // accessible live entity the index lost (missed attach seams, race
-        // evictions) BEFORE counting, so the census below sees the healed set.
-        boolean forceInline = RegionScheduler.callSuccessBooleanIfHealthy(
-                () -> (level.getGameTime() & 255) == 0);
-        if (forceInline) {
-            int[] healedSlot = new int[1];
-            RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                var storage = ((TickingChunksAccess)
-                        ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor) level)
-                                .fabrolia$entityManager()).fabrolia$sectionStorage();
-                healedSlot[0] = SpawnIndex.reconcile(level, storage);
-            });
-            int healed = healedSlot[0];
-            if (healed > 0) {
-                RegionScheduler.commitSuccessIfHealthy(
-                        () -> SpawnCensusDiag.RECONCILE_HEALED.addAndGet(healed));
-            }
-        }
-
-        @SuppressWarnings("unchecked")
-        Collection<Entity>[] indexSlot = new Collection[1];
-        RegionScheduler.runSuccessBodyIfHealthy(() ->
-                indexSlot[0] = com.axalotl.fabrolia.common.parallelised.utils.SpawnIndex
-                        .getEntities(level));
-        Collection<Entity> indexEntities = indexSlot[0];
-
-        int n = 0;
-        try {
-            boolean useIndex = indexEntities != null
-                    && RegionScheduler.callSuccessBooleanIfHealthy(
-                    () -> !indexEntities.isEmpty());
-            if (useIndex) {
-                n = fillBufferFromIndex(level, indexEntities);
-                RegionScheduler.commitSuccessIfHealthy(
-                        SpawnCensusDiag.CENSUS_INLINE::incrementAndGet);
-            } else {
-                // Vanilla createState's own source. Third-party wraps of that
-                // call (C2ME notickvd, Lithium) sit inside the replaced body;
-                // chunkGetter.query below applies the ticking-chunk filter.
-                n = fillBuffer(level.getAllEntities());
-            }
-            BatchResult merged = collect(level, entityBuf, n, chunkGetter);
-            // (a parallel playersNearChunk pre-warm was tried and reverted 2026-06-12 —
-            // dispatch overhead exceeded the addMob saving; the arena seed made it moot)
-            return finishState(level, spawnableChunkCount, merged, localMobCap);
-        } finally {
-            // encloses the FILL too — a fill-time throw must not strand up to
-            // ~13k strong Entity refs in the static buffer (crash-day leak).
-            // A throwing fill never returns its count, so clear the written
-            // prefix itself: fills write from 0 contiguously and every census
-            // leaves the buffer all-null behind it.
-            Entity[] b = entityBuf;
-            for (int i = 0; i < b.length && b[i] != null; i++) b[i] = null;
-        }
     }
 
     /** Incremental-census createState (task #21). Semantics vs vanilla's scan:
@@ -630,8 +315,9 @@ public final class ParallelSpawnHelper {
      *  (both are consulted only by spawn attempts); the Java local-cap maps
      *  are still seeded count-weighted so mods reading {@code lastSpawnState}
      *  observe vanilla-complete local counts. */
-    private static NaturalSpawner.SpawnState fabrolia$buildStateIncremental(ServerLevel level,
-            int spawnableChunkCount, NaturalSpawner.ChunkGetter chunkGetter, LocalMobCapCalculator localMobCap) {
+    public static NaturalSpawner.SpawnState buildState(int spawnableChunkCount, ServerLevel level,
+            NaturalSpawner.ChunkGetter chunkGetter, LocalMobCapCalculator localMobCap) {
+        RegionScheduler.throwWorkerFailureIfAny();
         long t0 = System.nanoTime();
         boolean auditTick = RegionScheduler.callSuccessBooleanIfHealthy(
                 () -> (level.getGameTime() & 255) == 0);
@@ -673,7 +359,7 @@ public final class ParallelSpawnHelper {
         // An accepted arena marshals it directly into the reusable primitive
         // ABI buffers; the Java fallback remains count-weighted as well.
         boolean arenaSeeded = RegionScheduler.callSuccessBooleanIfHealthy(
-                () -> fabrolia$buildLocalCapArenaWeighted(
+                () -> fabrolia$buildLocalCapArena(
                         level, localMobCap, red.mobSeed(), red.totalMobs()));
         if (!arenaSeeded) {
             fabrolia$seedJavaCountWeighted(localMobCap, red.mobSeed());
@@ -799,14 +485,12 @@ public final class ParallelSpawnHelper {
      *  the 256-gt ground-truth audit that keeps the island lanes' census honest. */
     public static boolean incrementalCensusActive() {
         return !FabroliaConfig.disabled && FabroliaConfig.enableFabroliaSpawn
-                && ParallelProcessor.executor != null
-                && FabroliaConfig.fabroliaIncrementalSpawnCensus;
+                && ParallelProcessor.executor != null;
     }
 
-    /** Main-only ledger audit for the island lanes when Main's own census does
-     *  not take the incremental path (vanilla / legacy scan): the islands still
-     *  census from the ledger, so its self-heal must still run on Main's
-     *  single-entry cadence. */
+    /** Main-only ledger audit for the island lanes when Main's own census
+     *  uses vanilla createState: the islands still census from the ledger,
+     *  so its self-heal must still run on Main's single-entry cadence. */
     public static void auditLedgerForIslandLanes(ServerLevel level) {
         fabrolia$auditFailStop(level);
     }
@@ -904,351 +588,10 @@ public final class ParallelSpawnHelper {
         throw (T) failure;
     }
 
-    /**
-     * Fills {@link #entityBuf} from the {@link com.axalotl.fabrolia.common.parallelised.utils.SpawnIndex}
-     * snapshot, applying the lifecycle filters (removed, fake-player, fast-removed) inline so
-     * downstream {@link #computeRange} can do raw per-entity work without re-checking. The
-     * c2me-notickvd "is in ticking chunk" filter is intentionally NOT applied here — it's
-     * handled by {@code chunkGetter.query} inside {@code computeRange}, which silently no-ops
-     * for non-ticking chunks. That keeps semantics identical to vanilla's filtered iterator
-     * while skipping the per-entity {@code ChunkPos.pack} + {@code Long2ByteConcurrentHashMap.containsKey}
-     * pre-check chain that costs ~2% of server thread on a 23-player session.
-     */
-    private static int fillBufferFromIndex(ServerLevel level, Collection<Entity> entities) {
-        // size() of the LIVE concurrent set is a capacity HINT, never a bound
-        // (2026-07-17 production AIOOBE: buffer sized exactly to a stale
-        // size(), weakly-consistent iteration observed a concurrent island
-        // arrival, idx ran past the array). Growth is handled in-loop; the
-        // slack absorbs the common few-arrivals case without reallocating.
-        Entity[][] buffer = new Entity[][] {entityBuf};
-        int[] size = new int[1];
-        boolean[] purged = new boolean[1];
-        @SuppressWarnings("unchecked")
-        java.util.Iterator<Entity>[] iterator = new java.util.Iterator[1];
-        RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            int hint = entities.size();
-            if (buffer[0].length < hint + 64) {
-                buffer[0] = new Entity[Math.max(hint + 64, buffer[0].length * 2)];
-                entityBuf = buffer[0];
-            }
-            iterator[0] = entities.iterator();
-        });
-        java.util.Iterator<Entity> it = iterator[0];
-        while (RegionScheduler.callSuccessBooleanIfHealthy(it::hasNext)) {
-            RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                Entity e = it.next();
-                if (e == null) return;
-                int purgeReason = e.isRemoved() ? 1
-                        : fabrolia$deadCorpse(level, e) ? 2
-                        : !fabrolia$inSectionsTolerant(level, e) ? 3 : 0;
-                if (purgeReason == 3 && !SpawnIndex.strikeForPurge(level, e)) {
-                    SpawnCensusDiag.SECT_STRIKE1.incrementAndGet();
-                    // First failed sighting stays census-visible; a second
-                    // exact sighting performs the authoritative removal.
-                    purgeReason = 0;
-                } else if (purgeReason == 0) {
-                    SpawnIndex.clearStrike(level, e);
-                }
-                if (purgeReason != 0) {
-                    it.remove();
-                    purged[0] = true;
-                    SpawnIndex.clearStrike(level, e);
-                    switch (purgeReason) {
-                        case 1 -> SpawnCensusDiag.onPurgeRemoved(e);
-                        case 2 -> SpawnCensusDiag.onPurgeCorpse(e);
-                        default -> SpawnCensusDiag.onPurgeSections(e);
-                    }
-                    return;
-                }
-                if (size[0] == buffer[0].length) {
-                    buffer[0] = java.util.Arrays.copyOf(buffer[0],
-                            buffer[0].length + (buffer[0].length >> 1) + 64);
-                    entityBuf = buffer[0];
-                }
-                buffer[0][size[0]++] = e;
-            });
-        }
-        if (purged[0]) {
-            RegionScheduler.runSuccessBodyIfHealthy(SpawnIndex::bumpVersion);
-        } else {
-            RegionScheduler.commitSuccessIfHealthy(() -> { });
-        }
-        return size[0];
-    }
-
-    private static int fillBuffer(Iterable<Entity> entities) {
-        // One growth-tolerant loop for every source (2026-07-17 audit): the
-        // old Collection fast path returned the PRE-iteration size after a
-        // toArray on a possibly-mutating source — a shrink left null slots
-        // inside the processed range (NPE in computeRange), a grow silently
-        // truncated and leaked un-nulled refs past the stale count. Sizing is
-        // only a capacity hint; the returned count is the written count, and
-        // the lifecycle filter now holds on every path (computeRange's
-        // no-recheck contract).
-        Entity[][] buffer = new Entity[][] {entityBuf};
-        int[] size = new int[1];
-        @SuppressWarnings("unchecked")
-        java.util.Iterator<Entity>[] iterator = new java.util.Iterator[1];
-        RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            if (entities instanceof java.util.Collection<?> c) {
-                int hint = c.size() + 64;
-                if (buffer[0].length < hint) {
-                    buffer[0] = new Entity[Math.max(hint, buffer[0].length * 2)];
-                    entityBuf = buffer[0];
-                }
-            }
-            iterator[0] = entities.iterator();
-        });
-        java.util.Iterator<Entity> it = iterator[0];
-        while (RegionScheduler.callSuccessBooleanIfHealthy(it::hasNext)) {
-            RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                Entity e = it.next();
-                if (e == null || e.isRemoved()) return;
-                if (size[0] == buffer[0].length) {
-                    buffer[0] = java.util.Arrays.copyOf(buffer[0],
-                            buffer[0].length + (buffer[0].length >> 1) + 64);
-                    entityBuf = buffer[0];
-                }
-                buffer[0][size[0]++] = e;
-            });
-        }
-        RegionScheduler.commitSuccessIfHealthy(() -> { });
-        return size[0];
-    }
-
-    private static BatchResult collect(ServerLevel level, Entity[] entities, int n,
-                                       NaturalSpawner.ChunkGetter chunkGetter) {
-        if (n == 0) return new BatchResult(0);
-        if (n > SPAWN_GRAIN && ParallelProcessor.executor instanceof ForkJoinPool fjp) {
-            int poolSize = Math.max(1, ParallelProcessor.getPoolSize());
-            int batchSize = Math.max(64, (n + poolSize - 1) / poolSize);
-            int batchCount = (n + batchSize - 1) / batchSize;
-            BatchResult[] parts = new BatchResult[batchCount];
-            CollectRangeTask[] tasks = new CollectRangeTask[batchCount];
-            SpawnFailureGate gate = new SpawnFailureGate();
-            int b = 0;
-            for (int from = 0; from < n; from += batchSize, b++) {
-                int to = Math.min(from + batchSize, n);
-                parts[b] = new BatchResult(to - from);
-                tasks[b] = new CollectRangeTask(gate, level, entities, chunkGetter, from, to, parts[b]);
-            }
-            int submitted = 0;
-            try {
-                while (submitted < batchCount) {
-                    CollectRangeTask task = tasks[submitted];
-                    submitted++;
-                    gate.runNext(() -> fjp.execute(task));
-                }
-            } catch (Throwable submissionFailure) {
-                gate.publishFailure(submissionFailure);
-            }
-            fabrolia$awaitCollectFanIn(tasks, submitted, gate);
-            BatchResult[] merged = new BatchResult[1];
-            RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                BatchResult result = new BatchResult(n);
-                for (BatchResult p : parts) result.absorb(p);
-                merged[0] = result;
-            });
-            return merged[0];
-        }
-        BatchResult result = new BatchResult(n);
-        computeRange(level, entities, chunkGetter, 0, n, result);
-        return result;
-    }
-
-    private static void fabrolia$awaitCollectFanIn(CollectRangeTask[] tasks, int count,
-                                                    SpawnFailureGate gate) {
-        if (!ForkJoinTask.inForkJoinPool()) {
-            boolean interrupted = Thread.interrupted();
-            try {
-                while (true) {
-                    try {
-                        RegionScheduler.throwWorkerFailureIfAny();
-                    } catch (Throwable fatal) {
-                        gate.publishFailure(fatal);
-                    }
-                    if (gate.failureOrNull() != null) {
-                        for (int i = 0; i < count; i++) tasks[i].cancelBeforeRun();
-                    }
-                    boolean complete = true;
-                    for (int i = 0; i < count; i++) {
-                        if (!tasks[i].isDone()) {
-                            complete = false;
-                            break;
-                        }
-                    }
-                    if (Thread.interrupted()) interrupted = true;
-                    if (complete) break;
-                    LockSupport.parkNanos("Fabrolia spawn-collect quiescence", 25_000L);
-                }
-            } finally {
-                if (interrupted) Thread.currentThread().interrupt();
-            }
-        }
-        for (int i = 0; i < count; i++) {
-            if (gate.failureOrNull() != null) {
-                for (int k = 0; k < count; k++) tasks[k].cancelBeforeRun();
-            }
-            try {
-                tasks[i].join();
-            } catch (Throwable encodedFailure) {
-                if (gate.failureOrNull() == null) gate.publishFailure(encodedFailure);
-            }
-        }
-        try {
-            RegionScheduler.throwWorkerFailureIfAny();
-        } catch (Throwable fatal) {
-            gate.publishFailure(fatal);
-        }
-        Throwable failure = gate.failureOrNull();
-        if (failure != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
-    }
-
-    private static void computeRange(ServerLevel level, Entity[] entities, NaturalSpawner.ChunkGetter chunkGetter,
-                                     int from, int to, BatchResult out) {
-        computeRange(level, entities, chunkGetter, from, to, out, null);
-    }
-
-    private static void computeRange(ServerLevel level, Entity[] entities, NaturalSpawner.ChunkGetter chunkGetter,
-                                     int from, int to, BatchResult out, SpawnFailureGate gate) {
-        for (int i = from; i < to; i++) {
-            if (gate != null) gate.admitNext();
-            Entity entry = entities[i];
-            // This live observation is a multi-entry drain. Atomically cut
-            // every entity/query body against the physical generation W; the
-            // permit terminal prevents the next entity from entering after a
-            // concurrent winner.
-            RegionScheduler.runSuccessBodyIfHealthy(
-                    () -> computeOne(level, entry, chunkGetter, out));
-        }
-    }
-
-    /** Vanilla 26.3 createState's per-entity step. */
-    private static void computeOne(ServerLevel level, Entity e,
-                                   NaturalSpawner.ChunkGetter chunkGetter,
-                                   BatchResult out) {
-        if (e == null) return;
-        if (e instanceof Mob mob
-                && (mob.isPersistenceRequired() || mob.requiresCustomPersistence())) return;
-        MobCategory cat = e.getType().getCategory();
-        int ord = cat.ordinal();
-        if (ord == MISC_ORDINAL) return;
-        BlockPos pos = e.blockPosition();
-        chunkGetter.query(ChunkPos.pack(pos), chunk -> {
-            MobSpawnSettings.MobSpawnCost cost = level.environmentAttributes()
-                    .getValue(EnvironmentAttributes.NATURAL_MOB_SPAWNS, pos)
-                    .getMobSpawnCost(e.getType());
-            if (cost != null) out.charges.add(new ChargeEntry(pos, cost.charge()));
-            if (e instanceof Mob) out.mobCaps.add(new MobCapEntry(chunk.getPos(), cat));
-            out.counts[ord]++;
-        });
-    }
-
-    private static final class CollectRangeTask extends RecursiveAction {
-        private static final int QUEUED = 0;
-        private static final int RUNNING = 1;
-        private static final int TERMINAL = 2;
-        private static final int CANCELLED = 3;
-
-        private final SpawnFailureGate gate;
-        private final ServerLevel level;
-        private final Entity[] entities;
-        private final NaturalSpawner.ChunkGetter chunkGetter;
-        private final int from;
-        private final int to;
-        private final BatchResult out;
-        private final AtomicInteger state = new AtomicInteger(QUEUED);
-
-        private CollectRangeTask(SpawnFailureGate gate, ServerLevel level, Entity[] entities,
-                                 NaturalSpawner.ChunkGetter chunkGetter,
-                                 int from, int to, BatchResult out) {
-            this.gate = gate;
-            this.level = level;
-            this.entities = entities;
-            this.chunkGetter = chunkGetter;
-            this.from = from;
-            this.to = to;
-            this.out = out;
-        }
-
-        @Override
-        protected void compute() {
-            if (!state.compareAndSet(QUEUED, RUNNING)) return;
-            Throwable failure = null;
-            try {
-                gate.admitNext();
-                RegionScheduler.runSuccessBodyIfHealthy(
-                        () -> computeRange(level, entities, chunkGetter, from, to, out, gate));
-                gate.admitNext();
-            } catch (Throwable thrown) {
-                failure = gate.publishFailure(thrown);
-            }
-            state.set(TERMINAL);
-            if (failure == null) {
-                try {
-                    RegionScheduler.commitSuccessIfHealthy(() -> {});
-                } catch (Throwable terminalFailure) {
-                    failure = gate.publishFailure(terminalFailure);
-                }
-            }
-            if (failure != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
-        }
-
-        void cancelBeforeRun() {
-            if (state.compareAndSet(QUEUED, CANCELLED)) {
-                Throwable failure = gate.failureOrNull();
-                if (failure == null) {
-                    complete(null);
-                } else {
-                    completeExceptionally(failure);
-                }
-            }
-        }
-    }
-
-    private static final class PrecomputeTask implements Runnable {
-        private static final int QUEUED = 0;
-        private static final int RUNNING = 1;
-        private static final int TERMINAL = 2;
-        private static final int CANCELLED = 3;
-
-        private final SpawnFailureGate gate;
-        private final Supplier<BatchResult> body;
-        private final AtomicInteger state = new AtomicInteger(QUEUED);
-        private final CompletableFuture<BatchResult> completion = new CompletableFuture<>();
-        private volatile BatchResult result;
-
-        private PrecomputeTask(SpawnFailureGate gate, Supplier<BatchResult> body) {
-            this.gate = gate;
-            this.body = body;
-        }
-
-        @Override
-        public void run() {
-            if (!state.compareAndSet(QUEUED, RUNNING)) return;
-            try {
-                gate.admitNext();
-                RegionScheduler.runSuccessBodyIfHealthy(() -> result = body.get());
-                gate.admitNext();
-            } catch (Throwable thrown) {
-                gate.publishFailure(thrown);
-            } finally {
-                state.set(TERMINAL);
-                gate.completeTerminal(completion, result);
-            }
-        }
-
-        void cancelBeforeRun() {
-            if (state.compareAndSet(QUEUED, CANCELLED)) {
-                gate.completeTerminal(completion, null);
-            }
-        }
-    }
-
-    private static final class SpawnFailureGate extends SpawnFanoutGate {
+    /** First-wins failure gate of one census fan-out (SpawnCensus.reduce). */
+    static final class SpawnFanoutGate {
         private Throwable failure;
 
-        @Override
         void runNext(Runnable body) {
             if (body == null) throw new NullPointerException("body");
             try {
@@ -1265,7 +608,6 @@ public final class ParallelSpawnHelper {
             }
         }
 
-        @Override
         void admitNext() {
             Throwable observed = failureOrNull();
             if (observed != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(observed);
@@ -1278,12 +620,10 @@ public final class ParallelSpawnHelper {
             if (observed != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(observed);
         }
 
-        @Override
         synchronized Throwable failureOrNull() {
             return failure;
         }
 
-        @Override
         synchronized Throwable publishFailure(Throwable candidate) {
             if (candidate == null) candidate = new NullPointerException("async spawn failure");
             if (failure == null) {
@@ -1295,29 +635,6 @@ public final class ParallelSpawnHelper {
             return failure;
         }
 
-        synchronized <T> void completeTerminal(CompletableFuture<T> completion, T result) {
-            if (failure == null) {
-                try {
-                    RegionScheduler.commitSuccessIfHealthy(() -> {
-                        if (!completion.complete(result)) {
-                            throw new IllegalStateException("async spawn precompute completed more than once");
-                        }
-                    });
-                } catch (Throwable fatal) {
-                    failure = RegionScheduler.publishFatalAndSelectWinner(fatal);
-                }
-            }
-            if (failure != null) completion.completeExceptionally(failure);
-        }
     }
 
-    abstract static class SpawnFanoutGate {
-        abstract void runNext(Runnable body);
-
-        abstract void admitNext();
-
-        abstract Throwable failureOrNull();
-
-        abstract Throwable publishFailure(Throwable candidate);
-    }
 }

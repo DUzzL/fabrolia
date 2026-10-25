@@ -1,0 +1,135 @@
+{
+  "test_counts": {
+    "tests": 1519,
+    "skipped": 8,
+    "failures": 0,
+    "errors": 0,
+    "passed": 1511
+  },
+  "artifacts": {
+    "fabric": {
+      "path": "C:\\Users\\duzzl\\Documents\\Neuer Ordner\\fabrolia\\fabric\\build\\libs\\fabrolia-alpha_3.1.13.jar",
+      "version": "3.1.13-alpha",
+      "sha256": "2f8096a584d697b38948cb533572152aa8b1f5c33aa0bcc8b9c67de3e5c9bfdb",
+      "bytes": 2888403
+    },
+    "neoforge": {
+      "path": "C:\\Users\\duzzl\\Documents\\Neuer Ordner\\fabrolia\\neoforge\\build\\libs\\fabrolia-neoforge-alpha_3.1.13.jar",
+      "version": "3.1.13-alpha",
+      "sha256": "ba6c9793607b7b633e697fbd74471f28ac094935cf7e4fa387fcca2d8a2dfec7",
+      "bytes": 2489739
+    }
+  },
+  "fresh_pair": {
+    "window_seconds": [
+      60,
+      690
+    ],
+    "window_end_exclusive": true,
+    "limitations": [
+      "One sequential desktop run per build, not a repeated experiment.",
+      "Eight stationary clients, not the production 40-client stand.",
+      "Identify builds by their SHA-256, not only by the jar filename.",
+      "Match scenario parameters and heap size before interpreting a comparison.",
+      "One-second TPS minima are noisy clock packet measurements."
+    ],
+    "runs": {
+      "mobs-3112-review8": {
+        "bench_json": "C:\\Users\\duzzl\\Documents\\Neuer Ordner\\fabrolia-release\\runs\\mobs-3112-review8\\bench.json",
+        "bench_json_sha256": "c1b5b91468361634a0691e7819fc349bf974d420767e12f8c120feef770faa9b",
+        "jar": "C:\\Users\\duzzl\\Documents\\Neuer Ordner\\fabrolia-release\\runs\\mobs-3112-review8\\mods\\fabrolia-alpha_3.1.12.jar",
+        "jar_sha256": "d5477efcf1e28b01eb82194453d7fb4d29613dace348ddffd70d541d8adab685",
+        "config": "fabrolia-async-lithium-c2me",
+        "mods": [
+          "fabric-api-0.165.0+26.3.jar",
+          "fabrolia-alpha_3.1.12.jar",
+          "lithium-fabric-0.26.2+mc26.3.jar",
+          "c2me-fabric-mc26.3-0.4.2-alpha.0.106.jar"
+        ],
+        "params": {
+          "steps": 20,
+          "step_seconds": 30.0,
+          "per_step": 24,
+          "warmup": 60.0,
+          "tail": 30.0
+        },
+        "xmx": "8G",
+        "logical_cpus": 16,
+        "status": "ok",
+        "exit_code": 0,
+        "spawned": 3840,
+        "entities_end": "Test passed. Count: 4540",
+        "samples": 630,
+        "mean_process_cpu_percent_all_cpus": 10.47888888888889,
+        "mean_tps_all_clients": 20.003174603174603,
+        "min_one_second_tps_mean_all_clients": 18,
+        "min_one_second_tps_one_client": 16,
+        "max_client_errors": 0
+      },
+      "mobs-3113-review8": {
+        "bench_json": "C:\\Users\\duzzl\\Documents\\Neuer Ordner\\fabrolia-release\\runs\\mobs-3113-review8\\bench.json",
+        "bench_json_sha256": "ff36db1ed259acfd91bc7a55efff06cd25dec553a55bcb03ad5318168b638b8d",
+        "jar": "C:\\Users\\duzzl\\Documents\\Neuer Ordner\\fabrolia-release\\runs\\mobs-3113-review8\\mods\\fabrolia-alpha_3.1.13.jar",
+        "jar_sha256": "2f8096a584d697b38948cb533572152aa8b1f5c33aa0bcc8b9c67de3e5c9bfdb",
+        "config": "fabrolia-async-lithium-c2me",
+        "mods": [
+          "fabric-api-0.165.0+26.3.jar",
+          "fabrolia-alpha_3.1.13.jar",
+          "lithium-fabric-0.26.2+mc26.3.jar",
+          "c2me-fabric-mc26.3-0.4.2-alpha.0.106.jar"
+        ],
+        "params": {
+          "steps": 20,
+          "step_seconds": 30.0,
+          "per_step": 24,
+          "warmup": 60.0,
+          "tail": 30.0
+        },
+        "xmx": "8G",
+        "logical_cpus": 16,
+        "status": "ok",
+        "exit_code": 0,
+        "spawned": 3840,
+        "entities_end": "Test passed. Count: 4528",
+        "samples": 630,
+        "mean_process_cpu_percent_all_cpus": 8.494126984126984,
+        "mean_tps_all_clients": 20.008333333333333,
+        "min_one_second_tps_mean_all_clients": 19.25,
+        "min_one_second_tps_one_client": 18,
+        "max_client_errors": 0
+      }
+    },
+    "comparisons_vs_first_run": {
+      "mobs-3113-review8": {
+        "mean_process_cpu_reduction_percent": 18.94057591226502,
+        "matching_params": true,
+        "matching_config": true,
+        "matching_xmx": true,
+        "matching_logical_cpus": true
+      }
+    }
+  },
+  "profile_notes": {
+    "scope": "Complete JFR recordings, not the 60-690 second table window.",
+    "main_allocation_weight_mb": {
+      "baseline": 19150.7,
+      "candidate": 14089.6
+    },
+    "worker_runIslandScheduled_inclusive_samples": {
+      "baseline": 1953,
+      "candidate": 1920
+    },
+    "main_ThreadLocal_getEntryAfterMiss_self_samples": {
+      "baseline": 126,
+      "candidate": 40
+    },
+    "main_ownerSafeIncrementalSave_inclusive_samples": {
+      "baseline": 692,
+      "candidate": 497
+    }
+  },
+  "open_findings": [
+    "Synchronous Fabric RETAINED CLAIM diagnostic unresolved; see README.",
+    "Production stand / 100-client regression / full modpack export still outstanding."
+  ]
+}

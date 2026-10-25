@@ -49,8 +49,9 @@ public final class Region {
      *  at creation (ThreadedRegionizer), then only at island rebuilds. */
     volatile EpochDomain domain;
 
-    /** Heal-loop forensic counter (main-only): consecutive sightings of a
-     *  claim whose holder is not working this region. */
+    /** Heal-loop forensic counter (main-only): consecutive sightings of one
+     *  acquisition held outside any claim body by a holder that does not
+     *  publish this region. */
     int staleClaimSightings;
     /** Heal-loop forensic counter (main-only): consecutive sightings of an
      *  UNCLAIMED region with pending queue work (lost ready entry). */
@@ -252,16 +253,25 @@ public final class Region {
     // Single-writer discipline: every field below is written ONLY by the
     // thread that owns the claim transition (the CAS winner right after
     // acquiring, the holder right before releasing), so plain volatile
-    // stamps are coherent without extra atomics. The heal forensic uses
-    // claimGen to correlate sightings: the SAME generation observed across
-    // two passes means one acquisition persisted (a real retention, with
-    // its acquire path and age in hand); different generations mean claim
-    // churn, which is never reported. Cost: a few volatile writes per
-    // claim transition, zero allocation (paths are interned literals).
+    // stamps are coherent without extra atomics. claimSeq counts every
+    // acquisition; claimGen counts the stamped ones, i.e. the claims that
+    // entered a body. The heal forensic reads both through snapshotClaim():
+    // the SAME claimSeq across two passes is one acquisition that persisted
+    // (a thread re-claiming the region gets a new seq, so A-B-A cannot blur
+    // two claims together), and a stamped acquisition without its release
+    // stamp is inside its body, working or stalled there but not retained.
+    // Cost: a few volatile writes per claim transition, zero allocation
+    // (paths are interned literals).
     // ------------------------------------------------------------------
-    /** Monotonic acquisition counter; ++ by each CAS winner after claiming. */
+    /** Every successful acquisition, stamped or not; ++ by the CAS winner
+     *  once the post-CAS validation admitted it. */
+    public volatile long claimSeq;
+    /** {@link #claimSeq} of the acquisition that stamped last. */
+    public volatile long stampedClaimSeq;
+    /** Monotonic counter of stamped acquisitions; ++ by each stamping holder,
+     *  written last so a reader that sees it also sees the other stamps. */
     public volatile long claimGen;
-    /** Nanotime of the current/last acquisition. */
+    /** Nanotime of the current/last stamped acquisition. */
     public volatile long claimAcquiredNanos;
     /** Interned tag of the acquiring site ("workOnce", "stealOne", ...). */
     public volatile String claimPath = "-";
@@ -269,22 +279,63 @@ public final class Region {
      *  the ledger saw a paired release for the current generation). */
     public volatile long lastReleaseGen;
     public volatile String lastReleasePath = "-";
-    /** Heal-forensic correlation: generation seen at the previous mismatch
-     *  sighting (main-only, like the sighting counters). */
+    /** Heal-forensic correlation (main-only, like the sighting counters): the
+     *  acquisition and generation of the previous retention sighting, and
+     *  when that acquisition was first seen outside a body. */
+    long staleClaimSeqSeen = -1L;
     long staleClaimGenSeen = -1L;
+    long staleClaimFirstSeenNanos;
 
     /** CAS winner bookkeeping — call immediately after a successful
      *  {@link #tryClaim}. */
     public void stampAcquire(String path) {
-        claimGen++;
+        stampedClaimSeq = claimSeq;
         claimAcquiredNanos = System.nanoTime();
         claimPath = path;
+        claimGen++;
     }
 
     /** Holder bookkeeping — call immediately BEFORE {@link #release}. */
     public void stampRelease(String path) {
-        lastReleaseGen = claimGen;
         lastReleasePath = path;
+        lastReleaseGen = claimGen;
+    }
+
+    /**
+     * One validated read of the claim ledger for the heal forensic, or
+     * {@code null} while a claim transition is in flight. The holder,
+     * sequence and generations are re-read after the other fields, so every
+     * value belongs to the same acquisition; the holder's work itself is not
+     * paused by this read.
+     */
+    ClaimSnapshot snapshotClaim() {
+        Thread holder = currentWorker();
+        long seq = claimSeq;
+        long gen = claimGen;
+        long stampedSeq = stampedClaimSeq;
+        long releasedGen = lastReleaseGen;
+        String acquirePath = claimPath;
+        long acquiredNanos = claimAcquiredNanos;
+        String releasePath = lastReleasePath;
+        if (holder != currentWorker() || seq != claimSeq || gen != claimGen
+                || releasedGen != lastReleaseGen) {
+            return null;
+        }
+        return new ClaimSnapshot(holder, seq, gen, stampedSeq == seq, releasedGen,
+                acquirePath, acquiredNanos, releasePath);
+    }
+
+    /** {@link #snapshotClaim}'s values. {@code stamped}: this acquisition
+     *  called {@link #stampAcquire}, so the path, age and generation are its
+     *  own; otherwise they describe the last stamped acquisition. */
+    record ClaimSnapshot(Thread holder, long seq, long gen, boolean stamped,
+                         long releasedGen, String acquirePath, long acquiredNanos,
+                         String releasePath) {
+        /** Stamped and not yet release-stamped: the holder is inside this
+         *  acquisition's body. */
+        boolean inBody() {
+            return stamped && gen != releasedGen;
+        }
     }
 
     /** Game time of the first consecutive reclamation-pass observation of this
@@ -360,6 +411,7 @@ public final class Region {
                 }
                 return false;
             }
+            claimSeq++;
             retainedTransaction = true;
             return true;
         } finally {
@@ -482,6 +534,7 @@ public final class Region {
             }
             return false;
         }
+        claimSeq++;
         return true;
     }
 

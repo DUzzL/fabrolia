@@ -61,10 +61,28 @@ public abstract class LocalMobCapCalculatorMobCountsMixin
     private void fabrolia$atomicAdd(MobCategory category, Operation<Void> original) {
         if (FabroliaConfig.disabled || !FabroliaConfig.enableFabroliaSpawn) {
             original.call(category);
+        } else {
+            this.fabrolia$atomic.incrementAndGet(category.ordinal());
+        }
+        com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge
+                .recordSeedIncrement((LocalMobCapCalculator.MobCounts) (Object) this);
+    }
+
+    @Override
+    public void fabrolia$addCopies(int categoryOrdinal, int copies) {
+        if (copies <= 0) {
             return;
         }
-        int ord = category.ordinal();
-        this.fabrolia$atomic.incrementAndGet(ord);
+        MobCategory category = com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge
+                .CATS[categoryOrdinal];
+        if (FabroliaConfig.disabled || !FabroliaConfig.enableFabroliaSpawn) {
+            LocalMobCapCalculator.MobCounts self = (LocalMobCapCalculator.MobCounts) (Object) this;
+            for (int i = 0; i < copies; i++) {
+                self.add(category);
+            }
+            return;
+        }
+        this.fabrolia$atomic.addAndGet(categoryOrdinal, copies);
     }
 
     @WrapMethod(method = "canSpawn(Lnet/minecraft/world/entity/MobCategory;)Z")

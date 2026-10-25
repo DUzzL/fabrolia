@@ -8,6 +8,11 @@
     "${mod_author}"
   ],
   "license": "GPL-3.0",
+  "contact": {
+    "homepage": "https://github.com/DUzzL/fabrolia",
+    "sources": "https://github.com/DUzzL/fabrolia",
+    "issues": "https://github.com/DUzzL/fabrolia/issues"
+  },
   "icon": "fabrolia/icon.png",
   "environment": "*",
   "entrypoints": {

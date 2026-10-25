@@ -115,7 +115,7 @@ class PlayerTickExperimentRemovalTest {
     }
 
     @Test
-    void playerActorPreferenceIsASeparateDefaultOffConfigValue() throws Exception {
+    void playerActorPreferenceIsASeparateDefaultOnConfigValue() throws Exception {
         Field preference = FabroliaConfig.class.getDeclaredField("enablePlayerTickActor");
         assertEquals(boolean.class, preference.getType());
         assertTrue(java.lang.reflect.Modifier.isStatic(preference.getModifiers()));
@@ -125,8 +125,8 @@ class PlayerTickExperimentRemovalTest {
         String commonConfig = readRepositoryFile(
                 "common/src/main/java/com/axalotl/fabrolia/common/config/FabroliaConfig.java");
         assertTrue(commonConfig.matches(
-                        "(?s).*public static volatile boolean enablePlayerTickActor\\s*=\\s*false;.*"),
-                "a new installation must remain opt-in even though later choices persist");
+                        "(?s).*public static volatile boolean enablePlayerTickActor\\s*=\\s*true;.*"),
+                "a new installation starts with island-owned player ticks (3.1.11); a saved choice persists");
 
         List<String> mutableRuntimeBooleans = new ArrayList<>();
         for (Field field : RegionalPlayerEntityTicksV2.class.getDeclaredFields()) {

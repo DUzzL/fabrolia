@@ -108,8 +108,10 @@ class TickDomainsProductionPathTest {
     static final class TestLevelTicks<T> extends LevelTicks<T> implements LevelTicksIslandAccess<T> {
         final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<LevelChunkTicks<T>> containers =
                 new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
-        final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap next =
-                new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
+        /** The production map: keys indexed by region-grid cell (LevelTicksMixin). */
+        final com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap next =
+                new com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap(
+                        64, IslandScheduledTicks::scheduledTickCell);
         final Object lock = new Object();
         final IslandScheduledTicks.SliceRegistry sliceRegistry =
                 new IslandScheduledTicks.SliceRegistry();

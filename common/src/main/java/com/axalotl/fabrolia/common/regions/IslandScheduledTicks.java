@@ -602,52 +602,48 @@ public final class IslandScheduledTicks {
             Long2LongMap nextTick, long cellKey, long unitTime) {
         Long2ObjectMap<LevelChunkTicks<Object>> containers =
                 access.fabrolia$allContainers();
-        int shift = rs.regionizer().grid.shift;
-        int side = 1 << shift;
-        int baseChunkX = ((int) cellKey) << shift;
-        int baseChunkZ = ((int) (cellKey >> 32)) << shift;
+        LongArrayList scheduled = scheduledChunksInCell(rs, nextTick, cellKey);
+        if (scheduled.isEmpty()) return null;
         boolean frontierClosed = hasClosedScheduledFrontier(rs, d, cellKey);
-        for (int dx = 0; dx < side; dx++) {
-            for (int dz = 0; dz < side; dz++) {
-                long chunkPos = ChunkPos.pack(baseChunkX + dx, baseChunkZ + dz);
-                if (nextTick.get(chunkPos) == Long.MAX_VALUE) continue;
-                LevelChunkTicks<Object> container = containers.get(chunkPos);
-                if (container == null) continue;
-                ScheduledTick<Object> head = container.peek();
-                if (head == null) continue;
-                CausalScheduledTickIndex hint =
-                        (CausalScheduledTickIndex) (Object) container;
-                if (!ScheduledTickIslandAdmission.requiresPulseCoherence(head.type())
-                        && !hint.fabrolia$mayContainPulseSensitiveTick()) {
-                    continue;
-                }
+        for (int i = 0, n = scheduled.size(); i < n; i++) {
+            long chunkPos = scheduled.getLong(i);
+            if (nextTick.get(chunkPos) == Long.MAX_VALUE) continue;
+            LevelChunkTicks<Object> container = containers.get(chunkPos);
+            if (container == null) continue;
+            ScheduledTick<Object> head = container.peek();
+            if (head == null) continue;
+            CausalScheduledTickIndex hint =
+                    (CausalScheduledTickIndex) (Object) container;
+            if (!ScheduledTickIslandAdmission.requiresPulseCoherence(head.type())
+                    && !hint.fabrolia$mayContainPulseSensitiveTick()) {
+                continue;
+            }
 
-                // Normalize only the cold causal candidate. This is the same
-                // idempotent owner-clock heal used by normal discovery; it may
-                // refresh the compressed nextTick key but consumes no work.
-                long next = TickDomains.enforceConsumerDomain(
-                        rs.level, access, chunkPos,
-                        d.owner.id, d.owner.gen, unitTime);
-                if (next > unitTime) continue;
-                container = containers.get(chunkPos);
-                head = container != null ? container.peek() : null;
-                if (container == null || head == null || head.triggerTick() > unitTime
-                        || !hasDuePulseSensitiveTick(container, head, unitTime)) {
-                    continue;
-                }
-                if (!frontierClosed) {
-                    return new CausalPreflightHold(chunkPos, head,
-                            "pulse-sensitive-head-preflight/open-write-frontier");
-                }
+            // Normalize only the cold causal candidate. This is the same
+            // idempotent owner-clock heal used by normal discovery; it may
+            // refresh the compressed nextTick key but consumes no work.
+            long next = TickDomains.enforceConsumerDomain(
+                    rs.level, access, chunkPos,
+                    d.owner.id, d.owner.gen, unitTime);
+            if (next > unitTime) continue;
+            container = containers.get(chunkPos);
+            head = container != null ? container.peek() : null;
+            if (container == null || head == null || head.triggerTick() > unitTime
+                    || !hasDuePulseSensitiveTick(container, head, unitTime)) {
+                continue;
+            }
+            if (!frontierClosed) {
+                return new CausalPreflightHold(chunkPos, head,
+                        "pulse-sensitive-head-preflight/open-write-frontier");
+            }
 
-                boolean entityDmBefore = inEntityTickingRange(rs.level, chunkPos);
-                boolean exact = access.fabrolia$tickCheck().test(chunkPos);
-                if (exact) continue;
-                boolean entityDmAfter = inEntityTickingRange(rs.level, chunkPos);
-                if (entityDmBefore || entityDmAfter) {
-                    return new CausalPreflightHold(chunkPos, head,
-                            "pulse-sensitive-head-preflight/exact-refusal/dm-true");
-                }
+            boolean entityDmBefore = inEntityTickingRange(rs.level, chunkPos);
+            boolean exact = access.fabrolia$tickCheck().test(chunkPos);
+            if (exact) continue;
+            boolean entityDmAfter = inEntityTickingRange(rs.level, chunkPos);
+            if (entityDmBefore || entityDmAfter) {
+                return new CausalPreflightHold(chunkPos, head,
+                        "pulse-sensitive-head-preflight/exact-refusal/dm-true");
             }
         }
         return null;
@@ -902,31 +898,55 @@ public final class IslandScheduledTicks {
         return due;
     }
 
+    /** Group function of every {@code nextTickForContainer} map: the region-grid
+     *  cell of a packed chunk position ({@link RegionGrid#DEFAULT_SHIFT}). */
+    public static long scheduledTickCell(long chunkPos) {
+        return TICK_CELLS.keyFor(chunkPos);
+    }
+
+    private static final RegionGrid TICK_CELLS = new RegionGrid(RegionGrid.DEFAULT_SHIFT);
+
+    /** The chunk positions of {@code cellKey} that hold scheduled ticks. The
+     *  index keeps discovery proportional to scheduled containers instead of
+     *  probing all (2^shift)^2 positions of every owned cell three times per
+     *  unit (the 2026-10-25 profile: 9 % of worker CPU in those probes). */
+    private static LongArrayList scheduledChunksInCell(RegionizedServer rs, Long2LongMap nextTick,
+                                                       long cellKey) {
+        if (rs.regionizer().grid.shift != TICK_CELLS.shift
+                || !(nextTick instanceof com.axalotl.fabrolia.api.fastutil.Long2LongConcurrentHashMap indexed)) {
+            throw new IllegalStateException("scheduled-tick cell index does not match the region grid");
+        }
+        LongArrayList chunks = new LongArrayList();
+        indexed.collectKeysInGroup(cellKey, chunks);
+        // Preserve the former x-then-z cell walk. Loaded containers can have
+        // equal priority/subTickOrder (unpack numbers each chunk separately),
+        // so their PriorityQueue drain order depends on insertion order.
+        chunks.sort((a, b) -> {
+            int x = Integer.compare((int) a, (int) b);
+            return x != 0 ? x : Integer.compare((int) (a >> 32), (int) (b >> 32));
+        });
+        return chunks;
+    }
+
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static LongArrayList probeCellDueChunks(
             RegionizedServer rs, LevelTicksIslandAccess access, Long2LongMap nextTick,
             long cellKey, long laneIslandId, long laneGen, long laneTime,
             LongArrayList due) {
-        int shift = rs.regionizer().grid.shift;
-        int side = 1 << shift;
-        int baseChunkX = ((int) cellKey) << shift;
-        int baseChunkZ = ((int) (cellKey >> 32)) << shift;
-        for (int dx = 0; dx < side; dx++) {
-            for (int dz = 0; dz < side; dz++) {
-                long chunkPos = ChunkPos.pack(baseChunkX + dx, baseChunkZ + dz);
-                long next = nextTick.get(chunkPos);
-                if (next == Long.MAX_VALUE) continue;
+        LongArrayList scheduled = scheduledChunksInCell(rs, nextTick, cellKey);
+        for (int i = 0, n = scheduled.size(); i < n; i++) {
+            long chunkPos = scheduled.getLong(i);
+            if (nextTick.get(chunkPos) == Long.MAX_VALUE) continue;
 
-                // The container tag, not the map's compressed wall/logical
-                // value, is authoritative across topology/domain transitions.
-                next = com.axalotl.fabrolia.common.regions.TickDomains
-                        .enforceConsumerDomain(
-                                rs.level, access, chunkPos,
-                                laneIslandId, laneGen, laneTime);
-                if (next > laneTime) continue;
-                if (due == null) due = new LongArrayList(16);
-                due.add(chunkPos);
-            }
+            // The container tag, not the map's compressed wall/logical
+            // value, is authoritative across topology/domain transitions.
+            long next = com.axalotl.fabrolia.common.regions.TickDomains
+                    .enforceConsumerDomain(
+                            rs.level, access, chunkPos,
+                            laneIslandId, laneGen, laneTime);
+            if (next > laneTime) continue;
+            if (due == null) due = new LongArrayList(16);
+            due.add(chunkPos);
         }
         return due;
     }
@@ -1628,8 +1648,7 @@ public final class IslandScheduledTicks {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         } finally {
             if (currentInstalled) {
-                if (previous == null) CURRENT_SLICE.remove();
-                else CURRENT_SLICE.set(previous);
+                CURRENT_SLICE.set(previous);
             }
         }
 

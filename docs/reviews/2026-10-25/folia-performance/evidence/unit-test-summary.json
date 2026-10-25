@@ -1,0 +1,51 @@
+{
+  "counts": {
+    "tests": 1519,
+    "skipped": 8,
+    "failures": 0,
+    "errors": 0,
+    "passed": 1511
+  },
+  "skips": [
+    {
+      "class": "com.axalotl.fabrolia.common.mixin.c2me.C2meDirectThreadConsumerWiringTest",
+      "test": "actualRuntimeModulesRetainAllAuditedConsumerShapes()",
+      "reason": "org.opentest4j.TestAbortedException: Assumption failed: set all three processed C2ME module paths for external pins"
+    },
+    {
+      "class": "com.axalotl.fabrolia.common.mixin.c2me.C2meServerLevelActorThreadWiringTest",
+      "test": "processedRuntimeC2meHasExactlyTheOneAuditedHook()",
+      "reason": "org.opentest4j.TestAbortedException: Assumption failed: set FABROLIA_C2ME_FIXES_WORLDGEN_JAR to pin the processed runtime module"
+    },
+    {
+      "class": "com.axalotl.fabrolia.common.mixin.carpet.CarpetPiercingAttackCompatTest",
+      "test": "exactCarpetArtifactStillHasTheAuditedBrokenEntityArm()",
+      "reason": "org.opentest4j.TestAbortedException: Assumption failed: exact Carpet artifact is optional outside the full-modpack workspace"
+    },
+    {
+      "class": "com.axalotl.fabrolia.common.mixin.carpet.CarpetPlayerCommandIslandWiringTest",
+      "test": "installedCarpetArtifactStillHasTheAuditedMutationTopology()",
+      "reason": "org.opentest4j.TestAbortedException: Assumption failed: exact Carpet artifact is optional outside the full-modpack workspace"
+    },
+    {
+      "class": "com.axalotl.fabrolia.common.mixin.carpet.CarpetThreadValueBlockingWaitMixinTest",
+      "test": "exactCarpetArtifactRetainsTheAuditedWaitDescriptorsAndBridge()",
+      "reason": "org.opentest4j.TestAbortedException: Assumption failed: exact Carpet artifact is optional outside the full-modpack workspace"
+    },
+    {
+      "class": "com.axalotl.fabrolia.common.mixin.lithium.LithiumLevelActorThreadWiringTest",
+      "test": "productionLithium0262HasTheByteIdenticalAuditedLevelSeams()",
+      "reason": "org.opentest4j.TestAbortedException: Assumption failed: set FABROLIA_LITHIUM_0262_JAR for the external production-artifact pin"
+    },
+    {
+      "class": "com.axalotl.fabrolia.common.mixin.vmp.VmpPlayerTrackingLockWiringTest",
+      "test": "installedVmpArtifactStillHasTheAuditedUnsafeTopology()",
+      "reason": "org.opentest4j.TestAbortedException: Assumption failed: exact installed VMP artifact is optional outside the modpack workspace"
+    },
+    {
+      "class": "com.axalotl.fabrolia.common.regions.FullModpackMixinExportVerifierTest",
+      "test": "verifiesFreshFinalFullModpackComposition()",
+      "reason": "org.opentest4j.TestAbortedException: Assumption failed: use :common:verifyFullModpackMixinExport with -PfabroliaMixinExportRoot=/path/to/.mixin.out"
+    }
+  ]
+}

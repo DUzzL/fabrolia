@@ -80,17 +80,22 @@ public abstract class LocalMobCapCalculatorMixin implements com.axalotl.fabrolia
      *  a static initializer in THIS mixin silently broke the target's instance
      *  {@code @Unique} field init (2026-07-21 crash). Do not
      *  add initialized static fields here. */
+    /** Runs of equal (chunk, category) entries collapse into one weighted
+     *  seed step: the incremental census emits its entries grouped that way,
+     *  so Main replays one real {@code addMob} per occupied chunk and category
+     *  instead of one per mob. */
     @Override
     public void fabrolia$seedJavaShadow(long[] chunks, int[] cats, int n) {
-        LocalMobCapCalculator self = (LocalMobCapCalculator) (Object) this;
-        com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge.SEED_BYPASS.set(Boolean.TRUE);
-        try {
-            for (int i = 0; i < n; i++) {
-                self.addMob(new ChunkPos(ChunkPos.getX(chunks[i]), ChunkPos.getZ(chunks[i])),
-                        com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge.CATS[cats[i]]);
+        int i = 0;
+        while (i < n) {
+            long chunk = chunks[i];
+            int cat = cats[i];
+            int end = i + 1;
+            while (end < n && chunks[end] == chunk && cats[end] == cat) {
+                end++;
             }
-        } finally {
-            com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge.SEED_BYPASS.remove();
+            this.fabrolia$addMobs(chunk, cat, end - i);
+            i = end;
         }
     }
 
@@ -115,9 +120,18 @@ public abstract class LocalMobCapCalculatorMixin implements com.axalotl.fabrolia
     @Shadow
     protected abstract List<ServerPlayer> getPlayersNear(ChunkPos pos);
 
-    /** Count-weighted Java-map seed (task #21): {@code count} vanilla addMob
-     *  calls collapsed to one near-player lookup per chunk. Java maps only —
-     *  the native arena has its own bulk seed at build. */
+    /** Count-weighted Java-map seed (task #21): {@code count} addMob calls
+     *  collapsed to ONE real call through the installed addMob, whose touched
+     *  counts get the other {@code count - 1} copies. Java maps only — the
+     *  native arena has its own bulk seed at build.
+     *
+     *  <p>The real call matters (2026-10-24 tunnel-bore review): the seed used
+     *  to pick players with vanilla {@code getPlayersNear} while approval and
+     *  post-spawn {@code addMob} run the installed rule (VMP overwrites both
+     *  with its area index). Any disagreement between the two rules leaves a
+     *  near player without counts, and vanilla {@code canSpawn} treats a player
+     *  without counts as "under cap". Seeding through the same addMob makes
+     *  every rule — vanilla, VMP, or another mod — agree with itself. */
     @Override
     public void fabrolia$addMobs(long packedChunk, int categoryOrdinal, int count) {
         if (count <= 0) {
@@ -127,12 +141,20 @@ public abstract class LocalMobCapCalculatorMixin implements com.axalotl.fabrolia
         net.minecraft.world.entity.MobCategory cat =
                 com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge
                         .CATS[categoryOrdinal];
-        for (ServerPlayer player : this.getPlayersNear(pos)) {
-            LocalMobCapCalculator.MobCounts mc = this.playerMobCounts
-                    .computeIfAbsent(player, k -> new LocalMobCapCalculator.MobCounts());
-            for (int i = 0; i < count; i++) {
-                mc.add(cat);
+        java.util.ArrayList<LocalMobCapCalculator.MobCounts> touched =
+                com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge.beginSeedRecording();
+        try {
+            ((LocalMobCapCalculator) (Object) this).addMob(pos, cat);
+        } finally {
+            com.axalotl.fabrolia.common.parallelised.utils.LocalCapSeedBridge.endSeedRecording();
+        }
+        try {
+            for (int i = 0, n = touched.size(); i < n; i++) {
+                ((com.axalotl.fabrolia.api.spawn.FabroliaMobCountsView) (Object) touched.get(i))
+                        .fabrolia$addCopies(categoryOrdinal, count - 1);
             }
+        } finally {
+            touched.clear();
         }
     }
 

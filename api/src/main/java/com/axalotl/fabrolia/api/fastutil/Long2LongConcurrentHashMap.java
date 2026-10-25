@@ -4,6 +4,7 @@ import it.unimi.dsi.fastutil.longs.AbstractLong2LongMap;
 import it.unimi.dsi.fastutil.longs.Long2LongMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongCollection;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import it.unimi.dsi.fastutil.objects.ObjectSet;
@@ -15,6 +16,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiFunction;
 import java.util.function.LongUnaryOperator;
 
@@ -71,16 +73,63 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
 
     private final Segment[] segments;
 
+    /** Optional key grouping; null when the map keeps no group index. */
+    private final LongUnaryOperator groupOf;
+    /** Group key -> live map keys of that group. A key's set entry changes only
+     *  inside {@code groups.compute*} for its group, called by the writer that
+     *  holds the key's segment monitor right after the key's slot transition, so
+     *  each group set always equals the map's keys in that group. */
+    private final ConcurrentHashMap<Long, LongOpenHashSet> groups;
+
     public Long2LongConcurrentHashMap() { this(64); }
     public Long2LongConcurrentHashMap(int expectedSize) {
+        this(expectedSize, null);
+    }
+
+    /** A map that also indexes its keys by {@code groupOf(key)}; see
+     *  {@link #collectKeysInGroup}. */
+    public Long2LongConcurrentHashMap(int expectedSize, LongUnaryOperator groupOf) {
         segments = new Segment[NSEG];
         int perSegEntries = Math.max(8, expectedSize / NSEG);
         int cap = 16;
         while (cap < perSegEntries * 2) cap <<= 1;
         for (int i = 0; i < NSEG; i++) segments[i] = new Segment(cap);
+        this.groupOf = groupOf;
+        this.groups = groupOf == null ? null : new ConcurrentHashMap<>();
     }
     @SuppressWarnings("unused")
     public Long2LongConcurrentHashMap(int initialCapacity, float loadFactor) { this(initialCapacity); }
+
+    /**
+     * Appends the keys of {@code group} to {@code into}: one lookup instead of
+     * probing every possible key of the group. Exact for keys whose writers are
+     * quiescent; a key written concurrently may or may not be included, as with
+     * a {@link #get} that races the write.
+     */
+    public void collectKeysInGroup(long group, LongArrayList into) {
+        if (groups == null) throw new IllegalStateException("map keeps no key groups");
+        groups.computeIfPresent(group, (g, keys) -> {
+            into.addAll(keys);
+            return keys;
+        });
+    }
+
+    private void groupAdd(long key) {
+        if (groups == null) return;
+        groups.compute(groupOf.applyAsLong(key), (g, keys) -> {
+            if (keys == null) keys = new LongOpenHashSet(4);
+            keys.add(key);
+            return keys;
+        });
+    }
+
+    private void groupRemove(long key) {
+        if (groups == null) return;
+        groups.computeIfPresent(groupOf.applyAsLong(key), (g, keys) -> {
+            keys.remove(key);
+            return keys.isEmpty() ? null : keys;
+        });
+    }
 
     private Segment segmentFor(long key) {
         return segments[(hash(key) >>> (32 - NSEG_BITS)) & SEGMASK];
@@ -221,6 +270,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
                     writeSlot(s, idx, TOMBSTONE, s.vals[idx]);
                     seg.size--; seg.tombstones++;
                     shrinkAfterRemoveLocked(seg);
+                    groupRemove(key);
                 }
                 return defaultReturnValue();
             }
@@ -262,6 +312,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
                 writeSlot(s, idx, TOMBSTONE, s.vals[idx]);
                 seg.size--; seg.tombstones++;
                 shrinkAfterRemoveLocked(seg);
+                groupRemove(key);
                 return defaultReturnValue();
             }
             writeSlot(s, idx, s.keys[idx], nv);
@@ -282,6 +333,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
                     writeSlot(s, idx, TOMBSTONE, s.vals[idx]);
                     seg.size--; seg.tombstones++;
                     shrinkAfterRemoveLocked(seg);
+                    groupRemove(key);
                     return defaultReturnValue();
                 }
                 nv = res;
@@ -313,7 +365,9 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
                 // its keys before publishing the replacement so a get which began
                 // before clear cannot return an old value after clear completes.
                 for (int i = 0; i <= old.mask; i++) {
+                    long key = old.keys[i];
                     writeSlot(old, i, EMPTY, old.vals[i]);
+                    if (key != EMPTY && key != TOMBSTONE) groupRemove(key);
                 }
                 seg.state = empty;
                 seg.size = 0;
@@ -381,6 +435,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
                 // chunk-boundary breaks, 2026-07-06).
                 writeSlot(s, writeIdx, key, value);
                 seg.size++;
+                groupAdd(key);
                 return defaultReturnValue();
             }
             if (kk == TOMBSTONE) {
@@ -410,6 +465,7 @@ public final class Long2LongConcurrentHashMap extends AbstractLong2LongMap {
                 writeSlot(s, idx, TOMBSTONE, v[idx]);
                 seg.size--; seg.tombstones++;
                 shrinkAfterRemoveLocked(seg);
+                groupRemove(key);
                 return prev;
             }
             idx = (idx + 1) & mask;

@@ -27,7 +27,11 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public final class RegionWorkerPool {
     private static final Logger LOGGER = LoggerFactory.getLogger(RegionWorkerPool.class);
     private static final AtomicInteger WORKER_COUNTER = new AtomicInteger();
-    /** Explicitly propagated parent step for a worker -> foreign-executor handoff. */
+    /** Explicitly propagated parent step for a worker -> foreign-executor handoff.
+     *  Cleared with {@code set(null)}, never {@code remove()}: every admitted body
+     *  reads it, and a removed entry makes the next read re-create it (an
+     *  allocation plus a collision probe on each body, 9 % of Main's CPU in the
+     *  2026-10-25 profile). */
     private static final ThreadLocal<StepToken> CAUSAL_STEP = new ThreadLocal<>();
 
     private final Thread[] workers;
@@ -436,8 +440,7 @@ public final class RegionWorkerPool {
     }
 
     private static void restoreCausalAuthority(StepToken previousAuthority) {
-        if (previousAuthority == null) CAUSAL_STEP.remove();
-        else CAUSAL_STEP.set(previousAuthority);
+        CAUSAL_STEP.set(previousAuthority);
     }
 
     boolean isTerminated() {
@@ -853,8 +856,7 @@ public final class RegionWorkerPool {
             }
             if (previousRead) {
                 try {
-                    if (previous == null) CAUSAL_STEP.remove();
-                    else CAUSAL_STEP.set(previous);
+                    CAUSAL_STEP.set(previous);
                 } catch (Throwable cleanup) {
                     failure = publishAndSelectFatal(
                             mergeFailure(failure, cleanup));
@@ -2484,8 +2486,7 @@ public final class RegionWorkerPool {
             } finally {
                 if (causalExecution) {
                     try {
-                        if (previous == null) CAUSAL_STEP.remove();
-                        else CAUSAL_STEP.set(previous);
+                        CAUSAL_STEP.set(previous);
                     } catch (Throwable cleanup) {
                         failure = publishAndSelectFatal(
                                 mergeFailure(failure, cleanup));
@@ -3334,7 +3335,7 @@ public final class RegionWorkerPool {
                     activeSteps.decrementAndGet();
                     signalLifecycleWaiters();
                 }
-                CAUSAL_STEP.remove();
+                CAUSAL_STEP.set(null);
                 me.chunkCache.clear();
             }
             if (stepFailure != null) return;

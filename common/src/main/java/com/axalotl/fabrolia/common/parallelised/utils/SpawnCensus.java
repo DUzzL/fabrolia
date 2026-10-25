@@ -424,7 +424,7 @@ public final class SpawnCensus {
             int batchCount = fabrolia$reduceBatchCount(keys.length, batchSize);
             CensusPart[] parts = new CensusPart[batchCount];
             CensusRangeTask[] tasks = new CensusRangeTask[batchCount];
-            ParallelSpawnHelper.SpawnFanoutGate gate = ParallelSpawnHelper.fabrolia$newSpawnFanoutGate();
+            ParallelSpawnHelper.SpawnFanoutGate gate = new ParallelSpawnHelper.SpawnFanoutGate();
             int b = 0;
             for (int from = 0; from < keys.length; from += batchSize) {
                 int to = Math.min(from + batchSize, keys.length);
@@ -798,9 +798,8 @@ public final class SpawnCensus {
 
     /** Ground-truth pass reusing the established two-strike purge + reconcile:
      *  corrections land exclusively through {@link #update}, preserving the
-     *  ledger invariant. Also sweeps zero vectors and logs vector-vs-ground
-     *  drift to {@link SpawnCensusDiag} (diagnostic; the entity-level heals
-     *  are what converge the counts). */
+     *  ledger invariant. Also sweeps zero vectors. {@link SpawnCensusDiag}
+     *  exposes the purge and heal counters for diagnostics. */
     public static void audit(ServerLevel level) {
         var em = ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor) level)
                 .fabrolia$entityManager();
@@ -813,10 +812,9 @@ public final class SpawnCensus {
                 if (!gone) {
                     SpawnIndex.clearStrike(level, e);
                     update(level, e, true);
-                } else if (SpawnIndex.strikeForPurge(level, e)) {
-                    SpawnIndex.getEntities(level).remove(e);
-                    SpawnIndex.bumpVersion();
-                    update(level, e, false);
+                } else if (SpawnIndex.strikeForPurge(level, e)
+                        && SpawnIndex.purge(level, e, x -> x.isRemoved()
+                                || !ParallelSpawnHelper.fabrolia$inSectionsTolerant(level, x))) {
                     SpawnCensusDiag.onPurgeSections(e);
                 }
             });

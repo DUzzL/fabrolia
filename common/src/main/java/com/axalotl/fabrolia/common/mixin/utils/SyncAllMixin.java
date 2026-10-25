@@ -67,10 +67,11 @@ import org.spongepowered.asm.mixin.Mixin;
         // remove without replacing the POI tracker's guard. The convoy this monitor
         // caused on the spawn hot path (workers running naturalSpawnChunkCounter
         // waves from hasPlayersNearby while holding the ChunkMap monitor) is closed
-        // structurally instead: DistanceManagerMixin reroutes the spawn-proximity
-        // reads onto a completed-wave snapshot (FixedPlayerDistanceChunkTrackerMixin)
-        // so workers never run — or wait on — the propagator at all; waves now run
-        // only inside DistanceManager.runAllUpdates on main (off-main refusal in
+        // structurally instead: DistanceManagerMixin drops the readers' wave and
+        // lets them read the live concurrent map (FixedPlayerDistanceChunkTrackerMixin),
+        // answering DEFAULT unless its proximity epoch proves the tracker settled,
+        // so workers never run — or wait on — the propagator at all; waves run
+        // only inside DistanceManager.runAllUpdates (off-main refusal in
         // ServerChunkCacheMixin.fabrolia$serializeDistanceUpdatesWithPlayerMove).
         DynamicGraphMinFixedPoint.class,
         // PathNavigation (task #40 rework of the task-#32 area): the blanket bit

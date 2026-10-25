@@ -19,13 +19,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * dropped the readers' inline wave (task #40).
  *
  * <p>The completed-wave snapshot that used to be published here
- * ({@code CompletedPlayerProximityView}) was REMOVED 2026-08-02: with the map
- * concurrent, a mid-wave read cannot corrupt anything — the worst case is one
- * transient proximity answer on one spawn check for one tick, self-healing —
- * while the snapshot paid a full map copy per changed wave and interposed a
- * wave of staleness directly under the mob cap (the
- * {@code getNaturalSpawnChunkCount} cap scale). The three spawn-proximity
- * readers now read this live concurrent map.
+ * ({@code CompletedPlayerProximityView}) was REMOVED 2026-08-02: it paid a full
+ * map copy per changed wave. The concurrent map keeps a mid-wave read from
+ * corrupting the map, but NOT from being wrong: a level increase removes the
+ * chunk until the wave re-lowers it, and that definite FALSE used to drop a
+ * whole chunk from a spawn pass's local-cap seed. {@code DistanceManagerMixin}
+ * therefore answers DEFAULT (vanilla's exact per-player test) unless its
+ * proximity epoch proves this map settled.
  */
 @Mixin(targets = "net.minecraft.server.level.DistanceManager$FixedPlayerDistanceChunkTracker")
 public class FixedPlayerDistanceChunkTrackerMixin {

@@ -207,7 +207,7 @@ public class FabroliaConfig {
                 "Legacy debug-drill containment toggle. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.",
                 () -> asyncFailClosed, v -> asyncFailClosed = v));
         e.add(bool("asyncIslands", null,
-                "A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. Default off. Runtime: /fabrolia regions async on|off (saved immediately).",
+                "A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. Default on. Runtime: /fabrolia regions async on|off (saved immediately).",
                 () -> asyncIslands, v -> asyncIslands = v));
         e.add(bool("islandEntityParallel", null,
                 "Async islands: false (default) ticks an island's entities in one serial pass in Vanilla insertion order. true ticks its regions in parallel under the color gate, as up to 0.2.38 (entity order across region borders follows the color waves, out-of-region block writes are replayed after the phase). Islands holding primed TNT or any minecart always use the serial pass to preserve explosion and cart-pushing order. Runtime: /fabrolia regions islandentities vanilla|parallel.",

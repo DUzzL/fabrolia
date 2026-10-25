@@ -337,9 +337,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     @Unique private static final Logger LOGGER = LoggerFactory.getLogger("Fabrolia-ChunkTick");
 
     @Unique private volatile CompletableFuture<Void> fabrolia$spawnFuture;
-    /** Previous tick's chunkGetter — a stateless method ref over this chunk source,
-     *  identical every tick; cached so the tick-head precompute can use it. */
-    @Unique private volatile NaturalSpawner.ChunkGetter fabrolia$lastChunkGetter;
     @Unique private volatile CompletableFuture<Void> fabrolia$blockTicksFuture;
     @Unique private boolean fabrolia$spawnLaunchedThisTick;
     /** The level's border, resolved on Main every chunk phase for off-main gates. */
@@ -1338,7 +1335,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         // ASYNC ISLANDS — Main's census covers only the GLOBAL LANE (chunks
         // with no island owner): every island takes its own census in its own
         // chunk pass. The lane getter is the single membership rule for the
-        // ledger reduce, the legacy entity scan, the potential charges and the
+        // ledger reduce, the vanilla entity scan, the potential charges and the
         // local-cap seed. The global-cap check then reads the SUM of all lane
         // slots (SpawnCapLanes): this state is built with the summed
         // spawnable-chunk count, publishes Main's own lane, then folds the
@@ -1353,7 +1350,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         if (lanes) {
             // The islands always census from the incremental ledger. Its
             // 256-gt ground-truth audit normally rides Main's incremental
-            // createState; when Main takes the vanilla/legacy scan instead,
+            // createState; when Main takes the vanilla scan instead,
             // keep the audit on Main's single-entry cadence here.
             if (!ParallelSpawnHelper.incrementalCensusActive()
                     && (this.level.getGameTime() & 255) == 0) {
@@ -1373,9 +1370,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             islandSlots = rs.spawnCapLanes.sum(rs.islandRegistry().identitySnapshot(), null, false);
             stateChunkCount = laneChunkCount + islandSlots[SpawnCapLanes.CHUNKS];
         }
-        // The tick-head precompute (legacy census) must count with the same
-        // lane rule as this build, or its bit-identity claim is void.
-        fabrolia$lastChunkGetter = getter;
         NaturalSpawner.SpawnState state =
                 original.call(stateChunkCount, censusLevel, getter, localMobCapCalculator);
         if (lanes) {
@@ -1589,16 +1583,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 spawnFut.join();
             }
             fabrolia$spawnFuture = null;
-        }
-    }
-
-    /** Start spawn-gate precomputation at the unconditional chunk-source head. */
-    @Inject(method = "tick(Ljava/util/function/BooleanSupplier;Z)V", at = @At("HEAD"))
-    private void fabrolia$kickSpawnPrecompute(CallbackInfo ci) {
-        if (!FabroliaConfig.disabled && FabroliaConfig.enableFabroliaSpawn
-                && RegionScheduler.isActive()) {
-            com.axalotl.fabrolia.common.parallelised.utils.ParallelSpawnHelper
-                    .precompute(this.level, fabrolia$lastChunkGetter);
         }
     }
 

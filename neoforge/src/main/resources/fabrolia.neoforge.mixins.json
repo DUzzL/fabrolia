@@ -6,7 +6,11 @@
   "mixins": [
     "server.ServerLevelSleepClockMixin",
     "server.ServerWatchdogMixin",
-    "utils.ClassInstanceMultiMapMixin"
+    "utils.ClassInstanceMultiMapMixin",
+    "world.BlockDropCaptureMixin",
+    "world.CommonHooksBlockSnapshotCaptureMixin",
+    "world.LevelBlockSnapshotCaptureMixin",
+    "world.LevelChunkBlockSnapshotCaptureMixin"
   ],
   "client": [],
   "server": [],

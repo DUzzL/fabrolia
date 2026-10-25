@@ -462,7 +462,7 @@ public final class NetherPortalTransfers {
                     prepared.add(transfer);
                     if (!transfer.preparation.resolve()) return false;
                     if (!transfer.prepareArrivals()) return false;
-                } finally { ACTIVE.remove(); }
+                } finally { ACTIVE.set(null); }
             }
             for (Transfer transfer : prepared) {
                 if (transfer.state.get() != WAITING) continue;
@@ -470,7 +470,7 @@ public final class NetherPortalTransfers {
                 try {
                     if (!transfer.players.reserveExecution()) return false;
                     playerClaims.add(transfer);
-                } finally { ACTIVE.remove(); }
+                } finally { ACTIVE.set(null); }
             }
             // Geometry, every player token, and all owners are ready together.
             // Late fences may refuse this whole body, but never revoke the
@@ -484,7 +484,7 @@ public final class NetherPortalTransfers {
                     Scope scope = new Scope(transfer, enteredClaims);
                     ACTIVE.set(scope);
                     try { transfer.execute(scope); }
-                    finally { ACTIVE.remove(); }
+                    finally { ACTIVE.set(null); }
                 }
             });
             // Publish data-only tails before releasing claims. A Main consumer
@@ -503,14 +503,14 @@ public final class NetherPortalTransfers {
             NetherPortalTransfers.<RuntimeException>rethrow(failure);
             return false;
         } finally {
-            ACTIVE.remove();
+            ACTIVE.set(null);
             if (claims != null) {
                 for (Transfer transfer : prepared) {
                     if (!transfer.bodyEntered && !transfer.resumePoses.isEmpty()) {
                         ACTIVE.set(new Scope(transfer, claims));
                         try { transfer.restoreResumePose(); }
                         catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(merge(failure, cleanup)); }
-                        finally { ACTIVE.remove(); }
+                        finally { ACTIVE.set(null); }
                     }
                 }
             }
@@ -1086,8 +1086,11 @@ public final class NetherPortalTransfers {
 
     public static Object currentTransfer() { Scope scope = ACTIVE.get(); return scope == null ? null : scope.transfer; }
     public static long gameTimeFor(ServerLevel level) {
+        // Every getGameTime() lands here: test the thread type before the
+        // thread-local lookup, which only a worker inside a transfer needs.
+        if (!(Thread.currentThread() instanceof RegionWorkerThread)) return Long.MIN_VALUE;
         Scope scope = ACTIVE.get();
-        if (scope == null || !(Thread.currentThread() instanceof RegionWorkerThread)) return Long.MIN_VALUE;
+        if (scope == null) return Long.MIN_VALUE;
         Transfer transfer = scope.transfer;
         BlockPos position;
         if (level == transfer.sourceLevel) {
@@ -1196,7 +1199,7 @@ public final class NetherPortalTransfers {
             RegionScheduler.runSuccessBodyIfHealthy(body);
             return true;
         } finally {
-            ACTIVE.remove();
+            ACTIVE.set(null);
             claims.close();
         }
     }

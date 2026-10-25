@@ -1044,15 +1044,19 @@ class IslandEntityTrackingWiringTest {
                 "(Ljava/lang/Object;)Z");
         int enter = callIndex(admittedCommit, "java/lang/ThreadLocal", "set", null);
         int body = callIndex(admittedCommit, "java/lang/Runnable", "run", "()V");
-        int leave = callIndex(admittedCommit, "java/lang/ThreadLocal", "remove", "()V");
+        // Cleared with set(null), not remove(): a removed entry is re-created by
+        // every later get() on the hot tracking path.
+        int leave = callIndexAfter(admittedCommit, "java/lang/ThreadLocal", "set", null, body);
         assertTrue(lockProof >= 0 && enter > lockProof && body > enter && leave > body,
                 "PairingCommit must cover the transformed update/remove body under the exact "
                         + "tracker lock");
         assertEquals(0, callCount(admittedCommit, REGION_SCHEDULER,
                 "runSuccessBodyIfHealthy"),
                 "an already-detached pairing body must not face a second refusal cut");
-        assertEquals(1, callCount(admittedCommit, "java/lang/ThreadLocal", "remove"),
+        assertEquals(2, callCount(admittedCommit, "java/lang/ThreadLocal", "set"),
                 "the unified cleanup edge must clear PairingCommit after either outcome");
+        assertEquals(0, callCount(admittedCommit, "java/lang/ThreadLocal", "remove"),
+                "PairingCommit is cleared with set(null); remove() re-creates the entry");
 
         MethodNode mainOwned = method(tracking, "mainOwnedEntityType",
                 "(Lnet/minecraft/world/entity/Entity;)Z");

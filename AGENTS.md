@@ -34,10 +34,16 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 ```
 
 Jar: `fabric/build/libs/fabrolia-alpha_<major>.<minor>.<patch>.jar`; current build
-`fabrolia-alpha_3.1.10.jar` (metadata `3.1.10-alpha` in `gradle.properties`; A5 listener
-FIFOs follow vanilla's queued-packet gates and stop at stopServer, so a stop saves the
-world again; on top of 3.1.9's region-access detector fix and 3.1.8's rider crash fix),
-not yet production-stand-verified; production ran `3.1.7-alpha` on 2026-10-18. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
+`fabrolia-alpha_3.1.13.jar` (metadata `3.1.13-alpha` in `gradle.properties`; indexed
+scheduled-tick discovery with the previous chunk encounter order, hot ThreadLocal
+slots retained, save-refusal prefilter and dead legacy census removed; see
+`docs/reviews/2026-10-25/folia-performance/`; local Windows validation, no production
+stand verification yet). This includes 3.1.12's settled
+spawn-proximity answers, a local-cap seed through the installed `addMob` and one
+SpawnIndex/ledger transaction per entity, see `docs/reviews/2026-10-24/mob-cap/`; on top
+of 3.1.11's per-thread NeoForge drop/snapshot capture, 3.1.10's A5 stop/save fix,
+3.1.9's region-access detector fix and 3.1.8's rider crash fix. 3.1.11 was release-checked on
+Windows with `tools/bench` (see `docs/BENCHMARK.md`), not yet production-stand-verified; production ran `3.1.7-alpha` on 2026-10-18. Production ran `0.2.38+alpha-26.3` until 2026-10-11, then `3.0.2-alpha`,
 which crashed on a mob killing an island player (fixed in 3.0.3); `3.0.3-alpha` ran from
 2026-10-11 12:58 CEST and lagged at 40 players (see `docs/PERF-ANALYSE-2026-10-11.md`).
 The owner's 2026-10-10 versioning rule supersedes the old fixed `0.2.38+alpha-26.3`:
@@ -62,7 +68,7 @@ classes of the real mod set: `tools/stand/stand.sh export exp-1 <jar>`, then
 (details, scenarios and how to read results: `docs/STAND.md`):
 
 ```bash
-tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.10.jar   # must print ALL PASS
+tools/stand/stand.sh verify vfy-1 fabric/build/libs/fabrolia-alpha_3.1.13.jar   # must print ALL PASS
 tools/stand/stand.sh perf perf-1 <jar> 120 [--scenario items|pistons] [--heap]
 python3 tools/spark/frames.py <old>.sparkprofile <new>.sparkprofile
 ```
@@ -154,6 +160,14 @@ Fabrolia config `config/fabrolia.toml` (`asyncIslands = true`, `enableRegionThre
 BlazeandCave's Advancements.
 
 ## Known open items
+
+- Claim forensics: the `RETAINED CLAIM` reports of 3.1.10 and the first 3.1.13
+  function test were false reports of the forensic (a `stealOne` holder draining
+  the region's queue; see `CHANGELOG.md` 3.1.13). The fixed forensic reports only
+  one acquisition held outside any claim body for at least 1 s, so a new report is
+  a real retention. Not yet re-run in the function test or on the stand.
+  `currentRegion` stays a lock-routing field: do not set it on other claim paths
+  just to feed the diagnostic.
 
 - Main waits for running island units whenever it needs an island: Main-lane packets
   (`ServerboundUseItemOnPacket` is `MAIN_FIFO` by design), overdue tracking publications

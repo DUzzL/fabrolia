@@ -191,4 +191,31 @@ class SpawnLocalCapReservationPinTest {
                 "reservation width is vanilla's max spawn cluster (4); changing it changes the "
                         + "overshoot bound — re-argue the bound if this moves");
     }
+
+    /** 2026-10-24 tunnel-bore review: the weighted seed must choose players
+     *  with the INSTALLED addMob (the rule approval and post-spawn addMob use;
+     *  VMP overwrites both), never with a separate getPlayersNear walk. */
+    @Test
+    void weightedSeedChoosesPlayersThroughTheInstalledAddMob() throws IOException {
+        Path calcMixin = findSource(
+                "src/main/java/com/axalotl/fabrolia/common/mixin/entity/spawn/LocalMobCapCalculatorMixin.java");
+        Path countsMixin = findSource(
+                "src/main/java/com/axalotl/fabrolia/common/mixin/entity/spawn/LocalMobCapCalculatorMobCountsMixin.java");
+        Assumptions.assumeTrue(calcMixin != null && countsMixin != null, "source tree not available");
+        String calc = Files.readString(calcMixin);
+        int start = calc.indexOf("public void fabrolia$addMobs(");
+        assertTrue(start >= 0, "weighted seed entry is gone");
+        String body = calc.substring(start, calc.indexOf("\n    }", start));
+        assertTrue(body.contains("beginSeedRecording()") && body.contains(".addMob(pos, cat)")
+                        && body.contains("endSeedRecording()") && body.contains("fabrolia$addCopies"),
+                "the seed must record one real addMob and replay the copies onto its counts");
+        assertFalse(body.contains("getPlayersNear"),
+                "a separate near-player walk in the seed disagrees with the installed approval rule");
+
+        String counts = Files.readString(countsMixin);
+        int add = counts.indexOf("private void fabrolia$atomicAdd(");
+        assertTrue(add >= 0, "MobCounts.add wrap is gone");
+        assertTrue(counts.substring(add, counts.indexOf("\n    }", add)).contains("recordSeedIncrement"),
+                "every MobCounts.add must report to the seed recorder, or copies are lost");
+    }
 }

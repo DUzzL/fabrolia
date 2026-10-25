@@ -1,11 +1,13 @@
 modLoader = "javafml"
 loaderVersion = "${neoforge_loader_version_range}"
 license = "GPL-3.0"
+issueTrackerURL = "https://github.com/DUzzL/fabrolia/issues"
 
 [[mods]]
 modId = "fabrolia"
 version = "${version}"
 displayName = "Fabrolia"
+displayURL = "https://github.com/DUzzL/fabrolia"
 
 logoFile = "fabrolia/icon.png"
 authors = "AxalotL, Alchemy, Bliss, Contributor, Grider, jediminer543"

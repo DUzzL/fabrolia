@@ -28,8 +28,12 @@ public abstract class LevelTicksMixin<T> implements LevelTickAccess<T>,
     @Shadow
     private final Long2ObjectMap<LevelChunkTicks<T>> allContainers = new Long2ObjectConcurrentHashMap<>();
 
+    /** Keys indexed by region-grid cell: island units discover their due
+     *  containers per owned cell (IslandScheduledTicks.scheduledChunksInCell). */
     @Shadow
-    private final Long2LongMap nextTickForContainer = Util.make(new Long2LongConcurrentHashMap(), p_193262_ -> p_193262_.defaultReturnValue(Long.MAX_VALUE));
+    private final Long2LongMap nextTickForContainer = Util.make(
+            new Long2LongConcurrentHashMap(64, IslandScheduledTicks::scheduledTickCell),
+            p_193262_ -> p_193262_.defaultReturnValue(Long.MAX_VALUE));
 
     @Shadow
     @Final

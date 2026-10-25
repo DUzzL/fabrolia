@@ -16,9 +16,6 @@ public class FabroliaConfig {
     public static int maxThreads = -1;
     public static int threadPriority = Thread.NORM_PRIORITY - 1;
     public static boolean enableFabroliaSpawn = true;
-    /** task #21: O(chunks x categories) incremental spawn census replacing the
-     *  per-tick full-entity scan. */
-    public static boolean fabroliaIncrementalSpawnCensus = true;
     public static boolean enableFabroliaRandomTicks = true;
     public static boolean enableFabroliaVmpTracking = true;
     public static boolean enableFabroliaDespawn = true;
@@ -35,10 +32,10 @@ public class FabroliaConfig {
      * server restarts, while the runtime gate may still fail closed when region
      * threading or another prerequisite is unavailable. With async islands enabled
      * the same preference selects the autonomous per-island player owner; otherwise it
-     * selects the awaited exact-ordinal compatibility actor. Missing keys from older
-     * configs default to {@code false}.
+     * selects the awaited exact-ordinal compatibility actor. On by default since
+     * 3.1.11 (the production setting); a saved {@code false} is kept.
      */
-    public static volatile boolean enablePlayerTickActor = false;
+    public static volatile boolean enablePlayerTickActor = true;
     /** R4 phase 0: count/log block writes landing outside the writing worker's
      *  claimed region — the certification data for the collector unlock.
      *  Observation only; off = one volatile read per setBlock. */
@@ -121,11 +118,12 @@ public class FabroliaConfig {
     // same per-region [spawn][random][entities] FIFO and serial entity order. false = legacy
     // group dispatch (rollback lever). Tunable live: /fabrolia regions eventsched.
     public static boolean regionEventScheduler = true;
-    // A2 async islands: independent per-island deadline ticking. DEFAULT OFF;
-    // /fabrolia regions async enables it (requires the event scheduler + color
-    // gate) and persists the choice — see asyncIslandsPersister below and
+    // A2 async islands: independent per-island deadline ticking. On by default
+    // since 3.1.11 (the production setting; a saved false is kept);
+    // /fabrolia regions async on|off switches it (requires the event scheduler +
+    // color gate) and persists the choice — see asyncIslandsPersister below and
     // docs/ASYNC-ISLANDS.md.
-    public static volatile boolean asyncIslands = false;
+    public static volatile boolean asyncIslands = true;
     /** Entity phase of an async island unit. false (default): one serial pass
      *  over the island in Vanilla EntityTickList insertion order (3.0.0 TNT
      *  fix). true: the member regions tick their entities in parallel under the

@@ -8,6 +8,8 @@
 - [Test stand](STAND.md): functional, mechanics and performance checks.
 - [Release workflow](RELEASES.md): versions, artifact names and release validation.
 - [Profiler tools](../tools/spark/README.md): decode and compare Spark captures.
+- [Benchmark and release check](BENCHMARK.md): TPS against Vanilla, Lithium, C2ME, Paper
+  and Folia; dedicated server and singleplayer on both loaders ([tools](../tools/bench/README.md)).
 
 ## Reviews and regression evidence
 
@@ -23,6 +25,7 @@ behaviour is described by the requirements, architecture and [changelog](../CHAN
 | MSPT | [Production profile analysis](MSPT-ANALYSE-2026-10-10.md) |
 | Production log | [Full-day log review and diagnostic fixes](LOG-REVIEW-2026-10-11.md), [16–19 Oct logs: unsaved stops, watchdog and diagnostics](LOG-REVIEW-2026-10-19.md) |
 | Performance | [Main lag at 40 players: island units and Main waits (2026-10-11)](PERF-ANALYSE-2026-10-11.md) |
+| Folia comparison and 3.1.13 candidate | [Performance changes, cleanup and review handoff (2026-10-25)](reviews/2026-10-25/folia-performance/README.md) |
 | Alpha 3.0.0 | [Build and cleanup verification](ALPHA-3.0.0-RELEASE.md) |
 | C2ME strand recovery | [Known C2ME issue](C2ME-FLAG_BROKEN-STRAND.md) |
 

@@ -99,18 +99,12 @@ public abstract class DistanceManagerMixin {
     // off-main refusal + ChunkMap-monitor wrap).
     //
     // The completed-wave SNAPSHOT that used to sit on top of this
-    // (CompletedPlayerProximityView) was REMOVED 2026-08-02: the tracker's
-    // chunks map is already concurrent (FixedPlayerDistanceChunkTrackerMixin),
-    // so a mid-wave read cannot corrupt anything — worst case is one transient
-    // answer on one spawn check for one tick, self-healing — while the snapshot
-    // paid a full map copy per changed wave and added a wave of staleness
-    // directly under the mob cap. Readers now read the LIVE concurrent map:
-    // no copy, no staleness, convoy still closed. Main-thread readers
-    // (getNaturalSpawnChunkCount / getSpawnCandidateChunks in tickChunks) run
-    // strictly after this tick's consolidation, so they always see completed
-    // values; only worker-side hasPlayersNearby can race a wave, with the
-    // transient-answer tolerance above. The handler takes @Coerce Object
-    // because FixedPlayerDistanceChunkTracker is a private inner class.
+    // (CompletedPlayerProximityView) was REMOVED 2026-08-02: it paid a full
+    // map copy per changed wave. Readers read the LIVE concurrent map
+    // (FixedPlayerDistanceChunkTrackerMixin) — but a live read is only a
+    // vanilla answer when the tracker is settled; see the proximity epoch
+    // below. The handler takes @Coerce Object because
+    // FixedPlayerDistanceChunkTracker is a private inner class.
     // -----------------------------------------------------------------------
 
     @WrapOperation(
@@ -126,5 +120,113 @@ public abstract class DistanceManagerMixin {
         // is the load-bearing half of task #40 and is unconditional: re-enabling
         // the inline wave reopens the ChunkMap-monitor convoy and the
         // playersPerChunk rehash race, so it must not be one command away.
+    }
+
+    // -----------------------------------------------------------------------
+    // Settled proximity answers (2026-10-24 tunnel-bore mob-cap review).
+    // Vanilla's hasPlayersNearby drains the wave first, so its definite
+    // TRUE/FALSE always describe the CURRENT player positions. Without the
+    // drain, a worker reader can meet the tracker in two non-vanilla states:
+    //   * mid-wave: every level increase passes through levelCount-1, which
+    //     REMOVES the chunk from the map (level 9 > maxDistance 8) — a chunk
+    //     one chunk away from the player reads as definite FALSE;
+    //   * queued: a player crossed a section, the update is enqueued, the
+    //     wave has not run yet — the ring at the new edge reads FALSE.
+    // A definite FALSE makes getPlayersCloseForSpawning return no players,
+    // and LocalMobCapCalculator caches that for the whole spawn pass: the
+    // island seed then drops every mob of that chunk from the player's local
+    // count (probe: 80 seeded mobs, cap still open). One wrong answer is not
+    // "one spawn check" — it is one whole pass of accepted spawns.
+    //
+    // The fix keeps the live map and the dropped reader wave, and only
+    // refuses a DEFINITE answer unless the tracker is settled: no writer in
+    // flight, no queued update, and no writer started between the two epoch
+    // reads around the level read (seqlock). Otherwise the reader gets
+    // DEFAULT, for which vanilla itself evaluates the exact per-player test
+    // (getPlayersCloseForSpawning / anyPlayerCloseEnoughForSpawningInternal,
+    // including mod hooks such as Vanish's playerIsCloseEnoughForSpawning).
+    // DEFAULT is never wrong, only slower; settled answers are vanilla's.
+    // The only naturalSpawnChunkCounter writers are the update() calls in
+    // addPlayer/removePlayer and the wave in runAllUpdates(ChunkMap) (26.3
+    // bytecode; C2ME notickvd only injects before the same update INVOKEs).
+    // -----------------------------------------------------------------------
+
+    @org.spongepowered.asm.mixin.Unique
+    private final java.util.concurrent.atomic.AtomicLong fabrolia$proximityEpoch =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    @org.spongepowered.asm.mixin.Unique
+    private final java.util.concurrent.atomic.AtomicInteger fabrolia$proximityWriters =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /** An update was enqueued that no completed wave has propagated yet. */
+    @org.spongepowered.asm.mixin.Unique
+    private volatile boolean fabrolia$proximityQueued;
+
+    /** Writer entry: the count first, then the epoch, so a reader that saw no
+     *  writer either sees this epoch move or read the pre-write state. */
+    @org.spongepowered.asm.mixin.Unique
+    private long fabrolia$beginProximityWrite() {
+        this.fabrolia$proximityWriters.incrementAndGet();
+        return this.fabrolia$proximityEpoch.incrementAndGet();
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private void fabrolia$endProximityWrite() {
+        this.fabrolia$proximityEpoch.incrementAndGet();
+        this.fabrolia$proximityWriters.decrementAndGet();
+    }
+
+    @WrapOperation(
+            method = {"addPlayer", "removePlayer"},
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/DistanceManager$FixedPlayerDistanceChunkTracker;update(JIZ)V"))
+    private void fabrolia$queueProximityUpdate(@Coerce Object tracker, long chunkPos, int level,
+                                               boolean onlyDecrease, Operation<Void> original) {
+        this.fabrolia$beginProximityWrite();
+        try {
+            this.fabrolia$proximityQueued = true;
+            original.call(tracker, chunkPos, level, onlyDecrease);
+        } finally {
+            this.fabrolia$endProximityWrite();
+        }
+    }
+
+    @WrapOperation(
+            method = "runAllUpdates(Lnet/minecraft/server/level/ChunkMap;)Z",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/DistanceManager$FixedPlayerDistanceChunkTracker;runAllUpdates()V"))
+    private void fabrolia$propagateProximity(@Coerce Object tracker, Operation<Void> original) {
+        long started = this.fabrolia$beginProximityWrite();
+        try {
+            original.call(tracker);
+            // runUpdates(MAX_VALUE) drained the queue. Clear the flag only
+            // when no other writer overlapped this wave: an update enqueued
+            // meanwhile keeps it set until the next wave settles it.
+            if (this.fabrolia$proximityEpoch.get() == started
+                    && this.fabrolia$proximityWriters.get() == 1) {
+                this.fabrolia$proximityQueued = false;
+            }
+        } finally {
+            this.fabrolia$endProximityWrite();
+        }
+    }
+
+    @WrapOperation(
+            method = "hasPlayersNearby",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/server/level/DistanceManager$FixedPlayerDistanceChunkTracker;getLevel(J)I"))
+    private int fabrolia$settledProximityLevel(@Coerce Object tracker, long chunkPos,
+                                               Operation<Integer> original) {
+        // Level 8 is the outer ring: vanilla maps it to DEFAULT (it is above
+        // INSCRIBED_SQUARE_SPAWN_DISTANCE_CHUNK and not above 8), i.e. "ask
+        // every player" — the exact answer, whatever state the tracker is in.
+        long before = this.fabrolia$proximityEpoch.get();
+        if (this.fabrolia$proximityWriters.get() != 0 || this.fabrolia$proximityQueued) {
+            return 8;
+        }
+        int level = original.call(tracker, chunkPos);
+        java.lang.invoke.VarHandle.acquireFence();
+        return this.fabrolia$proximityEpoch.get() == before ? level : 8;
     }
 }

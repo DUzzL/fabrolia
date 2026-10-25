@@ -54,28 +54,25 @@ public final class SpawnIndex {
 
     private static final Map<ServerLevel, Set<Entity>> VISIBLE_PER_LEVEL = new ConcurrentHashMap<>();
 
-    /** Bumped on every visibility-set membership change — the createState
-     *  precompute uses it as its validity guard: snapshot built at tick head
-     *  is only used if no membership change happened before the real
-     *  createState point. */
-    private static final java.util.concurrent.atomic.AtomicLong VERSION =
-            new java.util.concurrent.atomic.AtomicLong();
-
-    public static long version() {
-        return VERSION.get();
+    /** Membership and the census ledger's {@code tracked} flag change as ONE
+     *  per-entity transaction under the entity's census lock (the lock
+     *  {@link SpawnCensus#update} already takes; monitors are reentrant). The
+     *  2026-10-24 review reproduced the split version: an audit purge removed
+     *  the entity, a worker's section-add re-inserted it with tracked=true,
+     *  then the purge's update(false) cleared the flag — a live index member
+     *  without a census contribution, which no later add/move repairs. */
+    private static Object transactionLock(Entity entity) {
+        return entity instanceof SpawnCensus.Ledger led ? led.fabrolia$censusLock() : entity;
     }
 
     /** Entity entered an accessible section in {@code level}. Mirrors
      *  {@code PersistentEntitySectionManager.startTracking}. */
     public static void onTrackingStart(ServerLevel level, Entity entity) {
         Set<Entity> set = VISIBLE_PER_LEVEL.computeIfAbsent(level, k -> ConcurrentHashMap.newKeySet());
-        // Bump BEFORE the mutation (2026-07-17 audit): the precompute guard
-        // reads version-then-snapshot; mutate-then-bump let a committed add be
-        // observed by the snapshot while the bump landed after the check —
-        // the guard falsely passed. Bump-first can only invalidate spuriously.
-        VERSION.incrementAndGet();
-        set.add(entity);
-        SpawnCensus.update(level, entity, true);
+        synchronized (transactionLock(entity)) {
+            set.add(entity);
+            SpawnCensus.update(level, entity, true);
+        }
     }
 
     /** Entity left an accessible section in {@code level} (chunk hidden, entity died,
@@ -85,18 +82,34 @@ public final class SpawnIndex {
      *  would otherwise stay referenced by the strike ledger until level unload. */
     public static void onTrackingEnd(ServerLevel level, Entity entity) {
         Set<Entity> set = VISIBLE_PER_LEVEL.get(level);
-        if (set != null) {
-            VERSION.incrementAndGet();
-            set.remove(entity);
+        synchronized (transactionLock(entity)) {
+            if (set != null) {
+                set.remove(entity);
+            }
+            clearStrike(level, entity);
+            SpawnCensus.update(level, entity, false);
         }
-        clearStrike(level, entity);
-        SpawnCensus.update(level, entity, false);
     }
 
-    /** Census-side purge notification (removed-entry self-heal in
-     *  ParallelSpawnHelper.fillBufferFromIndex bypasses onTrackingEnd). */
-    public static void bumpVersion() {
-        VERSION.incrementAndGet();
+    /** Census purge (two-strike section miss or removed entity):
+     *  re-checks {@code stillGone} under the transaction lock, then removes the
+     *  entity and its census contribution together. A worker's
+     *  {@link #ensurePresent} either completes before (and the re-check sees
+     *  the section) or re-adds after; it can no longer land between the two.
+     *
+     *  @return true when the entity was purged */
+    public static boolean purge(ServerLevel level, Entity entity,
+                                java.util.function.Predicate<Entity> stillGone) {
+        Set<Entity> set = VISIBLE_PER_LEVEL.get(level);
+        synchronized (transactionLock(entity)) {
+            clearStrike(level, entity);
+            if (set == null || !set.contains(entity) || !stillGone.test(entity)) {
+                return false;
+            }
+            set.remove(entity);
+            SpawnCensus.update(level, entity, false);
+            return true;
+        }
     }
 
     /** Two-strike purge ledger (task #32 cod runaway): entities whose census
@@ -107,7 +120,7 @@ public final class SpawnIndex {
      *  seam that re-adds it while it stays continuously visible, and every
      *  invisible mob permanently under-fills the spawn caps. Real leaks
      *  (c2me unloads, frozen corpses) are STABLY absent and still purge on the
-     *  second consecutive sighting, one census later. */
+     *  second consecutive sighting, one audit interval later. */
     private static final Map<ServerLevel, Set<Entity>> PENDING_PURGE = new ConcurrentHashMap<>();
 
     /** @return true when this is the SECOND consecutive failed sighting — purge now. */
@@ -138,17 +151,20 @@ public final class SpawnIndex {
 
     /** Census self-heal (task #32): a live entity that crossed into an
      *  accessible section but is missing from the index (false purge, or any
-     *  other membership hole) re-enters here. Idempotent; version bumps only
-     *  on an actual heal so the precompute guard is undisturbed on the
-     *  overwhelmingly-common already-present path. */
+     *  other membership hole) re-enters here. The overwhelmingly-common
+     *  already-present path returns after one membership lookup. */
     public static void ensurePresent(ServerLevel level, Entity entity) {
         Set<Entity> set = VISIBLE_PER_LEVEL.computeIfAbsent(level, k -> ConcurrentHashMap.newKeySet());
         if (set.contains(entity)) {
             return;
         }
-        VERSION.incrementAndGet();
-        set.add(entity);
-        SpawnCensus.update(level, entity, true);
+        synchronized (transactionLock(entity)) {
+            if (set.contains(entity)) {
+                return;
+            }
+            set.add(entity);
+            SpawnCensus.update(level, entity, true);
+        }
     }
 
     /** GROUND-TRUTH RECONCILIATION (task #32): the index is a derived cache of
@@ -157,7 +173,7 @@ public final class SpawnIndex {
      *  FOREVER because nothing re-fires for a continuously-visible entity. This
      *  sweep walks section storage and re-adds any accessible live entity the
      *  index lost, bounding ANY membership hole to one sweep interval. Runs on
-     *  main at the forced-inline census tick (every 256 gt — the same cadence
+     *  main during the census audit (every 256 gt — the same cadence
      *  as the purge hygiene it mirrors); cost is one section walk, amortized
      *  ~0.02% of a tick. A failed section walk is a failed census obligation
      *  and propagates unchanged; it must not be converted into a partial heal. */

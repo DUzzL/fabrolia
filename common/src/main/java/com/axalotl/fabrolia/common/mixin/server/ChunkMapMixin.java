@@ -80,6 +80,9 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
     @WrapMethod(method = "saveChunkIfNeeded")
     private boolean fabrolia$ownerSafeIncrementalSave(ChunkHolder holder, long now,
                                                       Operation<Boolean> original) {
+        if (!fabrolia$saveMayBeDue(holder, now)) {
+            return false;
+        }
         com.axalotl.fabrolia.common.regions.RegionizedServer rs =
                 com.axalotl.fabrolia.common.regions.RegionScheduler.forLevel(this.level);
         if (rs == null || !rs.asyncActive || rs.currentThreadHoldsAllClaims()) {
@@ -141,6 +144,29 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
                     .publishAndPropagate(failure);
         }
         return saved;
+    }
+
+    /**
+     * Vanilla's own side-effect-free refusals of {@code saveChunkIfNeeded}, in
+     * its order, before any owner claim or admission. C2ME's idle autosave
+     * offers every unsaved chunk of {@code chunksToEagerlySave} (up to 256 per
+     * call, repeatedly while Main idles), and most are still in the 10 s
+     * cooldown; claiming their island for a body that only returns false cost
+     * 11 % of Main's CPU in the 2026-10-25 profile and interrupted island
+     * units. Holder state and the cooldown map are Main's; {@code isUnsaved}
+     * is the same unclaimed flag read C2ME makes before calling. A
+     * {@code true} here only lets the claimed vanilla body decide.
+     */
+    @org.spongepowered.asm.mixin.Unique
+    private boolean fabrolia$saveMayBeDue(ChunkHolder holder, long now) {
+        if (!holder.wasAccessibleSinceLastSave() || !holder.isReadyForSaving()) return false;
+        net.minecraft.world.level.chunk.ChunkAccess chunk = holder.getLatestChunk();
+        if (!(chunk instanceof net.minecraft.world.level.chunk.ImposterProtoChunk)
+                && !(chunk instanceof net.minecraft.world.level.chunk.LevelChunk)) {
+            return false;
+        }
+        return chunk.isUnsaved()
+                && now >= this.nextChunkSaveTime.getOrDefault(chunk.getPos().pack(), -1L);
     }
 
     @org.spongepowered.asm.mixin.Unique
@@ -494,6 +520,10 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
     @Shadow
     @Final
     private LongSet chunksToEagerlySave;
+
+    @Shadow
+    @Final
+    private it.unimi.dsi.fastutil.longs.Long2LongMap nextChunkSaveTime;
 
     public ChunkMapMixin(RegionStorageInfo info, Path folder, DataFixer fixerUpper, boolean sync, DataFixTypes dataFixType) {
         super(info, folder, fixerUpper, sync, dataFixType);

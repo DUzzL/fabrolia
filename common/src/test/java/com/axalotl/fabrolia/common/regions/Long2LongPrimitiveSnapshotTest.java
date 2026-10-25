@@ -210,6 +210,99 @@ class Long2LongPrimitiveSnapshotTest {
         assertFalse(map.containsKey(7L), "removal after setValue must match the new mapping");
     }
 
+    /** The cell index behind scheduled-tick discovery: after any sequence of
+     *  every mutating entry point, each group holds exactly the map's keys of
+     *  that group. */
+    @Test
+    void keyGroupsFollowEveryKeyTransition() {
+        Long2LongConcurrentHashMap map = new Long2LongConcurrentHashMap(16, key -> key >> 4);
+        map.defaultReturnValue(Long.MAX_VALUE);
+        Map<Long, Long> reference = new HashMap<>();
+        java.util.Random random = new java.util.Random(20261025L);
+        for (int step = 0; step < 50_000; step++) {
+            long key = random.nextInt(256);
+            long value = random.nextInt(4);
+            switch (random.nextInt(10)) {
+                case 0 -> { map.put(key, value); reference.put(key, value); }
+                case 1 -> { map.remove(key); reference.remove(key); }
+                case 2 -> {
+                    if (map.remove(key, value)) reference.remove(key);
+                }
+                case 3 -> {
+                    map.compute(key, (k, old) -> value == 0 ? null : (Long) value);
+                    if (value == 0) reference.remove(key); else reference.put(key, value);
+                }
+                case 4 -> {
+                    map.computeIfPresent(key, (k, old) -> value == 0 ? null : (Long) value);
+                    if (reference.containsKey(key)) {
+                        if (value == 0) reference.remove(key); else reference.put(key, value);
+                    }
+                }
+                case 5 -> {
+                    map.merge(key, value, (old, given) -> given == 0 ? null : given);
+                    if (!reference.containsKey(key)) reference.put(key, value);
+                    else if (value == 0) reference.remove(key);
+                    else reference.put(key, value);
+                }
+                case 6 -> { map.computeIfAbsent(key, k -> value); reference.putIfAbsent(key, value); }
+                case 7 -> { map.putIfAbsent(key, value); reference.putIfAbsent(key, value); }
+                case 8 -> {
+                    if (map.keySet().remove(key)) reference.remove(key);
+                }
+                default -> {
+                    if (random.nextInt(500) == 0) { map.clear(); reference.clear(); }
+                    else { map.replace(key, value); reference.computeIfPresent(key, (k, v) -> value); }
+                }
+            }
+        }
+        assertGroupsMatch(map, reference.keySet(), 16, 4);
+    }
+
+    @Test
+    void concurrentWritersOfOneGroupKeepItExact() throws Exception {
+        Long2LongConcurrentHashMap map = new Long2LongConcurrentHashMap(16, key -> key >> 6);
+        map.defaultReturnValue(Long.MAX_VALUE);
+        int writers = 4;
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread[] threads = new Thread[writers];
+        for (int w = 0; w < writers; w++) {
+            long base = w;
+            threads[w] = new Thread(() -> {
+                try {
+                    start.await();
+                    java.util.Random random = new java.util.Random(base);
+                    for (int i = 0; i < 100_000; i++) {
+                        long key = base + writers * (long) random.nextInt(32);
+                        if (random.nextBoolean()) map.put(key, i); else map.remove(key);
+                    }
+                } catch (Throwable t) {
+                    failure.compareAndSet(null, t);
+                }
+            });
+            threads[w].start();
+        }
+        start.countDown();
+        for (Thread thread : threads) thread.join();
+        assertNull(failure.get());
+        java.util.Set<Long> keys = new java.util.HashSet<>();
+        map.keySet().forEach((long key) -> keys.add(key));
+        assertGroupsMatch(map, keys, 4, 6);
+    }
+
+    private static void assertGroupsMatch(Long2LongConcurrentHashMap map,
+                                          java.util.Set<Long> expectedKeys, int groups, int shift) {
+        for (long group = 0; group < groups; group++) {
+            LongArrayList collected = new LongArrayList();
+            map.collectKeysInGroup(group, collected);
+            java.util.Set<Long> actual = new java.util.HashSet<>(collected);
+            assertEquals(collected.size(), actual.size(), "group " + group + " lists a key twice");
+            java.util.Set<Long> expected = new java.util.HashSet<>();
+            for (long key : expectedKeys) if ((key >> shift) == group) expected.add(key);
+            assertEquals(expected, actual, "group " + group);
+        }
+    }
+
     private static long valueFor(long key) {
         return Long.rotateLeft(key * 0x9E3779B97F4A7C15L, 17) ^ 0x5A5A5A5A5A5A5A5AL;
     }

@@ -1,0 +1,14 @@
+{
+  "mobs-3112-review8": {
+    "c2me-fabric-mc26.3-0.4.2-alpha.0.106.jar": "41b49a6276d477ca45b4398457a658e72063dab2251e20fd73faa89279efc288",
+    "fabric-api-0.165.0+26.3.jar": "18442e2ad466d6ef41c37dbb4cb68495e6ca6658b1f1ee9be76143d155ef2c88",
+    "fabrolia-alpha_3.1.12.jar": "d5477efcf1e28b01eb82194453d7fb4d29613dace348ddffd70d541d8adab685",
+    "lithium-fabric-0.26.2+mc26.3.jar": "0be5b17ef9f6e9244cd07b24b227553a73aec0cf93158cf28099f3094c167f1b"
+  },
+  "mobs-3113-review8": {
+    "c2me-fabric-mc26.3-0.4.2-alpha.0.106.jar": "41b49a6276d477ca45b4398457a658e72063dab2251e20fd73faa89279efc288",
+    "fabric-api-0.165.0+26.3.jar": "18442e2ad466d6ef41c37dbb4cb68495e6ca6658b1f1ee9be76143d155ef2c88",
+    "fabrolia-alpha_3.1.13.jar": "2f8096a584d697b38948cb533572152aa8b1f5c33aa0bcc8b9c67de3e5c9bfdb",
+    "lithium-fabric-0.26.2+mc26.3.jar": "0be5b17ef9f6e9244cd07b24b227553a73aec0cf93158cf28099f3094c167f1b"
+  }
+}

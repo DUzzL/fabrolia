@@ -27,8 +27,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p>Accessibility rule mirrors vanilla {@code getEffectiveStatus}: the
  * section's status, with {@code isAlwaysTicking} forcing accessible.
  * {@code ensurePresent} is contains-first idempotent (one set lookup on the
- * overwhelmingly-common already-present path) and bumps the precompute
- * version only on an actual heal. Removal stays event-driven (stopTracking +
+ * overwhelmingly-common already-present path). Removal stays event-driven (stopTracking +
  * census purge) — this hook only guarantees the add side can never be missed.
  */
 @Mixin(value = EntitySection.class, priority = 900)

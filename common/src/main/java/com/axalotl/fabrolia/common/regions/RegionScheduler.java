@@ -434,7 +434,7 @@ public final class RegionScheduler {
             runSuccessBodyIfHealthy(() -> LOGGER.warn(
                     "RegionScheduler: ACTIVE with {} workers, grid shift={} ({}x{} chunks/region) — "
                             + "experimental Fabrolia region threading. Report issues at "
-                            + "https://github.com/AxalotLDev/Fabrolia/issues with [region] tag",
+                            + "https://github.com/DUzzL/fabrolia/issues with [region] tag",
                     n, buildDraft.grid.shift,
                     1 << buildDraft.grid.shift, 1 << buildDraft.grid.shift));
             boolean playerTickPreferenceApplied = callSuccessBooleanIfHealthy(
@@ -3736,6 +3736,11 @@ public final class RegionScheduler {
     static final long STRANDED_SIGHTING_WINDOW_NANOS = 100_000_000L;
     /** The full sweep's own pair window: consecutive full sweeps are up to 1 s apart. */
     static final long FULL_SWEEP_SIGHTING_WINDOW_NANOS = 2 * FULL_HEAL_INTERVAL_NANOS;
+    /** A claim is reported as retained only after one acquisition stayed
+     *  outside any claim body this long. Its CAS-to-stamp and stamp-to-release
+     *  windows are microseconds; a holder that is merely descheduled or
+     *  paused with Main for a GC moves on within a few heal passes. */
+    static final long STALE_CLAIM_MIN_AGE_NANOS = 1_000_000_000L;
 
     /** Called at a global-domain entity dispatch on Main: a new Main-awaited
      *  epoch is exactly when new orphans can appear, so heal at full cadence
@@ -3995,27 +4000,27 @@ public final class RegionScheduler {
         } else {
             r.strandedQueueSightings = 0;
         }
-        // Leaked-claim forensic: a claim whose holder has moved on
-        // (currentRegion no longer this region) blocks tryMarkDone and
-        // neighbor eligibility forever — the other wedge shape this
-        // dump could not distinguish. Two consecutive sightings avoid
-        // the benign clear-then-release window in the claim epilogue.
-        // COHERENT SNAPSHOT (2026-07-13, user 07:21 report): with the
-        // publication protocol (publish-before-claim, release-before-
-        // unpublish), a reader that observes the claim CAS is
-        // guaranteed to observe the matching publication — so a
-        // mismatch here can no longer be a transition artifact. The
-        // snapshot is validated by re-reading the holder AFTER the
-        // publication read (holder changed = transition in flight =
-        // skip), and a report additionally requires the SAME claim
-        // GENERATION across two sightings: one acquisition that
-        // persisted, with its acquire path and age from the ledger —
-        // never two different claims blurred together.
-        Thread holder = r.currentWorker();
-        long gen = r.claimGen;
+        // Leaked-claim forensic: a claim nobody works blocks tryMarkDone and
+        // neighbor eligibility forever — the other wedge shape this dump
+        // could not distinguish. The holder's published currentRegion alone
+        // cannot show that: workOnce and the halo belt publish the region
+        // they hold, but stealOne never does and the island entity phase
+        // publishes only one of the regions it holds (the 3.1.13 function
+        // test reported a stealOne holder draining this region's queue as a
+        // REAL retention). The claim ledger decides instead: a stamped
+        // acquisition without its release stamp is inside its body, working
+        // or stalled there. Only ONE acquisition (same claimSeq, so a holder
+        // that re-claimed in between cannot pose as the old claim) seen
+        // outside any body over three sightings and STALE_CLAIM_MIN_AGE_NANOS
+        // is reported, with the values of the validated snapshot.
+        Region.ClaimSnapshot claim = r.snapshotClaim();
+        Thread holder = claim == null ? null : claim.holder();
         Region published = holder instanceof RegionWorkerThread w0 ? w0.currentRegion : r;
-        if (holder != r.currentWorker()) {
+        if (claim == null || holder != r.currentWorker() || claim.seq() != r.claimSeq) {
+            // Transition in flight: the publication read must belong to the
+            // same acquisition as the ledger snapshot.
             r.staleClaimSightings = 0;
+            r.staleClaimSeqSeen = -1L;
             r.staleClaimGenSeen = -1L;
         } else if (holder instanceof RegionWorkerThread hw && published != r) {
             // DEAD-HOLDER RECOVERY (2026-07-13): a claim held by a thread
@@ -4031,6 +4036,7 @@ public final class RegionScheduler {
                         holder.getName(), r.queue().size(), r.helpQueue.size(),
                         rs.owesEntityPhase(r));
                 r.staleClaimSightings = 0;
+                r.staleClaimSeqSeen = -1L;
                 r.staleClaimGenSeen = -1L;
                 ((RegionWorkerThread) holder).currentRegion = null;
                 r.stampRelease("heal-dead");
@@ -4059,35 +4065,58 @@ public final class RegionScheduler {
                     r.finishClaimTransaction();
                 }
                 effect = true;
-            } else if (r.staleClaimGenSeen != gen) {
-                // First mismatch sighting for THIS acquisition.
-                r.staleClaimGenSeen = gen;
+            } else if (claim.inBody()) {
+                // Working (or stalled) inside its claim body: not retained.
+                r.staleClaimSightings = 0;
+                r.staleClaimSeqSeen = -1L;
+                r.staleClaimGenSeen = -1L;
+            } else if (r.staleClaimSeqSeen != claim.seq() || r.staleClaimGenSeen != claim.gen()) {
+                // First sighting of THIS acquisition outside a body. The
+                // generation is part of the key: a stamp in between means the
+                // holder entered or left its body since.
+                r.staleClaimSeqSeen = claim.seq();
+                r.staleClaimGenSeen = claim.gen();
+                r.staleClaimFirstSeenNanos = now;
                 r.staleClaimSightings = 1;
-            } else if (++r.staleClaimSightings >= 2 && now - lastStaleClaimLogNanos > 10_000_000_000L) {
-                lastStaleClaimLogNanos = now;
+            } else if (++r.staleClaimSightings >= 3
+                    && now - r.staleClaimFirstSeenNanos >= STALE_CLAIM_MIN_AGE_NANOS
+                    && now - lastStaleClaimLogNanos > 10_000_000_000L) {
                 StackTraceElement[] hs = holder.getStackTrace();
-                StringBuilder sb = new StringBuilder();
-                for (int si = 0; si < Math.min(hs.length, 14); si++) {
-                    sb.append("\n      at ").append(hs[si]);
+                // Sampled after the snapshot: the stack shows this
+                // acquisition only while the holder still has it.
+                if (holder == r.currentWorker() && claim.seq() == r.claimSeq) {
+                    lastStaleClaimLogNanos = now;
+                    StringBuilder sb = new StringBuilder();
+                    for (int si = 0; si < Math.min(hs.length, 14); si++) {
+                        sb.append("\n      at ").append(hs[si]);
+                    }
+                    String ledger = claim.stamped()
+                            ? "acquired via '" + claim.acquirePath() + "' (gen=" + claim.gen() + ") "
+                                    + (now - claim.acquiredNanos()) / 1_000_000L
+                                    + "ms ago, release stamped via '" + claim.releasePath()
+                                    + "' but never released"
+                            : "never stamped, so it entered no claim body (last stamped claim: gen="
+                                    + claim.gen() + " via '" + claim.acquirePath()
+                                    + "', released via '" + claim.releasePath() + "')";
+                    LOGGER.error("[event-sched] RETAINED CLAIM on region {} ({}): holder {} keeps acquisition #{} "
+                            + "outside any claim body for {}ms over {} sightings: {} "
+                            + "(holderRegion={} holderDomain={} queue={} help={} owed={}). "
+                            + "Holder stack, sampled after the last sighting:{}",
+                            Long.toHexString(r.gridKey), r.level.dimension().identifier(),
+                            holder.getName(), claim.seq(),
+                            (now - r.staleClaimFirstSeenNanos) / 1_000_000L,
+                            r.staleClaimSightings, ledger,
+                            published == null ? "-" : Long.toHexString(published.gridKey),
+                            hw.currentDomain == null || hw.currentDomain.owner == null
+                                    ? "-" : ("island#" + hw.currentDomain.owner.id),
+                            r.queue().size(), r.helpQueue.size(),
+                            rs.owesEntityPhase(r),
+                            sb);
                 }
-                LOGGER.error("[event-sched] RETAINED CLAIM on region {} ({}): holder {} gen={} acquired via '{}' {}ms ago "
-                        + "(lastRelease: gen={} via '{}') and is not working it "
-                        + "(queue={} help={} owed={} holderRegion={} holderDomain={}) — same-generation across "
-                        + "sightings under the coherent publication protocol: this is a REAL retention, "
-                        + "not observer skew. Holder stack:{}",
-                        Long.toHexString(r.gridKey), r.level.dimension().identifier(),
-                        holder.getName(), gen, r.claimPath,
-                        (now - r.claimAcquiredNanos) / 1_000_000L,
-                        r.lastReleaseGen, r.lastReleasePath,
-                        r.queue().size(), r.helpQueue.size(),
-                        rs.owesEntityPhase(r),
-                        published == null ? "-" : Long.toHexString(published.gridKey),
-                        hw.currentDomain == null || hw.currentDomain.owner == null
-                                ? "-" : ("island#" + hw.currentDomain.owner.id),
-                        sb);
             }
         } else {
             r.staleClaimSightings = 0;
+            r.staleClaimSeqSeen = -1L;
             r.staleClaimGenSeen = -1L;
         }
         return effect;

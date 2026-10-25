@@ -54,8 +54,8 @@ public interface FabroliaLocalCapView {
     }
 
     /** Count-weighted Java-map seed (task #21 incremental census): equivalent
-     *  to {@code count} vanilla {@code addMob(chunk, category)} calls — one
-     *  near-player lookup per chunk instead of one per mob. */
+     *  to {@code count} installed {@code addMob(chunk, category)} calls — one
+     *  real call picks the players, the rest are replayed onto their counts. */
     default void fabrolia$addMobs(long packedChunk, int categoryOrdinal, int count) {
     }
 

@@ -1,0 +1,37 @@
+// Isolated investigation probes; does not add tests or change runtime sources.
+def probeDir = gradle.startParameter.initScripts.find {
+    it.name == 'repro.init.gradle'
+}.absoluteFile.parentFile
+
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.findProject(':common')
+    if (p == null) return
+    def probeClasses = p.layout.buildDirectory.dir('mobcap-investigation/classes')
+    def compileProbe = p.tasks.register('compileMobcapInvestigation', JavaCompile) {
+        dependsOn p.tasks.named('testClasses')
+        source = p.files(new File(probeDir, 'ExactSpawnWaveProbe.java'),
+                new File(probeDir, 'CensusAuditRaceRepro.java'))
+        classpath = p.sourceSets.test.runtimeClasspath
+        destinationDirectory.set(probeClasses)
+        options.encoding = 'UTF-8'
+        javaCompiler.set(p.javaToolchains.compilerFor {
+            languageVersion.set(JavaLanguageVersion.of(25))
+        })
+    }
+    def waveProbe = p.tasks.register('runMobcapWaveProbe', JavaExec) {
+        dependsOn compileProbe
+        classpath = p.files(probeClasses) + p.sourceSets.test.runtimeClasspath
+        mainClass = 'ExactSpawnWaveProbe'
+        javaLauncher.set(p.javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(25))
+        })
+    }
+    p.tasks.register('runMobcapInvestigation', JavaExec) {
+        dependsOn waveProbe
+        classpath = p.files(probeClasses) + p.sourceSets.test.runtimeClasspath
+        mainClass = 'com.axalotl.fabrolia.common.parallelised.utils.CensusAuditRaceRepro'
+        javaLauncher.set(p.javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(25))
+        })
+    }
+}

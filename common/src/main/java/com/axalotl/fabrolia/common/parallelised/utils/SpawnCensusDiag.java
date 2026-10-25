@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicLongArray;
 /**
  * SPAWNCENSUS diagnostics (task #32 cod overpopulation): live comparison of the
  * {@link SpawnIndex} membership against section-storage ground truth, plus counters
- * for every census-time purge {@link ParallelSpawnHelper#fillBufferFromIndex} performs.
+ * for the purges and heals performed by {@link SpawnCensus#audit}.
  *
  * <p>The number that matters is <b>invis</b> per category: entities that ARE present in
  * an accessible section (gameplay-visible — selectors/kills resolve through sections)
@@ -35,16 +35,8 @@ public final class SpawnCensusDiag {
 
     private static final MobCategory[] CATS = MobCategory.values();
 
-    /** Census purges by reason (fillBufferFromIndex it.remove() sites). */
-    public static final AtomicLong PURGE_REMOVED = new AtomicLong();
-    public static final AtomicLong PURGE_CORPSE = new AtomicLong();
+    /** Entities purged after two consecutive failed section-membership checks. */
     public static final AtomicLong PURGE_SECTIONS = new AtomicLong();
-    /** How buildState resolved each census: purging inline walk vs precompute snapshot. */
-    public static final AtomicLong CENSUS_INLINE = new AtomicLong();
-    public static final AtomicLong CENSUS_PRE = new AtomicLong();
-    /** First-failed-sighting events on the section check (near-miss rate of the
-     *  purge race; with the two-strike fix these are held, not purged). */
-    public static final AtomicLong SECT_STRIKE1 = new AtomicLong();
     /** Entities re-added by the ground-truth reconciliation sweep. */
     public static final AtomicLong RECONCILE_HEALED = new AtomicLong();
     /** Incremental census (task #21): fast-path builds, all-saturated skips,
@@ -64,21 +56,13 @@ public final class SpawnCensusDiag {
     /** Per-category count of section-absence purges — the suspect reason. */
     private static final AtomicLongArray PURGE_SECTIONS_BY_CAT = new AtomicLongArray(CATS.length);
 
-    public static void onPurgeRemoved(Entity e) {
-        PURGE_REMOVED.incrementAndGet();
-    }
-
-    public static void onPurgeCorpse(Entity e) {
-        PURGE_CORPSE.incrementAndGet();
-    }
-
     public static void onPurgeSections(Entity e) {
         PURGE_SECTIONS.incrementAndGet();
         PURGE_SECTIONS_BY_CAT.incrementAndGet(e.getType().getCategory().ordinal());
     }
 
-    /** Would this entity be counted by the census (computeRange semantics)?
-     *  Corpse rule mirrors ParallelSpawnHelper: dying mobs in TICKING chunks
+    /** Would this entity be counted by the census?
+     *  Corpse rule mirrors SpawnCensus: dying mobs in TICKING chunks
      *  count (vanilla's ~20-tick death window); frozen corpses don't. */
     private static boolean censusable(ServerLevel level, Entity e) {
         if (e.isRemoved()) return false;
@@ -101,7 +85,6 @@ public final class SpawnCensusDiag {
         Set<Entity> indexed = java.util.Collections.newSetFromMap(new IdentityHashMap<>(Math.max(16, idx.size() * 2)));
         indexed.addAll(idx);
 
-        long[] truthAll = new long[CATS.length];
         long[] ledgered = new long[CATS.length];
         long[] truthCensus = new long[CATS.length];
         long[] invis = new long[CATS.length];
@@ -126,7 +109,6 @@ public final class SpawnCensusDiag {
                     });
                     for (Entity e : snap) {
                         int ord = e.getType().getCategory().ordinal();
-                        truthAll[ord]++;
                         boolean inIdx = indexed.contains(e);
                         if (inIdx) matched++;
                         if (!censusable(level, e)) continue;
@@ -150,17 +132,11 @@ public final class SpawnCensusDiag {
 
         StringBuilder sb = new StringBuilder(256);
         sb.append("SPAWNCENSUS idx=").append(idx.size())
-          .append(" v=").append(SpawnIndex.version())
           .append(" sections=").append(sectionsWalked);
         if (sectionsFailed > 0) sb.append(" failed=").append(sectionsFailed);
         sb.append(" ghost=").append(Math.max(0, idx.size() - matched));
-        sb.append(" purges[rem=").append(PURGE_REMOVED.get())
-          .append(" corpse=").append(PURGE_CORPSE.get())
-          .append(" sect=").append(PURGE_SECTIONS.get())
-          .append(" strike1=").append(SECT_STRIKE1.get()).append(']');
-        sb.append(" census[inline=").append(CENSUS_INLINE.get())
-          .append(" pre=").append(CENSUS_PRE.get())
-          .append(" fast=").append(CENSUS_FAST.get())
+        sb.append(" purges[sect=").append(PURGE_SECTIONS.get()).append(']');
+        sb.append(" census[fast=").append(CENSUS_FAST.get())
           .append(" skipAll=").append(CENSUS_SKIP_ALL.get())
           .append(" reduceAvgUs=").append(CENSUS_FAST.get() == 0 ? 0
                   : REDUCE_NANOS.sum() / Math.max(1, CENSUS_FAST.get()) / 1000)

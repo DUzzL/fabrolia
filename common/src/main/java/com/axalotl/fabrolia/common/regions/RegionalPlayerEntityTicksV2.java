@@ -524,7 +524,7 @@ public final class RegionalPlayerEntityTicksV2 {
             }
             throw failure;
         }
-        EXACT_LEVEL.remove();
+        EXACT_LEVEL.set(null);
     }
 
     /** Whole-ServerLevel.tick epilogue; failure retains the fence for global abort. */
@@ -1137,7 +1137,7 @@ public final class RegionalPlayerEntityTicksV2 {
             throw failure;
         }
         stack.pop();
-        if (stack.isEmpty()) PLAYER_CONSUMER_SCOPE.remove();
+        if (stack.isEmpty()) PLAYER_CONSUMER_SCOPE.set(null);
     }
 
     private static void openPlayerEntityConsumerScope(Entity entity) {
@@ -1744,7 +1744,7 @@ public final class RegionalPlayerEntityTicksV2 {
             // this phase, while suppression itself must never interrupt cleanup.
             return winner;
         }
-        TICK_CONTEXT.remove();
+        TICK_CONTEXT.set(null);
         return result;
     }
 
