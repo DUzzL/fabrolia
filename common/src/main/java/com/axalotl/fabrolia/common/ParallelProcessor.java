@@ -538,6 +538,30 @@ public final class ParallelProcessor {
         return false;
     }
 
+    /**
+     * True when a non-player in {@code entity}'s tree holds an End-gateway portal
+     * process. Vanilla {@code baseTick} runs {@code handlePortal} before the rest
+     * of the tick; for a gateway without an exit,
+     * {@code TheEndGatewayBlockEntity.findOrCreateValidTeleportPos} loads chunks
+     * about 1000 blocks away and builds the exit gateway there, and every gateway
+     * teleport moves the entity into another domain. Such a tick must run under
+     * the global fence ({@link RegionScheduler#queueMainSyncFencedTick}), like a
+     * possibly transferring TNT. Players take {@code PlayerDimensionTransition.deferPortal}.
+     */
+    public static boolean usesEndGateway(Entity entity) {
+        if (!(entity instanceof ServerPlayer)) {
+            var process = entity.portalProcess;
+            if (process != null
+                    && process.portal instanceof net.minecraft.world.level.block.EndGatewayBlock) {
+                return true;
+            }
+        }
+        for (Entity passenger : entity.getPassengers()) {
+            if (usesEndGateway(passenger)) return true;
+        }
+        return false;
+    }
+
     public static boolean shouldTickSynchronously(Entity entity) {
         if (isShuttingDown || FabroliaConfig.disabled) return true;
         if (containsMainOwnedTrackingEntity(entity)) return true;
