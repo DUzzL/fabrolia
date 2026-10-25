@@ -3,9 +3,33 @@ package com.axalotl.fabrolia.common.mixin.utils;
 import java.util.List;
 
 public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCanceller {
-    private boolean LITHIUM = false;
-    private boolean VMP = false;
-    private boolean C2ME = false;
+    // Seeded from the loader's mod list (audit D-18): MixinSquared asks per target
+    // class while transforming, so a Fabrolia compat mixin whose target loads before
+    // any Lithium/C2ME/VMP mixin name was seen used to be dropped silently. The
+    // name sightings below stay as a second source.
+    private boolean LITHIUM = modLoaded("lithium");
+    private boolean VMP = modLoaded("vmp");
+    private boolean C2ME = modLoaded("c2me");
+
+    /** Fabric Loader or NeoForge FML, by reflection: common code links against neither. */
+    static boolean modLoaded(String modId) {
+        try {
+            Class<?> fabric = Class.forName("net.fabricmc.loader.api.FabricLoader");
+            Object loader = fabric.getMethod("getInstance").invoke(null);
+            return (boolean) fabric.getMethod("isModLoaded", String.class).invoke(loader, modId);
+        } catch (ClassNotFoundException absent) {
+            // not Fabric
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            return false;
+        }
+        try {
+            Class<?> list = Class.forName("net.neoforged.fml.loading.LoadingModList");
+            Object mods = list.getMethod("get").invoke(null);
+            return mods != null && list.getMethod("getModFileById", String.class).invoke(mods, modId) != null;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError absent) {
+            return false;
+        }
+    }
 
     @Override
     public boolean shouldCancel(List<String> targetClassNames, String mixinClassName) {
