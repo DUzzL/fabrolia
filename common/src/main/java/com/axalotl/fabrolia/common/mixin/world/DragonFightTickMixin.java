@@ -61,6 +61,15 @@ public abstract class DragonFightTickMixin {
         }
     }
 
+    /** A crystal destroyed outside the central island: see DragonCrystalRouting (audit D-13). */
+    @WrapMethod(method = "onCrystalDestroyed")
+    private void fabrolia$crystalOnCentralOwner(net.minecraft.world.entity.boss.enderdragon.EndCrystal crystal,
+                                                net.minecraft.world.damagesource.DamageSource source,
+                                                Operation<Void> original) {
+        com.axalotl.fabrolia.common.regions.DragonCrystalRouting.onCrystalDestroyed(
+                this.level, crystal, () -> original.call(crystal, source));
+    }
+
     private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
         if (primary == null) return cleanup;
         if (cleanup != null && cleanup != primary) {

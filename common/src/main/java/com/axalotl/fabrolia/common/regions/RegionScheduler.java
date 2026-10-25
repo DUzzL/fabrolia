@@ -3213,6 +3213,20 @@ public final class RegionScheduler {
                 cancelRejectedRoot(p, task, rejection));
     }
 
+    /**
+     * Publish a physical-Main body to the main-only lane even from Main itself:
+     * unlike {@link #enqueueGlobalMainOnly} it never runs inline, for a caller
+     * that holds a partial claim set and needs the body to run outside it.
+     */
+    public static void enqueueMainOnlyLater(Runnable task) {
+        RegionWorkerPool p = pool;
+        if (p != null && p.enqueueGlobalMainOnly(task)) return;
+        Throwable fatal = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
+        Throwable rejection = fatal != null ? fatal
+                : new IllegalStateException("main-only task rejected: no live worker pool");
+        RegionScheduler.<RuntimeException>rethrow(cancelRejectedRoot(p, task, rejection));
+    }
+
     /** A2: submit an island tick-unit coordinator (dedicated lane — only the
      *  top-level worker loop starts units; coordinators never nest). */
     public static boolean enqueueUnit(Runnable task) {
