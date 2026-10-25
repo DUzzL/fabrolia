@@ -174,6 +174,14 @@ public final class PoiChunkLoadFence {
      *
      * @return {@code true} if this thread was the winner and ran {@code original}.
      */
+    /** Neither physical Main nor a Fabrolia simulation thread (region worker, pool, actor). */
+    static boolean foreignLoaderThread() {
+        if (com.axalotl.fabrolia.common.ParallelProcessor.isServerExecutionThread()) return false;
+        net.minecraft.server.MinecraftServer server = RegionScheduler.getServer();
+        return server == null
+                || !com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2.isPhysicalServerThread(server);
+    }
+
     public boolean runExclusively(Object loadLock, long chunkKey, LongPredicate alreadyLoaded, Runnable original) {
         LoadAttempt waitFor;
         LoadAttempt mine = null;
@@ -197,7 +205,15 @@ public final class PoiChunkLoadFence {
         }
         Throwable failure = null;
         try {
-            if (RegionScheduler.isActive()) {
+            if (RegionScheduler.isActive() && foreignLoaderThread()) {
+                // A chunk loader outside the pool (C2ME disk read) unpacks storage,
+                // not simulation. The success-body permit refuses such a thread in
+                // closed pool windows (exact-turn pause, stop drain) and turned the
+                // refusal into a fatal (audit D-11, the class of the worldgen fix).
+                // It only must not start after a selected W.
+                RegionScheduler.throwWorkerFailureIfAny();
+                original.run();
+            } else if (RegionScheduler.isActive()) {
                 // The check and the first bytecode of the vanilla unpack must be
                 // one generation cut.  A plain throwIfFailed() here leaves a
                 // W-vs-original.run() window and can enter a fresh POI load after
