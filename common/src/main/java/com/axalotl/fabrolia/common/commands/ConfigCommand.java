@@ -51,11 +51,22 @@ public class ConfigCommand {
                         ctx.getSource().sendFailure(msg);
                         return 0;
                     }
+                    LifecycleKeys live = LifecycleKeys.capture();
                     PlatformUtils.reloadConfig();
+                    String kept = live.restoreChanged();
 
                     boolean playerPreferenceApplied = com.axalotl.fabrolia.common.regions
                             .RegionalPlayerEntityTicksV2.applyConfiguredPreference(
                                     ctx.getSource().getServer());
+                    if (kept != null) {
+                        MutableComponent keptMsg = prefix.copy()
+                                .append(Component.literal("Kept the running " + kept
+                                        + ": these change only through their runtime commands "
+                                        + "(/fabrolia config toggle, /fabrolia regions on|off, "
+                                        + "/fabrolia regions async on|off) or at the next restart.")
+                                        .withStyle(style -> style.withColor(ChatFormatting.YELLOW)));
+                        ctx.getSource().sendSuccess(() -> keptMsg, true);
+                    }
                     if (FabroliaConfig.enablePlayerTickActor && !playerPreferenceApplied) {
                         String reason = com.axalotl.fabrolia.common.regions
                                 .RegionalPlayerEntityTicksV2.refusalReason(
@@ -79,6 +90,14 @@ public class ConfigCommand {
 
     private static LiteralArgumentBuilder<CommandSourceStack> buildToggleCommand() {
         return literal("toggle").executes(ctx -> {
+            // Region workers read disabled on every tick while the scheduler runs;
+            // flipping it under them switches off their guards before the async
+            // collapse at the next level head (audit D-02). Stop regions first.
+            if (!FabroliaConfig.disabled && com.axalotl.fabrolia.common.regions.RegionScheduler.isActive()) {
+                sendErrorMessage(ctx, "Region threading is running: ", "run /fabrolia regions off first",
+                        ", then toggle.");
+                return 0;
+            }
             FabroliaConfig.disabled = !FabroliaConfig.disabled;
             PlatformUtils.saveConfig();
 
@@ -336,6 +355,42 @@ public class ConfigCommand {
         sendMessage(ctx, "All entities with namespace ", namespace,
                 " have been removed from synchronized list.");
         return 1;
+    }
+
+    /**
+     * Keys a reload must not flip under a running server: workers and the
+     * scheduler read them live, and their safe transitions are the runtime
+     * commands (audit D-02). A file edit of them takes effect at the next start.
+     */
+    record LifecycleKeys(boolean disabled, boolean enableRegionThreading, int regionWorkerCount,
+                         boolean regionEventScheduler, boolean asyncIslands) {
+        static LifecycleKeys capture() {
+            return new LifecycleKeys(FabroliaConfig.disabled, FabroliaConfig.enableRegionThreading,
+                    FabroliaConfig.regionWorkerCount, FabroliaConfig.regionEventScheduler,
+                    FabroliaConfig.asyncIslands);
+        }
+
+        /** Restores every key the reload changed; returns their names, or null. */
+        String restoreChanged() {
+            java.util.ArrayList<String> kept = new java.util.ArrayList<>();
+            if (FabroliaConfig.disabled != disabled) kept.add("disabled=" + disabled);
+            if (FabroliaConfig.enableRegionThreading != enableRegionThreading) {
+                kept.add("enableRegionThreading=" + enableRegionThreading);
+            }
+            if (FabroliaConfig.regionWorkerCount != regionWorkerCount) kept.add("regionWorkerCount=" + regionWorkerCount);
+            if (FabroliaConfig.regionEventScheduler != regionEventScheduler) {
+                kept.add("regionEventScheduler=" + regionEventScheduler);
+            }
+            if (FabroliaConfig.asyncIslands != asyncIslands) kept.add("asyncIslands=" + asyncIslands);
+            if (kept.isEmpty()) return null;
+            FabroliaConfig.disabled = disabled;
+            FabroliaConfig.enableRegionThreading = enableRegionThreading;
+            FabroliaConfig.regionWorkerCount = regionWorkerCount;
+            FabroliaConfig.regionEventScheduler = regionEventScheduler;
+            FabroliaConfig.asyncIslands = asyncIslands;
+            FabroliaConfig.onConfigLoaded();
+            return String.join(", ", kept);
+        }
     }
 
     private static void sendMessage(CommandContext<CommandSourceStack> ctx, String prefix,

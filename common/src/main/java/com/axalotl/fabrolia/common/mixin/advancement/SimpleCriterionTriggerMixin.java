@@ -117,10 +117,6 @@ public abstract class SimpleCriterionTriggerMixin {
             }
         }
 
-        if (com.axalotl.fabrolia.common.config.FabroliaConfig.disabled) {
-            original.call(player, predicate);
-            return;
-        }
         @SuppressWarnings({"unchecked", "rawtypes"})
         CriterionTrigger<?> selfTrigger = (CriterionTrigger) (Object) this;
         AdvancementBuffer.trigger(player, predicate, selfTrigger);

@@ -1421,6 +1421,13 @@ public final class RegionCommand {
             // obligation without waiting for itself.
             return;
         }
+        if (enable && FabroliaConfig.disabled) {
+            // Workers would start with every Fabrolia guard switched off (audit D-02).
+            src.sendFailure(prefix.copy().append(Component.literal(
+                    "Fabrolia is disabled; run /fabrolia config toggle first")
+                    .withStyle(ChatFormatting.RED)));
+            return;
+        }
         boolean previous = FabroliaConfig.enableRegionThreading;
         if (previous == enable) {
             MutableComponent msg = prefix.copy().append(Component.literal(

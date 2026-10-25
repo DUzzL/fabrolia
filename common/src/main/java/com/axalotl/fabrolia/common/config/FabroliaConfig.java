@@ -12,7 +12,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FabroliaConfig {
     public static final Logger LOGGER = LoggerFactory.getLogger(FabroliaConfig.class);
 
-    public static boolean disabled = false;
+    // volatile: read on region workers every tick, written on Main by commands.
+    public static volatile boolean disabled = false;
     public static int maxThreads = -1;
     public static int threadPriority = Thread.NORM_PRIORITY - 1;
     public static boolean enableFabroliaSpawn = true;
@@ -23,7 +24,7 @@ public class FabroliaConfig {
      *  shown/toggled by the config and stats commands, but chunk delivery
      *  (ChunkDelivery / FabroliaPlayerChunkSenderMixin) runs regardless. */
     public static boolean enableFabroliaChunkSend = true;
-    public static boolean enableRegionThreading = true;
+    public static volatile boolean enableRegionThreading = true;
     /**
      * Persisted operator preference for the exact-ordinal player-tick actor.
      *
