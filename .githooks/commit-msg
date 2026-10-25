@@ -1,0 +1,8 @@
+#!/bin/sh
+# Entfernt KI-Attribution aus Commit-Messages, falls sie trotz
+# .claude/settings.json doch einmal hineingerät.
+sed -i.bak -E \
+  -e '/^[Cc]o-[Aa]uthored-[Bb]y:.*([Cc]laude|anthropic\.com)/d' \
+  -e '/^Claude-Session:/d' \
+  -e '/Generated with \[?Claude Code/d' \
+  "$1" && rm -f "$1.bak"
