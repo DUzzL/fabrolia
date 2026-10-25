@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.utils;
 
+import net.minecraft.server.players.SleepStatus;
 import net.minecraft.util.profiling.ActiveProfiler;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.monster.warden.AngerManagement;
@@ -155,6 +156,14 @@ import org.spongepowered.asm.mixin.Mixin;
         // extent object swap is a reference write (atomic), and a one-tick-stale read
         // during a border lerp is behaviorally invisible. No sync needed for readers.
         ActiveProfiler.class,
+        // SleepStatus (audit D-16): update() zeroes both counters and recounts the
+        // level's players; Main (bed click, night skip in tick, removeAllSleepers)
+        // and island workers (a player waking up, tracking start/end) run it
+        // concurrently, so a writer could publish a stale count (night not skipped)
+        // and Main's areEnoughSleeping could read the zeroed transient. Pure leaf:
+        // the methods read player getters only and call no other monitor. Rare,
+        // uncontended calls.
+        SleepStatus.class,
 })
 public class SyncAllMixin {
 }
