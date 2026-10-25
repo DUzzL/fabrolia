@@ -14,9 +14,8 @@ import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.javafmlmod.FMLModContainer;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
-import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
-import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.server.permission.events.PermissionGatherEvent;
 import org.slf4j.Logger;
 
@@ -38,8 +37,15 @@ public class FabroliaNeoForge extends FabroliaCommon {
         LOGGER.info("Fabrolia Initialized Successfully!");
     }
 
+    /**
+     * ServerAboutToStartEvent precedes loadLevel (DedicatedServer#initServer), as
+     * Fabric's SERVER_STARTING precedes createLevels. ServerStartingEvent came after
+     * loadLevel and the first save, so world loading ran on the compiled defaults
+     * instead of fabrolia.toml (audit D-17). Each level's runtime is created on
+     * LevelEvent.Load, before that level loads chunks.
+     */
     @SubscribeEvent
-    public void onServerStarting(ServerStartingEvent event) {
+    public void onServerAboutToStart(ServerAboutToStartEvent event) {
         LOGGER.info("Fabrolia Setting up thread-pool...");
         this.initialize();
         loadConfig();
@@ -82,15 +88,17 @@ public class FabroliaNeoForge extends FabroliaCommon {
      *  NeoForge wired nothing — precompute slot, spawn index, and the native
      *  cap arena retained unloaded ServerLevels forever). */
     @SubscribeEvent
-    public void onLevelUnload(LevelEvent.Unload event) {
+    public void onLevelLoad(LevelEvent.Load event) {
         if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel sl) {
-            com.axalotl.fabrolia.common.parallelised.utils.ParallelSpawnHelper.onLevelUnload(sl);
+            RegionScheduler.forLevel(sl);
         }
     }
 
     @SubscribeEvent
-    public void onServerStopping(ServerStoppingEvent event) {
-        ParallelProcessor.stopServerRuntime();
+    public void onLevelUnload(LevelEvent.Unload event) {
+        if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel sl) {
+            com.axalotl.fabrolia.common.parallelised.utils.ParallelSpawnHelper.onLevelUnload(sl);
+        }
     }
 
     @SubscribeEvent

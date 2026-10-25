@@ -5,6 +5,7 @@
   "compatibilityLevel": "JAVA_25",
   "mixins": [
     "server.ServerLevelSleepClockMixin",
+    "server.ServerStopRuntimeMixin",
     "server.ServerWatchdogMixin",
     "utils.ClassInstanceMultiMapMixin",
     "world.BlockDropCaptureMixin",

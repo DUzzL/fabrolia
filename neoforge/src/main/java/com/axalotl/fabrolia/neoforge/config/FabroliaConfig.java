@@ -183,16 +183,14 @@ public class FabroliaConfig {
         com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaCrossDimCoupling = fabroliaCrossDimCoupling.get();
         com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimUnlinkGraceTicks = crossDimUnlinkGraceTicks.get();
         List<? extends String> pairEntries = crossDimLinkedPairs.get();
-        com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimLinkedPairs = pairEntries.isEmpty()
-                ? com.axalotl.fabrolia.common.config.FabroliaConfig.defaultCrossDimLinkedPairs()
-                : new ArrayList<>(pairEntries);
+        // An empty list in the file is the operator's choice, as on Fabric (audit
+        // D-17); the spec's defaults apply only when the key is absent.
+        com.axalotl.fabrolia.common.config.FabroliaConfig.crossDimLinkedPairs = new ArrayList<>(pairEntries);
 
         List<? extends String> entries = synchronizedEntities.get();
         Set<String> entities = new HashSet<>();
         if (!entries.isEmpty()) entities.addAll(entries);
-        com.axalotl.fabrolia.common.config.FabroliaConfig.synchronizedEntities = entities.isEmpty()
-                ? getDefaultSynchronizedEntities()
-                : entities;
+        com.axalotl.fabrolia.common.config.FabroliaConfig.synchronizedEntities = entities;
         com.axalotl.fabrolia.common.config.FabroliaConfig.onConfigLoaded();
     }
 
