@@ -18,4 +18,25 @@ public interface MinecraftPlatform {
                                           HitResult hitResult, Vec3 previousPosition) {
         return PearlLanding.vanilla(previousPosition);
     }
+
+    /**
+     * The packet a player's chunk send transmits. NeoForge's patched
+     * {@code PlayerChunkSender#sendChunk} bundles the chunk's aux light data with it.
+     * Built where the packet is sealed, under the chunk owner.
+     */
+    default net.minecraft.network.protocol.Packet<?> chunkPacket(
+            net.minecraft.world.level.chunk.LevelChunk chunk,
+            net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket packet) {
+        return packet;
+    }
+
+    /** Whether {@link #chunkSent} does anything; vanilla (Fabric) fires nothing. */
+    default boolean firesChunkSent() {
+        return false;
+    }
+
+    /** NeoForge's {@code EventHooks.fireChunkSent}, after the chunk reached the connection. */
+    default void chunkSent(ServerPlayer player, net.minecraft.world.level.chunk.LevelChunk chunk,
+                           net.minecraft.server.level.ServerLevel level) {
+    }
 }

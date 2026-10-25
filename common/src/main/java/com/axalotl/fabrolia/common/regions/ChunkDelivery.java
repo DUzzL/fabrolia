@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.regions;
 
+import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientboundChunkBatchFinishedPacket;
 import net.minecraft.network.protocol.game.ClientboundChunkBatchStartPacket;
 import net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket;
@@ -368,7 +369,8 @@ public final class ChunkDelivery {
     // ------------------------------------------------------------------
     public static final class Entry {
         final LevelChunk chunk;                 // identity = lifecycle witness
-        final ClientboundLevelChunkWithLightPacket packet;
+        /** The loader's chunk packet: NeoForge bundles aux light data (audit A-12). */
+        final Packet<?> packet;
         final long sealL;
         /** Witness sampled before copying block/BE/light payload. A light update
          *  may publish concurrently with an owner-held seal; a post-copy sample
@@ -383,7 +385,7 @@ public final class ChunkDelivery {
         Entry(LevelChunk chunk, long writeGenBeforeCopy, ClientboundLevelChunkWithLightPacket packet,
               long sealL, IslandRegistry.PIsland island) {
             this.chunk = chunk;
-            this.packet = packet;
+            this.packet = com.axalotl.fabrolia.common.platform.PlatformUtils.chunkPacket(chunk, packet);
             this.sealL = sealL;
             this.writeGenAtSeal = writeGenBeforeCopy;
             this.ownerRef = new PIslandRef(island);
@@ -413,6 +415,9 @@ public final class ChunkDelivery {
          *  only bounded ACK intent; PlayerChunkSender drains it here from its
          *  Main send slot. */
         final ArrayDeque<Batch> outstanding = new ArrayDeque<>();
+        /** Main-only: chunks whose send committed and whose loader event
+         *  (NeoForge ChunkWatchEvent.Sent) still waits for the owner's claim. */
+        final ArrayDeque<LevelChunk> pendingChunkSent = new ArrayDeque<>();
         /** At most one offered batch awaits real EventLoop completion/Main commit. */
         volatile BatchPublication activePublication;
         volatile boolean closed;
@@ -781,6 +786,9 @@ public final class ChunkDelivery {
                     final Batch batchCommit = completedBatch;
                     final long nanosCommit = completedNanos[0];
                     final long bytesCommit = completedBytes[0];
+                    final LevelChunk[] sentChunks = new LevelChunk[
+                            com.axalotl.fabrolia.common.platform.PlatformUtils.firesChunkSent() ? admittedCount : 0];
+                    for (int i = 0; i < sentChunks.length; i++) sentChunks[i] = admitted[i].entry.chunk;
                     RegionScheduler.commitSuccessIfHealthy(() -> {
                         batchCommit.acceptPublication();
                         for (int i = 0; i < admittedCount; i++) {
@@ -791,6 +799,7 @@ public final class ChunkDelivery {
                         owner.bytesEnqueued += bytesCommit;
                         owner.lastFullSendNanos = nanosCommit;
                         owner.batches++;
+                        for (LevelChunk sent : sentChunks) owner.pendingChunkSent.addLast(sent);
                         state = APPLIED;
                         owner.activePublication = null;
                     });
@@ -1322,9 +1331,51 @@ public final class ChunkDelivery {
      *  this method returns zero after offering a batch; the next Main sender
      *  pass obtains the real completed count from
      *  {@link #applyCompletedChunkBatch}. */
+    /**
+     * Main, sender pass: the loader's chunk-sent event for chunks whose send
+     * committed (NeoForge ChunkWatchEvent.Sent; its attachment sync reads the
+     * chunk's block entities). Fired in send order under the chunk owner's claim,
+     * taken only when free: a busy island keeps the rest for the next pass, so
+     * the sender never waits for a running unit (audit A-12). A chunk the player
+     * no longer tracks is dropped.
+     */
+    private static void fireChunkSentEvents(PlayerState ps, ServerPlayer p, ServerLevel level) {
+        RegionizedServer rs = RegionScheduler.forLevel(level);
+        while (!ps.pendingChunkSent.isEmpty()) {
+            LevelChunk chunk = ps.pendingChunkSent.peekFirst();
+            long key = chunk.getPos().pack();
+            if (chunk.getLevel() != level || !ps.records.containsKey(key)) {
+                ps.pendingChunkSent.pollFirst();
+                continue;
+            }
+            IslandRegistry.PIsland owner = rs == null || !rs.asyncActive ? null : rs.islandOwnerOfChunk(key);
+            if (owner == null || IslandCommands.mainHolds(owner) || IslandCommands.fenceWindowHeld()) {
+                ps.pendingChunkSent.pollFirst();
+                com.axalotl.fabrolia.common.platform.PlatformUtils.chunkSent(p, chunk, level);
+            } else if (IslandCommands.tryMainClaim(owner, "chunk sent event")) {
+                ps.pendingChunkSent.pollFirst();
+                Throwable failure = null;
+                try {
+                    com.axalotl.fabrolia.common.platform.PlatformUtils.chunkSent(p, chunk, level);
+                } catch (Throwable thrown) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+                }
+                try {
+                    IslandCommands.mainRelease(owner);
+                } catch (Throwable cleanup) {
+                    failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
+                }
+                if (failure != null) ChunkDelivery.<RuntimeException>rethrow(failure);
+            } else {
+                return;
+            }
+        }
+    }
+
     public static int sendNextChunks(ServerPlayer p, ServerLevel level, int maxToSend) {
         RegionScheduler.throwWorkerFailureIfAny();
         PlayerState ps = PLAYERS.get(p.getUUID());
+        if (ps != null && !ps.pendingChunkSent.isEmpty()) fireChunkSentEvents(ps, p, level);
         if (ps == null || ps.closed || ps.activePublication != null
                 || ps.records.isEmpty() || maxToSend <= 0) return 0;
         RegionizedServer[] runtime = new RegionizedServer[1];

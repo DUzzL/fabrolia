@@ -106,7 +106,7 @@ class ChunkDeliveryPublicationProgressTest {
             assertTrue(fixture.state.outstanding.isEmpty(), "empty work creates no ACK obligation");
 
             ChunkDelivery.Rec successor = fixture.ready();
-            ClientboundLevelChunkWithLightPacket expectedFull = successor.entry.packet;
+            net.minecraft.network.protocol.Packet<?> expectedFull = successor.entry.packet;
             assertEquals(0, ChunkDelivery.sendNextChunks(fixture.player, fixture.level, 1));
             // In the delayed case, the old empty receipt is still queued while
             // this newer publication owns the sender slot. Its completion must
@@ -172,7 +172,7 @@ class ChunkDeliveryPublicationProgressTest {
             }
 
             ChunkDelivery.Rec successor = fixture.ready(destinationChunk);
-            ClientboundLevelChunkWithLightPacket expected = successor.entry.packet;
+            net.minecraft.network.protocol.Packet<?> expected = successor.entry.packet;
             fixture.listener.packets.clear();
             ChunkDelivery.sendNextChunks(fixture.player, destination, 1);
             fixture.awaitReceipts();
