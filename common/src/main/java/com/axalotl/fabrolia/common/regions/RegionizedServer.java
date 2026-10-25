@@ -405,6 +405,11 @@ public final class RegionizedServer {
     public static final int ISLAND_BFS_RADIUS = 2;
 
     private volatile boolean islandsDirty = true;
+
+    /** A topology rebuild is due at the next level head. */
+    boolean topologyRebuildPending() {
+        return islandsDirty;
+    }
     private volatile List<Island> islands = List.of();
 
     /** Upper bound on how long lazy topology drift (committed core cells that

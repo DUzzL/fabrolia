@@ -834,6 +834,26 @@ public final class IslandScheduledTicks {
         }
         return due;
     }
+    /**
+     * True when a populated halo cell of {@code d}'s island lacks its one-cell
+     * write margin: Main made its chunks FULL after the last rebuild and the next
+     * rebuild has not absorbed it yet. The scheduled-tick rule above applies to the
+     * whole unit then (audit X-03): random ticks, spawning, block entities and block
+     * events of that halo could write into a neighbour another island or Main owns.
+     */
+    static boolean hasOpenPopulatedFrontier(RegionizedServer rs, EpochDomain d) {
+        IslandRegistry.PIsland owner = d.owner;
+        if (owner == null) return false;
+        var haloCells = owner.haloCells.iterator();
+        while (haloCells.hasNext()) {
+            long cellKey = haloCells.nextLong();
+            Region halo = rs.regionizer().peekByGridKey(cellKey);
+            if (halo == null || halo.fullChunkCount.get() <= 0) continue;
+            if (!hasClosedScheduledFrontier(rs, d, cellKey)) return true;
+        }
+        return false;
+    }
+
     /** Core closure is a topology invariant. A newly populated halo has no such
      *  guarantee: require its complete write margin before admitting handlers.
      *  Existing Regions retain authority over the cold-creation snapshot. */

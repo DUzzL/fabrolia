@@ -979,8 +979,14 @@ public final class IslandTickUnit {
                     // command/task/arrival producer can encounter vanilla's
                     // unique (pos,type) entry. Pure terrain containers take
                     // only the cold monotonic-hint rejection here.
-                    boolean scheduledHeadAdmitted =
-                            IslandScheduledTicks.preflightIslandScheduled(
+                    // A freshly populated halo without its write margin holds the
+                    // complete unit at this L until Main's pending rebuild closes
+                    // the frontier (audit X-03), as scheduled ticks already did.
+                    boolean frontierHold = globalSprintRequest == null
+                            && rs.topologyRebuildPending()
+                            && IslandScheduledTicks.hasOpenPopulatedFrontier(rs, d);
+                    boolean scheduledHeadAdmitted = !frontierHold
+                            && IslandScheduledTicks.preflightIslandScheduled(
                                     rs, d, d.unitGameTime);
                     RegionScheduler.throwWorkerFailureIfAny();
                     if (!scheduledHeadAdmitted) {

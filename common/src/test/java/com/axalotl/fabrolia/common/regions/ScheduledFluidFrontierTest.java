@@ -39,6 +39,28 @@ class ScheduledFluidFrontierTest {
     }
 
     @Test
+    void openPopulatedHaloHoldsTheWholeUnitUntilItsFrontierCloses() throws Exception {
+        // Audit X-03: random ticks, spawning, block entities and block events of
+        // the open halo share the scheduled-tick rule, through a whole-unit hold.
+        try (Fixture fixture = new Fixture(false)) {
+            assertTrue(IslandScheduledTicks.hasOpenPopulatedFrontier(fixture.runtime, fixture.owner.domain));
+            fixture.closeFrontier(true);
+            assertFalse(IslandScheduledTicks.hasOpenPopulatedFrontier(fixture.runtime, fixture.owner.domain));
+        }
+        try (Fixture fixture = new Fixture(true)) {
+            assertFalse(IslandScheduledTicks.hasOpenPopulatedFrontier(fixture.runtime, fixture.owner.domain),
+                    "a closed topology holds nothing");
+        }
+        String unit = java.nio.file.Files.readString(java.nio.file.Paths.get("").toAbsolutePath()
+                .resolve("src/main/java/com/axalotl/fabrolia/common/regions/IslandTickUnit.java"));
+        int hold = unit.indexOf("boolean frontierHold = globalSprintRequest == null");
+        int pending = unit.indexOf("rs.topologyRebuildPending()", hold);
+        int open = unit.indexOf("IslandScheduledTicks.hasOpenPopulatedFrontier(rs, d)", pending);
+        int preflight = unit.indexOf("boolean scheduledHeadAdmitted = !frontierHold", open);
+        assertTrue(hold >= 0 && pending > hold && open > pending && preflight > open);
+    }
+
+    @Test
     void coreFluidCanSpreadAcrossItsCellBoundaryIntoOwnedHalo() throws Exception {
         try (Fixture fixture = new Fixture(true)) {
             fixture.run();
