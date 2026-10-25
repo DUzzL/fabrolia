@@ -9,6 +9,7 @@
     "utils.ClassInstanceMultiMapMixin",
     "world.BlockDropCaptureMixin",
     "world.CommonHooksBlockSnapshotCaptureMixin",
+    "world.CommonHooksPoiUnloadMixin",
     "world.LevelBlockSnapshotCaptureMixin",
     "world.LevelChunkBlockSnapshotCaptureMixin"
   ],
