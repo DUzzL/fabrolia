@@ -243,6 +243,19 @@ def count_entities():
     return int(m.group(1)) if m else -1
 
 
+def count_pen_entities():
+    """Mobs inside each pen's walls. The pens stay loaded before the stop and after the
+    restart; animals in the terrain around them do not (fewer players keep fewer chunks
+    loaded after the restart), so a level-wide count is not comparable."""
+    counts = []
+    for cx, cz in sc.CENTERS:
+        out = rcmd('execute if entity @e[type=!minecraft:player,type=!minecraft:item,x=%d,y=%d,z=%d,dx=%d,dy=3,dz=%d]'
+                   % (cx - sc.HALF, sc.FLOOR_Y + 1, cz - sc.HALF, 2 * sc.HALF, 2 * sc.HALF))
+        m = re.search(r'Count: (\d+)', out)
+        counts.append(int(m.group(1)) if m else -1)
+    return counts
+
+
 def spot(pen_bots, name):
     p = next(q for q in range(PENS) if name in pen_bots[q])
     k = pen_bots[p].index(name)
@@ -440,6 +453,8 @@ try:
     stop.set()
     entities_before = count_entities()
     report['entities_before_stop'] = entities_before
+    pens_before = count_pen_entities()
+    report['pen_entities_before_stop'] = pens_before
     for b in bots.values():
         b.close()
     time.sleep(2)
@@ -464,8 +479,11 @@ try:
     time.sleep(15)
     entities_after = count_entities()
     report['entities_after_restart'] = entities_after
-    check('saved entities survive the restart', entities_after == entities_before > 0,
-          '%s -> %s' % (entities_before, entities_after))
+    pens_after = count_pen_entities()
+    report['pen_entities_after_restart'] = pens_after
+    check('saved entities survive the restart (every pen)', pens_after == pens_before and min(pens_before) > 0,
+          '%s -> %s (level-wide, loaded chunks only: %s -> %s)'
+          % (pens_before, pens_after, entities_before, entities_after))
     check('players rejoin in their pens', all(in_pen(again[pen_bots[p][0]], p) for p in range(PENS)),
           {n: b.pos for n, b in again.items()})
     out = rcmd('fabrolia regions list')
