@@ -1,6 +1,10 @@
 package com.axalotl.fabrolia.common.mixin.entity;
 
+import com.axalotl.fabrolia.common.platform.PearlLanding;
+import com.axalotl.fabrolia.common.platform.PlatformUtils;
 import com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks;
+import com.llamalad7.mixinextras.sugar.Local;
+import net.minecraft.world.phys.HitResult;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -158,7 +162,8 @@ public abstract class ThrownEnderpearlMixin {
             at = @At(value = "INVOKE",
                     target = "Lnet/minecraft/server/network/ServerGamePacketListenerImpl;isAcceptingMessages()Z"))
     private boolean fabrolia$routePlayerTeleportToMain(ServerGamePacketListenerImpl connection,
-                                                       Operation<Boolean> original) {
+                                                       Operation<Boolean> original,
+                                                       @Local(argsOnly = true) HitResult hitResult) {
         if (!(Thread.currentThread() instanceof RegionWorkerThread)) {
             return original.call(connection);
         }
@@ -177,6 +182,7 @@ public abstract class ThrownEnderpearlMixin {
         }
 
         Vec3 teleportPos = self.oldPosition();
+        Vec3 hitPosition = self.position();
         boolean portalCooldown = self.isOnPortalCooldown();
         float endermiteRoll = self.getRandom().nextFloat();
         // The whole remainder runs under the all-island fence: the endermite
@@ -189,6 +195,15 @@ public abstract class ThrownEnderpearlMixin {
             if (player.connection != connection
                     || !connection.isAcceptingMessages()
                     || !fabrolia$ownerTeleportAllowed(player, level)) {
+                return;
+            }
+            // The loader's landing hook at its vanilla position, before the
+            // endermite: NeoForge's EntityTeleportEvent.EnderPearl may cancel,
+            // retarget or change the damage. Its pearl argument is already
+            // discarded here (vanilla discards it right after onHit).
+            PearlLanding landing = PlatformUtils.onEnderPearlLand(
+                    player, self, hitPosition, hitResult, teleportPos);
+            if (landing.canceled()) {
                 return;
             }
 
@@ -208,13 +223,14 @@ public abstract class ThrownEnderpearlMixin {
             }
 
             ServerPlayer newOwner = player.teleport(new TeleportTransition(
-                    level, teleportPos, Vec3.ZERO, 0.0F, 0.0F,
+                    level, landing.target(), Vec3.ZERO, 0.0F, 0.0F,
                     Relative.ROTATION,
                     TeleportTransition.DO_NOTHING));
             if (newOwner != null) {
                 newOwner.resetFallDistance();
                 newOwner.resetCurrentImpulseContext();
-                newOwner.hurtServer(player.level(), self.damageSources().enderPearl(), 5.0F);
+                newOwner.hurtServer(landing.damageInArrivalLevel() ? newOwner.level() : player.level(),
+                        self.damageSources().enderPearl(), landing.damage());
             }
 
             level.playSound(null, teleportPos.x, teleportPos.y, teleportPos.z,

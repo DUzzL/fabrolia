@@ -28,6 +28,14 @@ public class PlatformUtils {
         return minecraftPlatform.hasPermission(source, node, level);
     }
 
+    public static PearlLanding onEnderPearlLand(net.minecraft.server.level.ServerPlayer player,
+                                                net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEnderpearl pearl,
+                                                net.minecraft.world.phys.Vec3 hitPosition,
+                                                net.minecraft.world.phys.HitResult hitResult,
+                                                net.minecraft.world.phys.Vec3 previousPosition) {
+        return minecraftPlatform.onEnderPearlLand(player, pearl, hitPosition, hitResult, previousPosition);
+    }
+
 
     private static <T> T load(Class<T> clazz) {
         return ServiceLoader.load(clazz, clazz.getClassLoader()).findFirst().orElseThrow(() -> new NullPointerException("Failed to load service for " + clazz.getName()));
