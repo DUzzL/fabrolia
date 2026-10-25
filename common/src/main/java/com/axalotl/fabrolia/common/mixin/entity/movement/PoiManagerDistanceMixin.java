@@ -90,4 +90,23 @@ public abstract class PoiManagerDistanceMixin {
         tracker.fabrolia$drainTrackerUpdates();
         original.call(tracker);
     }
+
+    /**
+     * The read half of {@code sectionsToVillage}. {@code SyncAllMixin} makes every
+     * graph method {@code synchronized} on the tracker, so a decrease wave on
+     * another island writes intermediate levels under that monitor; vanilla's
+     * {@code getLevel} reads the subclass' plain {@code Long2ByteOpenHashMap}
+     * without it and could see a real village section as 7 (raid stop) or hit a
+     * rehash. Read under the same monitor; it acquires nothing else.
+     */
+    @WrapOperation(
+            method = "sectionsToVillage",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/entity/ai/village/poi/PoiManager$DistanceTracker;getLevel(J)I"))
+    private int fabrolia$readLevelUnderGraphMonitor(@Coerce Object tracker, long sectionPos,
+                                                    Operation<Integer> original) {
+        synchronized (tracker) {
+            return original.call(tracker, sectionPos);
+        }
+    }
 }
