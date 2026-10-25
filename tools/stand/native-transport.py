@@ -174,8 +174,8 @@ def prepare(a):
             raise ValueError('Unexpected mod at inherited proof artifact path')
         inherited_probe.unlink()
     config = inputs / 'config/fabrolia.toml'
-    config.write_text(re.sub(r'^asyncIslands = .*$', 'asyncIslands = ' + str(a.async_mode == 'on').lower(),
-                            config.read_text(), flags=re.M))
+    # asyncIslands is no longer a config key: drop a stale line (the mode is a JVM option below).
+    config.write_text(re.sub(r'^asyncIslands = .*\r?\n', '', config.read_text(), flags=re.M))
     props = {
         'server-ip': '127.0.0.1', 'server-port': '25935', 'online-mode': 'false',
         'enforce-secure-profile': 'false', 'enable-rcon': 'false', 'enable-query': 'false',
@@ -215,7 +215,10 @@ def prepare(a):
         'command_timeout_seconds': 60, 'minimum_tick_delta': 100, 'progress_intervals': 3,
         'query_interval_seconds': 5, 'settled_observation_seconds': a.settled_seconds,
         'graceful_stop_seconds': 600, 'terminate_seconds': 5,
-        'java_args': ['-Xms2G', '-Xmx24G', '-Duser.language=en', '-Duser.country=US',
+        # debugCommands: the gameplay exchange flips `fabrolia regions async on|off` live.
+        'java_args': ['-Dfabrolia.debugCommands=true']
+                     + (['-Dfabrolia.syncMode=true'] if a.async_mode != 'on' else [])
+                     + ['-Xms2G', '-Xmx24G', '-Duser.language=en', '-Duser.country=US',
                       '--add-modules=jdk.internal.vm.ci', '--add-opens=java.base/java.lang=ALL-UNNAMED',
                       '--enable-native-access=ALL-UNNAMED', '-XX:-UseCodeCacheFlushing',
                       '-XX:+UseZGC', '-XX:+DisableExplicitGC', '-XX:+UseDynamicNumberOfGCThreads',

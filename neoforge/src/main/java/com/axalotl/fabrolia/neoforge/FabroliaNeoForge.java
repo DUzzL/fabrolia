@@ -49,7 +49,6 @@ public class FabroliaNeoForge extends FabroliaCommon {
         LOGGER.info("Fabrolia Setting up thread-pool...");
         this.initialize();
         loadConfig();
-        com.axalotl.fabrolia.neoforge.config.FabroliaConfig.registerPersister();
         ParallelProcessor.setServer(event.getServer());
         ParallelProcessor.setupThreadPool(getParallelism());
         RegionScheduler.start(event.getServer());

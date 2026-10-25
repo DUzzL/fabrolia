@@ -36,6 +36,7 @@ CONFIGS = {
 def prepare(config, run, world_template, port, xmx, view_distance, simulation_distance):
     """Fresh run directory with the server, its mods and a copy of the world; returns mc.Server."""
     cfg = CONFIGS[config]
+    sync_flag = []
     if run.exists():
         shutil.rmtree(run)
     if cfg['kind'] == 'paper':
@@ -57,12 +58,15 @@ def prepare(config, run, world_template, port, xmx, view_distance, simulation_di
         if mode:
             (run / 'config').mkdir(exist_ok=True)
             on = 'false' if mode == 'default' else 'true'
+            # Async islands are always on; the synchronous control is a JVM option.
             (run / 'config' / 'fabrolia.toml').write_text(
-                'asyncIslands = %s\nenablePlayerTickActor = %s\nenableRegionThreading = true\n'
-                'islandEntityParallel = %s\n' % (on, on, 'true' if mode == 'parallel' else 'false'))
+                'enablePlayerTickActor = %s\nenableRegionThreading = true\n'
+                'islandEntityParallel = %s\n' % (on, 'true' if mode == 'parallel' else 'false'))
+            if mode == 'default':
+                sync_flag = ['-Dfabrolia.syncMode=true']
     if world_template is not None:
         shutil.copytree(world_template, run / 'world')
-    srv = mc.Server(run, loader, port, xmx=xmx, jvm_extra=mc.AIKAR)
+    srv = mc.Server(run, loader, port, xmx=xmx, jvm_extra=mc.AIKAR + sync_flag)
     if loader == 'paper':
         jar = cfg['jar'].name
         srv.command_line = lambda: [mc.JAVA, '-Xms' + xmx, '-Xmx' + xmx] + mc.AIKAR + ['-jar', jar, '--nogui']

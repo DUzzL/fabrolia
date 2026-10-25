@@ -105,7 +105,9 @@ def clock_rate(bot, seconds=8):
 
 SPOTS = {'Near1': (16, 0), 'Near2': (40, 24), 'FarA': (3008, 3008), 'FarB': (-3008, 3008)}
 
-srv = mc.Server(run, a.loader, a.port, xmx='6G')
+# debugCommands: the synchronous section flips the mode live with `regions async off`,
+# which exists only on a server started with this option.
+srv = mc.Server(run, a.loader, a.port, xmx='6G', jvm_extra=['-Dfabrolia.debugCommands=true'])
 srv.write_properties(level_seed='fabrolia-functest', gamemode='creative', view_distance=8,
                      simulation_distance=8, difficulty='easy')
 report['completed'] = False
@@ -116,8 +118,8 @@ try:
         check('server started with Fabrolia loaded', re.search(r'(?i)fabrolia', log), report['boot_seconds'])
         for c in ('fabrolia', 'fabrolia help', 'fabrolia stats', 'fabrolia regions'):
             cmd(srv, c)
-        # Defaults changed to async in 3.1.11; select the synchronous control
-        # explicitly so the two sections still exercise different schedulers.
+        # Async is the default; select the synchronous control (debug command, not
+        # saved) so the two sections still exercise different schedulers.
         cmd(srv, 'fabrolia regions playerticks off')
         cmd(srv, 'fabrolia regions async off')
     for rule in ('spawn_mobs false', 'advance_weather false'):
@@ -214,7 +216,7 @@ try:
     unexpected = mc.unexpected_log_errors(log)
     check('no unexpected ERROR/FATAL log lines (first run)', not unexpected, unexpected[:3])
 
-    # Restart: saved entities and the persisted async preference survive.
+    # Restart: saved entities survive and the server is back in the default async mode.
     srv = mc.Server(run, a.loader, a.port, xmx='6G')
     report['reboot_seconds'] = boot(srv)
     bots = join(list(SPOTS), a.port)

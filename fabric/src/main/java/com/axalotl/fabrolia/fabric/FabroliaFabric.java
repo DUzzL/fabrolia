@@ -20,7 +20,6 @@ public class FabroliaFabric extends FabroliaCommon implements ModInitializer {
         LOGGER.info("Initializing Fabrolia...");
         this.initialize();
         com.axalotl.fabrolia.fabric.config.FabroliaConfig.init();
-        com.axalotl.fabrolia.fabric.config.FabroliaConfig.registerPersister();
 
         ServerLifecycleEvents.SERVER_STARTING.register(server -> {
             LOGGER.info("Fabrolia Setting up thread-pool...");

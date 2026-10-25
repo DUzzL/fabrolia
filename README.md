@@ -21,8 +21,8 @@ commands, players joining and leaving, and work that crosses islands.
 
 By default every island also keeps its own clock (**async islands**): a lagging
 base no longer slows down the rest of the server, and players tick on their own
-island. `/fabrolia regions async off` switches to synchronous region threading,
-where the whole world finishes each tick together.
+island. For diagnosis, the JVM option `-Dfabrolia.syncMode=true` starts the server in
+synchronous region threading, where the whole world finishes each tick together.
 
 Fabrolia only helps where work can be split: one huge base with all players in it
 is still one island. It does not skip or reorder vanilla work to gain TPS.
@@ -67,7 +67,6 @@ Operators:
 | Command | Level | What it does |
 | --- | --- | --- |
 | `/fabrolia regions player <player>` | 2 | TPS where another player is. |
-| `/fabrolia regions async [on\|off]` | 4 | Independent island clocks. |
 | `/fabrolia regions playerticks [on\|off]` | 4 | Players tick on their own island. |
 | `/fabrolia regions islandentities [vanilla\|parallel]` | 4 | Entities of one island in vanilla order (default) or in parallel per region. |
 | `/fabrolia regions on\|off\|toggle` | 4 | Region threading on or off. |
@@ -91,7 +90,6 @@ With Carpet, `/log tps` shows the main thread and the island you are on.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `enableRegionThreading` | `true` | Tick islands on worker threads. |
-| `asyncIslands` | `true` | Independent island clocks. |
 | `enablePlayerTickActor` | `true` | Players tick on their own island. |
 | `islandEntityParallel` | `false` | Parallel entity ticking inside one island. |
 | `regionWorkerCount` | `-1` | Worker threads; `-1` uses the core count minus two. |

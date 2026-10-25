@@ -191,7 +191,7 @@ public class FabroliaConfig {
                 "Defer a region worker's out-of-region block writes / neighbour updates to the main thread (post-barrier) so a cascade crossing into a concurrently-ticking region cannot race it. In-region redstone is untouched. Runtime: /fabrolia regions debug crossredstone true|false.",
                 () -> fabroliaRedstoneCrossRegionGuard, v -> fabroliaRedstoneCrossRegionGuard = v));
         e.add(bool("fabroliaIslandBlockEntityTicks", null,
-                "Synchronous region threading only (asyncIslands=false): block-entity ticks are split by loaded-space islands (≥16 unloaded chunks apart), one worker per island; the heaviest island stays on main, <2 islands → vanilla. Async islands always tick their own block entities. Runtime: /fabrolia regions debug setIslandBlockEntityTicks true|false.",
+                "Synchronous region threading only (-Dfabrolia.syncMode=true): block-entity ticks are split by loaded-space islands (≥16 unloaded chunks apart), one worker per island; the heaviest island stays on main, <2 islands → vanilla. Async islands always tick their own block entities. Runtime: /fabrolia regions debug setIslandBlockEntityTicks true|false.",
                 () -> fabroliaIslandBlockEntityTicks, v -> fabroliaIslandBlockEntityTicks = v));
         e.add(bool("fabroliaCrossDimCoupling", null,
                 "Cross-dimension cadence coupling: Overworld islands whose down-projected footprint (vanilla portal scale + pairing reach) touches a Nether island's cells are LINKED, and linked members share one deadline anchor + one lower-TPS-wins rate — removes the phase drift that breaks portal farms straddling the boundary. Clocks stay per-island (phase-lock, never value-merge); the End can never be linked. Runtime: /fabrolia regions crossdim on|off.",
@@ -206,9 +206,6 @@ public class FabroliaConfig {
         e.add(bool("asyncFailClosed", null,
                 "DEPRECATED: only changes the debug drill. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.",
                 () -> asyncFailClosed, v -> asyncFailClosed = v));
-        e.add(bool("asyncIslands", null,
-                "A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. Default on. Runtime: /fabrolia regions async on|off (saved immediately).",
-                () -> asyncIslands, v -> asyncIslands = v));
         e.add(bool("islandEntityParallel", null,
                 "Async islands: false (default) ticks an island's entities in one serial pass in Vanilla insertion order. true ticks its regions in parallel under the color gate, as up to 0.2.38 (entity order across region borders follows the color waves, out-of-region block writes are replayed after the phase). Islands holding primed TNT or any minecart always use the serial pass to preserve explosion and cart-pushing order. Runtime: /fabrolia regions islandentities vanilla|parallel.",
                 () -> islandEntityParallel, v -> islandEntityParallel = v));
@@ -240,14 +237,6 @@ public class FabroliaConfig {
         }
     }
 
-    /** Loader hook: immediate operator-preference persistence (async toggle).
-     *  saveConfig serializes the LIVE common fields, so the field is already
-     *  set by the caller; this just flushes atomically. */
-    public static void registerPersister() {
-        com.axalotl.fabrolia.common.config.FabroliaConfig.asyncIslandsPersister =
-                v -> saveConfig();
-    }
-
     public static void saveConfig() {
         com.axalotl.fabrolia.common.config.FabroliaConfig.enforceSafetyInvariants();
         // Strip out any stale keys before rewriting — entries removed from
@@ -265,6 +254,12 @@ public class FabroliaConfig {
      *  through {@link #saveConfig}, which also drops stale keys, restores our
      *  comments and applies the safety invariants. */
     private static void loadConfigValues() {
+        // asyncIslands left the config file; saveConfig drops the stale key, so say so once.
+        if (Boolean.FALSE.equals(CONFIG.get("asyncIslands"))) {
+            LOGGER.warn("Config key asyncIslands=false is ignored; islands now always run async. "
+                    + "Start the server with -D{}=true for the synchronous diagnostic mode.",
+                    com.axalotl.fabrolia.common.config.FabroliaConfig.SYNC_MODE_PROPERTY);
+        }
         for (Entry entry : ENTRIES) {
             Object value = CONFIG.get(entry.key());
             if (value != null) {

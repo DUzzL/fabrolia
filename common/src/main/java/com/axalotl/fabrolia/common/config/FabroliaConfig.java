@@ -119,12 +119,16 @@ public class FabroliaConfig {
     // same per-region [spawn][random][entities] FIFO and serial entity order. false = legacy
     // group dispatch (rollback lever). Tunable live: /fabrolia regions eventsched.
     public static boolean regionEventScheduler = true;
-    // A2 async islands: independent per-island deadline ticking. On by default
-    // since 3.1.11 (the production setting; a saved false is kept);
-    // /fabrolia regions async on|off switches it (requires the event scheduler +
-    // color gate) and persists the choice — see asyncIslandsPersister below and
+    /** System property that starts the server in synchronous region threading (no
+     *  independent island clocks). A diagnostic control for "is this bug
+     *  async-specific?", not a configuration key. */
+    public static final String SYNC_MODE_PROPERTY = "fabrolia.syncMode";
+    // A2 async islands: independent per-island deadline ticking. Always on unless
+    // -Dfabrolia.syncMode=true; never read from the config file. With
+    // -Dfabrolia.debugCommands=true, /fabrolia regions debug async on|off flips it
+    // live (not persisted). Requires the event scheduler + color gate, see
     // docs/ASYNC-ISLANDS.md.
-    public static volatile boolean asyncIslands = true;
+    public static volatile boolean asyncIslands = !Boolean.getBoolean(SYNC_MODE_PROPERTY);
     /** Entity phase of an async island unit. false (default): one serial pass
      *  over the island in Vanilla EntityTickList insertion order (3.0.0 TNT
      *  fix). true: the member regions tick their entities in parallel under the
@@ -135,36 +139,6 @@ public class FabroliaConfig {
      *  mechanics and cart pushes stay exact in both modes. Read once per unit; runtime:
      *  /fabrolia regions islandentities vanilla|parallel. */
     public static volatile boolean islandEntityParallel = false;
-    /** OPERATOR-PREFERENCE PERSISTENCE (2026-07-18 v2, corrected semantics):
-     *  /fabrolia regions async [on|off] sets {@link #asyncIslands} AND
-     *  persists it immediately through the loader's config system (atomic
-     *  write) — the last operator choice IS the boot default and survives
-     *  clean restart, crash, and hard kill. The runtime SAFETY fallback
-     *  (asyncFailClosedTripped) is session-only and never touches this
-     *  preference; crash sentinels that gate later boots remain forbidden.
-     *  Registered by each loader at init. */
-    public static volatile java.util.function.Consumer<Boolean> asyncIslandsPersister = null;
-
-    public static void persistAsyncIslands(boolean v) {
-        boolean previous = asyncIslands;
-        asyncIslands = v;
-        java.util.function.Consumer<Boolean> pers = asyncIslandsPersister;
-        if (pers == null) {
-            asyncIslands = previous;
-            throw new IllegalStateException("no async-islands config persister is registered");
-        }
-        try {
-            pers.accept(v);
-        } catch (Throwable failure) {
-            asyncIslands = previous;
-            FabroliaConfig.<RuntimeException>rethrow(failure);
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
     /** Task #43 — cross-dimension deadline-anchor cadence coupling: linked
      *  Overworld↔Nether islands (populated-cell projections intersect, per
      *  CrossDimProjection) share one deadline anchor and one lower-TPS-wins

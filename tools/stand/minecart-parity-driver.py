@@ -114,7 +114,6 @@ def build_run(args):
             ''.join(key + '=' + value + '\n' for key, value in settings.items()))
         (server / 'config').mkdir(exist_ok=True)
         (server / 'config/fabrolia.toml').write_text(
-            'asyncIslands = ' + str(args.mode != 'sync').lower() + '\n'
             'enableRegionThreading = true\nenablePlayerTickActor = true\n'
             'regionWorkerCount = 2\nislandEntityParallel = '
             + str(args.mode == 'parallel').lower() + '\n')
@@ -212,7 +211,10 @@ class Fixture:
         self.log = (self.run / 'console.log').open('w', encoding='utf-8')
         self.process = subprocess.Popen(
             [self.args.java, '-Xms512M', '-Xmx' + self.args.heap,
-             '-XX:ActiveProcessorCount=4', '-jar', self.args.launcher, 'nogui'],
+             '-XX:ActiveProcessorCount=4']
+            # Async islands are always on; the synchronous control is a JVM option.
+            + (['-Dfabrolia.syncMode=true'] if self.args.mode == 'sync' else [])
+            + ['-jar', self.args.launcher, 'nogui'],
             cwd=self.server, stdin=subprocess.PIPE, stdout=self.log, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.wait_until('server boot', lambda: 'Done (' in

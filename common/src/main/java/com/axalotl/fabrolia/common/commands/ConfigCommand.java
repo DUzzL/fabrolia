@@ -340,11 +340,10 @@ public class ConfigCommand {
      * commands (audit D-02). A file edit of them takes effect at the next start.
      */
     record LifecycleKeys(boolean disabled, boolean enableRegionThreading, int regionWorkerCount,
-                         boolean regionEventScheduler, boolean asyncIslands) {
+                         boolean regionEventScheduler) {
         static LifecycleKeys capture() {
             return new LifecycleKeys(FabroliaConfig.disabled, FabroliaConfig.enableRegionThreading,
-                    FabroliaConfig.regionWorkerCount, FabroliaConfig.regionEventScheduler,
-                    FabroliaConfig.asyncIslands);
+                    FabroliaConfig.regionWorkerCount, FabroliaConfig.regionEventScheduler);
         }
 
         /** Restores every key the reload changed; returns their names, or null. */
@@ -358,13 +357,11 @@ public class ConfigCommand {
             if (FabroliaConfig.regionEventScheduler != regionEventScheduler) {
                 kept.add("regionEventScheduler=" + regionEventScheduler);
             }
-            if (FabroliaConfig.asyncIslands != asyncIslands) kept.add("asyncIslands=" + asyncIslands);
             if (kept.isEmpty()) return null;
             FabroliaConfig.disabled = disabled;
             FabroliaConfig.enableRegionThreading = enableRegionThreading;
             FabroliaConfig.regionWorkerCount = regionWorkerCount;
             FabroliaConfig.regionEventScheduler = regionEventScheduler;
-            FabroliaConfig.asyncIslands = asyncIslands;
             FabroliaConfig.onConfigLoaded();
             return String.join(", ", kept);
         }

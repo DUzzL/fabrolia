@@ -82,9 +82,9 @@ RCON_PASS = 'raid-ab-local-only'
 (RUN / 'config').mkdir(exist_ok=True)
 if a.fabrolia:
     (RUN / 'config' / 'fabrolia.toml').write_text(
-        'disabled = %s\nasyncIslands = %s\nenableRegionThreading = %s\nenablePlayerTickActor = %s\n'
+        'disabled = %s\nenableRegionThreading = %s\nenablePlayerTickActor = %s\n'
         'regionWorkerCount = 4\nislandEntityParallel = %s\n' %
-        ((str(a.disabled).lower(),) + (str(not a.disabled).lower(),) * 3 + (str(a.parallel).lower(),)))
+        ((str(a.disabled).lower(),) + (str(not a.disabled).lower(),) * 2 + (str(a.parallel).lower(),)))
 
 report = {'name': a.name, 'fabrolia': str(a.fabrolia) if a.fabrolia else None, 'parallel': a.parallel,
           'disabled': a.disabled,

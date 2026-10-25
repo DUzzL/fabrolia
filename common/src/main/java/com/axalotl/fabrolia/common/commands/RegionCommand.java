@@ -274,10 +274,8 @@ public final class RegionCommand {
                     return 1;
                 })));
 
-        regionsCmd.then(literal("async").requires(PlatformPermission.require("command.regions.toggle", 4))
-                        .executes(ctx -> setAsyncIslands(ctx, !FabroliaConfig.asyncIslands))
-                        .then(literal("on").executes(ctx -> setAsyncIslands(ctx, true)))
-                        .then(literal("off").executes(ctx -> setAsyncIslands(ctx, false)))
+        LiteralArgumentBuilder<CommandSourceStack> asyncCmd = literal("async")
+                .requires(PlatformPermission.require("command.regions.toggle", 4))
                 .then(literal("debug")
                         .executes(ctx -> {
                             send(ctx, "diagnostics: ", com.axalotl.fabrolia.common.regions.FlightRecorder.DEBUG
@@ -293,7 +291,16 @@ public final class RegionCommand {
                             com.axalotl.fabrolia.common.regions.FlightRecorder.DEBUG = false;
                             send(ctx, "diagnostics: ", "OFF — corrective actions still log one concise line", true);
                             return 1;
-                        }))));
+                        })));
+        // The live mode flip is the A/B control for "is this bug async-specific?":
+        // it exists only with -Dfabrolia.debugCommands=true and is never saved.
+        // Normal servers start synchronous only through -Dfabrolia.syncMode=true.
+        if (DEBUG_COMMANDS) {
+            asyncCmd.executes(ctx -> setAsyncIslands(ctx, !FabroliaConfig.asyncIslands))
+                    .then(literal("on").executes(ctx -> setAsyncIslands(ctx, true)))
+                    .then(literal("off").executes(ctx -> setAsyncIslands(ctx, false)));
+        }
+        regionsCmd.then(asyncCmd);
 
         regionsCmd.then(literal("playerticks")
                 .requires(PlatformPermission.require("command.regions.toggle", 4))
@@ -1564,9 +1571,9 @@ public final class RegionCommand {
         return sb.isEmpty() ? null : sb.toString();
     }
 
-    /** Operator preference: applied live at the next level-tick HEAD (the
-     *  per-level mode latch — between drives, forced rebuild before any
-     *  dispatch stamps) AND persisted immediately as the boot default. */
+    /** Debug control: applied live at the next level-tick HEAD (the per-level
+     *  mode latch — between drives, forced rebuild before any dispatch stamps).
+     *  Not persisted; a restart returns to the -Dfabrolia.syncMode default. */
     private static int setAsyncIslands(
             com.mojang.brigadier.context.CommandContext<net.minecraft.commands.CommandSourceStack> ctx,
             boolean turningOn) {
@@ -1580,9 +1587,9 @@ public final class RegionCommand {
             send(ctx, "async islands: ", "requires the event scheduler + color gate (both on by default)", false);
             return 0;
         }
-        FabroliaConfig.persistAsyncIslands(turningOn);
+        FabroliaConfig.asyncIslands = turningOn;
         send(ctx, "async islands: ", (turningOn ? "ON" : "OFF")
-                + " (applies at next tick; saved as the boot default)", true);
+                + " (applies at next tick; not saved)", true);
         return 1;
     }
 

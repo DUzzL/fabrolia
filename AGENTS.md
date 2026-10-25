@@ -83,6 +83,10 @@ export JAVA_HOME=/path/to/jdk-25              # the JDK named by java_version in
 - Fault-injection and stress subcommands of `/fabrolia regions debug` (`wedgemain`,
   `failunittail`, `offmainpkt`, `chunksender inject|stresstp`) exist only on a server
   started with `-Dfabrolia.debugCommands=true` (`RegionCommand.DEBUG_COMMANDS`).
+- Synchronous region threading (no independent island clocks) is a diagnostic control, not
+  a config key: start with `-Dfabrolia.syncMode=true` (`FabroliaConfig.SYNC_MODE_PROPERTY`).
+  With `-Dfabrolia.debugCommands=true`, `/fabrolia regions async [on|off]` flips it live
+  (not saved). Use it to tell whether a bug is async-specific.
 - `tools/raid-farm-ab/`: compares a farm world in vanilla and in Fabrolia with a real
   protocol client. Carpet bots tick at a different point than real players, so do not
   use them for farm parity.
