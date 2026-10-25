@@ -4426,6 +4426,10 @@ public final class RegionizedServer {
             RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
             return;
         }
+        if (ParallelProcessor.exitsTheEnd(e)) {
+            RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
+            return;
+        }
         if (containsPlayerTick || ParallelProcessor.requiresMainThread(e)) {
             RegionScheduler.queueMainSyncTick(e);
             return;

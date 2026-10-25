@@ -630,6 +630,29 @@ public final class ParallelProcessor {
         return false;
     }
 
+    /**
+     * True when a non-player in {@code entity}'s tree holds an End-portal process
+     * in the End: vanilla's exit-portal destination
+     * ({@code EndPortalBlock#getPortalDestination} → {@code Entity#adjustSpawnLocation})
+     * reads, and loads if cold, the Overworld spawn chunk, which an Overworld island
+     * may own. On a worker that read crossed ownership and a cold load parked the End
+     * island's claim behind Main (audit X-04); such a tick runs under the global fence.
+     */
+    public static boolean exitsTheEnd(Entity entity) {
+        if (!(entity instanceof ServerPlayer)) {
+            var process = entity.portalProcess;
+            if (process != null
+                    && process.portal instanceof net.minecraft.world.level.block.EndPortalBlock
+                    && entity.level().dimension() == net.minecraft.world.level.Level.END) {
+                return true;
+            }
+        }
+        for (Entity passenger : entity.getPassengers()) {
+            if (exitsTheEnd(passenger)) return true;
+        }
+        return false;
+    }
+
     public static boolean shouldTickSynchronously(Entity entity) {
         if (isShuttingDown || FabroliaConfig.disabled) return true;
         if (containsMainOwnedTrackingEntity(entity)) return true;
