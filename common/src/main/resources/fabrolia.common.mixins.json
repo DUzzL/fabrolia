@@ -230,6 +230,7 @@
     "world.RaidsTickMixin",
     "world.RaidsOmenRouteMixin",
     "world.RandomSequencesMixin",
+    "world.RandomSequenceDrawMixin",
     "world.RedstoneTorchBlockMixin",
     "world.SavedDataStorageMixin",
     "world.ScoreboardMixin",
