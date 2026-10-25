@@ -74,13 +74,13 @@ class PoiBlockChangeCallbackTest {
         Holder<PoiType> holder = BuiltInRegistries.POINT_OF_INTEREST_TYPE.getOrThrow(type);
         Method hook = ServerLevelPortalPreparationMixin.class.getDeclaredMethod(
                 "fabrolia$trackPortalPublication",
-                MinecraftServer.class, Runnable.class, Operation.class, Holder.class);
+                MinecraftServer.class, Runnable.class, Operation.class, net.minecraft.core.BlockPos.class, Holder.class);
         hook.setAccessible(true);
         Operation<Void> original = arguments -> {
             vanillaExecute.accept((Runnable) arguments[1]);
             return null;
         };
-        hook.invoke(new Level(), null, callback, original, holder);
+        hook.invoke(new Level(), null, callback, original, net.minecraft.core.BlockPos.ZERO, holder);
     }
 
     private static void onWorker(CheckedRunnable body) throws Exception {

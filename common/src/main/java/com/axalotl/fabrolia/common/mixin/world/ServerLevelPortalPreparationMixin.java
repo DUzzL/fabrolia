@@ -7,6 +7,7 @@ import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.TickTask;
@@ -25,6 +26,11 @@ public abstract class ServerLevelPortalPreparationMixin implements NetherPortalP
     @Unique
     private final PoiPublicationFence fabrolia$portalPublications =
             new PoiPublicationFence(RegionScheduler::publishFatalAndSelectWinner);
+
+    /** Positions with a queued nether_portal POI publication (count per position). */
+    @Unique
+    private final java.util.concurrent.ConcurrentHashMap<Long, Integer> fabrolia$pendingPortalPositions =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     @Override
     public PoiPublicationFence fabrolia$portalPublications() {
@@ -54,16 +60,33 @@ public abstract class ServerLevelPortalPreparationMixin implements NetherPortalP
             require = 2, allow = 2)
     private void fabrolia$trackPortalPublication(MinecraftServer server, Runnable callback,
                                                 Operation<Void> original,
+                                                @Local(argsOnly = true) BlockPos pos,
                                                 @Local(argsOnly = true) Holder<PoiType> poiType) {
+        long key = pos.asLong();
         if (!poiType.is(PoiTypes.NETHER_PORTAL)) {
-            if (ParallelProcessor.isServerExecutionThread()) {
+            if (this.fabrolia$pendingPortalPositions.containsKey(key)) {
+                // A portal publication of this position is still queued (portal
+                // frame broken, then a POI block placed, or one state change
+                // portal -> other POI). Vanilla applies them in order; running this
+                // one inline would let the queued portal remove delete the new
+                // record (audit D-19). Queue it behind, never inline.
+                server.schedule(new TickTask(server.getTickCount(), callback));
+            } else if (ParallelProcessor.isServerExecutionThread()) {
                 callback.run();
             } else {
                 original.call(server, callback);
             }
             return;
         }
-        this.fabrolia$portalPublications.submit(callback, tracked -> {
+        this.fabrolia$pendingPortalPositions.merge(key, 1, Integer::sum);
+        Runnable counted = () -> {
+            try {
+                callback.run();
+            } finally {
+                this.fabrolia$pendingPortalPositions.computeIfPresent(key, (k, v) -> v > 1 ? v - 1 : null);
+            }
+        };
+        this.fabrolia$portalPublications.submit(counted, tracked -> {
             if (NetherPortalPreparation.deferGenerationPublication((ServerLevel) (Object) this)) {
                 // execute may inline on Main even with older queued worldgen adds.
                 // Do not let a portal replacement remove overtake its earlier add.
