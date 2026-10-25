@@ -706,8 +706,6 @@ class FullModpackMixinExportVerifierTest {
         MethodNode fence = generatedMethod(functions, "$fabrolia$fenceFunction");
         String unboundedDesc = "(L" + P_ISLAND + ";)Z";
         String boundedDesc = "(L" + P_ISLAND + ";J)Z";
-        int batchCapability = callIndex(fence, ADVANCEMENT_BATCH_SCOPE,
-                "cleanMainFenceRoot", "()Z");
         int unbounded = callIndex(fence, ISLAND_COMMANDS,
                 "quiesceAllExcept", unboundedDesc);
         int bounded = callIndex(fence, ISLAND_COMMANDS,
@@ -722,8 +720,6 @@ class FullModpackMixinExportVerifierTest {
                 ADVANCEMENT_BATCH_SCOPE, "rewardFunctionActive");
         int release = callIndex(fence, ISLAND_COMMANDS,
                 "releaseAllExceptAndPropagate", "(Ljava/lang/Throwable;)V");
-        assertEquals(1, callCount(fence, ADVANCEMENT_BATCH_SCOPE,
-                "cleanMainFenceRoot", "()Z"));
         assertEquals(2, callCount(fence, ADVANCEMENT_BATCH_SCOPE,
                 "rewardFunctionActive", "()Z"),
                 "only the exact serial reward-body phase may classify or meter a "
@@ -736,8 +732,8 @@ class FullModpackMixinExportVerifierTest {
                 "quiesceAllExcept", unboundedDesc));
         assertEquals(1, callCount(fence, ISLAND_COMMANDS,
                 "quiesceAllExcept", boundedDesc));
-        assertTrue(stickyRead >= 0 && batchCapability > stickyRead
-                        && unbounded > batchCapability && bounded > unbounded
+        assertTrue(stickyRead >= 0
+                        && unbounded > stickyRead && bounded > unbounded
                         && preBodyFailStop > bounded
                         && release > preBodyFailStop,
                 "the sticky cleanup receipt must precede fence acquisition; deferred rewards "

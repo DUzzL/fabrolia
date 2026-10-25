@@ -424,11 +424,6 @@ public final class IslandRegistry {
         // value spans the last five seconds, refreshed every second.
         final TpsWindow tpsWindow = new TpsWindow(TpsWindow.ONE_SECOND_NANOS, Double.NaN, 5);
 
-        /** Per-source-clock-domain delivery chains (task #20): domain key →
-         *  {lastSourceTick, lastDestTick}. Guarded by the pendingArrivals
-         *  monitor. Cleared when the queue drains (idle re-anchor). */
-        public final java.util.HashMap<Long, long[]> arrivalChains = new java.util.HashMap<>(4);
-
         /** Next tick deadline (nanos, System.nanoTime domain); 0 = unscheduled. */
         public volatile long nextDeadlineNanos;
         /** Unit claim: true while this island's tick unit executes or topology/

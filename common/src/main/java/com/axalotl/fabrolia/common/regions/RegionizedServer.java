@@ -760,9 +760,6 @@ public final class RegionizedServer {
     /** Exact cleanup identity for {@link #globalSprintAdmissionFenced}. */
     private volatile Object globalSprintAdmissionFenceOwner;
 
-    /** task #19 arrival spacing chain for the global lane (main-only). */
-    public final java.util.HashMap<Long, long[]> globalArrivalChains = new java.util.HashMap<>(4);
-
     public boolean mainHoldsAllClaims() {
         return mainAllClaimsOwnership != null;
     }

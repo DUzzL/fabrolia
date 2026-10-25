@@ -3,7 +3,6 @@ package com.axalotl.fabrolia.common.regions;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
@@ -116,7 +115,6 @@ class GlobalLaneCohortIntegrityTest {
         final int cohortSize = 5;
         ConcurrentLinkedQueue<CrossDimArrivals.StagedOp> lane = new ConcurrentLinkedQueue<>();
         Object lock = new Object();
-        HashMap<Long, long[]> chains = new HashMap<>();
         CountDownLatch start = new CountDownLatch(1);
 
         Thread producer = new Thread(() -> {
@@ -130,9 +128,8 @@ class GlobalLaneCohortIntegrityTest {
         start.countDown();
 
         ArrayList<String> delivered = new ArrayList<>();
-        long destNow = 0;
         while (producer.isAlive() || !lane.isEmpty()) {
-            ArrayList<CrossDimArrivals.StagedOp> batch = CrossDimArrivals.takeGlobalBatch(lane, lock, chains, destNow++, null);
+            ArrayList<CrossDimArrivals.StagedOp> batch = CrossDimArrivals.takeGlobalBatch(lane, lock, null);
             if (batch != null) {
                 // The drain must never observe a fragment of a mid-append batch.
                 delivered.addAll(assertWholeCohorts(batch, cohortSize, "published batch"));
@@ -149,22 +146,17 @@ class GlobalLaneCohortIntegrityTest {
     }
 
     @Test
-    void takeGlobalBatchClearsChainsOnlyWhenTheLaneIsIdle() {
+    void takeGlobalBatchReleasesTheWholePrefixAndIdleHeadReturnsNull() {
         ConcurrentLinkedQueue<CrossDimArrivals.StagedOp> lane = new ConcurrentLinkedQueue<>();
         Object lock = new Object();
-        HashMap<Long, long[]> chains = new HashMap<>();
-        chains.put(9L, new long[]{1, 2});
 
         lane.addAll(cohort(1L, 7, 2));
         ArrayList<CrossDimArrivals.StagedOp> batch =
-                CrossDimArrivals.takeGlobalBatch(lane, lock, chains, 100L, null);
+                CrossDimArrivals.takeGlobalBatch(lane, lock, null);
         assertEquals(2, batch.size(), "causal rule releases the whole prefix");
         assertTrue(lane.isEmpty());
-        assertTrue(chains.containsKey(1L), "release must anchor the domain chain");
 
-        // Idle head: the chain map resets so the next arrival re-anchors.
-        assertEquals(null, CrossDimArrivals.takeGlobalBatch(lane, lock, chains, 101L, null));
-        assertTrue(chains.isEmpty(), "idle head must clear the spacing chains");
+        assertEquals(null, CrossDimArrivals.takeGlobalBatch(lane, lock, null));
     }
 
 

@@ -3,7 +3,6 @@ package com.axalotl.fabrolia.common.regions;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -43,8 +42,8 @@ class ArrivalReleaseRuleTest {
         for (int i = 0; i < blocks; i++) out.add(new Op(domain, tick, "entity"));
     }
 
-    private static int release(List<Op> queued, long destNow, HashMap<Long, long[]> chains) {
-        return ArrivalReleaseRule.prefix(new Q(queued), destNow, chains);
+    private static int release(List<Op> queued) {
+        return ArrivalReleaseRule.prefix(new Q(queued));
     }
 
     // ------------------------------------------------------------------
@@ -58,7 +57,7 @@ class ArrivalReleaseRuleTest {
         cohort(queued, DOM_SRC, 101, 3);
         cohort(queued, DOM_SRC, 102, 3);
 
-        int take = release(queued, 50, new HashMap<>());
+        int take = release(queued);
 
         assertEquals(queued.size(), take,
                 "every cohort in the queue was sealed by a source pass that already completed, "
@@ -71,7 +70,7 @@ class ArrivalReleaseRuleTest {
         cohort(queued, DOM_SRC, 100, 2);
         cohort(queued, DOM_SRC, 101, 2);
 
-        int take = release(queued, 50, new HashMap<>());
+        int take = release(queued);
 
         // The invariant, stated over the released prefix: if ANY entity is released,
         // every op belonging to an earlier-or-equal source pass must be released too.
@@ -96,7 +95,7 @@ class ArrivalReleaseRuleTest {
         cohort(queued, DOM_SRC, 100, 2);
         cohort(queued, DOM_SRC, 101, 2);
 
-        int take = release(queued, 50, new HashMap<>());
+        int take = release(queued);
 
         // Released prefix must be the queue's own FIFO order: regen before its blocks,
         // and cohort 100 entirely before cohort 101.
@@ -117,7 +116,7 @@ class ArrivalReleaseRuleTest {
         List<Op> queued = new ArrayList<>();
         for (long t = 200; t < 205; t++) cohort(queued, DOM_SRC, t, 2);
 
-        assertEquals(queued.size(), release(queued, 10, new HashMap<>()),
+        assertEquals(queued.size(), release(queued),
                 "a fast source must not leave completed passes queued behind a ticking "
                         + "destination");
     }
@@ -128,19 +127,18 @@ class ArrivalReleaseRuleTest {
         List<Op> queued = new ArrayList<>();
         cohort(queued, DOM_SRC, 300, 2);
 
-        assertEquals(queued.size(), release(queued, 9_999, new HashMap<>()));
+        assertEquals(queued.size(), release(queued));
     }
 
     @Test
     void equalRatesWithPhaseDriftStillDrainsFully() {
         // Identical TPS, but the destination's epoch numbering is offset — the case
         // that made "both at 40 TPS" behave the same as 20/20.
-        HashMap<Long, long[]> chains = new HashMap<>();
         for (int step = 0; step < 8; step++) {
             List<Op> queued = new ArrayList<>();
             cohort(queued, DOM_SRC, 400 + step, 2);
             long destNow = 400 + step - 137;   // constant phase offset
-            assertEquals(queued.size(), release(queued, destNow, chains),
+            assertEquals(queued.size(), release(queued),
                     "phase offset must not withhold a completed cohort (step " + step + ")");
         }
     }
@@ -152,7 +150,7 @@ class ArrivalReleaseRuleTest {
         for (int step = 0; step < 5; step++) {
             List<Op> queued = new ArrayList<>();
             cohort(queued, DOM_SRC, 500 + step, 3);
-            assertEquals(queued.size(), release(queued, 500 + step, new HashMap<>()));
+            assertEquals(queued.size(), release(queued));
         }
     }
 
@@ -168,12 +166,12 @@ class ArrivalReleaseRuleTest {
         // is where the task #20/#23 separation still comes from.
         List<Op> atHead = new ArrayList<>();
         cohort(atHead, DOM_SRC, 600, 2);
-        int take = release(atHead, 60, new HashMap<>());
+        int take = release(atHead);
         assertEquals(3, take, "only what was queued at the head is released");
 
         List<Op> nextHead = new ArrayList<>();
         cohort(nextHead, DOM_SRC, 601, 2);   // arrived during the previous phase
-        assertEquals(3, release(nextHead, 61, new HashMap<>()),
+        assertEquals(3, release(nextHead),
                 "it is delivered at the following head, one destination epoch later");
     }
 
@@ -185,9 +183,7 @@ class ArrivalReleaseRuleTest {
         cohort(queued, 11L, 700, 1);
         cohort(queued, 22L, 900, 1);
 
-        HashMap<Long, long[]> chains = new HashMap<>();
-        assertEquals(queued.size(), release(queued, 70, chains));
-        assertEquals(2, chains.size(), "one chain per source domain");
+        assertEquals(queued.size(), release(queued));
     }
 
     @Test
@@ -197,18 +193,18 @@ class ArrivalReleaseRuleTest {
         List<Op> requeued = new ArrayList<>();
         cohort(requeued, DOM_SRC, 800, 4);
 
-        assertEquals(requeued.size(), release(requeued, 0, new HashMap<>()),
+        assertEquals(requeued.size(), release(requeued),
                 "after a merge/rebuild the re-routed backlog is still causally prior");
     }
 
     @Test
     void unknownSourceEpochStillDrains() {
         List<Op> queued = List.of(new Op(0L, -1L, "entity"), new Op(0L, -1L, "regen"));
-        assertEquals(2, release(new ArrayList<>(queued), 5, new HashMap<>()));
+        assertEquals(2, release(new ArrayList<>(queued)));
     }
 
     @Test
     void emptyQueueReleasesNothing() {
-        assertEquals(0, release(new ArrayList<>(), 5, new HashMap<>()));
+        assertEquals(0, release(new ArrayList<>()));
     }
 }

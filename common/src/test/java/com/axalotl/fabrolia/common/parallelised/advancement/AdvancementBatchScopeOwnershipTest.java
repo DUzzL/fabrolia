@@ -20,19 +20,19 @@ final class AdvancementBatchScopeOwnershipTest {
         AdvancementBatchScope.begin();
         try {
             assertTrue(AdvancementBatchScope.active());
-            assertFalse(AdvancementBatchScope.cleanMainFenceRoot(),
+            assertFalse(AdvancementBatchScope.rewardFunctionActive(),
                     "the broad batch owner is not itself a reward-body capability");
 
             AdvancementBatchScope.enterRewardBody();
             assertTrue(AdvancementBatchScope.rewardFunctionActive());
-            assertTrue(AdvancementBatchScope.cleanMainFenceRoot());
+            assertTrue(AdvancementBatchScope.rewardFunctionActive());
 
             AtomicBoolean foreignActive = new AtomicBoolean(true);
             AtomicBoolean foreignClean = new AtomicBoolean(true);
             AtomicReference<Throwable> foreignEnd = new AtomicReference<>();
             Thread foreign = Thread.ofPlatform().start(() -> {
                 foreignActive.set(AdvancementBatchScope.active());
-                foreignClean.set(AdvancementBatchScope.cleanMainFenceRoot());
+                foreignClean.set(AdvancementBatchScope.rewardFunctionActive());
                 try {
                     AdvancementBatchScope.end();
                 } catch (Throwable expected) {
@@ -51,12 +51,12 @@ final class AdvancementBatchScopeOwnershipTest {
 
             AdvancementBatchScope.exitRewardBody();
             assertFalse(AdvancementBatchScope.rewardFunctionActive());
-            assertFalse(AdvancementBatchScope.cleanMainFenceRoot());
+            assertFalse(AdvancementBatchScope.rewardFunctionActive());
         } finally {
             AdvancementBatchScope.end();
         }
         assertFalse(AdvancementBatchScope.active());
-        assertFalse(AdvancementBatchScope.cleanMainFenceRoot());
+        assertFalse(AdvancementBatchScope.rewardFunctionActive());
     }
 
     @Test
@@ -65,7 +65,7 @@ final class AdvancementBatchScopeOwnershipTest {
         try {
             assertThrows(IllegalStateException.class, AdvancementBatchScope::begin);
             assertTrue(AdvancementBatchScope.active());
-            assertFalse(AdvancementBatchScope.cleanMainFenceRoot());
+            assertFalse(AdvancementBatchScope.rewardFunctionActive());
         } finally {
             AdvancementBatchScope.end();
         }
@@ -88,7 +88,7 @@ final class AdvancementBatchScopeOwnershipTest {
                     () -> wrapper.invoke(null, (Runnable) () -> {
                         sawNarrowCapability.set(
                                 AdvancementBatchScope.rewardFunctionActive()
-                                        && AdvancementBatchScope.cleanMainFenceRoot());
+                                        && AdvancementBatchScope.rewardFunctionActive());
                         throw primary;
                     }));
             assertSame(primary, thrown.getCause());
@@ -97,7 +97,7 @@ final class AdvancementBatchScopeOwnershipTest {
                     "reward cleanup must retain the broad batch owner");
             assertFalse(AdvancementBatchScope.rewardFunctionActive(),
                     "reward cleanup must retire the narrow capability");
-            assertFalse(AdvancementBatchScope.cleanMainFenceRoot());
+            assertFalse(AdvancementBatchScope.rewardFunctionActive());
         } finally {
             AdvancementBatchScope.end();
         }
@@ -114,7 +114,7 @@ final class AdvancementBatchScopeOwnershipTest {
         assertTrue(leaked.getMessage().contains("active reward body"));
         assertFalse(AdvancementBatchScope.active());
         assertFalse(AdvancementBatchScope.rewardFunctionActive());
-        assertFalse(AdvancementBatchScope.cleanMainFenceRoot());
+        assertFalse(AdvancementBatchScope.rewardFunctionActive());
 
         // The invariant is fail-stop, but its mandatory teardown must leave no
         // stale owner which could poison a later test/server cleanup path.

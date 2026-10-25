@@ -617,14 +617,12 @@ public final class CrossDimArrivals {
      * back while the destination ticks already-published falling blocks lets a
      * later {@code createEndPlatform} destroy blocks those entities just placed.
      */
-    private static int fabrolia$eligiblePrefix(java.util.List<StagedOp> ops,
-                                               long destNow,
-                                               java.util.HashMap<Long, long[]> chains) {
+    private static int fabrolia$eligiblePrefix(java.util.List<StagedOp> ops) {
         return ArrivalReleaseRule.prefix(new ArrivalReleaseRule.Queue() {
             @Override public int size() { return ops.size(); }
             @Override public long sourceDomain(int i) { return ops.get(i).sourceDomain(); }
             @Override public long sourceTick(int i) { return ops.get(i).sourceTick(); }
-        }, destNow, chains);
+        });
     }
 
     /** Adapter: a released-prefix window of staged ops for the handoff gate.
@@ -717,16 +715,13 @@ public final class CrossDimArrivals {
                     if (offering == null) {
                         discardCancelledRoutes(prefix);
                         if (!prefix.isEmpty()) {
-                            int take = fabrolia$eligiblePrefix(
-                                    prefix, island.logicalTick, island.arrivalChains);
+                            int take = fabrolia$eligiblePrefix(prefix);
                             if (take > 0) {
                                 RegionizedServer destRs =
                                         RegionScheduler.forLevel(island.domainLevel());
                                 ops = fabrolia$gatedExtract(prefix, take,
                                         destRs != null ? destRs.platformHandoff : null);
                             }
-                        } else {
-                            island.arrivalChains.clear();
                         }
                         break;
                     }
@@ -799,9 +794,8 @@ public final class CrossDimArrivals {
      */
     static ArrayList<StagedOp> takeGlobalBatch(
             java.util.concurrent.ConcurrentLinkedQueue<StagedOp> lane, Object lock,
-            java.util.HashMap<Long, long[]> chains, long destNow,
             EndPlatformHandoff.Tracker tracker) {
-        return takeGlobalBatch(lane, lock, chains, destNow, tracker, null);
+        return takeGlobalBatch(lane, lock, tracker, null);
     }
 
     /**
@@ -811,12 +805,10 @@ public final class CrossDimArrivals {
      */
     private static ArrayList<StagedOp> takeGlobalBatch(
             ConcurrentLinkedQueue<StagedOp> lane, Object lock,
-            java.util.HashMap<Long, long[]> chains, long destNow,
             EndPlatformHandoff.Tracker tracker, RegionizedServer rs) {
         ArrayList<StagedOp> pending;
         synchronized (lock) {
             if (lane.isEmpty()) {
-                chains.clear();
                 return null;
             }
             pending = new ArrayList<>(lane);
@@ -837,10 +829,9 @@ public final class CrossDimArrivals {
                 ArrayList<StagedOp> global = targets == null
                         ? pending : offerCurrentTargets(targets, false);
                 if (global == null || global.isEmpty()) {
-                    chains.clear();
                     return null;
                 }
-                int take = fabrolia$eligiblePrefix(global, destNow, chains);
+                int take = fabrolia$eligiblePrefix(global);
                 ArrayList<StagedOp> released = take > 0
                         ? fabrolia$gatedExtract(global, take, tracker) : null;
                 prependGlobalLane(lane, lock, global);
@@ -855,9 +846,8 @@ public final class CrossDimArrivals {
     public static void publishGlobal(RegionizedServer rs) {
         int[] published = new int[1];
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            long destNow = IslandClock.wallTime(rs.level);
             ArrayList<StagedOp> ops = takeGlobalBatch(rs.globalArrivals, rs.globalArrivalsLock,
-                    rs.globalArrivalChains, destNow, rs.platformHandoff, rs);
+                    rs.platformHandoff, rs);
             published[0] = publishEntered(ops);
         });
         commitPublishMetrics(published[0]);
@@ -1196,7 +1186,6 @@ public final class CrossDimArrivals {
                     // Save follows the normal landing rule. Held operations
                     // stay queued and are captured by EndArrivalSavedData.
                     ops = extractForSave(p.pendingArrivals, rs.platformHandoff);
-                    if (p.pendingArrivals.isEmpty()) p.arrivalChains.clear();
                 }
                 published[0] = publishEntered(ops);
             });
@@ -1219,7 +1208,6 @@ public final class CrossDimArrivals {
                 discardCancelledRoutes(pending);
                 released = extractForSave(pending, rs.platformHandoff);
                 rs.globalArrivals.addAll(pending);
-                if (rs.globalArrivals.isEmpty()) rs.globalArrivalChains.clear();
             }
             globalPublished[0] = publishEntered(released);
         });

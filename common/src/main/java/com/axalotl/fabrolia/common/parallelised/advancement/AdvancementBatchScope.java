@@ -48,18 +48,11 @@ public final class AdvancementBatchScope {
         return owner == null && !stickyHeld && rewardBodyDepth == 0;
     }
 
-    /**
-     * True only for the exact physical-Main batch owner while it is inside one
-     * serial reward body.  The entity-batch barrier and trigger /
-     * PlayerAdvancements monitors have been released before that body begins,
-     * so its first function may wait for the exact unbounded global fence.
-     */
-    public static boolean cleanMainFenceRoot() {
-        return rewardFunctionActive();
-    }
-
     /** True only while the exact batch owner is inside a serial vanilla
-     * award/direct-replay body which may synchronously dispatch rewards. */
+     * award/direct-replay body which may synchronously dispatch rewards.
+     * The entity-batch barrier and trigger / PlayerAdvancements monitors have
+     * been released before that body begins, so its first function may wait
+     * for the exact unbounded global fence. */
     public static boolean rewardFunctionActive() {
         return owner == Thread.currentThread() && rewardBodyDepth > 0;
     }

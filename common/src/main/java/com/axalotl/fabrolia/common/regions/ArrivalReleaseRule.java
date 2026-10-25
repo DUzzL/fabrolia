@@ -1,7 +1,5 @@
 package com.axalotl.fabrolia.common.regions;
 
-import java.util.Map;
-
 /**
  * Decides how much of a destination island's queued arrival backlog is released
  * at its unit head. Extracted from {@code CrossDimArrivals} so the rule is
@@ -60,33 +58,10 @@ public final class ArrivalReleaseRule {
     }
 
     /**
-     * @param ops     queued arrivals in FIFO order, as captured under the queue monitor
-     * @param destNow the destination island's current logical tick
-     * @param chains  per-source-domain {lastTick, lastDestEpoch} anchors; mutated
+     * @param ops queued arrivals in FIFO order, as captured under the queue monitor
      * @return how many leading ops to release now (the whole causal prefix)
      */
-    public static int prefix(Queue ops, long destNow, Map<Long, long[]> chains) {
-        int n = ops.size();
-        if (n == 0) return 0;
-
-        // Anchor bookkeeping: per-source-domain {lastTick, lastDestEpoch}, so
-        // the idle-reset semantics (a domain's chain re-anchors after the queue
-        // drains) stay well-defined for callers that clear the map when idle.
-        for (int i = 0; i < n; i++) {
-            long tick = ops.sourceTick(i);
-            if (tick < 0) continue;
-            long dom = ops.sourceDomain(i);
-            long[] c = chains.get(dom);
-            if (c == null) {
-                chains.put(dom, new long[]{tick, destNow});
-            } else if (tick != c[0]) {
-                c[0] = tick;
-                c[1] = destNow;
-            }
-        }
-        if (chains.size() > 64) {
-            chains.clear();
-        }
-        return n;
+    public static int prefix(Queue ops) {
+        return ops.size();
     }
 }

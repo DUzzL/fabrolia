@@ -78,7 +78,7 @@ final class ScheduledFunctionFenceScopeTest {
         String fence = section(functions, "fabrolia$fenceFunction(",
                 "@org.spongepowered.asm.mixin.Unique", 0);
         assertTrue(fence.contains("IslandCommands.inMainScheduledFunctionCallback()"));
-        assertTrue(fence.contains("AdvancementBatchScope.cleanMainFenceRoot()"),
+        assertTrue(fence.contains("|| sticky;"),
                 "the monitor-free deferred reward batch must use the unbounded exact fence");
         assertTrue(count(fence, "rewardFunctionActive()") == 2,
                 "sticky ownership and reward metrics must require the narrow exact reward body");

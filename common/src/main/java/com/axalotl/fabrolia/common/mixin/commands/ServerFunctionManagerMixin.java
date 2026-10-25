@@ -335,8 +335,7 @@ public abstract class ServerFunctionManagerMixin {
         Throwable failure = null;
         boolean cleanMainRoot = fabrolia$inTickTag
                 || IslandCommands.inMainScheduledFunctionCallback()
-                || com.axalotl.fabrolia.common.parallelised.advancement
-                        .AdvancementBatchScope.cleanMainFenceRoot();
+                || sticky;
         boolean took = cleanMainRoot
                 ? IslandCommands.quiesceAllExcept(null)
                 : IslandCommands.quiesceAllExcept(null, FENCE_TRY_NANOS);
