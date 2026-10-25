@@ -1505,6 +1505,10 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             if (!fabrolia$servercoreRandomTickDistanceAffectsRandomTicks()) {
                 RegionizedServer rs = RegionScheduler.forLevel(this.level);
                 if (rs != null) {
+                    // ServerCore's mode is read live each tick: once it is off, clear the
+                    // islands' ServerCore snapshots, or they keep ticking the stale list
+                    // (audit C-09). With the mode off this only writes null.
+                    fabrolia$publishIslandRandomTickSnapshots(List.of());
                     // Main only COLLECTS positions from the authoritative sim-tracker set
                     // (server-thread-only walk); per-chunk LevelChunk resolution + region-key
                     // derivation move onto the region workers in fabrolia$submitBlockTickPositions.
