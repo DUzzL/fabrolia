@@ -30,11 +30,14 @@ class CrossDimArrivalAdmissionTest {
     }
 
     @Test
-    void duplicateUuidRefusalFailsPublicationInsteadOfWaitingForAnUntrackedLanding() throws Exception {
+    void duplicateUuidRefusalDropsTheArrivalAndSettlesItsLanding() throws Exception {
         Field unsafeField = field(sun.misc.Unsafe.class, "theUnsafe");
         TestFallingBlock arrival = (TestFallingBlock) ((sun.misc.Unsafe) unsafeField.get(null))
                 .allocateInstance(TestFallingBlock.class);
         arrival.setUUID(UUID.randomUUID());
+        field(Entity.class, "levelCallback").set(arrival,
+                net.minecraft.world.level.entity.EntityInLevelCallback.NULL);
+        field(Entity.class, "passengers").set(arrival, com.google.common.collect.ImmutableList.of());
         PersistentEntitySectionManager<Entity> manager =
                 new PersistentEntitySectionManager<>(Entity.class, null, null);
         @SuppressWarnings("unchecked")
@@ -49,13 +52,15 @@ class CrossDimArrivalAdmissionTest {
         admission.setAccessible(true);
         Operation<Boolean> original = args -> manager.addNewEntity((Entity) args[1]);
         AtomicBoolean successor = new AtomicBoolean();
-        assertThrows(IllegalStateException.class, () -> CrossDimArrivals.runPublished(() -> {
-            invoke(admission, adapter, arrival, original);
+        // Audit A-14: vanilla addDuringTeleport ignores the refusal, the copy never
+        // exists. The publication continues and nothing awaits the dropped landing.
+        assertDoesNotThrow(() -> CrossDimArrivals.runPublished(() -> {
+            assertFalse(invoke(admission, adapter, arrival, original));
             successor.set(true);
         }));
-        assertFalse(successor.get(), "the failed member must abort the publication body");
-        assertFalse(arrival.isRemoved(), "refusal must not fabricate a settled falling block");
-        assertTrue(tracker.airborne(1L), "failure is fail-stop, not permission to regenerate over a failed cohort");
+        assertTrue(successor.get(), "the rest of the cohort still publishes");
+        assertTrue(arrival.isRemoved(), "the refused copy is dropped as vanilla drops it");
+        assertFalse(tracker.airborne(1L), "a dropped arrival cannot hold the platform handoff forever");
         assertFalse(CrossDimArrivals.PUBLISHING.get());
         // Outside staged publication the vanilla void caller retains its refusal semantics.
         assertFalse(invoke(admission, adapter, arrival, original));

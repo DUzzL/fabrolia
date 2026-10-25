@@ -175,6 +175,20 @@ public final class CrossDimArrivals {
      *  paths (the staging mixins pass through while set). */
     public static final ThreadLocal<Boolean> PUBLISHING = ThreadLocal.withInitial(() -> false);
 
+    /**
+     * A destination refused a staged member (UUID already known, or a NeoForge
+     * EntityJoinLevelEvent listener cancelled it). Vanilla's addDuringTeleport
+     * ignores the refusal: the copy never exists. Mark it removed so a tracker
+     * waiting for its landing (EndPlatformHandoff: removal means settled) resolves
+     * instead of waiting forever, and let the rest of the cohort publish.
+     */
+    public static void discardRejectedArrival(net.minecraft.server.level.ServerLevel destination, Entity entity) {
+        LOGGER.warn("[cross-dim] {} refused staged arrival {} {}; dropped as vanilla does",
+                destination == null ? "?" : destination.dimension().identifier(),
+                entity.getType(), entity.getUUID());
+        entity.discard();
+    }
+
     /** Source simulation {epoch, clock domain} carried across an exact Nether
      *  body whose between-unit worker has no current region/domain. Nested
      *  staging must not replace this source identity with a global wall tick. */

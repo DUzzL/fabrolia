@@ -25,7 +25,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class CrossDimTeleportMixin {
 
     /** Vanilla's void teleport entry discards the admission result. A rejected
-     * staged member is a failed publication, not an airborne entity to await. */
+     * staged member never arrives: it is dropped as vanilla drops it, and marked
+     * removed so nothing awaits its landing (audit A-14). */
     @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
             method = "addDuringTeleport",
             at = @At(value = "INVOKE",
@@ -34,8 +35,7 @@ public abstract class CrossDimTeleportMixin {
             com.llamalad7.mixinextras.injector.wrapoperation.Operation<Boolean> original) {
         boolean accepted = original.call(level, entity);
         if (!accepted && CrossDimArrivals.PUBLISHING.get()) {
-            throw new IllegalStateException("Destination rejected staged teleport arrival "
-                    + entity.getUUID());
+            CrossDimArrivals.discardRejectedArrival(level, entity);
         }
         return accepted;
     }
