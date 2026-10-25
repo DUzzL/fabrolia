@@ -758,7 +758,10 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                             if (c != null) list.add(c);
                         }
                     }
-                    fabrolia$runChunksMaybeParallel(r, list, action);
+                    // Serial within the region (audit C-01): help batches of one region ran
+                    // on several workers at once, and random ticks of neighbouring chunks
+                    // write the same LevelChunkSection counters and heightmaps unguarded.
+                    fabrolia$runChunksSerial(list, action);
                 } catch (Throwable failure) {
                     Throwable winner = fabrolia$completeFutureAfterFatalPublication(cf, failure);
                     ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(winner);
@@ -1523,45 +1526,21 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             if (!tickChunks.isEmpty()) {
                 // DEFERRED ARM — see fabrolia$deferredBlockTicksArm.
                 fabrolia$deferredBlockTicksArm = () -> {
-                    fabrolia$blockTicksFuture = fabrolia$submitPerRegion(tickChunks, tickingChunkConsumer);
+                    fabrolia$blockTicksFuture = fabrolia$submitPerRegion(tickChunks, tickingChunkConsumer, true);
                 };
             }
             return;
         }
 
-        if (!FabroliaConfig.disabled && FabroliaConfig.enableFabroliaRandomTicks) {
-            List<LevelChunk> collected = new ArrayList<>();
-            original.call(instance, (Consumer<LevelChunk>) collected::add);
-            fabrolia$publishIslandRandomTickSnapshots(collected);
-            List<LevelChunk> tickChunks = fabrolia$mainOwnedOnly(collected);
-            int n = tickChunks.size();
-            if (n > 0) {
-                int poolSize = Math.max(1, ParallelProcessor.getPoolSize());
-                int batchSize = Math.max(8, (n + (poolSize << 2) - 1) / (poolSize << 2));
-                int batchCount = (n + batchSize - 1) / batchSize;
-                FabroliaFlatSubmission blockSubmission = fabrolia$beginFlatFanout(
-                        ParallelProcessor.executor, batchCount, (failureGate, batchIndex) -> {
-                            int start = batchIndex * batchSize;
-                            int end = Math.min(start + batchSize, n);
-                            for (int j = start; j < end; j++) {
-                                int chunkIndex = j;
-                                failureGate.runNext(
-                                        () -> tickingChunkConsumer.accept(tickChunks.get(chunkIndex)));
-                            }
-                        });
-                blockTicksFut = blockSubmission.completion();
-                if (blockSubmission.failureAtReturn() != null) {
-                    fabrolia$awaitAcceptedFlatWork(blockTicksFut, spawnFut);
-                }
-            }
-        } else {
-            // Island-owned chunks are ticked by their island unit, never by Main.
-            List<LevelChunk> collected = new ArrayList<>();
-            original.call(instance, (Consumer<LevelChunk>) collected::add);
-            fabrolia$publishIslandRandomTickSnapshots(collected);
-            for (LevelChunk c : fabrolia$mainOwnedOnly(collected)) {
-                tickingChunkConsumer.accept(c);
-            }
+        // Random ticks of the flat (region threading off) path run serially on
+        // Main (audit C-01): the former pool fan-out ticked neighbouring chunks at
+        // once, and their writes share LevelChunkSection counters and heightmaps,
+        // which nothing guards. Island-owned chunks are ticked by their island unit.
+        List<LevelChunk> collected = new ArrayList<>();
+        original.call(instance, (Consumer<LevelChunk>) collected::add);
+        fabrolia$publishIslandRandomTickSnapshots(collected);
+        for (LevelChunk c : fabrolia$mainOwnedOnly(collected)) {
+            tickingChunkConsumer.accept(c);
         }
 
         boolean rideAlong = FabroliaConfig.enableSpawnBarrierOverlap && !FabroliaConfig.disabled;
