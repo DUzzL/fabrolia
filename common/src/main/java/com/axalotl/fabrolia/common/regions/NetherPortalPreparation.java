@@ -62,6 +62,14 @@ public final class NetherPortalPreparation {
     private static final ConcurrentLinkedQueue<Request> STAGED = new ConcurrentLinkedQueue<>();
     private static final Set<Request> ACTIVE = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final ConcurrentLinkedQueue<Request> RELEASE = new ConcurrentLinkedQueue<>();
+    /**
+     * Requests closed one boundary ago. A transfer closes its preparation inside an
+     * island unit and queues the arrival's PORTAL ticket to the main-only lane,
+     * which Main drains at the end of its next entity batch; releasing at the very
+     * next boundary let the destination chunk lose every ticket for one Main tick
+     * before that PORTAL ticket landed (audit X-06). Release one full tick later.
+     */
+    private static final ConcurrentLinkedQueue<Request> RELEASE_AFTER_NEXT_TICK = new ConcurrentLinkedQueue<>();
     /** READ/GENERATING scopes open on any thread. Raised before a scope's
      *  ThreadLocal is set and lowered after it is cleared, so a thread inside
      *  a scope always observes it non-zero: the per-call ServerChunkCache.getChunk
@@ -128,6 +136,7 @@ public final class NetherPortalPreparation {
         Set<Request> requests = new LinkedHashSet<>(STAGED);
         requests.addAll(ACTIVE);
         requests.addAll(RELEASE);
+        requests.addAll(RELEASE_AFTER_NEXT_TICK);
         requests.addAll(TRANSFER_BORDERS.values());
         return requests;
     }
@@ -136,6 +145,7 @@ public final class NetherPortalPreparation {
         STAGED.removeIf(requests::contains);
         ACTIVE.removeAll(requests);
         RELEASE.removeIf(requests::contains);
+        RELEASE_AFTER_NEXT_TICK.removeIf(requests::contains);
         TRANSFER_BORDERS.values().removeIf(requests::contains);
         for (Request request : requests) request.detachClosed();
     }
@@ -164,7 +174,8 @@ public final class NetherPortalPreparation {
         publishBorders(server);
         serviceClaimFree();
         Request released;
-        while ((released = RELEASE.poll()) != null) released.releaseTickets();
+        while ((released = RELEASE_AFTER_NEXT_TICK.poll()) != null) released.releaseTickets();
+        while ((released = RELEASE.poll()) != null) RELEASE_AFTER_NEXT_TICK.add(released);
         boolean cold = false;
         for (Request request : ACTIVE) {
             // The pool pause is the expensive part; prepareMain itself is cheap.
@@ -208,6 +219,8 @@ public final class NetherPortalPreparation {
         QUIESCENT.set(true);
         try {
             Request released;
+            // No island unit runs: every PORTAL ticket is already applied.
+            while ((released = RELEASE_AFTER_NEXT_TICK.poll()) != null) released.releaseTickets();
             while ((released = RELEASE.poll()) != null) released.releaseTickets();
             for (Request request : ACTIVE) {
                 synchronized (request) {
