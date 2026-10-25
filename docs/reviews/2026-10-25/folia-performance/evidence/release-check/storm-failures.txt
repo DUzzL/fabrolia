@@ -1,5 +1,0 @@
-ts-3112/crash-2026-10-25_12.32.08-server.txt: Description: Exception in server tick loop
-ts-3112/console.log: java.lang.IllegalStateException: A5 topology-gap handoff lost its exact player/session binding: auditedLifecycleMutationPending (player=T008 phase=MAIN_HANDOFF sessionEpoch=1)
-ts-3113-c11bab6/crash-2026-10-25_11.48.22-server.txt: Description: Exception in server tick loop
-ts-3113-c11bab6/console.log: java.lang.IllegalStateException: A5 topology-gap handoff lost its exact player/session binding: auditedLifecycleMutationPending (player=T009 phase=MAIN_HANDOFF sessionEpoch=4)
-ts-3113-fix/console.log: java.lang.IllegalStateException: A5 entity ordinal overlapped another island body

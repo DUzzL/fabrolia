@@ -5,8 +5,7 @@ CPU cores instead of one. It runs on **Fabric** and **NeoForge**, on dedicated
 servers and in singleplayer, and keeps farms, redstone and datapacks working
 like in vanilla.
 
-> **Alpha.** Fabrolia runs a busy production server, but it changes how the game
-> is scheduled at its core. Back up your world and test your modpack before you
+> **Alpha.** Fabrolia changes how the game is scheduled at its core. Back up your world and test your modpack before you
 > switch.
 
 ## How it works
@@ -44,9 +43,9 @@ combination that was measured:
 Fabrolia gains where work is spread over separate areas. One huge base with
 everyone in it stays one island; world generation is C2ME's field; and with
 piston-heavy redstone the single-threaded light engine becomes the limit (add
-ScalableLux). All comparisons (Lithium, C2ME, Paper, Folia; mobs, chunks, hoppers,
-redstone, world generation, thread scaling), the hardware and how to repeat the
-measurement are in [the benchmark](docs/BENCHMARK.md).
+ScalableLux). The charts in `docs/benchmark/` compare Lithium, C2ME, Paper and
+Folia for mobs, chunks, hoppers, redstone, world generation and thread scaling;
+`tools/bench/` repeats the measurement.
 
 ## Installation
 
@@ -119,8 +118,8 @@ Requires the JDK named in `gradle.properties` (`java_version`).
 ```
 
 Jars are written to `fabric/build/libs/` and `neoforge/build/libs/`. Before
-changing code, read [AGENTS.md](AGENTS.md) and the [documentation](docs/README.md);
-changes are listed in the [changelog](CHANGELOG.md).
+changing code, read [AGENTS.md](AGENTS.md): the contract, the build and test rules
+and a map of the code.
 
 ## Credits and license
 

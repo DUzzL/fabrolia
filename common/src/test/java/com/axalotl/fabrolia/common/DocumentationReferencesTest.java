@@ -17,8 +17,9 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The code map is how people and agents find code ("where to look when"). A
- * renamed or deleted class or test must not leave it pointing at nothing.
+ * The agent guide (and the local code map, when present) is how people and
+ * agents find code ("where to look when"). A renamed or deleted class or test
+ * must not leave it pointing at nothing.
  */
 class DocumentationReferencesTest {
 
@@ -35,7 +36,9 @@ class DocumentationReferencesTest {
 
         Set<String> missing = new TreeSet<>();
         for (String doc : new String[]{"docs/CODEMAP.md", "AGENTS.md"}) {
-            String text = Files.readString(root.resolve(doc));
+            Path file = root.resolve(doc);
+            if (!Files.isRegularFile(file)) continue; // docs/ is not versioned
+            String text = Files.readString(file);
             Matcher test = TEST_REF.matcher(text);
             while (test.find()) {
                 if (!tests.contains(test.group(1))) missing.add(doc + ": " + test.group(1));
@@ -75,8 +78,8 @@ class DocumentationReferencesTest {
     private static Path repositoryRoot() {
         Path dir = Paths.get("").toAbsolutePath();
         for (int i = 0; i < 6 && dir != null; i++, dir = dir.getParent()) {
-            if (Files.isRegularFile(dir.resolve("docs/CODEMAP.md"))
-                    && Files.isRegularFile(dir.resolve("AGENTS.md"))) {
+            if (Files.isRegularFile(dir.resolve("AGENTS.md"))
+                    && Files.isDirectory(dir.resolve("common/src/main/java"))) {
                 return dir;
             }
         }

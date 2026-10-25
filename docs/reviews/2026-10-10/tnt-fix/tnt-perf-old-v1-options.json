@@ -1,7 +1,0 @@
-{
-  "functions": [
-    "perfstand:items",
-    "perfstand:pistons"
-  ],
-  "heap_histogram": false
-}

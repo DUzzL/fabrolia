@@ -44,3 +44,14 @@ hs_err_pid*
 # local data next to the code (not versioned)
 /stand/
 /release/
+
+# local only: documentation, changelog and agent configuration (AGENTS.md stays versioned)
+/docs/*
+!/docs/benchmark/
+/docs/benchmark/*
+!/docs/benchmark/*.png
+/CHANGELOG.md
+/CLAUDE.md
+/AGENTS.local.md
+/.claude/
+/.githooks/
