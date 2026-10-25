@@ -3019,7 +3019,18 @@ public final class RegionWorkerPool {
                 return false;
             }
         }
+        // A stolen region body is region work like workOnce's: CrossRegionGuard
+        // and the tick locks route by currentRegion, so a null publication let
+        // boundary writes run inline (audit X-01). Same protocol as workOnce:
+        // publish before the claim, unpublish after the release, never nested.
+        RegionWorkerThread stealer = Thread.currentThread() instanceof RegionWorkerThread worker
+                ? worker : null;
+        if (stealer != null && stealer.currentRegion != null) {
+            return false;
+        }
+        if (stealer != null) stealer.currentRegion = r;
         if (!r.tryClaim(Thread.currentThread(), claimDomain, claimEpoch)) {
+            if (stealer != null) stealer.currentRegion = null;
             // false also means this stale claimant self-released after seeing
             // sealedDoneEpoch, not only that another live worker is BUSY.
             // Never detach a next-epoch help published after that seal.
@@ -3097,6 +3108,7 @@ public final class RegionWorkerPool {
                 failure = publishAndSelectFatal(
                         mergeFailure(failure, cleanupFailure));
             }
+            if (stealer != null) stealer.currentRegion = null;
             if (failure == null) failure = fatalFailure;
             if (failure == null) {
                 try {
