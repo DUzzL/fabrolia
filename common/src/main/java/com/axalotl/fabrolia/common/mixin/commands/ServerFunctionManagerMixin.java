@@ -51,8 +51,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(ServerFunctionManager.class)
 public abstract class ServerFunctionManagerMixin {
 
+    // Seconds, not 50 ms (audit D-01): a unit running past the budget fail-stopped
+    // the server for an ordinary command (OP sign click, mod server.execute, a
+    // nested managedBlock drain) under load, with production units at 37-100 ms.
+    // The quiesce pumps Main's chunk services while it waits, as mainClaim does;
+    // a real deadlock against a foreign monitor still ends in the fail-stop, well
+    // before the vanilla watchdog.
     @org.spongepowered.asm.mixin.Unique
-    private static final long FENCE_TRY_NANOS = 50_000_000L;
+    private static final long FENCE_TRY_NANOS = 5_000_000_000L;
 
     @org.spongepowered.asm.mixin.Unique
     private boolean fabrolia$inTickTag;
