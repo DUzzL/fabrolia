@@ -249,7 +249,7 @@ public final class AdvancementBuffer {
     // ------------------------------------------------------------------ routed work
 
     sealed interface Routed permits PendingTrigger, DeferredTrigger, RoutedAward, RoutedReward,
-            RoutedGrant, RoutedAnnouncement {
+            RoutedGrant, RoutedAnnouncement, RoutedStat {
         /** Whose per-player FIFO position this item holds; {@code null} when untracked. */
         PlayerAdvancements backlogOwner();
 
@@ -344,6 +344,32 @@ public final class AdvancementBuffer {
     }
 
     /** Main owns the player list; the broadcast needs no fence and changes no player state. */
+    /**
+     * A stat change from a thread that does not own the player (breeding love
+     * cause, kill credit, raid victory on another island). Stats are owner-local
+     * state ({@link com.axalotl.fabrolia.common.regions.PlayerTurnOwnership}); the
+     * change keeps its place in the player's FIFO and applies on Main under the
+     * fence, at most one tick later (audit D-12).
+     */
+    record RoutedStat(PlayerAdvancements advancements, ServerPlayer player,
+                      net.minecraft.stats.Stat<?> stat, int count, boolean reset) implements Routed {
+        public PlayerAdvancements backlogOwner() { return advancements; }
+
+        public boolean needsFence() { return true; }
+
+        public void apply() {
+            ServerPlayer target = currentPlayer(player);
+            if (reset) target.resetStat(stat);
+            else target.awardStat(stat, count);
+        }
+    }
+
+    /** Off-owner stat change: see {@link RoutedStat}. */
+    public static void routeStat(ServerPlayer player, net.minecraft.stats.Stat<?> stat, int count, boolean reset) {
+        publish(new RoutedStat(player.getAdvancements(), player, stat, count, reset),
+                AdvancementDiag.Route.OFF_OWNER_STAT);
+    }
+
     record RoutedAnnouncement(PlayerList playerList, Component message, boolean overlay) implements Routed {
         public PlayerAdvancements backlogOwner() { return null; }
 

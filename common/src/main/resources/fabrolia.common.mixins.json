@@ -178,6 +178,7 @@
     "server.WorkerTicketRouteMixin",
     "server.ServerLevelEntityCallbacksMixin",
     "server.ServerPlayerMixin",
+    "server.ServerPlayerStatOwnershipMixin",
     "server.ServerGamePacketListenerIslandMixin",
     "server.ServerGamePacketListenerDeferredContinuationMixin",
     "server.ServerPlayerGameModeAccessor",

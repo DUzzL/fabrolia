@@ -50,7 +50,9 @@ public final class AdvancementDiag {
         /** Whole reward grant (loot table, or behind earlier routed work). */
         REWARD_GRANT,
         /** Chat announcement from a thread that does not own the player list. */
-        ANNOUNCEMENT;
+        ANNOUNCEMENT,
+        /** Stat change from a thread that does not own the player. */
+        OFF_OWNER_STAT;
 
         final LongAdder count = new LongAdder();
     }
