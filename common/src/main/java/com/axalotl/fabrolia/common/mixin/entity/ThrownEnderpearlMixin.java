@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.entity;
 
+import com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -39,8 +40,9 @@ import org.spongepowered.asm.mixin.injection.At;
  * the vanilla teleport branch is short-circuited at the
  * {@code isAcceptingMessages} admission check and the remainder of the vanilla
  * player branch (endermite roll, portal cooldown, teleport, damage, sound) is
- * re-run as a continuation on physical Main. The continuation re-validates the
- * owner's listener and lifecycle before acting. Flight and stasis ticks retain
+ * re-run as a continuation on physical Main under the all-island fence. The
+ * continuation re-validates the owner's listener and lifecycle before acting and
+ * drops itself, as vanilla would, when they changed. Flight and stasis ticks retain
  * their existing island venue.
  */
 @Mixin(ThrownEnderpearl.class)
@@ -177,16 +179,17 @@ public abstract class ThrownEnderpearlMixin {
         Vec3 teleportPos = self.oldPosition();
         boolean portalCooldown = self.isOnPortalCooldown();
         float endermiteRoll = self.getRandom().nextFloat();
-        Runnable mainContinuation = () -> {
+        // The whole remainder runs under the all-island fence: the endermite
+        // spawn writes the landing chunk, which an island may own.
+        Runnable mainContinuation = () -> AsyncIslandPlayerTicks.runFencedMainMutation(
+                "pearl landing teleport", () -> {
+            // Vanilla checks the owner and teleports in the same onHit call. The
+            // owner kept ticking while this turn was queued; if it died, slept
+            // or disconnected meanwhile, vanilla would not have teleported.
             if (player.connection != connection
                     || !connection.isAcceptingMessages()
                     || !fabrolia$ownerTeleportAllowed(player, level)) {
-                throw new IllegalStateException(
-                        "accepted deferred pearl teleport lost its player/listener lifecycle: pearl="
-                                + self.getUUID()
-                                + " owner=" + player.getUUID()
-                                + " source=" + level.dimension().identifier()
-                                + " current=" + player.level().dimension().identifier());
+                return;
             }
 
             if (endermiteRoll < 0.05F
@@ -216,7 +219,7 @@ public abstract class ThrownEnderpearlMixin {
 
             level.playSound(null, teleportPos.x, teleportPos.y, teleportPos.z,
                     SoundEvents.PLAYER_TELEPORT, SoundSource.PLAYERS);
-        };
+        });
         RegionScheduler.enqueueGlobalMainOnly(mainContinuation);
         return false;
     }

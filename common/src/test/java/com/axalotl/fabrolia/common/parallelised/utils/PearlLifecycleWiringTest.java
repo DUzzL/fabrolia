@@ -176,7 +176,23 @@ class PearlLifecycleWiringTest {
                 "only a main-thread live handoff with a live published successor may bypass false death");
     }
 
-    
+    @Test
+    void staleDeferredPearlTeleportIsDroppedUnderTheMainFence() throws Exception {
+        String pearl = source("common/mixin/entity/ThrownEnderpearlMixin.java");
+        int route = pearl.indexOf("fabrolia$routePlayerTeleportToMain");
+        int fence = pearl.indexOf("AsyncIslandPlayerTicks.runFencedMainMutation(", route);
+        int recheck = pearl.indexOf("!fabrolia$ownerTeleportAllowed(player, level)", fence);
+        int drop = pearl.indexOf("return;", recheck);
+        int endermite = pearl.indexOf("level.addFreshEntity(endermite)", drop);
+        int teleport = pearl.indexOf("player.teleport(new TeleportTransition(", endermite);
+        int enqueue = pearl.indexOf("RegionScheduler.enqueueGlobalMainOnly(mainContinuation)", teleport);
+        assertTrue(route >= 0 && fence > route && recheck > fence && drop > recheck
+                        && endermite > drop && teleport > endermite && enqueue > teleport,
+                "the queued pearl landing must re-check its owner under the all-island fence, "
+                        + "drop a stale landing, and keep the endermite spawn and teleport inside it");
+        assertFalse(pearl.substring(route).contains("throw new IllegalStateException"),
+                "a lifecycle change before the queued landing is vanilla 'no teleport', not a fail-stop");
+    }
 
     private static String source(String relative) throws Exception {
         Path root = Paths.get("").toAbsolutePath();
