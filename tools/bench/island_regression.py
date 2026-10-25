@@ -16,6 +16,9 @@ and the saved entities. Each phase is measured three ways:
   - Main TPS: the level's game time (gt in the same row) per wall second.
 Writes runs/NAME/island-regression-report.json; exit code 1 if a check fails.
 FABROLIA_JAR selects the jar under test (default: the newest Fabric build).
+The script starts the server with -Dfabrolia.debugCommands=true: the fault-injection and
+stress subcommands it uses (`debug wedgemain`, `failunittail`, `offmainpkt`, `chunksender
+inject|stresstp`) are registered only under that system property.
 """
 import argparse
 import bisect
@@ -35,6 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import configs  # noqa: E402
 import mc  # noqa: E402
 import scenario as sc  # noqa: E402
+
+DEBUG_COMMANDS_FLAG = ['-Dfabrolia.debugCommands=true']
 
 ap = argparse.ArgumentParser()
 ap.add_argument('name')
@@ -57,6 +62,7 @@ if run.exists():
     raise SystemExit('run exists: %s' % run)
 srv = configs.prepare(a.config, run, ROOT / 'runs' / 'world-template', a.port, a.xmx,
                       view_distance=VIEW, simulation_distance=VIEW)
+srv.jvm_extra = srv.jvm_extra + DEBUG_COMMANDS_FLAG
 PROPS = dict(gamemode='creative', force_gamemode='true', view_distance=VIEW, simulation_distance=VIEW,
              difficulty='easy', max_players=a.bots + 16)
 srv.write_properties(**PROPS)
@@ -445,7 +451,7 @@ try:
     report['wedge_log'] = [l for l in log.splitlines() if '[wedgemain]' in l][:4]
     (run / 'console-run1.log').write_text(log, encoding='utf-8')
 
-    srv = mc.Server(run, 'fabric', a.port, xmx=a.xmx, jvm_extra=mc.AIKAR)
+    srv = mc.Server(run, 'fabric', a.port, xmx=a.xmx, jvm_extra=mc.AIKAR + DEBUG_COMMANDS_FLAG)
     srv.start()
     srv.wait_ready(timeout=1200)
     again = {}

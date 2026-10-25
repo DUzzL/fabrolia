@@ -115,9 +115,11 @@ public class StatsCommand {
         out.line("Threads", InfoText.text(String.valueOf(getPoolSize()), ChatFormatting.WHITE));
 
         out.section("Features");
-        out.line("Parallel spawning", InfoText.onOff(FabroliaConfig.enableFabroliaSpawn));
-        out.line("Parallel random ticks", InfoText.onOff(FabroliaConfig.enableFabroliaRandomTicks));
-        out.line("Parallel despawn", InfoText.onOff(FabroliaConfig.enableFabroliaDespawn));
+        // These switches act on Main's lane and the flat (non-island) mode only: island units
+        // always spawn and random-tick on their workers, so the labels name the lane.
+        out.line("Main-lane spawning", InfoText.onOff(FabroliaConfig.enableFabroliaSpawn));
+        out.line("Main-lane random ticks", InfoText.onOff(FabroliaConfig.enableFabroliaRandomTicks));
+        out.line("Flat-mode despawn", InfoText.onOff(FabroliaConfig.enableFabroliaDespawn));
         if (PlatformUtils.isModLoaded("vmp")) {
             out.line("VMP tracking", InfoText.onOff(FabroliaConfig.enableFabroliaVmpTracking));
         }

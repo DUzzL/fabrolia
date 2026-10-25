@@ -152,7 +152,7 @@ public class FabroliaConfig {
                 "Fabrolia random block ticks (parallel per-chunk). Default ON.",
                 () -> enableFabroliaRandomTicks, v -> enableFabroliaRandomTicks = v));
         e.add(bool("enableFabroliaChunkSend", null,
-                "Legacy key with no effect: chunk delivery always uses Fabrolia's batched sender. Kept so existing configs and /fabrolia config toggles stay valid.",
+                "DEPRECATED, no effect: chunk delivery always uses Fabrolia's batched sender. Kept only so existing config files stay valid.",
                 () -> enableFabroliaChunkSend, v -> enableFabroliaChunkSend = v));
         e.add(bool("enableFabroliaDespawn", null,
                 "Pre-pass despawn checks on workers (TickGuard entity reentry path). Halves the per-entity main-thread despawn cost on high-mob servers.",
@@ -182,7 +182,7 @@ public class FabroliaConfig {
         // ── Island parallelism ─────────────────────────────────────────
         e.add(bool("fabroliaRegionColorGate",
                 banner("Island parallelism", "Cross-region safety, synchronous block-entity partitioning and async islands."),
-                "R4 stage A: color-DAG scheduling — neighbours never tick concurrently. Required whenever region threading is enabled; false is clamped back to true.",
+                "DEPRECATED, no effect: the color-DAG gate (neighbours never tick concurrently) is required by region threading and always on; false is clamped back to true. Kept only so existing config files stay valid.",
                 () -> fabroliaRegionColorGate, v -> fabroliaRegionColorGate = v));
         e.add(bool("fabroliaRegionEviction", null,
                 "Reclaim idle regions (no full chunks, no entities, idle ~5s) at tick head — bounds the region map on long exploration so O(regions) scans and mspt stop climbing. Default ON. Runtime: /fabrolia regions debug eviction true|false.",
@@ -204,7 +204,7 @@ public class FabroliaConfig {
                 () -> new ArrayList<>(crossDimLinkedPairs),
                 v -> crossDimLinkedPairs = new ArrayList<>(v)));
         e.add(bool("asyncFailClosed", null,
-                "Legacy debug-drill containment toggle. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.",
+                "DEPRECATED: only changes the debug drill. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.",
                 () -> asyncFailClosed, v -> asyncFailClosed = v));
         e.add(bool("asyncIslands", null,
                 "A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. Default on. Runtime: /fabrolia regions async on|off (saved immediately).",

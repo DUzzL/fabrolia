@@ -31,7 +31,6 @@ public class ConfigCommand {
                 .then(buildSynchronizedEntitiesCommand())
                 .then(buildFabroliaEntitySpawnCommand())
                 .then(buildFabroliaRandomTicksCommand())
-                .then(buildFabroliaChunkSendCommand())
                 .then(buildFabroliaDespawnCommand());
         if (PlatformUtils.isModLoaded("vmp")) {
             config = config.then(buildFabroliaVmpTrackingCommand());
@@ -189,28 +188,6 @@ public class ConfigCommand {
                             PlatformUtils.saveConfig();
 
                             sendMessage(ctx, "Fabrolia Random Ticks set to ",
-                                    String.valueOf(value),
-                                    true);
-                            return 1;
-                        })
-                );
-    }
-
-    private static LiteralArgumentBuilder<CommandSourceStack> buildFabroliaChunkSendCommand() {
-        return literal("setFabroliaChunkSend")
-                .executes(ctx -> {
-                    sendMessage(ctx, "Current value of fabrolia chunk send (legacy key, no effect): ",
-                            String.valueOf(FabroliaConfig.enableFabroliaChunkSend),
-                            false);
-                    return 1;
-                })
-                .then(Commands.argument("value", BoolArgumentType.bool())
-                        .executes(ctx -> {
-                            boolean value = BoolArgumentType.getBool(ctx, "value");
-                            FabroliaConfig.enableFabroliaChunkSend = value;
-                            PlatformUtils.saveConfig();
-
-                            sendMessage(ctx, "Fabrolia Chunk Send (legacy key, no effect) set to ",
                                     String.valueOf(value),
                                     true);
                             return 1;

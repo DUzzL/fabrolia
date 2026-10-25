@@ -85,7 +85,7 @@ public class FabroliaConfig {
                 .define("fabroliaSpawnLocalCapReservation", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaSpawnLocalCapReservation);
         enableFabroliaRandomTicks = BUILDER.comment("Fabrolia random block ticks (parallel per-chunk). Default ON.")
                 .define("enableFabroliaRandomTicks", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaRandomTicks);
-        enableFabroliaChunkSend = BUILDER.comment("Legacy key with no effect: chunk delivery always uses Fabrolia's batched sender. Kept so existing configs and /fabrolia config toggles stay valid.")
+        enableFabroliaChunkSend = BUILDER.comment("DEPRECATED, no effect: chunk delivery always uses Fabrolia's batched sender. Kept only so existing config files stay valid.")
                 .define("enableFabroliaChunkSend", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaChunkSend);
         enableFabroliaDespawn = BUILDER.comment("Pre-pass despawn checks on workers (TickGuard entity reentry path). Halves the per-entity main-thread despawn cost on high-mob servers.")
                 .define("enableFabroliaDespawn", com.axalotl.fabrolia.common.config.FabroliaConfig.enableFabroliaDespawn);
@@ -113,7 +113,7 @@ public class FabroliaConfig {
         // ───── Island parallelism ─────
         BUILDER.comment("Cross-region safety, synchronous block-entity partitioning and async islands.").push("islands");
 
-        fabroliaRegionColorGate = BUILDER.comment("R4 stage A: color-DAG scheduling — neighbours never tick concurrently. Required whenever region threading is enabled; false is clamped back to true.")
+        fabroliaRegionColorGate = BUILDER.comment("DEPRECATED, no effect: the color-DAG gate (neighbours never tick concurrently) is required by region threading and always on; false is clamped back to true. Kept only so existing config files stay valid.")
                 .define("fabroliaRegionColorGate", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionColorGate);
         fabroliaRegionEviction = BUILDER.comment("Reclaim idle regions (no full chunks, no entities, idle ~5s) at tick head - bounds the region map on long exploration so O(regions) scans and mspt stop climbing. Default ON. Runtime: /fabrolia regions debug eviction true|false.")
                 .define("fabroliaRegionEviction", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRegionEviction);
@@ -121,7 +121,7 @@ public class FabroliaConfig {
                 .define("fabroliaRedstoneCrossRegionGuard", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaRedstoneCrossRegionGuard);
         fabroliaIslandBlockEntityTicks = BUILDER.comment("Synchronous region threading only (asyncIslands=false): block-entity ticks are split by loaded-space islands (≥16 unloaded chunks apart), one worker per island; the heaviest island stays on main, <2 islands → vanilla. Async islands always tick their own block entities. Runtime: /fabrolia regions debug setIslandBlockEntityTicks true|false.")
                 .define("fabroliaIslandBlockEntityTicks", com.axalotl.fabrolia.common.config.FabroliaConfig.fabroliaIslandBlockEntityTicks);
-        asyncFailClosed = BUILDER.comment("Legacy debug-drill containment toggle. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.")
+        asyncFailClosed = BUILDER.comment("DEPRECATED: only changes the debug drill. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.")
                 .define("asyncFailClosed", com.axalotl.fabrolia.common.config.FabroliaConfig.asyncFailClosed);
         asyncIslands = BUILDER.comment("A2: independent per-island ticking on the island's own scheduling timeline (entity phase increment; further phases land per docs/ASYNC-ISLANDS.md). Requires regionEventScheduler + color gate. Default on. Runtime: /fabrolia regions async on|off (saved immediately).")
                 .define("asyncIslands", com.axalotl.fabrolia.common.config.FabroliaConfig.asyncIslands);

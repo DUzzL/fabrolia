@@ -20,9 +20,9 @@ public class FabroliaConfig {
     public static boolean enableFabroliaRandomTicks = true;
     public static boolean enableFabroliaVmpTracking = true;
     public static boolean enableFabroliaDespawn = true;
-    /** Legacy key: nothing reads it. It is still persisted by both loaders and
-     *  shown/toggled by the config and stats commands, but chunk delivery
-     *  (ChunkDelivery / FabroliaPlayerChunkSenderMixin) runs regardless. */
+    /** Deprecated compatibility key: nothing reads it. Both loaders still parse and
+     *  persist it so old config files load, but no command exposes it and chunk
+     *  delivery (ChunkDelivery / FabroliaPlayerChunkSenderMixin) runs regardless. */
     public static boolean enableFabroliaChunkSend = true;
     public static volatile boolean enableRegionThreading = true;
     /**
@@ -41,10 +41,10 @@ public class FabroliaConfig {
      *  claimed region — the certification data for the collector unlock.
      *  Observation only; off = one volatile read per setBlock. */
     public static boolean fabroliaDebugRegionAccess = false;
-    /** R4 stage A: color-DAG scheduling — neighbors never tick concurrently
-     *  (checkerboard classes as claim dependencies). This is a correctness
-     *  invariant for region threading, not an optional speed toggle: without it
-     *  cross-border block/entity effects can race adjacent claimed regions. */
+    /** Deprecated compatibility key: the color gate is a correctness invariant of
+     *  region threading ({@link #useRegionColorGate()} follows
+     *  {@code enableRegionThreading}), not a toggle. The key is only parsed and
+     *  persisted so old config files load; a {@code false} is clamped back to true. */
     public static boolean fabroliaRegionColorGate = true;
     /** Cross-region effect containment. The color gate proves cross-border effects
      *  safe up to ONE region wide (neighbours never tick concurrently); a single-tick
@@ -213,9 +213,9 @@ public class FabroliaConfig {
         return new ArrayList<>(List.of("minecraft:overworld=minecraft:the_nether"));
     }
 
-    // Legacy/debug-drill containment toggle. A REAL detected cross-domain write
-    // always fail-stops the current generation; it is never downgraded to a live
-    // async->sync recovery. Kept for the explicit debugTrip drill/config ABI.
+    // Deprecated compatibility key, read only by the debugTrip drill and one log line.
+    // A REAL detected cross-domain write always fail-stops the current generation; it
+    // is never downgraded to a live async->sync recovery. No command exposes it.
     public static volatile boolean asyncFailClosed = true;
     // Session-only forensic latch. A real violation sets it before fail-stop;
     // debugTrip uses it to exercise the old mode-collapse drill.
@@ -290,7 +290,27 @@ public class FabroliaConfig {
     public static void enforceSafetyInvariants() {
         if (enableRegionThreading && !fabroliaRegionColorGate) {
             fabroliaRegionColorGate = true;
-            LOGGER.warn("fabroliaRegionColorGate=false is unsupported with region threading; forcing it ON");
+        }
+    }
+
+    private static final Set<String> WARNED_DEPRECATED_KEYS = ConcurrentHashMap.newKeySet();
+
+    private static void warnDeprecatedKey(String key, String note) {
+        if (WARNED_DEPRECATED_KEYS.add(key)) {
+            LOGGER.warn("Config key {}=false is deprecated and kept only so old config files load: {}", key, note);
+        }
+    }
+
+    /** Logs once per key when a deprecated compatibility key was set away from its default. */
+    private static void warnDeprecatedKeys() {
+        if (!enableFabroliaChunkSend) {
+            warnDeprecatedKey("enableFabroliaChunkSend", "chunk delivery always uses Fabrolia's batched sender");
+        }
+        if (!fabroliaRegionColorGate && enableRegionThreading) {
+            warnDeprecatedKey("fabroliaRegionColorGate", "the color gate is required by region threading and stays ON");
+        }
+        if (!asyncFailClosed) {
+            warnDeprecatedKey("asyncFailClosed", "a detected cross-island write always fail-stops; it only changes the debug drill");
         }
     }
 
@@ -354,6 +374,7 @@ public class FabroliaConfig {
     }
 
     public static void onConfigLoaded() {
+        warnDeprecatedKeys();
         enforceSafetyInvariants();
         rebuildCaches();
         LOGGER.info("Configuration loaded.");

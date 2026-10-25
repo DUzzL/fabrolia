@@ -59,6 +59,13 @@ public final class RegionCommand {
 
     private static final int LIST_TOP = 15;
 
+    /**
+     * Fault-injection and stress subcommands under {@code regions debug} (wedgemain,
+     * failunittail, offmainpkt, chunksender inject/stresstp) are registered only when the
+     * JVM runs with {@code -Dfabrolia.debugCommands=true}.
+     */
+    private static final boolean DEBUG_COMMANDS = Boolean.getBoolean("fabrolia.debugCommands");
+
     public static LiteralArgumentBuilder<CommandSourceStack> register(LiteralArgumentBuilder<CommandSourceStack> root) {
         // Primary tree — intentionally small: status, island list/top,
         // async (+ diagnostics gate), temporal controls, HUD, master
@@ -633,6 +640,11 @@ public final class RegionCommand {
                             return 1;
                         }))));
         dbg.then(literal("spawnrate").requires(PlatformPermission.require("command.regions", 0))
+                        .then(literal("off").executes(ctx -> {
+                            boolean was = com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.disarm();
+                            send(ctx, "spawnrate: ", was ? "recording stopped" : "recording was not armed", false);
+                            return 1;
+                        }))
                         .then(net.minecraft.commands.Commands.argument("ticks", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 128))
                         .executes(ctx -> {
                             String out = com.axalotl.fabrolia.common.parallelised.utils.SpawnRateDiag.report(
@@ -643,7 +655,7 @@ public final class RegionCommand {
                             return 1;
                         })))
         ;
-        dbg.then(literal("wedgemain").requires(PlatformPermission.require("command.regions", 2))
+        if (DEBUG_COMMANDS) dbg.then(literal("wedgemain").requires(PlatformPermission.require("command.regions", 2))
                 .then(net.minecraft.commands.Commands.argument("ms",
                         com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 120000))
                         .executes(ctx -> {
@@ -672,7 +684,7 @@ public final class RegionCommand {
                             org.slf4j.LoggerFactory.getLogger("fabrolia").info("[claims]\n{}", out);
                             return 1;
                         }));
-        dbg.then(literal("failunittail").requires(PlatformPermission.require("command.regions", 2))
+        if (DEBUG_COMMANDS) dbg.then(literal("failunittail").requires(PlatformPermission.require("command.regions", 2))
                 .then(net.minecraft.commands.Commands.argument("n",
                         com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 64))
                         .executes(ctx -> {
@@ -686,7 +698,7 @@ public final class RegionCommand {
                                     "[failunittail] armed for next {} units (debug injector)", n);
                             return 1;
                         })));
-        dbg.then(literal("offmainpkt").requires(PlatformPermission.require("command.regions", 2))
+        if (DEBUG_COMMANDS) dbg.then(literal("offmainpkt").requires(PlatformPermission.require("command.regions", 2))
                         .executes(ctx -> {
                             // task #25 reproduction hook: dispatch a REAL
                             // use-item packet handler invocation from a
@@ -802,7 +814,8 @@ public final class RegionCommand {
                             org.slf4j.LoggerFactory.getLogger("fabrolia").info("CMDSTATS " + out);
                             return 1;
                         }));
-        dbg.then(literal("chunksender").requires(PlatformPermission.require("command.regions.toggle", 4))
+        LiteralArgumentBuilder<CommandSourceStack> chunkSender = literal("chunksender")
+                        .requires(PlatformPermission.require("command.regions.toggle", 4))
                         .then(literal("status")
                                 .executes(ctx -> {
                                     send(ctx, "", com.axalotl.fabrolia.common.regions.ChunkDelivery.status(null), false);
@@ -826,7 +839,10 @@ public final class RegionCommand {
                                                     com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "cx"),
                                                     com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "cz")), false);
                                             return 1;
-                                        })))))
+                                        })))));
+        // Fault injection and teleport stress: only with -Dfabrolia.debugCommands=true.
+        if (DEBUG_COMMANDS) {
+            chunkSender
                         .then(literal("inject")
                                 .then(net.minecraft.commands.Commands.argument("faults", com.mojang.brigadier.arguments.StringArgumentType.word())
                                         .executes(ctx -> {
@@ -849,7 +865,9 @@ public final class RegionCommand {
                                                     com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "seconds"),
                                                     com.mojang.brigadier.arguments.LongArgumentType.getLong(ctx, "seed")), false);
                                             return 1;
-                                        })))))));
+                                        }))))));
+        }
+        dbg.then(chunkSender);
         dbg.then(literal("flightrec").requires(PlatformPermission.require("command.regions.toggle", 4))
                         .then(literal("status").executes(ctx -> {
                             send(ctx, "flightrec: ", com.axalotl.fabrolia.common.regions.FlightRecorder.status(), false);
@@ -913,7 +931,6 @@ public final class RegionCommand {
                             send(ctx, "debug: ", "fail-closed drill latched — async collapses to SYNC at next tick head", false);
                             return 1;
                         }));
-        dbg.then(colorGateToggle());
         dbg.then(boolToggle("eviction", "idle-region eviction",
                         () -> FabroliaConfig.fabroliaRegionEviction,
                         v -> FabroliaConfig.fabroliaRegionEviction = v));
@@ -970,25 +987,6 @@ public final class RegionCommand {
                             setter.accept(v);
                             PlatformUtils.saveConfig();
                             send(ctx, displayName + " set to ", String.valueOf(v), true);
-                            return 1;
-                        }));
-    }
-
-    private static LiteralArgumentBuilder<CommandSourceStack> colorGateToggle() {
-        return literal("setColorGate")
-                .requires(PlatformPermission.require("command.regions.toggle", 4))
-                .executes(ctx -> {
-                    send(ctx, "Current value of color gate: ",
-                            String.valueOf(FabroliaConfig.useRegionColorGate()), "  (required for region threading)");
-                    return 1;
-                })
-                .then(Commands.argument("value", BoolArgumentType.bool())
-                        .executes(ctx -> {
-                            boolean requested = BoolArgumentType.getBool(ctx, "value");
-                            FabroliaConfig.fabroliaRegionColorGate = true;
-                            PlatformUtils.saveConfig();
-                            send(ctx, requested ? "color gate set to " : "color gate forced to ",
-                                    "true", "  (required for region threading)");
                             return 1;
                         }));
     }

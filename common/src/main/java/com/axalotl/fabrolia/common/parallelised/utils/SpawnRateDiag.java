@@ -22,7 +22,10 @@ import java.util.concurrent.atomic.AtomicLongArray;
  *
  * <p>Off until the first {@code spawnrate} report: the hooks are then a single
  * volatile read. Recording every spawn pass made every spawning worker share
- * one row of atomics and allocated the 4 MiB visit table at class load.
+ * one row of atomics and allocated the 4 MiB visit table at class load. While
+ * armed every spawn pass of every worker shares that row again, so
+ * {@code spawnrate off} ({@link #disarm()}) switches recording off once the
+ * measurement is read.
  */
 public final class SpawnRateDiag {
 
@@ -54,7 +57,7 @@ public final class SpawnRateDiag {
         }
     }
 
-    /** Null until the first report arms recording; never disarmed. */
+    /** Null until the first report arms recording; {@link #disarm()} clears it. */
     private static volatile Recorder recorder;
 
     private static int rowBase(long tick) {
@@ -111,6 +114,15 @@ public final class SpawnRateDiag {
 
     private static long wall(ServerLevel level) {
         return com.axalotl.fabrolia.common.regions.IslandClock.wallTime(level);
+    }
+
+    /** Stops recording and drops the ring; returns whether recording was armed. */
+    public static boolean disarm() {
+        synchronized (SpawnRateDiag.class) {
+            boolean was = recorder != null;
+            recorder = null;
+            return was;
+        }
     }
 
     /** Last {@code n} recorded ticks (newest first), one row per line. The first
