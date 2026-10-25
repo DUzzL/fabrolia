@@ -1,4 +1,4 @@
-package com.axalotl.fabrolia.neoforge.mixin.utils;
+package com.axalotl.fabrolia.common.mixin.utils;
 
 import com.axalotl.fabrolia.api.utils.ConcurrentCollections;
 import com.axalotl.fabrolia.api.utils.ConcurrentList;
@@ -84,14 +84,12 @@ public abstract class ClassInstanceMultiMapMixin<T> extends AbstractCollection<T
         return ConcurrentCollections.toList();
     }
 
-    @WrapOperation(method = "remove",
-            at = @At(value = "INVOKE", target = "Ljava/util/List;remove(Ljava/lang/Object;)Z"))
+    @WrapOperation(method = "remove", at = @At(value = "INVOKE", target = "Ljava/util/List;remove(Ljava/lang/Object;)Z"))
     private boolean fabrolia$nullSafeListRemove(List<T> list, Object obj, Operation<Boolean> original) {
         return list != null && original.call(list, obj);
     }
 
-    @WrapOperation(method = "add",
-            at = @At(value = "INVOKE", target = "Ljava/util/List;add(Ljava/lang/Object;)Z"))
+    @WrapOperation(method = "add", at = @At(value = "INVOKE", target = "Ljava/util/List;add(Ljava/lang/Object;)Z"))
     private boolean fabrolia$nullSafeListAdd(List<T> list, Object obj, Operation<Boolean> original) {
         return list != null && original.call(list, obj);
     }

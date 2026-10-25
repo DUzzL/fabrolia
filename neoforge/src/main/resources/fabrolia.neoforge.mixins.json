@@ -7,7 +7,6 @@
     "server.ServerLevelSleepClockMixin",
     "server.ServerStopRuntimeMixin",
     "server.ServerWatchdogMixin",
-    "utils.ClassInstanceMultiMapMixin",
     "world.BlockDropCaptureMixin",
     "world.CommonHooksBlockSnapshotCaptureMixin",
     "world.CommonHooksPoiUnloadMixin",
