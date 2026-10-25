@@ -80,6 +80,9 @@ export JAVA_HOME=/path/to/jdk-25              # the JDK named by java_version in
   `neo_stress.py` stresses NeoForge's drop and snapshot capture, `island_regression.py`
   and `teleport_storm.py` drive island and teleport churn, `bench.py` measures TPS.
   Work directories default to `build/bench` (`FABROLIA_BENCH_HOME`).
+- Fault-injection and stress subcommands of `/fabrolia regions debug` (`wedgemain`,
+  `failunittail`, `offmainpkt`, `chunksender inject|stresstp`) exist only on a server
+  started with `-Dfabrolia.debugCommands=true` (`RegionCommand.DEBUG_COMMANDS`).
 - `tools/raid-farm-ab/`: compares a farm world in vanilla and in Fabrolia with a real
   protocol client. Carpet bots tick at a different point than real players, so do not
   use them for farm parity.
