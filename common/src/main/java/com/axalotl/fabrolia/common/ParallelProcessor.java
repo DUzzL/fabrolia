@@ -562,6 +562,44 @@ public final class ParallelProcessor {
         return false;
     }
 
+    /**
+     * True when a non-player in {@code entity}'s tree holds a non-Nether portal
+     * process (End portal, modded portal) and a spectator camera follows an entity
+     * of that tree. Vanilla {@code teleportCrossDimension} ends in
+     * {@code teleportSpectators}, which teleports each following spectator and
+     * resets its camera in the same call. Those spectators are Main-held, so such
+     * a tick must run on Main under the global fence
+     * ({@link RegionScheduler#queueMainSyncFencedTick}). Nether portals capture
+     * their followers in {@code NetherPortalPlayerAccess.Reservation}.
+     */
+    public static boolean leadsSpectatorsThroughPortal(Entity entity) {
+        return usesNonNetherPortal(entity) && hasSpectatorFollower(entity);
+    }
+
+    private static boolean usesNonNetherPortal(Entity entity) {
+        if (!(entity instanceof ServerPlayer)) {
+            var process = entity.portalProcess;
+            if (process != null
+                    && !(process.portal instanceof net.minecraft.world.level.block.NetherPortalBlock)) {
+                return true;
+            }
+        }
+        for (Entity passenger : entity.getPassengers()) {
+            if (usesNonNetherPortal(passenger)) return true;
+        }
+        return false;
+    }
+
+    private static boolean hasSpectatorFollower(Entity entity) {
+        if (com.axalotl.fabrolia.common.regions.NetherPortalPlayerAccess.isPublishedCameraTarget(entity)) {
+            return true;
+        }
+        for (Entity passenger : entity.getPassengers()) {
+            if (hasSpectatorFollower(passenger)) return true;
+        }
+        return false;
+    }
+
     public static boolean shouldTickSynchronously(Entity entity) {
         if (isShuttingDown || FabroliaConfig.disabled) return true;
         if (containsMainOwnedTrackingEntity(entity)) return true;

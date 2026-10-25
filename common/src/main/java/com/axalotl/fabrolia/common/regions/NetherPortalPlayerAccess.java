@@ -362,6 +362,20 @@ public final class NetherPortalPlayerAccess {
         synchronized (CAMERAS) { return CAMERAS.containsKey(player); }
     }
 
+    /**
+     * True when a spectator in {@code entity}'s level has a published camera link
+     * on it. Camera changes publish under the Main fence, so the answer is stable
+     * for the rest of a running island unit.
+     */
+    public static boolean isPublishedCameraTarget(Entity entity) {
+        synchronized (CAMERAS) {
+            for (CameraLink link : CAMERAS.values()) {
+                if (link.target == entity && link.level == entity.level()) return true;
+            }
+            return false;
+        }
+    }
+
     public static void publishCamera(ServerPlayer player) {
         Entity target = player.getCamera();
         CameraLink link = target == player || player.hasDisconnected() || player.getRemovalReason() != null
