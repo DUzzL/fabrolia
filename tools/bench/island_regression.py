@@ -1,15 +1,15 @@
-"""The owner's regression scenario (docs/USER-REQUIREMENTS.md) on one machine.
+"""The island regression scenario on one machine.
 
 Usage: python island_regression.py NAME [--config fabrolia-async-lithium-c2me] [--bots 100]
        [--xmx 8G] [--port 26700] [--phase-seconds 60] [--slow-ms 120] [--wedge-ms 8000]
 
-Protocol players stand in the eight pens of the benchmark world (prep_world.py), about
+Protocol players stand in the eight pens of the mob world (prep_world.py), about
 twelve per pen, so every pen is one island, and every pen gets the same mob load. Phases:
 steady load; one island slowed by an artificial unit cost (`debug islanddebug`); Main
 parked (`debug wedgemain`); players changing dimension and island; a save; stop, restart
 and the saved entities. Each phase is measured three ways:
   - client TPS: the observer clock above each pen as its players receive it
-    (2 x block updates per second, as in bench.py),
+    (2 x block updates per second),
   - island TPS: completed ticks of the pen's island per wall second, from its logical
     tick L in `fabrolia regions top verbose`, next to the TPS and MSPT the island
     reports in the same row,
@@ -248,7 +248,7 @@ def spot(pen_bots, name):
     k = pen_bots[p].index(name)
     cx, cz = sc.CENTERS[p]
     if k == 0:
-        return p, cx, cz  # the spawner stands at the pen centre, like bench.py
+        return p, cx, cz  # the spawner stands at the pen centre
     row = (k - 1) // 6  # two rows of six, 10 blocks north and south of the spawn ring
     return p, cx - 15 + 6 * ((k - 1) % 6) + 2 * (row // 2), cz - 10 + 20 * (row % 2)
 
@@ -492,7 +492,7 @@ finally:
         srv.stop(timeout=300)
     report['passed'] = report['completed'] and all(c['ok'] for c in report['checks'])
     (run / 'island-regression-report.json').write_text(json.dumps(report, indent=1), encoding='utf-8')
-    # Keep logs, crash reports and the report; drop the world copy, as bench.py does.
+    # Keep logs, crash reports and the report; drop the world copy.
     shutil.rmtree(run / 'world', ignore_errors=True)
     failed = [c['check'] for c in report['checks'] if not c['ok']]
     print('RESULT', a.name, 'ALL PASS' if report['passed'] else 'FAILURES', len(failed), flush=True)

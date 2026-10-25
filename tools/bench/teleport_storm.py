@@ -3,7 +3,7 @@
 Usage: python teleport_storm.py NAME [--config fabrolia-async-lithium-c2me] [--bots 16]
        [--seconds 120] [--port 26720]
 
-Players stand in the pens of the benchmark world (prep_world.py) while RCON teleports
+Players stand in the pens of the mob world (prep_world.py) while RCON teleports
 them, back to back, into other pens and onto ground without an island. Each same-level
 teleport is an audited A5 lifecycle mutation with its own Main handoff; each move can
 make the next level tick rebuild the islands before that handoff has drained (the
@@ -180,7 +180,7 @@ finally:
                                             if 'IllegalStateException: A5' in l), '')[:600]
     report['passed'] = bool(report['checks']) and all(c['ok'] for c in report['checks'])
     (run / 'teleport-storm-report.json').write_text(json.dumps(report, indent=1), encoding='utf-8')
-    # Keep logs, crash reports and the report; drop the world copy, as bench.py does.
+    # Keep logs, crash reports and the report; drop the world copy.
     shutil.rmtree(run / 'world', ignore_errors=True)
     print('RESULT', a.name, 'PASS' if report['passed'] else 'FAIL', report.get('crash_description', ''), flush=True)
 sys.exit(0 if report['passed'] else 1)

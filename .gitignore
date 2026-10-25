@@ -46,10 +46,7 @@ hs_err_pid*
 /release/
 
 # local only: documentation, changelog and agent configuration (AGENTS.md stays versioned)
-/docs/*
-!/docs/benchmark/
-/docs/benchmark/*
-!/docs/benchmark/*.png
+/docs/
 /CHANGELOG.md
 /CLAUDE.md
 /AGENTS.local.md

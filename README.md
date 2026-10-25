@@ -5,8 +5,8 @@ CPU cores instead of one. It runs on **Fabric** and **NeoForge**, on dedicated
 servers and in singleplayer, and keeps farms, redstone and datapacks working
 like in vanilla.
 
-> **Alpha.** Fabrolia changes how the game is scheduled at its core. Back up your world and test your modpack before you
-> switch.
+> Fabrolia changes how the game is scheduled at its core. Back up your world and
+> test your modpack before you switch.
 
 ## How it works
 
@@ -27,29 +27,17 @@ where the whole world finishes each tick together.
 Fabrolia only helps where work can be split: one huge base with all players in it
 is still one island. It does not skip or reorder vanilla work to gain TPS.
 
-## Performance
+## When it helps
 
-Players spread over several bases, each adding load; every line is the TPS the
-players measured in their own base. Fabrolia combines with Lithium and C2ME, and
-together they scale with the CPU threads. Each chart shows every server and mod
-combination that was measured:
-
-![Entity ticks per second by CPU threads for every measured configuration](docs/benchmark/scaling.png)
-
-![TPS under a growing mob load for every measured configuration](docs/benchmark/mobs.png)
-
-![TPS with many loaded chunks for every measured configuration](docs/benchmark/chunks.png)
-
-Fabrolia gains where work is spread over separate areas. One huge base with
-everyone in it stays one island; world generation is C2ME's field; and with
-piston-heavy redstone the single-threaded light engine becomes the limit (add
-ScalableLux). The charts in `docs/benchmark/` compare Lithium, C2ME, Paper and
-Folia for mobs, chunks, hoppers, redstone, world generation and thread scaling;
-`tools/bench/` repeats the measurement.
+Fabrolia gains where work is spread over separate areas, for example players in
+different bases. One huge base with everyone in it stays one island. World generation
+is C2ME's field, and with piston-heavy redstone the single-threaded light engine
+becomes the limit (ScalableLux helps there). Fabrolia combines with Lithium and C2ME.
 
 ## Installation
 
-1. Download the Fabrolia jar for your loader and Minecraft version.
+1. Download the Fabrolia jar that matches your loader and Minecraft version (each
+   release names the versions it supports).
 2. Fabric: also install [Fabric API](https://modrinth.com/mod/fabric-api).
    NeoForge needs nothing else.
 3. Put the jar into `mods/` of the server (or of your client for singleplayer) and

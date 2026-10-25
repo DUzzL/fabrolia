@@ -78,7 +78,7 @@ export JAVA_HOME=/path/to/jdk-25              # the JDK named by java_version in
 - `tools/bench/` (Windows and Linux): protocol-level bots against a generated world.
   `functest.py` runs the functional checks in synchronous and in async-island mode,
   `neo_stress.py` stresses NeoForge's drop and snapshot capture, `island_regression.py`
-  and `teleport_storm.py` drive island and teleport churn, `bench.py` measures TPS.
+  and `teleport_storm.py` drive island and teleport churn (see `tools/bench/README.md`).
   Work directories default to `build/bench` (`FABROLIA_BENCH_HOME`).
 - Fault-injection and stress subcommands of `/fabrolia regions debug` (`wedgemain`,
   `failunittail`, `offmainpkt`, `chunksender inject|stresstp`) exist only on a server
@@ -102,8 +102,8 @@ export JAVA_HOME=/path/to/jdk-25              # the JDK named by java_version in
 - `buildSrc/`: shared Java and release conventions (`fabrolia-java`, `fabrolia-release`)
   and verification tasks such as `VerifyPlayerTickArchitectureTask`.
 - `tools/`: stand, bench, spark, raid-farm and release tooling (§3).
-- `docs/benchmark/`: the charts shown in the README.
-- Not versioned: `docs/` (except the charts), `CHANGELOG.md`, `CLAUDE.md`,
+- `README.md`: the user-facing overview (§13).
+- Not versioned: `docs/`, `CHANGELOG.md`, `CLAUDE.md`,
   `AGENTS.local.md`, `.claude/`, `stand/`, `release/`. Local agent notes go into
   `AGENTS.local.md`.
 
@@ -446,10 +446,15 @@ All 153 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   Lithium's per-block-entity `areEntitiesLoaded`). The cost is memory latency per lookup;
   a primitive map alone measured only 5–25 % faster with a warm cache.
 
-## 13. Git and commits
+## 13. Git, commits and README
 
 - `main` is the release branch. Work on a topic branch and merge into `main`.
 - Commit messages: imperative summary; prefix with the area or an issue id when there is
   one (`fix(A-12): ...`). No AI attribution, co-author trailers or generated-by notes.
 - Code comments are in English.
 - Upstream is AxalotLDev/Async; this fork is DUzzL/fabrolia.
+- `README.md` is version-independent: no Fabrolia, Minecraft, loader or mod version
+  numbers, no release-state labels and no benchmark figures or charts. It describes what
+  Fabrolia does, how to install and use it, its commands and config keys, and how to
+  build. Versions belong in `gradle.properties` and the release notes. When a command or
+  config key changes, update the README tables in the same commit.
