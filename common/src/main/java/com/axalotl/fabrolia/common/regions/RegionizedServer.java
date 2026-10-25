@@ -1836,11 +1836,14 @@ public final class RegionizedServer {
         // EVERY island's pending piston events by one tick on EVERY rebuild
         // (main's next slot had to re-partition them) — with bots churning
         // population, that was a machine hiccup on every topology change.
-        // Pending deferrals → the global queue (main replays this tick);
-        // mid-unit BE registrations are re-delivered to the new owner so the
+        // Pending deferrals run right here, under the rebuild quiesce: each one
+        // targets its island's area, and the global queue main replays later in
+        // the tick runs without any claim while the islands tick again (audit
+        // B-05). Mid-unit BE registrations are re-delivered to the new owner so the
         // vanilla same-tick first-tick guarantee survives the migration.
         java.util.ArrayList<IslandRegistry.PIsland.StampedEvent> unstashedEvs = null;
         java.util.ArrayList<net.minecraft.world.level.block.entity.TickingBlockEntity> unstashedBes = null;
+        java.util.ArrayList<Runnable> unstashedOps = null;
         java.util.ArrayList<Long> unstashedSnapshotKeys = null;
         java.util.ArrayList<net.minecraft.server.level.ChunkHolder> unstashedBlockUpdates = null;
         TrackingTopologyTransitionReceipt trackerTransition = trackingTopologyTransitionReceipt();
@@ -1862,7 +1865,8 @@ public final class RegionizedServer {
                 }
                 Runnable op;
                 while ((op = p.domain.deferredOps.poll()) != null) {
-                    globalDomain.deferredOps.add(op);
+                    if (unstashedOps == null) unstashedOps = new java.util.ArrayList<>();
+                    unstashedOps.add(op);
                 }
                 synchronized (p.pendingUnitBes) {
                     if (!p.pendingUnitBes.isEmpty()) {
@@ -1893,6 +1897,7 @@ public final class RegionizedServer {
                     p.pendingBlockUpdates.clear();
                 }
             }
+            if (unstashedOps != null) replayIslandOpsUnderQuiesce(unstashedOps);
         }
 
         ArrayList<Region> topologyRebaseBatch = new ArrayList<>();
@@ -2588,6 +2593,19 @@ public final class RegionizedServer {
                 regionizer.grid.keyFor(target.getX() >> 4, target.getZ() >> 4));
         EpochDomain d = r != null && r.domain != null ? r.domain : globalDomain;
         d.deferredOps.add(op);
+    }
+
+    /**
+     * Topology rebuild only: replay the deferred cross-region effects collected
+     * from every island while Main holds every island claim. Each effect targets
+     * a position in its island's area; appending it to the global queue would run
+     * it later in the tick without a claim while that island ticks again.
+     */
+    private void replayIslandOpsUnderQuiesce(java.util.List<Runnable> ops) {
+        if (!currentThreadHoldsAllClaims()) {
+            throw new IllegalStateException("island deferred effects replayed without the rebuild quiesce");
+        }
+        for (Runnable op : ops) RegionScheduler.runSuccessBodyIfHealthy(op);
     }
 
     /** Replay GLOBAL-domain deferred effects on the server thread AFTER the region
