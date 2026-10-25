@@ -38,6 +38,14 @@ public class FabroliaFabric extends FabroliaCommon implements ModInitializer {
         ServerChunkEvents.CHUNK_UNLOAD.register((world, chunk) ->
                 RegionScheduler.onChunkFullChange(world, chunk.getPos().pack(), false, chunk));
 
+        // SERVER_STARTING precedes createLevels, so start() bootstraps no level and
+        // forLevel used to create each runtime lazily, after prepareLevels had
+        // already made saved-ticket chunks FULL: those CHUNK_LOAD transitions found
+        // no runtime and were lost (audit D-07). LOAD fires in createLevels on the
+        // server thread, before any chunk of that level loads.
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerLevelEvents.LOAD.register(
+                (server, world) -> RegionScheduler.forLevel(world));
+
         // Free the level's Rust local-cap arena handle on unload — without this the handle
         // map retains the ServerLevel (and its native arena) forever, which matters with
         // dynamic-dimension mods. No-op when no provider is registered.
