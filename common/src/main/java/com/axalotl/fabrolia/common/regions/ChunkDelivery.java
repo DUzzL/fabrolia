@@ -417,7 +417,7 @@ public final class ChunkDelivery {
         final ArrayDeque<Batch> outstanding = new ArrayDeque<>();
         /** Main-only: chunks whose send committed and whose loader event
          *  (NeoForge ChunkWatchEvent.Sent) still waits for the owner's claim. */
-        final ArrayDeque<LevelChunk> pendingChunkSent = new ArrayDeque<>();
+        final ArrayList<LevelChunk> pendingChunkSent = new ArrayList<>();
         /** At most one offered batch awaits real EventLoop completion/Main commit. */
         volatile BatchPublication activePublication;
         volatile boolean closed;
@@ -799,7 +799,7 @@ public final class ChunkDelivery {
                         owner.bytesEnqueued += bytesCommit;
                         owner.lastFullSendNanos = nanosCommit;
                         owner.batches++;
-                        for (LevelChunk sent : sentChunks) owner.pendingChunkSent.addLast(sent);
+                        for (LevelChunk sent : sentChunks) owner.pendingChunkSent.add(sent);
                         state = APPLIED;
                         owner.activePublication = null;
                     });
@@ -1342,18 +1342,18 @@ public final class ChunkDelivery {
     private static void fireChunkSentEvents(PlayerState ps, ServerPlayer p, ServerLevel level) {
         RegionizedServer rs = RegionScheduler.forLevel(level);
         while (!ps.pendingChunkSent.isEmpty()) {
-            LevelChunk chunk = ps.pendingChunkSent.peekFirst();
+            LevelChunk chunk = ps.pendingChunkSent.getFirst();
             long key = chunk.getPos().pack();
             if (chunk.getLevel() != level || !ps.records.containsKey(key)) {
-                ps.pendingChunkSent.pollFirst();
+                ps.pendingChunkSent.removeFirst();
                 continue;
             }
             IslandRegistry.PIsland owner = rs == null || !rs.asyncActive ? null : rs.islandOwnerOfChunk(key);
             if (owner == null || IslandCommands.mainHolds(owner) || IslandCommands.fenceWindowHeld()) {
-                ps.pendingChunkSent.pollFirst();
+                ps.pendingChunkSent.removeFirst();
                 com.axalotl.fabrolia.common.platform.PlatformUtils.chunkSent(p, chunk, level);
             } else if (IslandCommands.tryMainClaim(owner, "chunk sent event")) {
-                ps.pendingChunkSent.pollFirst();
+                ps.pendingChunkSent.removeFirst();
                 Throwable failure = null;
                 try {
                     com.axalotl.fabrolia.common.platform.PlatformUtils.chunkSent(p, chunk, level);

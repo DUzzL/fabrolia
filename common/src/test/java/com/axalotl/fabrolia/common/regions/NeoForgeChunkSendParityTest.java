@@ -25,7 +25,7 @@ final class NeoForgeChunkSendParityTest {
         assertTrue(delivery.contains("this.packet = com.axalotl.fabrolia.common.platform.PlatformUtils.chunkPacket(chunk, packet);"),
                 "the sealed packet is the loader's packet");
         int commit = delivery.indexOf("owner.batches++;");
-        int queue = delivery.indexOf("for (LevelChunk sent : sentChunks) owner.pendingChunkSent.addLast(sent);", commit);
+        int queue = delivery.indexOf("for (LevelChunk sent : sentChunks) owner.pendingChunkSent.add(sent);", commit);
         assertTrue(commit >= 0 && queue > commit, "events queue only for committed sends");
         int drain = delivery.indexOf("private static void fireChunkSentEvents(");
         int tryClaim = delivery.indexOf("IslandCommands.tryMainClaim(owner, \"chunk sent event\")", drain);
