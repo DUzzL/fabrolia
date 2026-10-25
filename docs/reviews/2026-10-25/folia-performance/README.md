@@ -424,3 +424,87 @@ diese Jars liegen unter `build/codex-validation-2026-10-25/measured-jars/`.
 | --- | --- |
 | Fabric | `fb10cd690d46587055b604cdf405b0de7cf8916a1468b60b2eff7c631037c28e` |
 | NeoForge | `39812350c5a9d997a9ebfe8c96ca58567ad99a29ef070f99fcfbfdd3096579b2` |
+
+Dieser Stand ist Commit `c11bab6` auf `candidate/3.1.13-alpha`.
+
+## Release-Check des finalen Builds
+
+Stand 25.10.2026, 13:30 Uhr. Belege mit SHA-256-Manifest:
+[evidence/release-check](evidence/release-check/).
+
+| Loader | Finaler Build, SHA-256 |
+| --- | --- |
+| Fabric | `06a610c69a41ceba936a295d56417eef30b2ad77e4a43f4d275d9a4a443cba19` |
+| NeoForge | `d5a6c44e88d83d920e2a18f4a16b0381f2432ad36c96a7f66773efaa29acac66` |
+
+- Build: 1528 erfasste Tests, 1520 bestanden, 8 optional übersprungen,
+  0 Fehler; beide Loader bauen, `check_jar.py` besteht.
+- Funktionstest: Fabric und NeoForge bestehen je **44 Prüfungen**. Neu sind
+  die zwei Log-Prüfungen: Jede ERROR/FATAL-Zeile lässt den Test durchfallen.
+  Ausgenommen ist nur NeoForges Windows-Appender-Meldung zu Nettys
+  epoll/kqueue, die ein Vanilla-NeoForge-Lauf ohne Fabrolia ebenso loggt.
+  Mit dieser Prüfung wäre der `RETAINED CLAIM` des ersten Laufs als Fehler
+  aufgefallen.
+- NeoForge-Stresstest (Blattzerfall, Block-Snapshots), beide Scheduler-Modi:
+  bestanden mit Build `c11bab6`. Dessen Erfassungscode hat sich seitdem
+  nicht geändert.
+
+### Absturz bei Befehls-Teleports (seit 3.0.1 offen)
+
+Beim Aufbau der 100-Spieler-Regression stürzte der Server ab, als zehn Spieler
+kurz hintereinander per RCON in Pferche ohne Insel teleportiert wurden:
+`A5 topology-gap handoff lost its exact player/session binding:
+auditedLifecycleMutationPending (phase=MAIN_HANDOFF)`. Das ist der in
+`AGENTS.md` offene Stand-Absturz aus 3.0.1, genau mit dessen Hypothese. Ein
+Teleport innerhalb einer Dimension ist eine weiche, auditierte
+Lifecycle-Mutation und startet die Main-Übergabe des Spielers. Läuft der
+Insel-Umbau am Level-Kopf, bevor diese Übergabe abgearbeitet ist, und steht
+der Spieler danach in einer Zelle ohne Insel, verweigerte die Tracker-Übergabe
+die offene Mutation. Liegt Main hinter dem Zeitplan, warten seine Tasks bis zu
+drei Ticks, und das Fenster wird breit.
+
+Behoben: In `MAIN_HANDOFF` hängt sich die Gap-Quittung an diese schon laufende
+Übergabe, mit geschuldeter Publikation. Das ist derselbe Zustand, den der
+umgekehrte Ablauf erzeugt (`updateTrackingTopologyGapForLifecycleLocked`).
+Der Main-Closer (`finishMainHandoff`) übernimmt die Quittung nach Prüfung von
+Tracker und Session-Epoche und schließt Mutation und Quittung gemeinsam ab.
+Harte Ausgänge (Tod, Dimensionswechsel) und eine Mutation ohne gestartete
+Übergabe bleiben Fail-Stops. Alle Identitätsbeine der Bindung bleiben geprüft
+(`TopologyGapLifecycleCompositionTest`).
+
+`tools/bench/teleport_storm.py` teleportiert Spieler in schneller Folge
+zwischen Pferchen und auf Gelände ohne Insel:
+
+| Build | Ergebnis |
+| --- | --- |
+| 3.1.12 (`d5477e…`) | Absturz nach 6 Teleports (3 s) |
+| 3.1.13 `c11bab6` (`fb10cd…`) | Absturz nach 71 Teleports (12 s) |
+| 3.1.13 `c11bab6`, nur Pferche mit Insel (`--anchors`) | bestanden, 25 136 Teleports in 120 s |
+| 3.1.13 mit Fix, erster Build (`9b8050…`) | kein Gap-Absturz; nach etwa 40 s Fail-Stop `A5 entity ordinal overlapped another island body` |
+| 3.1.13 final (`06a610…`), 7 Läufe | alle bestanden, zusammen 41 622 Teleports (4 × 120 s mit 16, 3 × 300 s mit 24 Spielern) |
+
+Der Ordinal-Fail-Stop trat nur in diesem einen Lauf auf. Dort lagen rund 35
+Teleports pro Sekunde an, und Main lag 21 s hinter dem Zeitplan. Seine Ursache
+ist offen. Ohne den Fix ist dieser Zustand nicht erreichbar, weil der
+Gap-Absturz vorher eintritt. Der Fix erzeugt allerdings keinen neuen Zustand,
+nur die umgekehrte Reihenfolge eines bestehenden. Die Meldung nennt jetzt
+Spieler, Phase, Session-Owner, besuchende Insel und Chunk-Owner. Ein
+Fabrolia-Fail-Stop beendet den Prozess nicht: Ohne Crash-Report scheitert der
+Server danach an allen weiteren Tasks. Der Sturm-Treiber erkennt das an der
+ERROR-Zeile.
+
+Nebenbefund: Läuft beim Fail-Stop gerade ein RCON-Befehl, hängt der Stopp
+endlos. Vanillas `GenericThread.stop` wartet ohne Limit auf den RCON-Thread
+(„Waited N seconds attempting force stop!“), und dieser wartet auf den
+angehaltenen Main.
+
+### Nicht mit dem finalen Build ausgeführt
+
+- Die 100-Spieler-Regression aus `docs/USER-REQUIREMENTS.md`
+  (`tools/bench/island_regression.py`, rund 15 min) und eine A/B-Messung des
+  finalen Jars: Auf Wunsch des Nutzers liefen keine Performance-Tests mehr.
+  Die −18,94 % Prozess-CPU oben gelten für den Build `2f8096…`. Seitdem
+  kamen nur Diagnose-Änderungen und der Teleport-Fix hinzu: ein Zähler pro
+  Claim und eine Bedingung im Fehlerpfad der Gap-Übergabe.
+- Der 40-Client-Produktionsstand (Linux) mit `verify` und `perf` bleibt
+  ausstehend.

@@ -4,12 +4,17 @@ Candidate; validation and review evidence are recorded in
 [the review handoff](docs/reviews/2026-10-25/folia-performance/README.md).
 Production stand verification is still pending.
 
-Local validation: 1511 tests pass, 8 optional skip (1519 total), both loader
-builds pass, and 42 function checks pass on each loader. A fresh matched 8-GB
-mob benchmark uses 18.94 % less process CPU at about 20 TPS. The synchronous
-Fabric function run logged one `RETAINED CLAIM` error, which the claim-forensics
-fix below identifies as a false report; the function tests and the benchmark ran
-before that diagnostics-only fix. This is not a production release clearance.
+Local validation of the final build: 1520 tests pass, 8 optional skip (1528
+total), both loader builds and the Fabric jar check pass, and 44 function checks
+pass on each loader, including no ERROR/FATAL line in the server log. The NeoForge
+stress test passed in both scheduler modes on the build before the teleport fix,
+and seven teleport storms with about 41,600 teleports passed. A matched 8-GB mob
+benchmark of the review build, before the claim-forensics and teleport fixes,
+used 18.94 % less process CPU at about 20 TPS; the final build was not
+re-measured, and the owner's 100-player regression has not been run on it. The
+first function run logged one `RETAINED CLAIM` error, which the claim-forensics
+fix below identifies as a false report. This is not a production release
+clearance; the production stand is still pending.
 
 - Performance: scheduled-tick discovery indexes occupied scheduler chunks by
   region cell instead of probing all 64 possible chunks on each pass. The
@@ -41,6 +46,28 @@ before that diagnostics-only fix. This is not a production release clearance.
   any claim body over three sightings and at least 1 s is reported, with the
   values of one validated snapshot. Diagnostics only: claims, ownership and
   `currentRegion` are unchanged.
+- Fix: a command teleport could crash the server with `A5 topology-gap handoff
+  lost its exact player/session binding: auditedLifecycleMutationPending`, the
+  crash left open since the 3.0.1 stand campaign. A same-level teleport of a
+  player who ticks on its island starts that player's Main handoff. When the
+  next level-head island rebuild ran before the handoff drained and left the
+  player in a cell without an island, the tracker handoff refused the pending
+  teleport. The tracker now joins that in-flight handoff with an owed
+  publication, the same state a teleport after the tracker handoff produces,
+  and the Main closer completes both. A hard exit (death, dimension change) and
+  a teleport whose handoff has not started still fail-stop.
+  `tools/bench/teleport_storm.py` crashed 3.1.12 after 6 teleports and the
+  first 3.1.13 build after 71; the fixed build passed seven storms with about
+  41,600 teleports into pens and onto open ground.
+- Diagnostics: the fail-stop `A5 entity ordinal overlapped another island body`
+  names the player, its phase and session owner, the visiting island and the
+  chunk owner. One storm run hit it once (about 35 teleports per second, Main
+  21 s behind schedule); its cause is open.
+- Validation tooling: `functest.py` and `neo_stress.py` fail on any ERROR/FATAL
+  server log line except NeoForge's Windows appender noise, which a vanilla
+  NeoForge run logs as well. `island_regression.py` runs the owner's 100-player
+  scenario (`docs/USER-REQUIREMENTS.md`) and `teleport_storm.py` the teleport
+  race; see `tools/bench/README.md`.
 
 ## 3.1.12-alpha (2026-10-24)
 

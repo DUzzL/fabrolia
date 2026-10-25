@@ -130,8 +130,10 @@ finally:
     report['exception_lines'] = [l[:300] for l in log.splitlines()
                                  if re.search(r'Exception|Error:|FATAL|fail-stop|fatal', l)
                                  and 'Error loading class' not in l][:60]
+    report['unexpected_log_errors'] = [l[:300] for l in mc.unexpected_log_errors(log)][:20]
     report['placed'] = placed[0]
-    report['passed'] = bool(report.get('alive_at_end')) and rc == 0 and not report['crash_reports']
+    report['passed'] = (bool(report.get('alive_at_end')) and rc == 0 and not report['crash_reports']
+                        and not report['unexpected_log_errors'])
     (run / 'stress-report.json').write_text(json.dumps(report, indent=1), encoding='utf-8')
     print('RESULT', a.name, 'PASS' if report['passed'] else 'FAIL', 'exit', rc, 'crashes', report['crash_reports'],
-          'exceptions', len(report['exception_lines']), flush=True)
+          'exceptions', len(report['exception_lines']), 'log errors', len(report['unexpected_log_errors']), flush=True)

@@ -36,9 +36,9 @@ export JAVA_HOME=/path/to/jdk-25              # Java 25 is required (production:
 Jar: `fabric/build/libs/fabrolia-alpha_<major>.<minor>.<patch>.jar`; current build
 `fabrolia-alpha_3.1.13.jar` (metadata `3.1.13-alpha` in `gradle.properties`; indexed
 scheduled-tick discovery with the previous chunk encounter order, hot ThreadLocal
-slots retained, save-refusal prefilter and dead legacy census removed; see
-`docs/reviews/2026-10-25/folia-performance/`; local Windows validation, no production
-stand verification yet). This includes 3.1.12's settled
+slots retained, save-refusal prefilter and dead legacy census removed, the 3.0.1
+teleport/topology-gap crash fixed; see `docs/reviews/2026-10-25/folia-performance/`;
+local Windows validation, no production stand verification yet). This includes 3.1.12's settled
 spawn-proximity answers, a local-cap seed through the installed `addMob` and one
 SpawnIndex/ledger transaction per entity, see `docs/reviews/2026-10-24/mob-cap/`; on top
 of 3.1.11's per-thread NeoForge drop/snapshot capture, 3.1.10's A5 stop/save fix,
@@ -165,9 +165,9 @@ BlazeandCave's Advancements.
   function test were false reports of the forensic (a `stealOne` holder draining
   the region's queue; see `CHANGELOG.md` 3.1.13). The fixed forensic reports only
   one acquisition held outside any claim body for at least 1 s, so a new report is
-  a real retention. Not yet re-run in the function test or on the stand.
-  `currentRegion` stays a lock-routing field: do not set it on other claim paths
-  just to feed the diagnostic.
+  a real retention. The 3.1.13 function tests on both loaders are log-clean; not yet
+  run on the stand. `currentRegion` stays a lock-routing field: do not set it on other
+  claim paths just to feed the diagnostic.
 
 - Main waits for running island units whenever it needs an island: Main-lane packets
   (`ServerboundUseItemOnPacket` is `MAIN_FIFO` by design), overdue tracking publications
@@ -227,18 +227,25 @@ BlazeandCave's Advancements.
   Reproduces with vanilla + Lithium only; reported upstream by the owner (CaffeineMC/lithium).
   Fabrolia deliberately does not override it (owner's decision). Workaround on the server:
   `mixin.entity.framed_maps=false` in `config/lithium.properties`, or periodic restarts.
-- Intermittent stand crash `A5 topology-gap handoff lost its exact player/session
-  binding` (3.0.1 first campaign, during player distribution; the rerun passed). The
-  message now lists the broken legs; on the next occurrence fix the named leg at its
-  source, do not relax the check. Code-reading hypothesis (unproven): a teleport runs
-  `AsyncIslandPlayerTicks.invalidateForLifecycleMutation` (sets `lifecycleInvalidated`
-  and `auditedLifecycleMutationPending`, schedules the Main handoff); the level-head
-  topology rebuild then reroutes the player's tracker into an ownerless cell before that
-  handoff drains, and `handoffTrackingTopologyGapLocked` refuses the pending audited
-  mutation. If the message shows `auditedLifecycleMutationPending`, decide on the stand
-  how the gap receipt and the queued lifecycle handoff compose (cf.
-  `updateTrackingTopologyGapForLifecycleLocked` for the opposite order). See
-  `docs/reviews/2026-10-11/unused-code-cleanup/`.
+- Fixed in 3.1.13: the stand crash `A5 topology-gap handoff lost its exact
+  player/session binding` (3.0.1 first campaign). The leg was
+  `auditedLifecycleMutationPending`, exactly the 3.0.1 hypothesis: a same-level teleport
+  schedules the player's Main handoff, and the level-head rebuild reroutes its tracker
+  into an ownerless cell before that handoff drains. The gap receipt now joins the
+  in-flight handoff (`MAIN_HANDOFF` only, owed publication); hard exits and a teleport
+  whose handoff has not started still fail-stop. Regression:
+  `python tools/bench/teleport_storm.py NAME` (3.1.12 crashes within seconds;
+  `TopologyGapLifecycleCompositionTest` pins the legs).
+- Rare fail-stop `A5 entity ordinal overlapped another island body`: seen once in a
+  teleport storm of the fixed 3.1.13 build (about 35 teleports per second onto open
+  ground, Main 21 s behind schedule); seven later storms with about 41,600 teleports did
+  not hit it. The message now names the player, phase, session owner, visiting island
+  and chunk owner; analyse the next occurrence before changing the check. A Fabrolia
+  fail-stop does not end the process (no crash report, the server keeps failing tasks).
+- After a fail-stop, a stop can hang forever when an RCON command is in flight:
+  vanilla's `GenericThread.stop` waits for the RCON client thread without a limit
+  ("Waited N seconds attempting force stop!") while that thread waits for the halted
+  Main to run its command. The process must be killed.
 - `:common:verifyFullModpackMixinExport`: the `verifyServerFunctionManager` ordering check
   ("the sticky cleanup receipt must precede fence acquisition") took the method's first
   `publishAndPropagate`, which now belongs to the worker/owner-local branches ahead of the

@@ -1,0 +1,260 @@
+{
+ "loader": "neoforge",
+ "jar": "fabrolia-neoforge-alpha_3.1.13.jar",
+ "mode": "sync",
+ "events": [
+  {
+   "t": 28.4,
+   "msg": "fixture built",
+   "islands": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Islands\n\nOverworld (5)\n  Decay2 (Overworld) \u00b7 19.3 TPS \u00b7 27.4 ms avg\n  Decay1 (Overworld) \u00b7 19.4 TPS \u00b7 24.0 ms avg\n  Decay4 (Overworld) \u00b7 19.3 TPS \u00b7 23.6 ms avg\n  Decay3 (Overworld) \u00b7 19.4 TPS \u00b7 22.9 ms avg\n  Builder (Overworld) \u00b7 19.3 TPS \u00b7 16.0 ms avg\n  Hover a name for its handle, the TPS for all figures.\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions top verbose\n"
+  },
+  {
+   "t": 38.7,
+   "msg": "sample",
+   "placed": 199,
+   "island_tps": {
+    "Decay1": 39.8,
+    "Decay2": 39.8,
+    "Decay3": 39.9,
+    "Decay4": 40.1
+   },
+   "items": "Count: 1578\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 48.9,
+   "msg": "sample",
+   "placed": 401,
+   "island_tps": {
+    "Decay1": 40.2,
+    "Decay2": 40.2,
+    "Decay3": 40.3,
+    "Decay4": 40.2
+   },
+   "items": "Count: 2855\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 59.1,
+   "msg": "sample",
+   "placed": 602,
+   "island_tps": {
+    "Decay1": 40.2,
+    "Decay2": 40.1,
+    "Decay3": 40.3,
+    "Decay4": 40.2
+   },
+   "items": "Count: 3953\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 69.4,
+   "msg": "sample",
+   "placed": 805,
+   "island_tps": {
+    "Decay1": 40.3,
+    "Decay2": 40.1,
+    "Decay3": 40.1,
+    "Decay4": 40.3
+   },
+   "items": "Count: 4920\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 79.7,
+   "msg": "sample",
+   "placed": 1005,
+   "island_tps": {
+    "Decay1": 40.2,
+    "Decay2": 40.2,
+    "Decay3": 40.2,
+    "Decay4": 40.2
+   },
+   "items": "Count: 5865\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 90.0,
+   "msg": "sample",
+   "placed": 1204,
+   "island_tps": {
+    "Decay1": 40.1,
+    "Decay2": 40.2,
+    "Decay3": 40.3,
+    "Decay4": 40.1
+   },
+   "items": "Count: 6680\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 100.3,
+   "msg": "sample",
+   "placed": 1403,
+   "island_tps": {
+    "Decay1": 40.1,
+    "Decay2": 40.2,
+    "Decay3": 40.1,
+    "Decay4": 40.1
+   },
+   "items": "Count: 7339\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 110.7,
+   "msg": "sample",
+   "placed": 1598,
+   "island_tps": {
+    "Decay1": 40.1,
+    "Decay2": 40.2,
+    "Decay3": 40.2,
+    "Decay4": 40.0
+   },
+   "items": "Count: 7784\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 121.0,
+   "msg": "sample",
+   "placed": 1793,
+   "island_tps": {
+    "Decay1": 40.2,
+    "Decay2": 40.1,
+    "Decay3": 40.0,
+    "Decay4": 40.1
+   },
+   "items": "Count: 8226\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 131.4,
+   "msg": "sample",
+   "placed": 1987,
+   "island_tps": {
+    "Decay1": 39.0,
+    "Decay2": 40.1,
+    "Decay3": 38.7,
+    "Decay4": 38.4
+   },
+   "items": "Count: 8621\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 141.8,
+   "msg": "sample",
+   "placed": 2180,
+   "island_tps": {
+    "Decay1": 39.3,
+    "Decay2": 40.1,
+    "Decay3": 37.6,
+    "Decay4": 37.8
+   },
+   "items": "Count: 8993\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 152.2,
+   "msg": "sample",
+   "placed": 2372,
+   "island_tps": {
+    "Decay1": 38.4,
+    "Decay2": 40.1,
+    "Decay3": 35.3,
+    "Decay4": 35.5
+   },
+   "items": "Count: 9334\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 162.7,
+   "msg": "sample",
+   "placed": 2564,
+   "island_tps": {
+    "Decay1": 37.1,
+    "Decay2": 40.0,
+    "Decay3": 32.4,
+    "Decay4": 33.0
+   },
+   "items": "Count: 9644\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 173.1,
+   "msg": "sample",
+   "placed": 2757,
+   "island_tps": {
+    "Decay1": 35.1,
+    "Decay2": 40.0,
+    "Decay3": 31.1,
+    "Decay4": 32.5
+   },
+   "items": "ount: 10034\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 183.6,
+   "msg": "sample",
+   "placed": 2951,
+   "island_tps": {
+    "Decay1": 33.8,
+    "Decay2": 40.3,
+    "Decay3": 28.6,
+    "Decay4": 29.7
+   },
+   "items": "ount: 10344\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 194.1,
+   "msg": "sample",
+   "placed": 3144,
+   "island_tps": {
+    "Decay1": 31.8,
+    "Decay2": 39.8,
+    "Decay3": 27.6,
+    "Decay4": 28.1
+   },
+   "items": "ount: 10700\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 204.6,
+   "msg": "sample",
+   "placed": 3338,
+   "island_tps": {
+    "Decay1": 30.2,
+    "Decay2": 40.0,
+    "Decay3": 26.9,
+    "Decay4": 27.4
+   },
+   "items": "ount: 11044\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 215.2,
+   "msg": "sample",
+   "placed": 3533,
+   "island_tps": {
+    "Decay1": 28.8,
+    "Decay2": 40.0,
+    "Decay3": 25.1,
+    "Decay4": 26.6
+   },
+   "items": "ount: 11398\n",
+   "bot_errors": {}
+  }
+ ],
+ "alive_at_end": true,
+ "exit_code": 0,
+ "crash_reports": [],
+ "exception_lines": [
+  "org.apache.logging.log4j.core.appender.AppenderLoggingException: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.kqueue.Native",
+  "Caused by: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.kqueue.Native",
+  "Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.IllegalStateException: Only supported on OSX/BSD [in thread \"Server thread\"]",
+  "org.apache.logging.log4j.core.appender.AppenderLoggingException: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.epoll.Native",
+  "Caused by: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.epoll.Native",
+  "Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.IllegalStateException: Only supported on Linux [in thread \"Server thread\"]"
+ ],
+ "unexpected_log_errors": [],
+ "placed": 3533,
+ "passed": true
+}

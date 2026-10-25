@@ -46,3 +46,39 @@ stop with save, and a restart. `neo_stress.py` drives four islands of decaying
 leaves and observer clocks while a player places 20 blocks per second (NeoForge's
 drop and block-snapshot capture). Singleplayer was checked by hand in a launcher
 (world load, commands, teleports, save, reload).
+
+Both fail on any ERROR/FATAL server log line (`mc.unexpected_log_errors`). The only
+exception is NeoForge's DebugFile appender failing on netty's epoll/kqueue probes on
+Windows, which a vanilla NeoForge run (`functest.py neoforge NAME --vanilla`) logs as
+well.
+
+## Owner's regression scenario
+
+```bash
+python tools/bench/island_regression.py ir-1        # 100 players, ~15 min; FABROLIA_JAR picks the jar
+```
+
+`island_regression.py` runs the scenario of [docs/USER-REQUIREMENTS.md](../../docs/USER-REQUIREMENTS.md)
+in the mob world (`prep_world.py`): 100 players in the eight pens (one island each,
+the same mob load in every pen), then steady load, one island slowed by
+`debug islanddebug`, Main parked by `debug wedgemain`, players changing dimension and
+island, `save-all flush`, stop and restart. It measures each pen three ways: the clock as
+its players receive it, the island's completed ticks per wall second (`L` in
+`regions top verbose`) next to the TPS and MSPT the island reports, and Main's game time
+per wall second. Report: `runs/NAME/island-regression-report.json`.
+
+## Teleport storm
+
+```bash
+python tools/bench/teleport_storm.py ts-1                  # 16 players, 120 s of RCON teleports
+python tools/bench/teleport_storm.py ts-2 --anchors        # every target pen keeps an island
+python tools/bench/teleport_storm.py ts-3 --no-playerticks # players tick on Main
+```
+
+`teleport_storm.py` teleports players back to back between the pens of the mob world
+and onto open ground without an island. Each same-level teleport is an audited A5
+lifecycle mutation with its own Main handoff, so the next island rebuild can race it.
+3.1.12 and the first 3.1.13 build crashed within seconds with
+`A5 topology-gap handoff lost its exact player/session binding: auditedLifecycleMutationPending`.
+The run fails on a crash report or on any ERROR line (a Fabrolia fail-stop keeps the
+process alive) and kills the server at once. Report: `runs/NAME/teleport-storm-report.json`.

@@ -1,0 +1,65 @@
+{
+ "name": "ts-3113-fix",
+ "config": "fabrolia-async-lithium-c2me",
+ "kind": "fabric",
+ "mods": [
+  "fabric-api-0.165.0+26.3.jar",
+  "fabrolia-alpha_3.1.13.jar",
+  "lithium-fabric-0.26.2+mc26.3.jar",
+  "c2me-fabric-mc26.3-0.4.2-alpha.0.106.jar"
+ ],
+ "jar": null,
+ "fabrolia_mode": "async",
+ "jar_under_test": "fabrolia-alpha_3.1.13.jar",
+ "jar_sha256": "9b805069d1d9c460be7672814c40188bb7194bc033459597e85e0ca21de5ffaa",
+ "params": {
+  "name": "ts-3113-fix",
+  "config": "fabrolia-async-lithium-c2me",
+  "bots": 16,
+  "seconds": 120,
+  "port": 26720,
+  "seed": 1
+ },
+ "teleports": 758,
+ "checks": [
+  {
+   "check": "players joined",
+   "ok": true,
+   "detail": "[]"
+  },
+  {
+   "check": "server survived the storm",
+   "ok": true,
+   "detail": "[]"
+  },
+  {
+   "check": "storm ran its full time",
+   "ok": false,
+   "detail": "TimeoutError('timed out')"
+  },
+  {
+   "check": "every player still connected",
+   "ok": true,
+   "detail": "[]"
+  },
+  {
+   "check": "clean stop (exit code 0)",
+   "ok": false,
+   "detail": "1"
+  },
+  {
+   "check": "no unexpected ERROR/FATAL log lines",
+   "ok": false,
+   "detail": "['[11:49:15] [Fabrolia-Rate-Pacer/ERROR]: Uncaught exception in thread \"Fabrolia-Rate-Pacer\"', '[11:49:15] [Server thread/ERROR]: Error downgrading chunk [-29, -63] to \"deferred\"', '[11:49:15] [Server thread/ERROR]: Failed to load chunk -29,-63']"
+  },
+  {
+   "check": "no crash reports",
+   "ok": true,
+   "detail": "[]"
+  }
+ ],
+ "storm_error": "TimeoutError('timed out')",
+ "storm_seconds": 1239.8,
+ "crash_reports": [],
+ "passed": false
+}

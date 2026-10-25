@@ -211,6 +211,8 @@ try:
     check('clean stop (exit code 0)', rc == 0, rc)
     check('world saved on stop', 'Saving worlds' in log or 'All dimensions are saved' in log)
     report['log_errors_run1'] = [l for l in log.splitlines() if re.search(r'ERROR|Exception|FATAL', l)][:80]
+    unexpected = mc.unexpected_log_errors(log)
+    check('no unexpected ERROR/FATAL log lines (first run)', not unexpected, unexpected[:3])
 
     # Restart: saved entities and the persisted async preference survive.
     srv = mc.Server(run, a.loader, a.port, xmx='6G')
@@ -232,6 +234,8 @@ try:
     log = srv.log_text()
     check('second clean stop', rc == 0, rc)
     report['log_errors_run2'] = [l for l in log.splitlines() if re.search(r'ERROR|Exception|FATAL', l)][:80]
+    unexpected = mc.unexpected_log_errors(log)
+    check('no unexpected ERROR/FATAL log lines (restart)', not unexpected, unexpected[:3])
     crashes = list((run / 'crash-reports').glob('*')) if (run / 'crash-reports').exists() else []
     check('no crash reports', not crashes, [c.name for c in crashes])
     report['completed'] = True

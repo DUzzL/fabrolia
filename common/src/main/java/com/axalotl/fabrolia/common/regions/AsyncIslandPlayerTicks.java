@@ -798,7 +798,18 @@ public final class AsyncIslandPlayerTicks {
             broken.append(" lifecycleMutationBodyDepth=").append(state.lifecycleMutationBodyDepth);
         }
         if (state.pendingLifecycleHandoff != null) broken.append(" pendingLifecycleHandoff");
-        if (state.auditedLifecycleMutationPending) broken.append(" auditedLifecycleMutationPending");
+        // A soft audited mutation (same-level teleport, mount) schedules its own
+        // Main handoff once its wrapper body has retired. A topology rebuild that
+        // runs before that handoff drains and leaves the player in an ownerless
+        // cell hands the tracker to that same in-flight handoff: the receipt is
+        // OWED, as updateTrackingTopologyGapForLifecycleLocked makes it when the
+        // soft mutation arrives after the receipt. Reproduced 2026-10-25 by ten
+        // RCON teleports into pens without an island (the 3.0.1 stand crash).
+        // A hard exit keeps its own leg below.
+        if (state.auditedLifecycleMutationPending
+                && phase != IslandPlayerTurnSession.Phase.MAIN_HANDOFF) {
+            broken.append(" auditedLifecycleMutationPending");
+        }
         if (state.hardLifecycleExitPending) broken.append(" hardLifecycleExitPending");
         if (state.lifecycleInvalidated && phase != IslandPlayerTurnSession.Phase.MAIN_HANDOFF) {
             broken.append(" lifecycleInvalidated");
@@ -4062,7 +4073,8 @@ public final class AsyncIslandPlayerTicks {
             // cannot legitimately reach the same player until that body terminalizes.
             if (isActiveIslandTurnPhase(view.phase())) {
                 throw new IllegalStateException(
-                        "A5 entity ordinal overlapped another island body");
+                        "A5 entity ordinal overlapped another island body"
+                                + overlapDetailLocked(state, player, view));
             }
 
             // Publish the exact E boundary before preparing the closer.  That closes
@@ -4077,6 +4089,35 @@ public final class AsyncIslandPlayerTicks {
             throw new IllegalStateException(
                     "A5 owed entity ordinal could not enter its ordered Main handoff");
         }
+    }
+
+    /** Caller holds {@code state}. Names both units of an overlap fail-stop:
+     *  the session's island owner and the island whose pass reached the player. */
+    private static String overlapDetailLocked(PlayerState state, ServerPlayer player,
+                                              IslandPlayerTurnSession.View view) {
+        IslandPlayerTurnSession.OwnerStamp owner = view.owner();
+        Object ownerIsland = owner == null ? null : owner.islandIdentity();
+        EpochDomain visiting = Thread.currentThread() instanceof RegionWorkerThread worker
+                ? worker.currentDomain : null;
+        long chunk = player.chunkPosition().pack();
+        RegionizedServer runtime = player.level() instanceof ServerLevel level
+                ? RegionScheduler.forLevel(level) : null;
+        IslandRegistry.PIsland chunkOwner = runtime == null ? null : runtime.islandOwnerOfChunk(chunk);
+        return " (player=" + player.getScoreboardName() + " phase=" + view.phase()
+                + " owner=" + islandName(ownerIsland instanceof IslandRegistry.PIsland p ? p : null)
+                + " sessionEpoch=" + (owner == null ? -1L : owner.sessionEpoch())
+                + " visiting=" + (visiting == null ? Thread.currentThread().getName()
+                        : islandName(visiting.owner))
+                + " chunk=" + net.minecraft.world.level.ChunkPos.getX(chunk)
+                + "," + net.minecraft.world.level.ChunkPos.getZ(chunk)
+                + " chunkOwner=" + islandName(chunkOwner)
+                + " invalidated=" + state.lifecycleInvalidated
+                + " audited=" + state.auditedLifecycleMutationPending
+                + " gapReceipt=" + (state.trackingTopologyGap != null) + ")";
+    }
+
+    private static String islandName(IslandRegistry.PIsland island) {
+        return island == null ? "-" : "island#" + island.id + "/gen" + island.gen;
     }
 
     /** Allocate one exact ordinal marker while the listener-state monitor is held. */

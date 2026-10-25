@@ -6,6 +6,7 @@ alive, accept teleports, acknowledge chunk batches and time-stamp block updates 
 """
 import hashlib
 import os
+import re
 import shutil
 import socket
 import struct
@@ -479,3 +480,26 @@ def wait_until(fn, timeout, step=0.25, what='condition'):
             return True
         time.sleep(step)
     raise TimeoutError(what)
+
+
+# ---------------------------------------------------------------- log scan
+# Log events at ERROR/FATAL: "[thread/ERROR]" lines and log4j status lines
+# ("2026-...Z Server thread ERROR ...").
+LOG_ERROR = re.compile(r'/(?:ERROR|FATAL)\]|^\d{4}-\d\d-\d\dT\S+Z .*? (?:ERROR|FATAL) ')
+# NeoForge on Windows: log4j's DebugFile appender fails on netty's epoll/kqueue
+# probes. A vanilla NeoForge run without Fabrolia logs the same lines.
+APPENDER_NOISE = re.compile(r'ERROR An exception occurred processing Appender DebugFile')
+NETTY_NATIVE = re.compile(r'io\.netty\.channel\.(?:epoll|kqueue)\.Native')
+
+
+def unexpected_log_errors(text):
+    """ERROR/FATAL log lines other than the proven NeoForge appender noise."""
+    lines = text.splitlines()
+    found = []
+    for i, line in enumerate(lines):
+        if not LOG_ERROR.search(line):
+            continue
+        if APPENDER_NOISE.search(line) and any(NETTY_NATIVE.search(l) for l in lines[i + 1:i + 4]):
+            continue
+        found.append(line)
+    return found

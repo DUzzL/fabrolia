@@ -1,0 +1,270 @@
+{
+ "loader": "neoforge",
+ "jar": "fabrolia-neoforge-alpha_3.1.13.jar",
+ "mode": "async",
+ "events": [
+  {
+   "t": 11.3,
+   "msg": "async",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 async islands: ON (applies at next tick; saved as the boot default)\n"
+  },
+  {
+   "t": 11.3,
+   "msg": "playerticks",
+   "out": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 regional player entity ticks: ON \u2014 supported real players and exact "
+  },
+  {
+   "t": 28.7,
+   "msg": "fixture built",
+   "islands": "\u00a78[\u00a7f\ud83c\udf00\u00a78]\u00a77 Islands\n\nOverworld (5)\n  Decay1 (Overworld) \u00b7 18.1 TPS \u00b7 34.3 ms avg\n  Decay2 (Overworld) \u00b7 18.1 TPS \u00b7 29.9 ms avg\n  Decay3 (Overworld) \u00b7 17.7 TPS \u00b7 28.7 ms avg\n  Decay4 (Overworld) \u00b7 18.1 TPS \u00b7 27.2 ms avg\n  Builder (Overworld) \u00b7 18.3 TPS \u00b7 22.8 ms avg\n  Hover a name for its handle, the TPS for all figures.\n\n  More: /fabrolia regions top \u00b7 /fabrolia regions top verbose\n"
+  },
+  {
+   "t": 38.9,
+   "msg": "sample",
+   "placed": 200,
+   "island_tps": {
+    "Decay1": 40.0,
+    "Decay2": 39.4,
+    "Decay3": 39.8,
+    "Decay4": 40.0
+   },
+   "items": "Count: 1593\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 49.2,
+   "msg": "sample",
+   "placed": 403,
+   "island_tps": {
+    "Decay1": 40.3,
+    "Decay2": 40.1,
+    "Decay3": 40.2,
+    "Decay4": 40.3
+   },
+   "items": "Count: 2918\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 59.4,
+   "msg": "sample",
+   "placed": 604,
+   "island_tps": {
+    "Decay1": 40.3,
+    "Decay2": 40.2,
+    "Decay3": 40.3,
+    "Decay4": 40.1
+   },
+   "items": "Count: 4044\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 69.6,
+   "msg": "sample",
+   "placed": 804,
+   "island_tps": {
+    "Decay1": 40.1,
+    "Decay2": 40.1,
+    "Decay3": 40.1,
+    "Decay4": 40.2
+   },
+   "items": "Count: 5041\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 79.9,
+   "msg": "sample",
+   "placed": 1005,
+   "island_tps": {
+    "Decay1": 40.1,
+    "Decay2": 40.1,
+    "Decay3": 40.3,
+    "Decay4": 40.1
+   },
+   "items": "Count: 5956\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 90.2,
+   "msg": "sample",
+   "placed": 1201,
+   "island_tps": {
+    "Decay1": 40.1,
+    "Decay2": 40.1,
+    "Decay3": 40.1,
+    "Decay4": 40.0
+   },
+   "items": "Count: 6746\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 100.6,
+   "msg": "sample",
+   "placed": 1396,
+   "island_tps": {
+    "Decay1": 40.2,
+    "Decay2": 40.1,
+    "Decay3": 40.0,
+    "Decay4": 40.1
+   },
+   "items": "Count: 7334\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 110.9,
+   "msg": "sample",
+   "placed": 1592,
+   "island_tps": {
+    "Decay1": 39.5,
+    "Decay2": 40.0,
+    "Decay3": 39.0,
+    "Decay4": 39.3
+   },
+   "items": "Count: 7770\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 121.3,
+   "msg": "sample",
+   "placed": 1787,
+   "island_tps": {
+    "Decay1": 39.1,
+    "Decay2": 40.2,
+    "Decay3": 37.5,
+    "Decay4": 38.3
+   },
+   "items": "Count: 8272\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 131.7,
+   "msg": "sample",
+   "placed": 1979,
+   "island_tps": {
+    "Decay1": 37.6,
+    "Decay2": 40.0,
+    "Decay3": 35.0,
+    "Decay4": 36.0
+   },
+   "items": "Count: 8656\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 142.1,
+   "msg": "sample",
+   "placed": 2173,
+   "island_tps": {
+    "Decay1": 36.2,
+    "Decay2": 40.0,
+    "Decay3": 32.9,
+    "Decay4": 33.9
+   },
+   "items": "Count: 9096\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 152.6,
+   "msg": "sample",
+   "placed": 2368,
+   "island_tps": {
+    "Decay1": 33.6,
+    "Decay2": 40.1,
+    "Decay3": 30.5,
+    "Decay4": 30.9
+   },
+   "items": "Count: 9482\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 163.1,
+   "msg": "sample",
+   "placed": 2561,
+   "island_tps": {
+    "Decay1": 31.3,
+    "Decay2": 39.8,
+    "Decay3": 28.3,
+    "Decay4": 28.9
+   },
+   "items": "Count: 9882\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 173.5,
+   "msg": "sample",
+   "placed": 2754,
+   "island_tps": {
+    "Decay1": 29.2,
+    "Decay2": 40.0,
+    "Decay3": 27.3,
+    "Decay4": 26.8
+   },
+   "items": "ount: 10280\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 184.1,
+   "msg": "sample",
+   "placed": 2949,
+   "island_tps": {
+    "Decay1": 28.1,
+    "Decay2": 39.8,
+    "Decay3": 25.0,
+    "Decay4": 25.4
+   },
+   "items": "ount: 10707\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 194.7,
+   "msg": "sample",
+   "placed": 3144,
+   "island_tps": {
+    "Decay1": 26.7,
+    "Decay2": 39.2,
+    "Decay3": 23.4,
+    "Decay4": 24.0
+   },
+   "items": "ount: 11139\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 205.3,
+   "msg": "sample",
+   "placed": 3339,
+   "island_tps": {
+    "Decay1": 25.5,
+    "Decay2": 39.4,
+    "Decay3": 22.7,
+    "Decay4": 21.8
+   },
+   "items": "ount: 11493\n",
+   "bot_errors": {}
+  },
+  {
+   "t": 216.0,
+   "msg": "sample",
+   "placed": 3534,
+   "island_tps": {
+    "Decay1": 24.1,
+    "Decay2": 38.1,
+    "Decay3": 20.9,
+    "Decay4": 20.8
+   },
+   "items": "ount: 11948\n",
+   "bot_errors": {}
+  }
+ ],
+ "alive_at_end": true,
+ "exit_code": 0,
+ "crash_reports": [],
+ "exception_lines": [
+  "org.apache.logging.log4j.core.appender.AppenderLoggingException: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.kqueue.Native",
+  "Caused by: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.kqueue.Native",
+  "Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.IllegalStateException: Only supported on OSX/BSD [in thread \"Server thread\"]",
+  "org.apache.logging.log4j.core.appender.AppenderLoggingException: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.epoll.Native",
+  "Caused by: java.lang.NoClassDefFoundError: Could not initialize class io.netty.channel.epoll.Native",
+  "Caused by: java.lang.ExceptionInInitializerError: Exception java.lang.IllegalStateException: Only supported on Linux [in thread \"Server thread\"]"
+ ],
+ "unexpected_log_errors": [],
+ "placed": 3534,
+ "passed": true
+}

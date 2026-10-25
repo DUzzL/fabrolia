@@ -1,0 +1,67 @@
+{
+ "name": "ts-3113-long-s13",
+ "config": "fabrolia-async-lithium-c2me",
+ "kind": "fabric",
+ "mods": [
+  "fabric-api-0.165.0+26.3.jar",
+  "fabrolia-alpha_3.1.13.jar",
+  "lithium-fabric-0.26.2+mc26.3.jar",
+  "c2me-fabric-mc26.3-0.4.2-alpha.0.106.jar"
+ ],
+ "jar": null,
+ "fabrolia_mode": "async",
+ "jar_under_test": "fabrolia-alpha_3.1.13.jar",
+ "jar_sha256": "06a610c69a41ceba936a295d56417eef30b2ad77e4a43f4d275d9a4a443cba19",
+ "params": {
+  "name": "ts-3113-long-s13",
+  "config": "fabrolia-async-lithium-c2me",
+  "bots": 24,
+  "seconds": 300.0,
+  "port": 26720,
+  "seed": 13,
+  "anchors": false,
+  "no_playerticks": false
+ },
+ "teleports": 10035,
+ "checks": [
+  {
+   "check": "players joined",
+   "ok": true,
+   "detail": "[]"
+  },
+  {
+   "check": "server survived the storm",
+   "ok": true,
+   "detail": "None"
+  },
+  {
+   "check": "storm ran its full time",
+   "ok": true,
+   "detail": "None"
+  },
+  {
+   "check": "every player still connected",
+   "ok": true,
+   "detail": "[]"
+  },
+  {
+   "check": "clean stop (exit code 0)",
+   "ok": true,
+   "detail": "0"
+  },
+  {
+   "check": "no unexpected ERROR/FATAL log lines",
+   "ok": true,
+   "detail": "[]"
+  },
+  {
+   "check": "no crash reports",
+   "ok": true,
+   "detail": "[]"
+  }
+ ],
+ "storm_seconds": 300.0,
+ "crash_reports": [],
+ "crash_description": "",
+ "passed": true
+}
