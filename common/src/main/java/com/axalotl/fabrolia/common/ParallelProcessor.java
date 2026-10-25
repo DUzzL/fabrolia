@@ -600,6 +600,36 @@ public final class ParallelProcessor {
         return false;
     }
 
+    /**
+     * True when {@code entity} is a pet whose owner is far enough away for
+     * vanilla's {@code TamableAnimal#tryToTeleportToOwner} (FollowOwnerGoal,
+     * TamableAnimalPanicGoal) and the landing area around the owner's block
+     * position lies outside {@code owner}'s island. Vanilla reads the target
+     * blocks and collisions, snaps the pet there and finishes its tick in that
+     * domain; such a tick must run under the global fence. Vanilla teleports
+     * within the pet's own level even when the owner is in another dimension, so
+     * the landing area is resolved in this runtime. Passengers cannot teleport
+     * ({@code unableToMoveToOwner}).
+     */
+    public static boolean teleportsToOwnerOutsideIsland(Entity entity,
+                                                       com.axalotl.fabrolia.common.regions.RegionizedServer runtime,
+                                                       com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland owner) {
+        if (runtime == null || !(entity instanceof net.minecraft.world.entity.TamableAnimal pet)) return false;
+        net.minecraft.world.entity.LivingEntity petOwner = pet.getOwner();
+        if (petOwner == null || pet.unableToMoveToOwner() || !pet.shouldTryTeleportToOwner()) return false;
+        // Attempts land within +-3 blocks; the collision and path-type reads reach
+        // one block further. Check the corner chunks of that square.
+        net.minecraft.core.BlockPos target = petOwner.blockPosition();
+        for (int dx = -4; dx <= 4; dx += 8) {
+            for (int dz = -4; dz <= 4; dz += 8) {
+                long chunk = net.minecraft.world.level.ChunkPos.pack(
+                        (target.getX() + dx) >> 4, (target.getZ() + dz) >> 4);
+                if (runtime.islandOwnerOfChunk(chunk) != owner) return true;
+            }
+        }
+        return false;
+    }
+
     public static boolean shouldTickSynchronously(Entity entity) {
         if (isShuttingDown || FabroliaConfig.disabled) return true;
         if (containsMainOwnedTrackingEntity(entity)) return true;

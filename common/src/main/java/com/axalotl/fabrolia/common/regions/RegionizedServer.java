@@ -2727,6 +2727,23 @@ public final class RegionizedServer {
         keyed.fabrolia$setRegionKey(RegionKeyed.NO_REGION);
     }
 
+    /**
+     * Main under the global fence: re-key {@code e}'s tree where it left its
+     * indexed cell. {@link #indexMove} carries this epoch's tick mark, so the new
+     * owner does not tick it a second time.
+     */
+    void reindexMovedTree(Entity e) {
+        if (!e.isRemoved() && e.level() == level) {
+            long stored = ((RegionKeyed) e).fabrolia$getRegionKey();
+            long current = regionizer.grid.keyFor(e.chunkPosition().pack());
+            if (stored != RegionKeyed.NO_REGION && stored != current) {
+                Region from = regionizer.peekByGridKey(stored);
+                if (from != null) indexMove(e, from, current);
+            }
+        }
+        for (Entity passenger : e.getPassengers()) reindexMovedTree(passenger);
+    }
+
     private void indexMove(Entity e, Region from, long newKey) {
         if (from.entities.remove(e)) from.entityCount.decrementAndGet();
         Region to = regionizer.admitEntity(newKey, e);
@@ -4364,6 +4381,13 @@ public final class RegionizedServer {
         // remote bed. The plain MAIN_SYNC lane claims only THIS island; the write
         // needs the bed's owner quiescent too, so tick under the global fence.
         if (ParallelProcessor.sleepsOutsideIsland(e, this, region.domain.owner)) {
+            RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
+            return;
+        }
+        // A pet far from its owner teleports next to the owner inside its own
+        // tick (TamableAnimal#tryToTeleportToOwner). Landing in another domain
+        // needs that domain quiescent, so tick under the global fence.
+        if (ParallelProcessor.teleportsToOwnerOutsideIsland(e, this, region.domain.owner)) {
             RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
             return;
         }

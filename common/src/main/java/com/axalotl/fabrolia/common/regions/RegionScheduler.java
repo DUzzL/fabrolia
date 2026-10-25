@@ -1433,6 +1433,19 @@ public final class RegionScheduler {
         if (rs != null) rs.indexRemove(e);
     }
 
+    /**
+     * Still under the global fence of a fenced MAIN_SYNC body: a body that moved
+     * its tree into another cell (pet teleport to its owner, End-gateway exit) is
+     * re-keyed now. The region index is otherwise re-keyed lazily by the next
+     * visit, and that visit would come from the old island, ticking the entity on
+     * its worker inside the new owner's domain.
+     */
+    private static void reindexMovedTree(Entity e) {
+        if (!(e.level() instanceof ServerLevel sl)) return;
+        RegionizedServer rs = PER_LEVEL.get(sl);
+        if (rs != null) rs.reindexMovedTree(e);
+    }
+
     /** Exact-ordinal mode's post-list auxiliary-index reconciliation. */
     public static void reconcileCanonicalEntityIndex(ServerLevel level) {
         if (!active) return;
@@ -1813,7 +1826,10 @@ public final class RegionScheduler {
             if (queued.allIslandsFenced()) {
                 AsyncIslandPlayerTicks.runFencedMainMutation(
                         "globally fenced MAIN_SYNC entity tick",
-                        () -> runMainSyncEntityTask(queued));
+                        () -> {
+                            runMainSyncEntityTask(queued);
+                            reindexMovedTree(queued.entity());
+                        });
             } else {
                 runMainSyncEntityTask(queued);
             }
