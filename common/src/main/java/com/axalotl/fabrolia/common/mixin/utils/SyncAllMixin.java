@@ -47,11 +47,10 @@ import org.spongepowered.asm.mixin.Mixin;
         //        array and resets firstIndex under a concurrent drainer.
         // Removing this entry is a real project, not a line deletion: schedule,
         // peek, hasScheduledTick and unpack would all need their own guard
-        // first. LevelChunkTicksMixin (priority 2000, so its handlers escape
-        // postApply and get NO blanket bit) already carries explicit monitors
-        // for the three methods above and asserts this entry is still in force
-        // at runtime — fabrolia$assertBlanketSyncOnce logs a loud ERROR if the
-        // class comes out with zero synchronized methods. TickContainer-
+        // first. LevelChunkTicksMixin already carries explicit monitors for
+        // getAll/pack and asserts this entry is still in force at runtime —
+        // fabrolia$assertBlanketSyncOnce logs a loud ERROR if schedule, peek,
+        // poll, hasScheduledTick or unpack comes out without the bit. TickContainer-
         // WriteShapedApiTest#levelChunkTicksIsStillInTheBlanketSyncSet pins it
         // at build time. Do not remove either without the other.
         LevelChunkTicks.class,

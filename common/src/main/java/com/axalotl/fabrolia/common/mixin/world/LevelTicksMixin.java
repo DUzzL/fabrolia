@@ -195,7 +195,9 @@ public abstract class LevelTicksMixin<T> implements LevelTickAccess<T>,
     }
 
     /** Active custom slices are absent from vanilla's private queues. Snapshot
-     *  all of them with durable state; otherwise run vanilla unchanged. */
+     *  all of them with durable state. {@code original} is never called:
+     *  {@link IslandScheduledTicks#copyCollectedAreaFrom} is a full replica of
+     *  vanilla's copy plus the custom slices. */
     @SuppressWarnings("unchecked")
     @WrapMethod(method = "copyAreaFrom")
     private void fabrolia$copySliceAreaFrom(LevelTicks<T> source, BoundingBox box,

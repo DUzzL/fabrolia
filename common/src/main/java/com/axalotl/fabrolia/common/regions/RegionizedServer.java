@@ -2611,10 +2611,12 @@ public final class RegionizedServer {
     }
 
     /** Replay GLOBAL-domain deferred effects on the server thread AFTER the region
-     *  phase barrier, when every region is quiescent. Replays run on main, so
-     *  CrossRegionGuard sees no claimed worker and lets them propagate fully and
-     *  single-threaded. Island-domain queues are drained by their unit
-     *  coordinators (see IslandTickUnit). */
+     *  phase barrier. Replays run on main, so CrossRegionGuard sees no claimed
+     *  worker and lets them propagate fully. The global lane is only quiescent
+     *  against regions in sync mode; in async mode global-lane effects touch only
+     *  global-lane chunks. Island-domain queues are drained by their unit
+     *  coordinators (see IslandTickUnit) or, at a topology rebuild, by
+     *  {@link #replayIslandOpsUnderQuiesce}. */
     public void drainDeferredCrossRegion() {
         drainDeferredOps(globalDomain);
     }

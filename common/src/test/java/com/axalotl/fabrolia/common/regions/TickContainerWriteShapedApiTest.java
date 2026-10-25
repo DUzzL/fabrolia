@@ -299,7 +299,7 @@ class TickContainerWriteShapedApiTest {
 
     /**
      * The blanket monitor is the actual fix for both hazards; the wraps only
-     * cover three of the container's methods. {@code schedule}, {@code peek},
+     * cover only getAll/pack/removeIf of the container's methods. {@code schedule}, {@code peek},
      * {@code hasScheduledTick} and {@code unpack} — the other half of every
      * invariant Lithium's cached head pointer depends on — have no guard but
      * this entry.

@@ -49,7 +49,6 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
      */
     private static final int SKIP_SYNTHETIC_ABSTRACT_NATIVE_BRIDGE_STATIC = 0x1548;
     private static final int SYNCHRONIZED = 0x20; // synchronized
-    private final Multimap<String, String> mixin2MethodsMap = ArrayListMultimap.create();
     private final Multimap<String, String> mixin2MethodsExcludeMap = ArrayListMultimap.create();
     private final TreeSet<String> syncAllSet = new TreeSet<>();
 
@@ -78,14 +77,16 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
         //     Before adding a name here, sweep every class listed in SyncAllMixin
         //     with javap and confirm the name is unique to the class you mean
         //     (all names below verified unique to PathNavigation on 26.2).
-        //  2. ORDER-DEPENDENT: postApply sees the target ClassNode at SyncAllMixin
-        //     apply time. Members merged by lower-priority/earlier-declared mixins
-        //     (FabroliaPathNavigationMixin) ARE seen and need exclusions; members
-        //     merged by higher-priority mixins (LevelChunkTicksMixin, prio 2000)
-        //     are NOT seen and silently escape the blanket.
+        //  2. NOT ORDER-DEPENDENT: Mixin's applicator runs every mixin's passes
+        //     for a target first and calls postApply for each mixin afterwards, so
+        //     the SyncAllMixin postApply sees the FULLY composed class. Members
+        //     merged by any mixin of any priority (FabroliaPathNavigationMixin,
+        //     LevelChunkTicksMixin, other mods' @Overwrite/handlers) ARE seen and
+        //     receive the blanket bit unless they are excluded here or are
+        //     synthetic/static/bridge/abstract/native.
         mixin2MethodsExcludeMap.put("com.axalotl.fabrolia.common.mixin.utils.SyncAllMixin", "isOrAfter");
-        // Task #32 (2026-07-28 production watchdog deadlock): postApply runs after
-        // FabroliaPathNavigationMixin merged its members, so the blanket bit also
+        // Task #32 (2026-07-28 production watchdog deadlock): postApply sees the
+        // members FabroliaPathNavigationMixin merged, so the blanket bit also
         // landed on the FabroliaSafeNavigation accessors — turning the
         // sendBlockUpdated nav scan (main/any worker) into a BLOCKING entry on the
         // nav monitor a region worker holds for its whole synchronized tick(),
@@ -182,12 +183,9 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
 
     @Override
     public void postApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
-        Collection<String> targetMethods = mixin2MethodsMap.get(mixinClassName);
         Collection<String> excludedMethods = mixin2MethodsExcludeMap.get(mixinClassName);
 
-        if (!targetMethods.isEmpty()) {
-            applySynchronizeBit(targetClass, targetMethods, targetClassName);
-        } else if (syncAllSet.contains(mixinClassName)) {
+        if (syncAllSet.contains(mixinClassName)) {
             for (MethodNode method : targetClass.methods) {
                 // isExcluded (not a plain contains) so that Mixin-mangled injector
                 // handler names (handler$xxx000$<name>) match their exemption too —
@@ -198,18 +196,12 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
                 }
             }
         }
+        // Runs for EVERY target class of every mixin of this config, not only the
+        // SyncAllMixin targets. Deliberately not narrowed to a class list: which
+        // vanilla/mod classes depend on it (ChunkMap.entityMap, ServerLevel.dragonParts,
+        // LevelChunk's game-event sections, ...) is pinned by no test, and narrowing it
+        // unproven could silently drop a concurrency fix.
         rewriteFastutilInstantiations(targetClassName, targetClass);
-    }
-
-    private void applySynchronizeBit(ClassNode targetClass, Collection<String> targetMethods, String targetClassName) {
-        for (MethodNode method : targetClass.methods) {
-            for (String targetMethod : targetMethods) {
-                if (method.name.equals(targetMethod)) {
-                    method.access |= SYNCHRONIZED;
-                    logSynchronize(method.name, targetClassName, null);
-                }
-            }
-        }
     }
 
     private void rewriteFastutilInstantiations(String targetClassName, ClassNode cls) {
@@ -252,7 +244,7 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
     }
 
     private void logSynchronize(String methodName, String targetClassName, String mixinClassName) {
-        if (mixinClassName == null || !mixinClassName.equals("com.axalotl.fabrolia.mixin.utils.FastUtilSynchronizeMixin")) {
+        if (!mixinClassName.equals("com.axalotl.fabrolia.common.mixin.utils.FastUtilSynchronizeMixin")) {
             String message = "Setting synchronize bit for " + methodName + " in " + targetClassName + ".";
             LOGGER.debug(message);
         }

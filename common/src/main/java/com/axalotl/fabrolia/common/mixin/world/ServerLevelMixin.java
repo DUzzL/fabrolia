@@ -826,9 +826,12 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                     com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                             .finishLevel(rsLease));
             // Cross-region effects the workers deferred (writes / neighbour updates that
-            // left their claimed region) — replay on main now that every region is
-            // quiescent, so boundary-crossing redstone completes within this tick,
-            // single-threaded and safe (CrossRegionGuard).
+            // left their claimed region) — in sync mode every region is quiescent
+            // here, so the replay on main completes boundary-crossing redstone within
+            // this tick, single-threaded and safe (CrossRegionGuard). In async mode
+            // only the global timeline's queue is drained here; island queues are
+            // replayed by their unit coordinators or, at a topology rebuild, by
+            // RegionizedServer#replayIslandOpsUnderQuiesce while Main holds all claims.
             var rsDefer = RegionScheduler.forLevel(self);
             if (rsDefer != null) {
                 // A2 async islands: island-domain deferrals were already replayed

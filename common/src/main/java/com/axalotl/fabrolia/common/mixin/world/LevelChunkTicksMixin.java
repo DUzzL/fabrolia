@@ -63,7 +63,9 @@ import java.util.List;
  *        {@code SyncAllMixin} monitor never covered it at all. {@code poll} is
  *        where Lithium's {@code updateNextTickQueue(true)} surfaces, having
  *        removed a bucket of live ticks before discovering it removed the
- *        wrong one. All three are wrapped below.</li>
+ *        wrong one. {@code getAll} and {@code pack} are wrapped below;
+ *        {@code poll} deliberately is not (hot path, its original already holds
+ *        the container monitor).</li>
  *  </ul>
  */
 @Mixin(value = LevelChunkTicks.class, priority = 2000)
@@ -165,14 +167,15 @@ public abstract class LevelChunkTicksMixin implements FabroliaTickDomain,
     // of the reasoning below may be true only inside a mixin environment,
     // because that is exactly what cannot be unit-tested.
     //
-    // WHY A WRAP AND NOT A `synchronized` KEYWORD SOMEWHERE: methods merged by
-    // a priority-2000 mixin are applied AFTER SyncAllMixin and are therefore
-    // invisible to SynchronisePlugin.postApply — a handler here never receives
-    // the blanket ACC_SYNCHRONIZED bit (SynchronisePlugin's javadoc names this
-    // class as the example). getAll/pack therefore take the container monitor
-    // themselves, reentrantly over the blanket bit their originals still
-    // carry; poll deliberately does NOT, because it is a hot path and its
-    // original already holds the same monitor — see its javadoc.
+    // WHY A WRAP AND NOT A `synchronized` KEYWORD SOMEWHERE: SynchronisePlugin's
+    // postApply runs after ALL mixins of the target are applied, so it sees this
+    // mixin's merged handlers too, and the blanket ACC_SYNCHRONIZED bit lands on
+    // them as well (they are not excluded). The bit on a WrapMethod handler is
+    // not what protects the lazy Lithium mutation, though: getAll/pack take the
+    // container monitor explicitly around the underlying call and the snapshot,
+    // reentrantly over the bit their originals carry; poll deliberately does NOT
+    // wrap, because it is a hot path and its original already holds the same
+    // monitor - see its javadoc.
     // ------------------------------------------------------------------
 
     /** {@code getAll()} MUTATES on Lithium, and does it lazily — after this
@@ -207,6 +210,10 @@ public abstract class LevelChunkTicksMixin implements FabroliaTickDomain,
             new java.util.concurrent.atomic.AtomicBoolean();
 
     @Unique
+    private static final java.util.List<String> fabrolia$BLANKET_METHODS =
+            java.util.List.of("schedule", "peek", "poll", "hasScheduledTick", "unpack");
+
+    @Unique
     private static final org.slf4j.Logger fabrolia$LOGGER =
             org.slf4j.LoggerFactory.getLogger("Fabrolia/TickContainer");
 
@@ -214,44 +221,50 @@ public abstract class LevelChunkTicksMixin implements FabroliaTickDomain,
      * One-shot loud check that {@code LevelChunkTicks} is still in the
      * {@code SyncAllMixin} blanket set. Everything above assumes ONE monitor
      * over the whole container API; the wraps here can only take it for the
-     * three methods they cover, and {@code schedule}/{@code peek}/
+     * methods they cover, and {@code schedule}/{@code peek}/{@code poll}/
      * {@code hasScheduledTick}/{@code unpack} — the other half of every
      * invariant Lithium's cached head pointer depends on — get it from the
      * blanket alone. Removing the {@code SyncAllMixin} entry without replacing
      * that coverage re-arms Lithium audit §4.4/§4.5/§4.6 silently, so make it
      * loud instead.
      *
-     * <p>Counts synchronized declared methods rather than naming one: runtime
-     * method names are intermediary on Fabric, so a name lookup would be a
-     * false alarm generator. The blanket sets the bit on every non-static
-     * method of the class; without it essentially none carry it. Runs off the
-     * cold {@code getAll}/{@code pack} paths, never from {@code poll}.
+     * <p>Checks the named container API ({@code fabrolia$BLANKET_METHODS}) by
+     * declared method name: 26.x runtime names are the Mojang names. A named
+     * method that is missing or lacks the bit is reported, so a blanket that
+     * vanished from only some methods is caught as well. Runs off the cold
+     * {@code getAll}/{@code pack} paths, never from {@code poll}.
      */
     @Unique
     private static void fabrolia$assertBlanketSyncOnce() {
         if (fabrolia$BLANKET_CHECKED.get() || !fabrolia$BLANKET_CHECKED.compareAndSet(false, true)) {
             return;
         }
-        int synced = 0, eligible = 0;
-        for (java.lang.reflect.Method m : LevelChunkTicks.class.getDeclaredMethods()) {
-            int mod = m.getModifiers();
-            if (java.lang.reflect.Modifier.isStatic(mod) || m.isSynthetic() || m.isBridge()) {
-                continue;
+        java.util.List<String> unguarded = new java.util.ArrayList<>();
+        for (String name : fabrolia$BLANKET_METHODS) {
+            boolean found = false;
+            boolean allSynchronized = true;
+            for (java.lang.reflect.Method m : LevelChunkTicks.class.getDeclaredMethods()) {
+                int mod = m.getModifiers();
+                if (!m.getName().equals(name) || java.lang.reflect.Modifier.isStatic(mod)
+                        || m.isSynthetic() || m.isBridge()) {
+                    continue;
+                }
+                found = true;
+                allSynchronized &= java.lang.reflect.Modifier.isSynchronized(mod);
             }
-            eligible++;
-            if (java.lang.reflect.Modifier.isSynchronized(mod)) {
-                synced++;
+            if (!found || !allSynchronized) {
+                unguarded.add(name);
             }
         }
-        if (synced == 0) {
-            fabrolia$LOGGER.error("LevelChunkTicks is NO LONGER blanket-synchronized ({} eligible methods, 0 with the bit) — "
-                    + "the SyncAllMixin entry was removed without replacing the per-container monitor. "
-                    + "schedule()/peek()/unpack() are now unguarded against concurrent drains, which re-arms "
-                    + "Lithium's cached-head hazards (audit §4.4 silent chunk death, §4.5 bucket destruction, "
-                    + "§4.6 compaction under a drainer). Restore the entry or wrap the remaining API.", eligible);
+        if (!unguarded.isEmpty()) {
+            fabrolia$LOGGER.error("LevelChunkTicks container API is NO LONGER blanket-synchronized for {} — "
+                    + "the SyncAllMixin entry was removed or a method renamed without replacing the "
+                    + "per-container monitor. These methods are now unguarded against concurrent drains, which "
+                    + "re-arms Lithium's cached-head hazards (audit §4.4 silent chunk death, §4.5 bucket "
+                    + "destruction, §4.6 compaction under a drainer). Restore the entry or wrap the remaining API.",
+                    unguarded);
         } else {
-            fabrolia$LOGGER.info("LevelChunkTicks container monitor in force: {}/{} declared methods synchronized",
-                    synced, eligible);
+            fabrolia$LOGGER.info("LevelChunkTicks container monitor in force on {}", fabrolia$BLANKET_METHODS);
         }
     }
 

@@ -369,10 +369,11 @@ public final class TickDomains {
     // pointer, its bucket map and its dedup set mutually consistent under
     // Fabrolia's concurrent schedule()/poll(). It is load-bearing — see the
     // comment on the SyncAllMixin entry before removing it. The helpers here
-    // take the SAME monitor explicitly rather than relying on it, because
-    // methods merged by a priority-2000 mixin are NOT seen by
-    // SynchronisePlugin.postApply and therefore never receive the blanket bit
-    // (SynchronisePlugin's own javadoc says so, naming this very class).
+    // take the SAME monitor explicitly rather than relying on it: the getAll/pack
+    // mutation is lazy or runs after the original returns, and the explicit
+    // monitor keeps the snapshot inside it independent of which methods the
+    // blanket happens to cover. (SynchronisePlugin.postApply sees the fully
+    // composed class, so the merged wrap handlers carry the bit too.)
     // ------------------------------------------------------------------
 
     /** Explicit no-op compactions requested through {@link #compact}; never a

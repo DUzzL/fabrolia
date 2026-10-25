@@ -147,8 +147,10 @@ public abstract class ChunkMapTrackedEntityMixin
     }
 
     /**
-     * Mixin does not merge the Java instance-initializer body into the target
-     * constructor.  Initialise every non-default tracker value from an exact
+     * Mixin's default initialiser mode merges the initializer of a {@code @Shadow}
+     * field into the target constructor (that is how {@code seenBy} above replaces
+     * vanilla's set), but not the initializer of a {@code @Unique} field.
+     * Initialise every non-default {@code @Unique} tracker value from an exact
      * target-constructor injection so a freshly created tracker can stage its
      * first login before any publication path observes it.
      */

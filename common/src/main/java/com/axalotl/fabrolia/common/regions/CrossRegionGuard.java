@@ -26,6 +26,11 @@ import net.minecraft.world.level.Level;
  * islands and dimensions remain protected. Keeping the block removal and its explosion
  * callback inline together prevents a second explosion from igniting the same TNT twice.
  *
+ * <p>Replay: deferred effects of island timelines are replayed by the owning unit's
+ * coordinator (or, at a topology rebuild, by Main while it holds every island claim);
+ * only the global timeline's queue is replayed on Main after the phase barrier. The
+ * "every region is quiescent" premise holds for that Main replay in sync mode only.
+ *
  * <p>Cost: in-region effects (≈99.95% — the detector's live figure) are never deferred and
  * run exactly as before; only boundary crossings pay a queue add + a one-sub-phase delay
  * within the same tick. Island scheduled/BE ticks run with no claimed region (currentRegion

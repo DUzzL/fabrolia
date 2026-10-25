@@ -13,8 +13,8 @@ import org.spongepowered.asm.mixin.Mixin;
 public abstract class HopperBlockEntityMixin {
 
     /**
-     * Hopper item-entity intake under the item's stable identity monitor. Hopper BLOCKS tick on the
-     * main thread (block entities are not regionized yet) and hopper MINECARTS suck via
+     * Hopper item-entity intake under the item's stable identity monitor. Hopper BLOCKS tick in their
+     * island's block-entity phase on a region worker and hopper MINECARTS suck via
      * the same static — both consume an ItemEntity that, with region-owned ticking, may
      * be mid-tick (moving, merging) on its region worker. Without this gate that is the
      * exact dupe vector that kept items sync-blacklisted in the pool model: hopper reads
