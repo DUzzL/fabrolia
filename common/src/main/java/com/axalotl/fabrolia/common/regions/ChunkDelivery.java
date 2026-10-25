@@ -54,8 +54,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * awaits the real send body.
  * On failure the
  * lease is re-issued (bounded); after {@link #ESCALATE_AFTER} failures the
- * record escalates to a fenced main build (mainClaimScoped — correct at any
- * island rate, bounded to pathological always-written chunks).
+ * record escalates to a fenced main build when Main gets the island claim
+ * without waiting (tryMainClaim); a busy island is leased again, so the sender
+ * never spins on a running unit.
  *
  * Batches are transactional: reserve → offer closed receipt → admit → real
  * EventLoop Start/full/Finished → Main completion intent. Every Throwable
@@ -1115,12 +1116,17 @@ public final class ChunkDelivery {
             }
             return;
         }
-        if (r.fenceFails >= ESCALATE_AFTER) {
-            // Bounded escalation: fenced main build — correct at any island
-            // rate; only ever hit for chunks written on every island tick.
+        boolean heldByMain = r.fenceFails >= ESCALATE_AFTER && IslandCommands.mainHolds(island);
+        if (r.fenceFails >= ESCALATE_AFTER
+                && (heldByMain || IslandCommands.tryMainClaim(island, "chunk-send escalation"))) {
+            // Escalation: Main builds the packet itself, but only when it gets the
+            // island without waiting. mainClaim spun until the running unit ended
+            // (37-100 ms in production) on every chunk a hopper or furnace dirties
+            // between seal and send (audit A-11). A busy island keeps the normal
+            // lease below and is tried again on the next pass; the sender never spins.
             ESCALATED.incrementAndGet();
             r.owner.escalations++;
-            boolean took = IslandCommands.mainClaimScoped(island);
+            boolean took = !heldByMain;
             Throwable failure = null;
             try {
                 Entry e = new Entry(live, ((FabroliaWriteGen) live).fabrolia$writeGen(),
