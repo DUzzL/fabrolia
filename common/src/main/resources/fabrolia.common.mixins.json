@@ -233,6 +233,7 @@
     "world.RandomSequencesMixin",
     "world.RandomSequenceDrawMixin",
     "world.RedstoneTorchBlockMixin",
+    "world.RedstoneWireSignalMixin",
     "world.SavedDataStorageMixin",
     "world.ScoreboardMixin",
     "world.SectionStorageMixin",
