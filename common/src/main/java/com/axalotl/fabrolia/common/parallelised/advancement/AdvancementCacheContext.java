@@ -119,12 +119,15 @@ public final class AdvancementCacheContext {
     /**
      * Called by the NBT predicate wraps before {@code getEntityTagToCompare}.
      * Throws {@link RouteSignal} when a fire-time compare of a player's tag
-     * references its ender pearls.
+     * references its ender pearls, or when the player is not owned by this
+     * thread: an off-owner producer (an arrow of P killing a mob on another
+     * island) would serialize P while P's owner mutates it (audit D-24).
      */
     public static void checkFireTimeCompare(Entity entity, CompoundTag expected) {
-        if (!(entity instanceof ServerPlayer)) return;
+        if (!(entity instanceof ServerPlayer player)) return;
         Frame frame = FRAME.get();
-        if (frame.mode == FIRE_TIME && expected.contains(ENDER_PEARLS)) {
+        if (frame.mode == FIRE_TIME && (expected.contains(ENDER_PEARLS)
+                || !com.axalotl.fabrolia.common.regions.PlayerTurnOwnership.currentThreadOwns(player))) {
             frame.routeRequested = true;
             throw RouteSignal.INSTANCE;
         }
