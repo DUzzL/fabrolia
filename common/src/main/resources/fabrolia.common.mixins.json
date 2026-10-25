@@ -221,6 +221,7 @@
     "world.NetherPortalBlockInvoker",
     "world.NetherPortalDimensionsMixin",
     "world.PalettedContainerLockMixin",
+    "world.PlayerTeamMixin",
     "world.PrimaryLevelDataMixin",
     "world.RaidTickMixin",
     "world.RaidsTickMixin",
