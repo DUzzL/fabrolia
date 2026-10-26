@@ -41,21 +41,13 @@ public class FabroliaConfig {
     private static CommentedFileConfig CONFIG;
 
     // ────────────────────────────────────────────────────────────────────
-    //  Section banner helper — generates the ASCII box that introduces a
+    //  Section banner helper — a one-line title that introduces a
     //  group of keys in the TOML file. The banner becomes the leading
     //  comment block of the first key in each section.
     // ────────────────────────────────────────────────────────────────────
 
-    private static String banner(String title, String description) {
-        String bar = "════════════════════════════════════════════════════════════════════";
-        StringBuilder sb = new StringBuilder();
-        sb.append('\n').append(bar);
-        sb.append("\n  ").append(title.toUpperCase());
-        if (description != null && !description.isEmpty()) {
-            sb.append("\n  ").append(description);
-        }
-        sb.append('\n').append(bar).append("\n\n");
-        return sb.toString();
+    private static String banner(String title) {
+        return "\n── " + title + " ──\n";
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -121,94 +113,42 @@ public class FabroliaConfig {
     private static List<Entry> buildSchema() {
         List<Entry> e = new ArrayList<>();
 
-        // ── Core ───────────────────────────────────────────────────────
-        e.add(bool("disabled",
-                banner("Core", "Global kill switch + thread-pool sizing."),
-                "Master kill switch. true = the mod still loads but every fabrolia path falls back to vanilla serial.",
+        e.add(bool("disabled", banner("Core"),
+                "true = Fabrolia stays loaded but everything runs as vanilla. Runtime: /fabrolia config toggle.",
                 () -> disabled, v -> disabled = v));
         e.add(intEntry("maxThreads", null,
-                "Maximum worker threads in the fabrolia pool. -1 = auto (cores). Hard-clamped to core count when positive.",
+                "Threads of the helper pool. -1 = number of cores.",
                 () -> maxThreads, v -> maxThreads = v));
         e.add(intEntry("threadPriority", null,
-                "Worker OS priority (1..10). Default 4 sits below the server/render thread (5) so they stay responsive on a saturated CPU.",
+                "OS priority of the worker threads (1..10).",
                 () -> threadPriority, v -> threadPriority = v));
         e.add(stringList("synchronizedEntities", null,
-                """
-                Entity types that must tick serially (order-sensitive: TNT chains, item merging, XP orbs).
-                  'minecraft:zombie' — a single entity type
-                  'minecraft:*'      — every entity in a namespace""",
+                "Entity types ticked serially, 'minecraft:zombie' or 'minecraft:*'. Only used with enableRegionThreading=false.",
                 () -> new ArrayList<>(synchronizedEntities),
                 v -> synchronizedEntities = new HashSet<>(v)));
 
-        // ── Fabrolia subsystems ───────────────────────────────────────────
-        e.add(bool("enableFabroliaSpawn",
-                banner("Fabrolia subsystems", "Per-subsystem toggles. Each is also runtime-switchable via /fabrolia."),
-                "Fabrolia mob spawning (parallel candidate generation + serial cap claim). Profile-validated 2026-06-08.",
-                () -> enableFabroliaSpawn, v -> enableFabroliaSpawn = v));
-        e.add(bool("fabroliaSpawnLocalCapReservation", null,
-                "Atomic pack reservation at spawn chunk-pass approval (local per-player mob cap): parallel chunk passes immediately see approved packs' slots taken, so overshoot stays ≈ cap + one pack while packs still complete like vanilla. false = vanilla plain approval (packs complete, parallel overshoot window returns). Runtime: /fabrolia regions localcapreserve on|off.",
-                () -> fabroliaSpawnLocalCapReservation, v -> fabroliaSpawnLocalCapReservation = v));
-        e.add(bool("enableFabroliaRandomTicks", null,
-                "Fabrolia random block ticks (parallel per-chunk). Default ON.",
-                () -> enableFabroliaRandomTicks, v -> enableFabroliaRandomTicks = v));
-        e.add(bool("enableFabroliaChunkSend", null,
-                "DEPRECATED, no effect: chunk delivery always uses Fabrolia's batched sender. Kept only so existing config files stay valid.",
-                () -> enableFabroliaChunkSend, v -> enableFabroliaChunkSend = v));
-        e.add(bool("enableFabroliaDespawn", null,
-                "Pre-pass despawn checks on workers (TickGuard entity reentry path). Halves the per-entity main-thread despawn cost on high-mob servers.",
-                () -> enableFabroliaDespawn, v -> enableFabroliaDespawn = v));
-        e.add(bool("enableFabroliaVmpTracking", null,
-                "Offload VMP's NearbyEntityTracking work (tryTickTracker + tryUpdateTracker, grouped per-tracker to avoid seenBy races) to the fabrolia pool. No effect without VMP installed.",
-                () -> enableFabroliaVmpTracking, v -> enableFabroliaVmpTracking = v));
-
-        // ── Region threading ───────────────────────────────────────────
-        e.add(bool("enableRegionThreading",
-                banner("Region threading", "Folia-style region-owned entity ticks. Core architecture toggle."),
-                "Master switch for region threading. ON = chunks partition into a fixed grid; entity ticks group by owning region and run on a dedicated worker pool (cross-region parallel). Runtime: /fabrolia regions on|off.",
+        e.add(bool("enableRegionThreading", banner("Regions"),
+                "Tick islands on worker threads. Runtime: /fabrolia regions on|off.",
                 () -> enableRegionThreading, v -> enableRegionThreading = v));
         e.add(bool("enablePlayerTickActor", null,
-                "Player-tick ownership mode. With async islands, supported real players and audited Carpet fakes tick on their autonomous island; otherwise the awaited exact-ordinal compatibility actor is used. The saved preference is restored after scheduler startup. Runtime: /fabrolia regions playerticks on|off.",
+                "Players tick on their own island. Runtime: /fabrolia regions playerticks on|off.",
                 () -> enablePlayerTickActor, v -> enablePlayerTickActor = v));
         e.add(intEntry("regionWorkerCount", null,
-                "Region worker thread count. -1 = auto (cores-2). No effect unless enableRegionThreading=true.",
+                "Region worker threads. -1 = cores minus 2.",
                 () -> regionWorkerCount, v -> regionWorkerCount = v));
-        e.add(bool("enableSpawnBarrierOverlap", null,
-                "Let the parallel-spawn future ride to the entity-phase barrier instead of awaiting it at the end of tickChunks. Main parks once for max(spawn, entities). Random/fluid ticks are still awaited before chunk phase ends (vanilla order preserved).",
-                () -> enableSpawnBarrierOverlap, v -> enableSpawnBarrierOverlap = v));
-        e.add(bool("regionEventScheduler", null,
-                "R5 event-driven entity dispatch: regions are the tasks; markDone pushes each dependent when its last color-DAG blocker completes. Both dispatchers preserve the same DAG, chunk-task FIFO and serial entity order. false = legacy group dispatch. Runtime: /fabrolia regions debug eventsched true|false.",
-                () -> regionEventScheduler, v -> regionEventScheduler = v));
-
-        // ── Island parallelism ─────────────────────────────────────────
-        e.add(bool("fabroliaRegionColorGate",
-                banner("Island parallelism", "Cross-region safety, synchronous block-entity partitioning and async islands."),
-                "DEPRECATED, no effect: the color-DAG gate (neighbours never tick concurrently) is required by region threading and always on; false is clamped back to true. Kept only so existing config files stay valid.",
-                () -> fabroliaRegionColorGate, v -> fabroliaRegionColorGate = v));
-        e.add(bool("fabroliaRegionEviction", null,
-                "Reclaim idle regions (no full chunks, no entities, idle ~5s) at tick head — bounds the region map on long exploration so O(regions) scans and mspt stop climbing. Default ON. Runtime: /fabrolia regions debug eviction true|false.",
-                () -> fabroliaRegionEviction, v -> fabroliaRegionEviction = v));
-        e.add(bool("fabroliaRedstoneCrossRegionGuard", null,
-                "Defer a region worker's out-of-region block writes / neighbour updates to the main thread (post-barrier) so a cascade crossing into a concurrently-ticking region cannot race it. In-region redstone is untouched. Runtime: /fabrolia regions debug crossredstone true|false.",
-                () -> fabroliaRedstoneCrossRegionGuard, v -> fabroliaRedstoneCrossRegionGuard = v));
-        e.add(bool("fabroliaIslandBlockEntityTicks", null,
-                "Synchronous region threading only (-Dfabrolia.syncMode=true): block-entity ticks are split by loaded-space islands (≥16 unloaded chunks apart), one worker per island; the heaviest island stays on main, <2 islands → vanilla. Async islands always tick their own block entities. Runtime: /fabrolia regions debug setIslandBlockEntityTicks true|false.",
-                () -> fabroliaIslandBlockEntityTicks, v -> fabroliaIslandBlockEntityTicks = v));
-        e.add(bool("fabroliaCrossDimCoupling", null,
-                "Cross-dimension cadence coupling: Overworld islands whose down-projected footprint (vanilla portal scale + pairing reach) touches a Nether island's cells are LINKED, and linked members share one deadline anchor + one lower-TPS-wins rate — removes the phase drift that breaks portal farms straddling the boundary. Clocks stay per-island (phase-lock, never value-merge); the End can never be linked. Runtime: /fabrolia regions crossdim on|off.",
-                () -> fabroliaCrossDimCoupling, v -> fabroliaCrossDimCoupling = v));
-        e.add(intEntry("crossDimUnlinkGraceTicks", null,
-                "Unlink hysteresis for cross-dimension links: the intersection must be absent for this many wall ticks before a link drops (reappearance resets the timer). Links themselves form immediately.",
-                () -> crossDimUnlinkGraceTicks, v -> crossDimUnlinkGraceTicks = v));
-        e.add(stringList("crossDimLinkedPairs", null,
-                "Cross-dimension link table. Default and ONLY supported value: 'minecraft:overworld=minecraft:the_nether'. Every other entry — the End in particular — is refused at parse time.",
-                () -> new ArrayList<>(crossDimLinkedPairs),
-                v -> crossDimLinkedPairs = new ArrayList<>(v)));
-        e.add(bool("asyncFailClosed", null,
-                "DEPRECATED: only changes the debug drill. A real detected cross-island live write always fail-stops the current server generation; it is never recovered by continuing in sync mode.",
-                () -> asyncFailClosed, v -> asyncFailClosed = v));
         e.add(bool("islandEntityParallel", null,
-                "Async islands: false (default) ticks an island's entities in one serial pass in Vanilla insertion order. true ticks its regions in parallel under the color gate, as up to 0.2.38 (entity order across region borders follows the color waves, out-of-region block writes are replayed after the phase). Islands holding primed TNT or any minecart always use the serial pass to preserve explosion and cart-pushing order. Runtime: /fabrolia regions islandentities vanilla|parallel.",
+                "Tick the entities of one island in parallel per region. false = one serial pass in vanilla order. Runtime: /fabrolia regions islandentities vanilla|parallel.",
                 () -> islandEntityParallel, v -> islandEntityParallel = v));
+        e.add(bool("fabroliaCrossDimCoupling", null,
+                "Overworld and Nether islands that overlap share one clock anchor and the lower TPS. Runtime: /fabrolia regions crossdim on|off.",
+                () -> fabroliaCrossDimCoupling, v -> fabroliaCrossDimCoupling = v));
+
+        e.add(bool("fabroliaSpawnLocalCapReservation", banner("Compatibility"),
+                "Parallel spawning reserves a pack's slots in the per-player mob cap. false = vanilla approval. Runtime: /fabrolia regions localcapreserve on|off.",
+                () -> fabroliaSpawnLocalCapReservation, v -> fabroliaSpawnLocalCapReservation = v));
+        e.add(bool("enableFabroliaVmpTracking", null,
+                "Run VMP's entity tracking on the Fabrolia pool. No effect without VMP. Runtime: /fabrolia config setFabroliaVmpTracking.",
+                () -> enableFabroliaVmpTracking, v -> enableFabroliaVmpTracking = v));
 
         return e;
     }

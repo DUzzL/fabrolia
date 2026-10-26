@@ -31,8 +31,8 @@ final class NeoForgeLifecycleParityTest {
                 .contains("\"server.ServerStopRuntimeMixin\""));
 
         String config = source("neoforge/src/main/java/com/axalotl/fabrolia/neoforge/config/FabroliaConfig.java");
-        assertTrue(config.contains("FabroliaConfig.crossDimLinkedPairs = new ArrayList<>(pairEntries);")
-                && config.contains("FabroliaConfig.synchronizedEntities = entities;"), "empty lists stay empty");
+        assertTrue(config.contains("FabroliaConfig.synchronizedEntities = entities;")
+                && !config.contains("crossDimLinkedPairs"), "empty lists stay empty");
 
         String toml = source("neoforge/src/main/resources/META-INF/neoforge.mods.toml");
         int c2me = toml.indexOf("modId = \"c2me\"");

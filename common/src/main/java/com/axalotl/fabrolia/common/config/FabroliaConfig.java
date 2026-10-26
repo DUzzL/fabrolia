@@ -20,10 +20,6 @@ public class FabroliaConfig {
     public static boolean enableFabroliaRandomTicks = true;
     public static boolean enableFabroliaVmpTracking = true;
     public static boolean enableFabroliaDespawn = true;
-    /** Deprecated compatibility key: nothing reads it. Both loaders still parse and
-     *  persist it so old config files load, but no command exposes it and chunk
-     *  delivery (ChunkDelivery / FabroliaPlayerChunkSenderMixin) runs regardless. */
-    public static boolean enableFabroliaChunkSend = true;
     public static volatile boolean enableRegionThreading = true;
     /**
      * Persisted operator preference for the exact-ordinal player-tick actor.
@@ -41,10 +37,8 @@ public class FabroliaConfig {
      *  claimed region — the certification data for the collector unlock.
      *  Observation only; off = one volatile read per setBlock. */
     public static boolean fabroliaDebugRegionAccess = false;
-    /** Deprecated compatibility key: the color gate is a correctness invariant of
-     *  region threading ({@link #useRegionColorGate()} follows
-     *  {@code enableRegionThreading}), not a toggle. The key is only parsed and
-     *  persisted so old config files load; a {@code false} is clamped back to true. */
+    /** Not a config key: the color gate is a correctness invariant of region
+     *  threading ({@link #useRegionColorGate()} follows {@code enableRegionThreading}). */
     public static boolean fabroliaRegionColorGate = true;
     /** Cross-region effect containment. The color gate proves cross-border effects
      *  safe up to ONE region wide (neighbours never tick concurrently); a single-tick
@@ -187,7 +181,7 @@ public class FabroliaConfig {
         return new ArrayList<>(List.of("minecraft:overworld=minecraft:the_nether"));
     }
 
-    // Deprecated compatibility key, read only by the debugTrip drill and one log line.
+    // Not a config key; read only by the debugTrip drill and one log line.
     // A REAL detected cross-domain write always fail-stops the current generation; it
     // is never downgraded to a live async->sync recovery. No command exposes it.
     public static volatile boolean asyncFailClosed = true;
@@ -267,27 +261,6 @@ public class FabroliaConfig {
         }
     }
 
-    private static final Set<String> WARNED_DEPRECATED_KEYS = ConcurrentHashMap.newKeySet();
-
-    private static void warnDeprecatedKey(String key, String note) {
-        if (WARNED_DEPRECATED_KEYS.add(key)) {
-            LOGGER.warn("Config key {}=false is deprecated and kept only so old config files load: {}", key, note);
-        }
-    }
-
-    /** Logs once per key when a deprecated compatibility key was set away from its default. */
-    private static void warnDeprecatedKeys() {
-        if (!enableFabroliaChunkSend) {
-            warnDeprecatedKey("enableFabroliaChunkSend", "chunk delivery always uses Fabrolia's batched sender");
-        }
-        if (!fabroliaRegionColorGate && enableRegionThreading) {
-            warnDeprecatedKey("fabroliaRegionColorGate", "the color gate is required by region threading and stays ON");
-        }
-        if (!asyncFailClosed) {
-            warnDeprecatedKey("asyncFailClosed", "a detected cross-island write always fail-stops; it only changes the debug drill");
-        }
-    }
-
     public static boolean isNamespaceWildcard(String input) {
         if (input == null) return false;
         int colon = input.indexOf(':');
@@ -348,7 +321,6 @@ public class FabroliaConfig {
     }
 
     public static void onConfigLoaded() {
-        warnDeprecatedKeys();
         enforceSafetyInvariants();
         rebuildCaches();
         LOGGER.info("Configuration loaded.");

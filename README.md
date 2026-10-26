@@ -89,11 +89,21 @@ With Carpet, `/log tps` shows the main thread and the island you are on.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| `disabled` | `false` | Turns Fabrolia off without removing it. |
 | `enableRegionThreading` | `true` | Tick islands on worker threads. |
 | `enablePlayerTickActor` | `true` | Players tick on their own island. |
-| `islandEntityParallel` | `false` | Parallel entity ticking inside one island. |
 | `regionWorkerCount` | `-1` | Worker threads; `-1` uses the core count minus two. |
-| `disabled` | `false` | Turns Fabrolia off without removing it. |
+| `islandEntityParallel` | `false` | Parallel entity ticking inside one island. |
+| `fabroliaCrossDimCoupling` | `true` | Overworld and Nether islands that overlap share one clock anchor. |
+| `synchronizedEntities` | TNT, item, XP orb | Entity types ticked serially; used only with `enableRegionThreading = false`. |
+| `maxThreads` | `-1` | Threads of the helper pool; `-1` uses the core count. |
+| `threadPriority` | `4` | OS priority of the worker threads (1 to 10). |
+| `fabroliaSpawnLocalCapReservation` | `true` | Parallel spawning reserves a pack's slots in the per-player mob cap. |
+| `enableFabroliaVmpTracking` | `true` | Runs VMP's entity tracking on the Fabrolia pool; no effect without VMP. |
+
+Internal switches are not config keys. The `/fabrolia regions debug` toggles and
+`/fabrolia config setFabroliaEntitySpawn|setFabroliaRandomTicks|setFabroliaDespawn` change the
+running server only and are never saved.
 
 ## Building
 

@@ -61,8 +61,8 @@ public class ConfigCommand {
                         MutableComponent keptMsg = prefix.copy()
                                 .append(Component.literal("Kept the running " + kept
                                         + ": these change only through their runtime commands "
-                                        + "(/fabrolia config toggle, /fabrolia regions on|off, "
-                                        + "/fabrolia regions async on|off) or at the next restart.")
+                                        + "(/fabrolia config toggle, /fabrolia regions on|off) "
+                                        + "or at the next restart.")
                                         .withStyle(style -> style.withColor(ChatFormatting.YELLOW)));
                         ctx.getSource().sendSuccess(() -> keptMsg, true);
                     }
@@ -163,10 +163,9 @@ public class ConfigCommand {
                         .executes(ctx -> {
                             boolean value = BoolArgumentType.getBool(ctx, "value");
                             FabroliaConfig.enableFabroliaSpawn = value;
-                            PlatformUtils.saveConfig();
 
                             sendMessage(ctx, "Fabrolia Entity Spawn set to ",
-                                    String.valueOf(value),
+                                    value + " (runtime only, not saved)",
                                     true);
                             return 1;
                         })
@@ -185,10 +184,9 @@ public class ConfigCommand {
                         .executes(ctx -> {
                             boolean value = BoolArgumentType.getBool(ctx, "value");
                             FabroliaConfig.enableFabroliaRandomTicks = value;
-                            PlatformUtils.saveConfig();
 
                             sendMessage(ctx, "Fabrolia Random Ticks set to ",
-                                    String.valueOf(value),
+                                    value + " (runtime only, not saved)",
                                     true);
                             return 1;
                         })
@@ -207,10 +205,9 @@ public class ConfigCommand {
                         .executes(ctx -> {
                             boolean value = BoolArgumentType.getBool(ctx, "value");
                             FabroliaConfig.enableFabroliaDespawn = value;
-                            PlatformUtils.saveConfig();
 
                             sendMessage(ctx, "Fabrolia Despawn set to ",
-                                    String.valueOf(value),
+                                    value + " (runtime only, not saved)",
                                     true);
                             return 1;
                         })
@@ -339,11 +336,10 @@ public class ConfigCommand {
      * scheduler read them live, and their safe transitions are the runtime
      * commands (audit D-02). A file edit of them takes effect at the next start.
      */
-    record LifecycleKeys(boolean disabled, boolean enableRegionThreading, int regionWorkerCount,
-                         boolean regionEventScheduler) {
+    record LifecycleKeys(boolean disabled, boolean enableRegionThreading, int regionWorkerCount) {
         static LifecycleKeys capture() {
             return new LifecycleKeys(FabroliaConfig.disabled, FabroliaConfig.enableRegionThreading,
-                    FabroliaConfig.regionWorkerCount, FabroliaConfig.regionEventScheduler);
+                    FabroliaConfig.regionWorkerCount);
         }
 
         /** Restores every key the reload changed; returns their names, or null. */
@@ -354,14 +350,10 @@ public class ConfigCommand {
                 kept.add("enableRegionThreading=" + enableRegionThreading);
             }
             if (FabroliaConfig.regionWorkerCount != regionWorkerCount) kept.add("regionWorkerCount=" + regionWorkerCount);
-            if (FabroliaConfig.regionEventScheduler != regionEventScheduler) {
-                kept.add("regionEventScheduler=" + regionEventScheduler);
-            }
             if (kept.isEmpty()) return null;
             FabroliaConfig.disabled = disabled;
             FabroliaConfig.enableRegionThreading = enableRegionThreading;
             FabroliaConfig.regionWorkerCount = regionWorkerCount;
-            FabroliaConfig.regionEventScheduler = regionEventScheduler;
             FabroliaConfig.onConfigLoaded();
             return String.join(", ", kept);
         }

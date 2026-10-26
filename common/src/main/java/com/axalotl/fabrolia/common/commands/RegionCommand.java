@@ -964,7 +964,6 @@ public final class RegionCommand {
                                 .executes(ctx -> {
                                     boolean v = BoolArgumentType.getBool(ctx, "value");
                                     FabroliaConfig.fabroliaDebugRegionAccess = v;
-                                    PlatformUtils.saveConfig();
                                     send(ctx, "Region access detector: ", v ? "ON" : "OFF",
                                             v ? "" : "  " + com.axalotl.fabrolia.common.regions.RegionAccessDetector.status());
                                     return 1;
@@ -992,8 +991,7 @@ public final class RegionCommand {
                         .executes(ctx -> {
                             boolean v = BoolArgumentType.getBool(ctx, "value");
                             setter.accept(v);
-                            PlatformUtils.saveConfig();
-                            send(ctx, displayName + " set to ", String.valueOf(v), true);
+                            send(ctx, displayName + " set to ", v + " (diagnostic, not saved)", true);
                             return 1;
                         }));
     }

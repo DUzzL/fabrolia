@@ -27,10 +27,9 @@ final class ConfigLifecycleKeysTest {
             FabroliaConfig.disabled = !live.disabled();
             FabroliaConfig.enableRegionThreading = !live.enableRegionThreading();
             FabroliaConfig.regionWorkerCount = live.regionWorkerCount() + 3;
-            FabroliaConfig.regionEventScheduler = !live.regionEventScheduler();
             String kept = live.restoreChanged();
             assertTrue(kept.contains("disabled") && kept.contains("enableRegionThreading")
-                    && kept.contains("regionWorkerCount") && kept.contains("regionEventScheduler"), kept);
+                    && kept.contains("regionWorkerCount"), kept);
             assertEquals(live, ConfigCommand.LifecycleKeys.capture(), "every key is back at its running value");
         } finally {
             saved.restoreChanged();
