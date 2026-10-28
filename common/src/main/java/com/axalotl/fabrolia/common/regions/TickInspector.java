@@ -5,6 +5,8 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.ticks.LevelChunkTicks;
 import net.minecraft.world.ticks.ScheduledTick;
@@ -303,7 +305,7 @@ public final class TickInspector {
                             && x.triggerTick() == t.triggerTick()
                             && x.subTickOrder() == t.subTickOrder() && x.type() == t.type());
                     if (removed == 0) continue;
-                    TickRepair.markDirty(level, chunkKey);
+                    markDirty(level, chunkKey);
                     org.slf4j.LoggerFactory.getLogger("Fabrolia-TickDomains").warn(
                             "[ticks clear-stale chunkhere] removed {} {} at {} trigger={} (+{}) chunk=[{},{}] {}",
                             block ? "block" : "fluid", type, t.pos().toShortString(),
@@ -358,7 +360,7 @@ public final class TickInspector {
                     int removed = TickDomains.drainRemoveIfErased(c, t -> t.pos().equals(pos)
                             && t.triggerTick() == e.trigger()
                             && t.subTickOrder() == e.subTick());
-                    if (removed > 0) TickRepair.markDirty(level, chunkKey);
+                    if (removed > 0) markDirty(level, chunkKey);
                 }
                 org.slf4j.LoggerFactory.getLogger("Fabrolia-TickDomains").warn(
                         "[ticks clear-stale] operator removed {} {} at {} trigger={} (+{} vs {})",
@@ -382,7 +384,7 @@ public final class TickInspector {
             boolean pending = level.getBlockTicks().hasScheduledTick(pos, state.getBlock());
             level.scheduleTick(pos, state.getBlock(), delay);
             if (!pending && level.getBlockTicks().hasScheduledTick(pos, state.getBlock())) {
-                TickRepair.markDirty(level, chunkKey);
+                markDirty(level, chunkKey);
             }
             sb.append("scheduled block ").append(BuiltInRegistries.BLOCK.getKey(state.getBlock()))
               .append(" +").append(delay);
@@ -391,7 +393,7 @@ public final class TickInspector {
             boolean pending = level.getFluidTicks().hasScheduledTick(pos, fluid.getType());
             level.scheduleTick(pos, fluid.getType(), delay);
             if (!pending && level.getFluidTicks().hasScheduledTick(pos, fluid.getType())) {
-                TickRepair.markDirty(level, chunkKey);
+                markDirty(level, chunkKey);
             }
             sb.append(sb.isEmpty() ? "" : "; ").append("scheduled fluid ")
               .append(BuiltInRegistries.FLUID.getKey(fluid.getType())).append(" +").append(delay);
@@ -400,5 +402,18 @@ public final class TickInspector {
         org.slf4j.LoggerFactory.getLogger("Fabrolia-TickDomains").warn(
                 "[ticks reschedule] operator: {} at {}", sb, pos.toShortString());
         return sb.toString();
+    }
+
+    /** A mutated tick container must reach disk: mark its FULL chunk unsaved.
+     *  A container without a FULL chunk is an invariant failure, not a no-op. */
+    private static void markDirty(ServerLevel level, long chunkKey) {
+        ChunkAccess chunk = level.getChunk(ChunkPos.getX(chunkKey), ChunkPos.getZ(chunkKey),
+                ChunkStatus.FULL, false);
+        if (chunk == null) {
+            throw new IllegalStateException("mutated tick container lost its FULL chunk before dirty mark: "
+                    + level.dimension().identifier() + " chunk[" + ChunkPos.getX(chunkKey) + ","
+                    + ChunkPos.getZ(chunkKey) + "]");
+        }
+        chunk.markUnsaved();
     }
 }

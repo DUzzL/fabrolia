@@ -40,9 +40,7 @@ import java.util.List;
  *        {@code pack}/{@code unpack}) is overwritten by Lithium consistently
  *        and is the only mutation surface Fabrolia uses now. Packed
  *        (deserialized, not-yet-unpacked) state is intentionally unreachable
- *        through that API, so packed containers are never mutated; the
- *        repair facility defers them until the chunk unpacks naturally (see
- *        {@code TickRepair}).</li>
+ *        through that API, so packed containers are never mutated.</li>
  *    <li><b>task #37 (2026-07-28 22:10 production NPE):</b> the one API
  *        member the audit trusted too much is {@code removeIf} — Lithium's
  *        overwrite iterates ABSOLUTE indices {@code 0..size()} over its

@@ -97,7 +97,7 @@ public final class TickDomains {
     /** Context-rich variant: {@code chunkKey}/{@code lane} feed the diagnostic
      *  on resolution failure (pass MIN_VALUE/null when unknown). */
     public static long resolveNow(ServerLevel level, LevelChunkTicks<?> c, long chunkKey, String lane) {
-        long now = probeNow(level, c);
+        long now = probeNow(level, ((FabroliaTickDomain) (Object) c).fabrolia$domainIsland());
         if (now != Long.MIN_VALUE) {
             return now;
         }
@@ -109,20 +109,6 @@ public final class TickDomains {
         throw new IllegalStateException(report);
     }
 
-    /**
-     * NON-COUNTING, NON-LOGGING resolution probe (2026-07-27 review finding
-     * #3a): identical resolution order to {@link #resolveNow} (WALL → live
-     * registry → islandLastL → retained FINAL_CLOCKS), but a failure returns
-     * {@code Long.MIN_VALUE} silently. For pure classification/diagnostic
-     * passes (the bulk {@code TickRepair} scan): the counter and fail-stop
-     * forensic line are the operational path's bug signal and must not be
-     * inflated by a read-only dry run.
-     */
-    public static long probeNow(ServerLevel level, LevelChunkTicks<?> c) {
-        FabroliaTickDomain tag = (FabroliaTickDomain) (Object) c;
-        return probeNow(level, tag.fabrolia$domainIsland());
-    }
-
     /** Same retained-clock resolution for detached slices, which have a tag
      * but no container after collection. */
     public static long resolveNow(ServerLevel level, long island) {
@@ -132,6 +118,8 @@ public final class TickDomains {
         throw new IllegalStateException("unresolved scheduled-tick slice clock island#" + island);
     }
 
+    /** Resolution order WALL, live registry, islandLastL, retained
+     *  FINAL_CLOCKS; {@code Long.MIN_VALUE} when none resolves. */
     private static long probeNow(ServerLevel level, long id) {
         if (id == FabroliaTickDomain.WALL) {
             return wallNow(level);
@@ -762,7 +750,7 @@ public final class TickDomains {
      * {@link #rebaseTo} now shifts and retags under the container monitor.
      *
      * <p>Lock discipline, block-first everywhere — the same fixed total order
-     * as {@code enforceConsumerDomain} and {@code TickRepair}: block lane lock
+     * as {@code enforceConsumerDomain}: block lane lock
      * → fluid lane lock → block container monitor → fluid container monitor.
      * Every other writer follows lane → container ({@code LevelTicksMixin}
      * schedule, addContainer install, the unpack anchor), and no path takes a

@@ -56,9 +56,7 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
             "it/unimi/dsi/fastutil/objects/Reference2ReferenceOpenHashMap",
             "com/axalotl/fabrolia/api/fastutil/Reference2ReferenceConcurrentHashMap",
             "it/unimi/dsi/fastutil/ints/Int2ObjectOpenHashMap",
-            "com/axalotl/fabrolia/api/fastutil/Int2ObjectConcurrentHashMap",
-            "it/unimi/dsi/fastutil/objects/Reference2ByteOpenHashMap",
-            "com/axalotl/fabrolia/api/fastutil/Reference2ByteConcurrentHashMap"
+            "com/axalotl/fabrolia/api/fastutil/Int2ObjectConcurrentHashMap"
     );
 
     private static final Set<String> CONCURRENT_OWN_CLASSES_DOTTED;

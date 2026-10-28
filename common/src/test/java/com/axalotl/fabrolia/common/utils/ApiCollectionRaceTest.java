@@ -1,9 +1,7 @@
 package com.axalotl.fabrolia.common.utils;
 
 import com.axalotl.fabrolia.api.fastutil.ConcurrentLongLinkedOpenHashSet;
-import com.axalotl.fabrolia.api.fastutil.Reference2ByteConcurrentHashMap;
 import com.axalotl.fabrolia.api.fastutil.Reference2ReferenceConcurrentHashMap;
-import com.axalotl.fabrolia.api.utils.IteratorSafeOrderedReferenceSet;
 import it.unimi.dsi.fastutil.HashCommon;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import org.junit.jupiter.api.Test;
@@ -56,50 +54,8 @@ final class ApiCollectionRaceTest {
     }
 
     @Test
-    void seeAdditionsIteratorSurvivesConcurrentGrowthAndSeesPublishedTail() throws Exception {
-        for (int round = 0; round < 50; round++) {
-            var set = new IteratorSafeOrderedReferenceSet<Object>(2, 0.75f, 1, 0.2, Object.class, false);
-            Object[] values = new Object[4096];
-            for (int i = 0; i < values.length; i++) values[i] = new Object();
-            set.add(values[0]);
-            var iterator = set.iterator(IteratorSafeOrderedReferenceSet.ITERATOR_FLAG_SEE_ADDITIONS);
-            FutureTask<Void> append = new FutureTask<>(() -> {
-                for (int i = 1; i < values.length; i++) set.add(values[i]);
-                return null;
-            });
-            Thread writer = new Thread(append, "ordered-set-grower");
-            writer.setDaemon(true);
-            writer.start();
-            int observed = 0;
-            try {
-                while (!append.isDone()) {
-                    while (iterator.hasNext()) assertSame(values[observed++], iterator.next());
-                    Thread.yield();
-                }
-                append.get(5, TimeUnit.SECONDS);
-                while (iterator.hasNext()) assertSame(values[observed++], iterator.next());
-                assertEquals(values.length, observed);
-            } finally {
-                iterator.finishedIterating();
-            }
-        }
-    }
-
-    @Test
-    void zeroCapacityOrderedSetAcceptsFirstAddition() {
-        var set = new IteratorSafeOrderedReferenceSet<Object>(2, 0.75f, 0, 0.2, Object.class, false);
-        Object value = new Object();
-        assertTrue(set.add(value));
-        assertTrue(set.contains(value));
-        var iterator = set.iterator();
-        try { assertSame(value, iterator.next()); assertFalse(iterator.hasNext()); }
-        finally { iterator.finishedIterating(); }
-    }
-
-    @Test
-    void simultaneousFirstWritesPreserveBothReferenceMaps() throws Exception {
+    void simultaneousFirstWritesPreserveReferenceMap() throws Exception {
         AtomicReference<Reference2ReferenceConcurrentHashMap<Object, Object>> refs = new AtomicReference<>();
-        AtomicReference<Reference2ByteConcurrentHashMap<Object>> bytes = new AtomicReference<>();
         Object[] keys = {new Object(), new Object(), new Object(), new Object()};
         CyclicBarrier start = new CyclicBarrier(keys.length + 1);
         CyclicBarrier done = new CyclicBarrier(keys.length + 1);
@@ -110,7 +66,6 @@ final class ApiCollectionRaceTest {
                 for (int round = 0; round < 2000; round++) {
                     start.await(10, TimeUnit.SECONDS);
                     refs.get().put(key, key);
-                    bytes.get().put(key, (byte) 7);
                     done.await(10, TimeUnit.SECONDS);
                 }
                 return null;
@@ -121,14 +76,11 @@ final class ApiCollectionRaceTest {
         }
         for (int round = 0; round < 2000; round++) {
             refs.set(new Reference2ReferenceConcurrentHashMap<>());
-            bytes.set(new Reference2ByteConcurrentHashMap<>());
             start.await(10, TimeUnit.SECONDS);
             done.await(10, TimeUnit.SECONDS);
             assertEquals(keys.length, refs.get().size());
-            assertEquals(keys.length, bytes.get().size());
             for (Object key : keys) {
                 assertSame(key, refs.get().get(key));
-                assertEquals(7, bytes.get().getByte(key));
             }
         }
         for (FutureTask<?> worker : workers) worker.get(10, TimeUnit.SECONDS);

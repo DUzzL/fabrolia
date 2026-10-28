@@ -193,22 +193,6 @@ public final class RegionCommand {
                             send(ctx, "", com.axalotl.fabrolia.common.regions.TickInspector.clearStale(ctx.getSource().getLevel(), pos, true), false);
                             return 1;
                         }))))
-                // SAFETY CONTRACT (task #33 bulk repair): every bare form is a
-                // DRY RUN; only an explicit trailing 'confirm' mutates. The
-                // clear-ambiguous branch is a separate, explicitly destructive
-                // mode — never reached by the other two forms.
-                .then(literal("repair-all")
-                        .executes(ctx -> com.axalotl.fabrolia.common.regions.TickRepairRun.command(
-                                ctx.getSource(), com.axalotl.fabrolia.common.regions.TickRepair.Mode.DRY))
-                        .then(literal("cancel").executes(ctx ->
-                                com.axalotl.fabrolia.common.regions.TickRepairRun.cancel(ctx.getSource())))
-                        .then(literal("confirm").executes(ctx -> com.axalotl.fabrolia.common.regions.TickRepairRun.command(
-                                ctx.getSource(), com.axalotl.fabrolia.common.regions.TickRepair.Mode.CONFIRM)))
-                        .then(literal("clear-ambiguous")
-                                .executes(ctx -> com.axalotl.fabrolia.common.regions.TickRepairRun.command(
-                                        ctx.getSource(), com.axalotl.fabrolia.common.regions.TickRepair.Mode.CLEAR_DRY))
-                                .then(literal("confirm").executes(ctx -> com.axalotl.fabrolia.common.regions.TickRepairRun.command(
-                                        ctx.getSource(), com.axalotl.fabrolia.common.regions.TickRepair.Mode.CLEAR_CONFIRM)))))
                 .then(literal("reschedule").then(net.minecraft.commands.Commands.argument("pos", net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos())
                         .executes(ctx -> {
                             var pos = net.minecraft.commands.arguments.coordinates.BlockPosArgument.getLoadedBlockPos(ctx, "pos");
