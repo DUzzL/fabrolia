@@ -415,8 +415,11 @@ All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   `stopServer` before it saves players and worlds. Vanilla saves after a tick crash. This
   fail-stop shape is deliberate and wiring-tested; a change must audit every save path
   under a failed generation.
-- A Fabrolia fail-stop does not end the process: there is no crash report, and the server
-  keeps failing tasks until it is stopped. After a fail-stop, a stop can hang when an
+- A Fabrolia fail-stop ends the process only when the failure reaches the server tick loop:
+  vanilla then writes its crash report ("Exception in server tick loop") and stops (seen with
+  `regions debug failunittail`). A failure that surfaces on other threads first (for example the
+  rate pacer in teleport storms) writes no crash report, and the server keeps failing tasks
+  until it is stopped. After a fail-stop, a stop can hang when an
   RCON command is in flight (vanilla's `GenericThread.stop` waits for the RCON thread,
   which waits for the halted Main).
 - The vanilla watchdog measures the tick schedule's backlog, not one tick: with Main below
