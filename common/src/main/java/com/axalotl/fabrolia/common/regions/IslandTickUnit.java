@@ -867,7 +867,7 @@ public final class IslandTickUnit {
                     // drive (submits on !unitClaim each wall tick) retries
                     // afterwards. A service request is answered at Main's next
                     // safe point: wake an idle Main.
-                    if (island.mainSyncWanted) RegionScheduler.requestMainSyncService();
+                    if (island.mainServiceWanted()) RegionScheduler.requestMainSyncService();
                     return;
                 } else if (!(claimAcquired = island.tryClaimAutonomousWork())) {
                     // Brief claim contention need not cost the island a tick.
@@ -885,7 +885,7 @@ public final class IslandTickUnit {
                         Thread.onSpinWait();
                     }
                     if (!claimed) {
-                        if (island.mainSyncWanted) RegionScheduler.requestMainSyncService();
+                        if (island.mainServiceWanted()) RegionScheduler.requestMainSyncService();
                         return; // quiesced by topology/save/Main — the next drive retries
                     }
                 }
@@ -1462,7 +1462,7 @@ public final class IslandTickUnit {
                 // A pending MAIN_SYNC service request stopped this island at
                 // this boundary (no successor, see prepareCompletion): the
                 // claim is free now, so wake an idle Main to take it.
-                if (failure == null && island.mainSyncWanted) {
+                if (failure == null && island.mainServiceWanted()) {
                     try {
                         RegionScheduler.requestMainSyncService();
                     } catch (Throwable wakeFailure) {

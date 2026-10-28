@@ -1112,8 +1112,11 @@ public final class RegionCommand {
                 MainFallbackStats.CLAIM_WAITS, false);
         waitSection(out, "Main wait: blocking island-bucket drains (waitForRemaining)",
                 MainFallbackStats.BUCKET_WAITS, false);
+        waitSection(out, "Island stops: standing Main service requests (request until served)",
+                MainFallbackStats.SERVICE_STOPS, false);
         out.note("Wait = time Main spent blocked in the call, including the services it ran"
                 + " while spinning; a fence's hold = time it kept every island stopped."
+                + " An island stop is time an island stayed stopped at a unit boundary for Main."
                 + " Sections can nest: do not add them up.");
         out.note("Not covered: pool pause (pauseExactTurnAndAwait), per-level quiesceAllIslands,"
                 + " domain-rebase and sprint claim waits.");

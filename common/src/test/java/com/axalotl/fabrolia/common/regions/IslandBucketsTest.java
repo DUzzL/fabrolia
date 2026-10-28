@@ -247,6 +247,41 @@ class IslandBucketsTest {
     }
 
     @Test
+    void trackingTailRequestStopsOnlyThroughItsOwnFlagAndEndsWhenServed() throws Exception {
+        try (Fixture f = new Fixture()) {
+            List<String> ran = new ArrayList<>();
+            long stale = System.nanoTime() - RegionScheduler.IslandBuckets.STALE_NANOS * 2;
+            RegionScheduler.MainTrackingService service = RegionScheduler.MainTrackingService.INSTANCE;
+            RegionScheduler.IslandBuckets<long[]> tail = new RegionScheduler.IslandBuckets<>(
+                    item -> ran.add(Long.toString(item[1])), (item, failure) -> fail("no abort expected"),
+                    item -> item[0], null, service);
+            f.busy.unitClaim.set(true);
+            tail.add(f.busy, new long[]{stale, 1});
+            assertFalse(tail.flushReadyRequestingService(false), "the tail pass never waits");
+            assertTrue(f.busy.mainTrackingWanted, "the overdue busy island got a tracking request");
+            assertFalse(f.busy.mainSyncWanted, "the MAIN_SYNC flag is untouched");
+            assertTrue(f.busy.mainInterest() && f.busy.mainServiceWanted(),
+                    "unit admission, chaining and the pacer yield; the island wakes Main");
+            List<long[]> requeued = tail.drainRemaining();
+
+            // MAIN_SYNC reconciliation must not end a tracking request.
+            RegionScheduler.MainSyncService.INSTANCE.reconcile(java.util.Set.of(), System.nanoTime());
+            assertTrue(f.busy.mainTrackingWanted);
+
+            f.busy.unitClaim.set(false);
+            RegionScheduler.IslandBuckets<long[]> next = new RegionScheduler.IslandBuckets<>(
+                    item -> ran.add(Long.toString(item[1])), (item, failure) -> fail("no abort expected"),
+                    item -> item[0], null, service);
+            for (long[] item : requeued) next.add(f.busy, item);
+            assertTrue(next.flushReady());
+            assertEquals(List.of("1"), ran);
+            assertFalse(f.busy.mainTrackingWanted, "the request ends once the bucket was served");
+            assertFalse(f.busy.mainInterest());
+            assertEquals(0, service.size());
+        }
+    }
+
+    @Test
     void requestedIslandIsServedOnceAtTheNextReadyPassAndStaysStoppedThroughItsBodies() throws Exception {
         try (Fixture f = new Fixture()) {
             List<String> ran = new ArrayList<>();
@@ -436,6 +471,7 @@ class IslandBucketsTest {
 
         @Override public void close() throws Exception {
             RegionScheduler.MainSyncService.INSTANCE.clearAll();
+            RegionScheduler.MainTrackingService.INSTANCE.clearAll();
             idle.unitClaim.set(false);
             busy.unitClaim.set(false);
             for (IslandRegistry.PIsland island : extra) island.unitClaim.set(false);

@@ -300,10 +300,22 @@ public final class IslandRegistry {
         public volatile boolean mainSyncWanted;
         /** Main-confined: when {@link #mainSyncWanted} was raised (stuck forensics). */
         long mainSyncWantedSinceNanos;
+        /** Fourth interest flag, same contract as {@link #mainSyncWanted}: a
+         *  standing request of the Main tracking tail
+         *  ({@code RegionScheduler.MainTrackingService}) for overdue Main-owned
+         *  tracker publications. Never saved/restored. */
+        public volatile boolean mainTrackingWanted;
+        /** Main-confined: when {@link #mainTrackingWanted} was raised (stuck forensics). */
+        long mainTrackingWantedSinceNanos;
+        /** True while a standing Main service request stops this island at its
+         *  next unit boundary; whoever sees it free wakes Main. */
+        public boolean mainServiceWanted() {
+            return mainSyncWanted || mainTrackingWanted;
+        }
         /** True while Main has announced interest in this island's claim:
          *  unit admission, chaining and the pacer yield. */
         public boolean mainInterest() {
-            return claimInterestAnnounced() || statusClaimWanted || mainSyncWanted;
+            return claimInterestAnnounced() || statusClaimWanted || mainSyncWanted || mainTrackingWanted;
         }
         /** Diagnostics: units launched by chaining/pacer since creation. */
         public volatile long chainedUnits;

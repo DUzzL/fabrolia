@@ -833,7 +833,7 @@ public final class TemporalControl {
                 // A MAIN_SYNC service request whose island sits idle (its last
                 // unit ended before the request, or a short non-unit hold made
                 // Main's double check miss it): nobody else wakes an idle Main.
-                if (e.island.mainSyncWanted && !e.island.unitClaim.get()) {
+                if (e.island.mainServiceWanted() && !e.island.unitClaim.get()) {
                     RegionScheduler.requestMainSyncService();
                 }
                 TicketState.Ticket retry = finishAndReseed(e, CLAIM_RETRY_NANOS);

@@ -38,6 +38,10 @@ public final class MainFallbackStats {
     /** Blocking island-bucket drains ({@code RegionScheduler.IslandBuckets.waitForRemaining}):
      *  the claim waits of one drain, without the bucket bodies, keyed by caller. */
     public static final WaitLedger BUCKET_WAITS = new WaitLedger(32);
+    /** Standing service requests (MAIN_SYNC, MAIN_TRACKING): time from the request
+     *  until Main served the island, keyed by lane. The island stops at its next
+     *  unit boundary for this time instead of Main waiting for its unit. */
+    public static final WaitLedger SERVICE_STOPS = new WaitLedger(8);
 
     /** Suffix of a fence whose spin budget expired before it held every claim. */
     public static final String BUDGET_EXPIRED = " [budget expired]";
@@ -196,6 +200,7 @@ public final class MainFallbackStats {
         FENCE_WAITS.reset();
         CLAIM_WAITS.reset();
         BUCKET_WAITS.reset();
+        SERVICE_STOPS.reset();
         windowStartNanos = System.nanoTime();
     }
 

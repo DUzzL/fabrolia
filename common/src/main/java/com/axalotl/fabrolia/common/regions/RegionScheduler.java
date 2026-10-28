@@ -774,6 +774,7 @@ public final class RegionScheduler {
                     "MAIN_SYNC was non-empty after the worker-pool fixed point"));
         }
         MainSyncService.INSTANCE.clearAll();
+        MainTrackingService.INSTANCE.clearAll();
         MAIN_SYNC_WAKE_POSTED.set(false);
         for (RegionizedServer rs : stopLevels) {
             try {
@@ -915,6 +916,7 @@ public final class RegionScheduler {
         try {
             // No standing service request may outlive the cancelled work.
             MainSyncService.INSTANCE.clearAll();
+            MainTrackingService.INSTANCE.clearAll();
             MAIN_SYNC_WAKE_POSTED.set(false);
         } catch (Throwable cleanup) {
             failure = expectedPool.mergeCancellationFailure(failure, cleanup);
@@ -2091,24 +2093,68 @@ public final class RegionScheduler {
      * never reached a boundary Main could claim). Main-confined except for the
      * fail-stop sweep, hence the monitor.
      */
-    static final class MainSyncService implements IslandServiceRequests {
+    static final class MainSyncService extends StandingServiceRequests {
         static final MainSyncService INSTANCE = new MainSyncService();
+
+        private MainSyncService() {
+            super("MAIN_SYNC");
+        }
+
+        @Override boolean wanted(IslandRegistry.PIsland island) { return island.mainSyncWanted; }
+        @Override void setWanted(IslandRegistry.PIsland island, boolean wanted) { island.mainSyncWanted = wanted; }
+        @Override long since(IslandRegistry.PIsland island) { return island.mainSyncWantedSinceNanos; }
+        @Override void setSince(IslandRegistry.PIsland island, long nanos) { island.mainSyncWantedSinceNanos = nanos; }
+    }
+
+    /**
+     * Standing service requests of the Main tracking tail
+     * ({@code PIsland.mainTrackingWanted}), same contract as {@link MainSyncService}:
+     * an island with overdue Main-owned tracker publications stops at its next
+     * unit boundary and Main publishes at its next safe point, instead of Main
+     * spinning on the running unit at the level-tick tail.
+     */
+    static final class MainTrackingService extends StandingServiceRequests {
+        static final MainTrackingService INSTANCE = new MainTrackingService();
+
+        private MainTrackingService() {
+            super("MAIN_TRACKING");
+        }
+
+        @Override boolean wanted(IslandRegistry.PIsland island) { return island.mainTrackingWanted; }
+        @Override void setWanted(IslandRegistry.PIsland island, boolean wanted) { island.mainTrackingWanted = wanted; }
+        @Override long since(IslandRegistry.PIsland island) { return island.mainTrackingWantedSinceNanos; }
+        @Override void setSince(IslandRegistry.PIsland island, long nanos) { island.mainTrackingWantedSinceNanos = nanos; }
+    }
+
+    /** One kind of standing per-island service request; the flag lives on the island. */
+    abstract static class StandingServiceRequests implements IslandServiceRequests {
         static final long STUCK_NANOS = 5_000_000_000L;
+        private final String lane;
         private final java.util.ArrayList<IslandRegistry.PIsland> requested = new java.util.ArrayList<>();
         private long lastStuckLogNanos;
 
+        StandingServiceRequests(String lane) {
+            this.lane = lane;
+        }
+
+        abstract boolean wanted(IslandRegistry.PIsland island);
+        abstract void setWanted(IslandRegistry.PIsland island, boolean wanted);
+        abstract long since(IslandRegistry.PIsland island);
+        abstract void setSince(IslandRegistry.PIsland island, long nanos);
+
         @Override
         public synchronized void request(IslandRegistry.PIsland island) {
-            if (island.mainSyncWanted || island.retired) return;
-            island.mainSyncWantedSinceNanos = System.nanoTime();
+            if (wanted(island) || island.retired) return;
+            setSince(island, System.nanoTime());
             requested.add(island);
-            island.mainSyncWanted = true;
+            setWanted(island, true);
         }
 
         @Override
         public synchronized void serviced(IslandRegistry.PIsland island) {
-            if (!island.mainSyncWanted) return;
-            island.mainSyncWanted = false;
+            if (!wanted(island)) return;
+            setWanted(island, false);
+            MainFallbackStats.SERVICE_STOPS.record(lane, System.nanoTime() - since(island));
             for (int i = requested.size() - 1; i >= 0; i--) {
                 if (requested.get(i) == island) requested.remove(i);
             }
@@ -2117,7 +2163,7 @@ public final class RegionScheduler {
         @Override
         public synchronized void clearAll() {
             if (requested.isEmpty()) return;
-            for (IslandRegistry.PIsland island : requested) island.mainSyncWanted = false;
+            for (IslandRegistry.PIsland island : requested) setWanted(island, false);
             requested.clear();
         }
 
@@ -2126,14 +2172,16 @@ public final class RegionScheduler {
             for (int i = requested.size() - 1; i >= 0; i--) {
                 IslandRegistry.PIsland island = requested.get(i);
                 if (island.retired || !withWork.contains(island)) {
-                    island.mainSyncWanted = false;
+                    setWanted(island, false);
+                    MainFallbackStats.SERVICE_STOPS.record(lane + " (ended without work)",
+                            now - since(island));
                     requested.remove(i);
-                } else if (now - island.mainSyncWantedSinceNanos > STUCK_NANOS
+                } else if (now - since(island) > STUCK_NANOS
                         && now - lastStuckLogNanos > STUCK_NANOS) {
                     lastStuckLogNanos = now;
-                    LOGGER.error("[async-islands] MAIN_SYNC service request stuck {}s — the island "
+                    LOGGER.error("[async-islands] {} service request stuck {}s — the island "
                                     + "never reached a boundary Main could claim; forensics: {}",
-                            (now - island.mainSyncWantedSinceNanos) / 1_000_000_000L,
+                            lane, (now - since(island)) / 1_000_000_000L,
                             IslandCommands.claimForensics(island));
                 }
             }
@@ -2193,6 +2241,9 @@ public final class RegionScheduler {
         }
         try {
             drainMainSyncOutOfPhase();
+            // A tracking-tail request stops its island the same way: publish
+            // for every island that is idle now (the drain task's ready pass).
+            if (!IslandCommands.mainHoldsAnyClaim()) drainReadyMainTracking();
         } catch (Throwable thrown) {
             // MinecraftServer.doRunTask would swallow it: fail-stop instead.
             FailStops.<RuntimeException>rethrow(publishFatalAndSelectWinner(thrown));
@@ -2695,8 +2746,11 @@ public final class RegionScheduler {
                     }
                     return failure;
                 },
-                MainTrackingPublication::publishedNanos, null);
+                MainTrackingPublication::publishedNanos, null, MainTrackingService.INSTANCE);
     }
+
+    /** Main-confined nesting depth of tracking drains (a publication may pump again). */
+    private static int mainTrackingDrainDepth;
 
     /**
      * Main thread only. Publishes for every island that is idle now; publications
@@ -2710,24 +2764,44 @@ public final class RegionScheduler {
     }
 
     /**
-     * Level-tick tail catch-up: also waits for busy islands whose oldest
-     * publication is older than {@link IslandBuckets#STALE_NANOS} (see
-     * {@link #drainOverdueMainSyncTicks} for the legality of the wait).
+     * Level-tick tail catch-up — NON-BLOCKING, like {@link #drainOverdueMainSyncTicks}:
+     * the ready pass, then a standing service request
+     * ({@code PIsland.mainTrackingWanted}, {@link MainTrackingService}) for each
+     * still-busy island whose oldest publication is older than
+     * {@link IslandBuckets#STALE_NANOS}. That island stops at its next unit
+     * boundary and wakes Main, which publishes at its next safe point (barrier
+     * pump, drain task, post-tick boundary, idle wait) instead of spinning on the
+     * running unit here. Publications keep their per-island queue order.
      */
     public static boolean drainOverdueMainTracking() {
         return drainMainTracking(true);
     }
 
     private static boolean drainMainTracking(boolean overdue) {
-        if (MAIN_TRACKING.isEmpty()) return false;
+        if (MAIN_TRACKING.isEmpty()) {
+            // No standing request may outlive the publications it was raised for.
+            if (mainTrackingDrainDepth == 0) MainTrackingService.INSTANCE.clearAll();
+            return false;
+        }
         IslandBuckets<MainTrackingPublication> buckets = trackingBuckets();
         MainTrackingPublication queued;
         while ((queued = MAIN_TRACKING.poll()) != null) {
             buckets.add(mainClaimOwnerOf(queued.trackedEntity()), queued);
         }
-        boolean ran = overdue ? buckets.flushOverdue() : buckets.flushReady();
-        java.util.ArrayList<MainTrackingPublication> busy = buckets.drainRemaining();
-        for (int i = busy.size() - 1; i >= 0; i--) MAIN_TRACKING.addFirst(busy.get(i));
+        boolean ran;
+        mainTrackingDrainDepth++;
+        try {
+            ran = overdue ? buckets.flushReadyRequestingService(false) : buckets.flushReady();
+            // This drain saw the whole queue: a request whose island has no
+            // publication left (served, re-keyed, retired) ends here.
+            if (mainTrackingDrainDepth == 1) {
+                MainTrackingService.INSTANCE.reconcile(buckets.registeredOwners(), System.nanoTime());
+            }
+        } finally {
+            mainTrackingDrainDepth--;
+            java.util.ArrayList<MainTrackingPublication> busy = buckets.drainRemaining();
+            for (int i = busy.size() - 1; i >= 0; i--) MAIN_TRACKING.addFirst(busy.get(i));
+        }
         return ran;
     }
 
