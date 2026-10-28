@@ -300,7 +300,7 @@ final class ResidualFailStopWiringTest {
         String domains = source("common/regions/TickDomains.java");
         String resolve = section(domains,
                 "public static long resolveNow(ServerLevel level, LevelChunkTicks<?> c, long chunkKey",
-                "public static long probeNow");
+                "public static long resolveNow(ServerLevel level, long island)");
         assertTrue(resolve.contains("throw new IllegalStateException(report)"));
         assertFalse(resolve.contains("return Long.MIN_VALUE"),
                 "operational clock resolution must fail before any semantic fallback");

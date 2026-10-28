@@ -348,19 +348,6 @@ class TickContainerWriteShapedApiTest {
         }
     }
 
-    /** The divergence is documented where it is deliberately tolerated, so the
-     *  pin above does not just push the mistake into TickRepair. */
-    @Test
-    void tickRepairDocumentsWhyItStillReadsCount() throws Exception {
-        String text = source("common/regions/TickRepair.java");
-        assertTrue(text.contains("c.count() > 0 || c.peek() != null"),
-                "the chunk-selection scan must not miss containers whose duplicate entries "
-                        + "collapse to count()==0 on Lithium");
-        assertTrue(text.contains("§4.7"),
-                "the packed-state probe keeps using count(); the imprecision it inherits must "
-                        + "be written down next to it");
-    }
-
     // ==================================================================
     // Lithium 0.25.1 emulation
     // ==================================================================

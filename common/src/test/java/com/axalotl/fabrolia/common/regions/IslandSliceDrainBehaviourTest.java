@@ -32,8 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Lithium's mixins do not apply on the test classpath, so Lithium's hostile
  * {@code LevelChunkTicks} contract is emulated with a subclass — the house
- * pattern established by {@code TickRemoveIfImplAgnosticTest} and
- * {@code TickRepairProductionPathTest}. Two behaviours matter:
+ * pattern established by {@code TickRemoveIfImplAgnosticTest}. Two behaviours matter:
  * <ul>
  *   <li>{@code poll()} NPEs when the container is empty (their {@code nextTickQueue}
  *       is null there; their contract is peek-first);</li>

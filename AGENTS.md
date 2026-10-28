@@ -126,7 +126,6 @@ Path abbreviations used below:
 | `Fabrolia-Rate-Pacer` | `TemporalControl` (`Pacer.ensureStarted`) | Fires ordinary async island units at each island's rate. |
 | `Fabrolia-Player-Region-Actor` | `C/regions/PlayerTickActor.java` (name constant in `RegionalPlayerEntityTicksV2`) | V2 exact-ordinal player turns: the "logical Main". |
 | `Fabrolia-Save-IO-N` (≤4) | `C/save/AsyncSaveWriter.java` | Player/level/advancement/stats file writes. |
-| `fabrolia-tick-repair-scan` | `C/regions/TickRepairRun.java` | Scan for `/fabrolia regions ticks repair-all`. |
 | Netty / c2me threads | vanilla / c2me | Fabrolia only publishes onto them. Netty: `FabroliaConnectionEventLoop.fabrolia$enqueueEventLoopTask`, `ConnectionOutbox`. c2me: `C/mixin/c2me/FabroliaC2me*ActorThreadMixin`. |
 
 Core concepts and the classes that own them:
@@ -237,7 +236,7 @@ Tail:
 | Players: packets / connection outbox | `AsyncIslandPacketPolicy.java`, `AsyncIslandPacketContinuations.java`, `ConnectionOutbox.java`, `C/mixin/network/ConnectionIslandPlayerMixin.java`, `PacketProcessorPlayerTickMixin.java` | `ConnectionIslandPlayerMixin.fabrolia$enqueueIslandPlayerPacket` → `AsyncIslandPlayerTicks.enqueuePacket` → `AsyncIslandPacketPolicy.classify` (`ISLAND_FIFO` / `MAIN_FIFO`); S2C via `ConnectionOutbox.offer` | Exact-class allow-list (`AUDITED_26_3`): unknown/mod packets fall back to `MAIN_FIFO`. Each connection's packets go out in exactly the order they were appended. | `AsyncIslandPacketPolicyTest`, `VanillaPacketHandlerCoverageTest`, `PacketLaneProductionPathTest`, `ConnectionOutboxTest`, `PacketFailureContainmentTest`, `A5ShutdownIngressTest`, `AsyncIslandPacketContinuationWiringTest` |
 | Players: chunk delivery | `ChunkDelivery.java`, `ChunkDeliveryCandidates.java`, `ChunkBatchAckReplay.java`, `FabroliaFullChunkPublisher.java`, `C/mixin/server/FabroliaPlayerChunkSenderMixin.java`, `FabroliaChunkAckMixin.java`, `PlayerMapMixin.java` | `ChunkDelivery.track`, `sealPending` (unit), `sendNextChunks` (Main), `onAck` | Chunk data is captured only by its owner. The sender/Main never takes an island claim and never spins. | `ChunkDeliveryCandidatesTest`, `ChunkDeliveryPublicationProgressTest`, `ChunkDeliverySuccessLinearizationWiringTest`, `ChunkBatchAckOwnershipTest`, `ChunkWriteEnqueueFenceTest` |
 | Chunk pass & spawning (census) | `C/mixin/server/ServerChunkCacheMixin.java`, `NaturalSpawnChunks.java`, `SpawnCapLanes.java`, `C/parallelised/utils/SpawnCensus.java`, `SpawnIndex.java`, `ParallelSpawnHelper.java`, `LocalCapPackReservation.java`, `C/mixin/entity/spawn/NaturalSpawnerMixin.java` | `fabrolia$tickIslandChunks` (island); `fabrolia$armDeferredChunkWork` / `fabrolia$interceptTickSpawning` (Main); `ParallelSpawnHelper.censusIslandLane`, `buildState` | Per-lane candidate sets partition vanilla's set exactly. A lane checks the cap against the SUM of all lane slots and never waits. | `NaturalSpawnChunksTest`, `SpawnCapLanesTest`, `T/parallelised/utils/SpawnCensusQueryAcceptanceTest`, `SpawnIndexStrikeLifecycleTest`, `LocalCapPackReservationTest`, `T/mixin/entity/spawn/SpawnLocalCapReservationPinTest` |
-| Scheduled ticks / tick domains | `IslandScheduledTicks.java`, `TickDomains.java`, `FabroliaTickDomain.java`, `CausalScheduledTickIndex.java`, `ScheduledTickIslandAdmission.java`, `C/mixin/world/LevelTicksMixin.java`, `LevelChunkTicksMixin.java`, `TickRepair.java` | `preflightIslandScheduled`, `runIslandScheduled`, `slotPartitionedAsync`; `TickDomains.rebaseTo`, `resolveNow` | Every trigger time in a container is in the clock domain its tag names. Lock order: block lane first, then fluid. | `ScheduledTickIslandAdmissionTest`, `ScheduledTickClockDomainTest`, `ScheduledTickSliceRegistryTest`, `TickDomainsProductionPathTest`, `TickSaveRaceTest`, `IslandScheduledHoldStreakTest`, `TickRepairRunTest` |
+| Scheduled ticks / tick domains | `IslandScheduledTicks.java`, `TickDomains.java`, `FabroliaTickDomain.java`, `CausalScheduledTickIndex.java`, `ScheduledTickIslandAdmission.java`, `C/mixin/world/LevelTicksMixin.java`, `LevelChunkTicksMixin.java` | `preflightIslandScheduled`, `runIslandScheduled`, `slotPartitionedAsync`; `TickDomains.rebaseTo`, `resolveNow` | Every trigger time in a container is in the clock domain its tag names. Lock order: block lane first, then fluid. | `ScheduledTickIslandAdmissionTest`, `ScheduledTickClockDomainTest`, `ScheduledTickSliceRegistryTest`, `TickDomainsProductionPathTest`, `TickSaveRaceTest`, `IslandScheduledHoldStreakTest`, `TickInspectorProductionPathTest` |
 | Block entities | `IslandBlockEntityTicks.java`, `BlockEntityTickerList.java`, `BlockEntityTickerPositionIndex.java`, `BlockEntitySleepDomains.java`, `BlockEntityIndexRetention.java`, `HopperClockHeal.java`, `C/mixin/world/LevelMixin.java` | `tickIslandCells` (unit), `tickPartitioned` (Main), `registerTicker`, `preUnitMaintenance` | Cell membership is fixed at registration time. Never hold the `BlockEntityTickerAccess` monitor while running ticker bodies. | `IslandBlockEntityFailStopTest`, `BlockEntityTickerListTest`, `BlockEntityTickerPositionIndexTest`, `BlockEntityIndexRetentionTest`, `BlockEntityRegistrationRaceTest`, `T/mixin/lithium/HopperSleepClockDomainTest` |
 | Block events | `IslandBlockEvents.java`, `BlockEventQueueAccess.java` | `runIslandEvents`, `runPartitioned`, `captureLocal` (`ServerLevelMixin.overwriteQueueAdd`) | Island events run before its entity phase. A canonical pending-identity set spans shared, active and captured queues. Dequeue removes one identity immediately before its callback; cancellation reaches all stores. | `BlockEventPendingParityTest` |
 | Block updates / broadcast | `GlobalBlockUpdateDrain.java`, `IslandBlockUpdateAccess.java`, `ServerChunkCacheMixin.java`, `C/mixin/world/ChunkHolderMixin.java` | `fabrolia$queueIslandBlockUpdate`, `fabrolia$flushIslandBlockUpdates`, `GlobalBlockUpdateDrain.drainLevel`; `AsyncIslandPlayerTicks.sendPredictedBlockCorrections` | Main may publish an island's holder only while it holds that island's claim. Otherwise the island publishes it at its tail. | `GlobalBlockUpdateDrainTest`, `IslandBlockPublicationWiringTest`, `IslandBlockPublicationRaceModelTest`, `PredictedBlockCorrectionModelTest`, `PredictedBlockCorrectionWiringTest` |
@@ -277,7 +276,7 @@ Commands are registered in `FabroliaCommand.register` (bare `/fabrolia` and `hel
 | Chunks not arriving / client stuck loading | `ChunkDelivery` (state machine; `liveness`, `sealPending`), `FabroliaPlayerChunkSenderMixin`, `ChunkBatchAckReplay`, `regions debug chunksender` |
 | Entity invisible / ghost / not tracked | `IslandEntityTracking` (`route`, `flush`), `NearbyEntityTrackingMixin`, `TrackerIndexChanges`, `ChunkMapTrackedEntityMixin` |
 | Mob spawning differs | `ServerChunkCacheMixin.fabrolia$tickIslandChunks`, `NaturalSpawnChunks`, `SpawnCapLanes`, `SpawnCensus`, `LocalCapPackReservation`, `regions debug spawncap\|spawncensus\|spawnrate`. |
-| Redstone / scheduled-tick timing differs | `IslandScheduledTicks`, `TickDomains` (clock domain per container), `LevelTicksMixin`, `CausalScheduledTickIndex`; repair: `regions ticks` (`TickInspector`, `TickRepairRun`) |
+| Redstone / scheduled-tick timing differs | `IslandScheduledTicks`, `TickDomains` (clock domain per container), `LevelTicksMixin`, `CausalScheduledTickIndex`; repair: `regions ticks` (`TickInspector`) |
 | Hopper / furnace / BE timing | `IslandBlockEntityTicks`, `BlockEntitySleepDomains`, `HopperClockHeal`, `C/mixin/lithium/FabroliaLithiumHopperSleepMixin.java` |
 | Portal / dimension bug | `EntityHandlePortalMixin` → `NetherPortalTransfers` / `PlayerDimensionTransition.deferPortal`; non-players: `CrossDimTeleportMixin` → `CrossDimArrivals`; end platform: `EndPlatformHandoff`; probe: `regions debug portalstuck` (`PortalStuckProbe`) |
 | Ender pearls lost / chunk tickets | `C/parallelised/utils/PearlRegistration.java`, `PearlLoadRecovery.java`, `C/utils/PearlTicketHold.java`, `PearlTrace.java` |
@@ -316,7 +315,7 @@ Canonical shape: `try { runSuccessBodyIfHealthy(body) } catch (t) { w = publishF
 - `RegionScheduler.java`: `LIFECYCLE_LOCK` → `RegionWorkerPool` lifecycle monitor. Never hold `LIFECYCLE_LOCK` while joining.
 - `EpochDomain.java`: level topology READ, then the domain READ. The WRITE side never takes the level lock.
 - `RegionizedServer.java` (`globalArrivalsLock`): topology read → this monitor → island queue / leaf tracker. Never wait or mutate the world under them.
-- `TickDomains.java` / `TickRepair.java`: "GLOBAL LOCK ORDER: block lane first, fluid second".
+- `TickDomains.java`: "GLOBAL LOCK ORDER: block lane first, fluid second".
 - `BlockEntityTickerAccess.java`: acquire after graph/region locks, and never while running ticker bodies.
 - `NetherPortalTransfers.java`: claims → reservation monitor → guard.
 - `PoiStripes.java`: at most one stripe at a time.
@@ -346,7 +345,7 @@ Canonical shape: `try { runSuccessBodyIfHealthy(body) } catch (t) { w = publishF
 
 ## 10. `C/regions/` package index (grouped by topic)
 
-All 153 files are listed here, grouped by topic. Each name is `C/regions/<Name>.java`.
+All 150 files are listed here, grouped by topic. Each name is `C/regions/<Name>.java`.
 
 - **Scheduler core:**
   - Scheduling and workers: `RegionScheduler`, `RegionWorkerPool`, `RegionWorkerThread`, `RegionizedServer`, `RegionizedTaskQueue`, `RegionTaskFanIn`, `RegionTickHooks`, `RegionTickingAccess`
@@ -369,7 +368,7 @@ All 153 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   - Tickets: `TicketLockBind`
 - **World passes:**
   - Scheduled ticks: `IslandScheduledTicks`, `ScheduledTickIslandAdmission`, `CausalScheduledTickIndex`, `FabroliaTickDomain`, `TickDomains`, `LevelTicksIslandAccess`
-  - Tick inspection and repair: `TickInspector`, `TickRepair`, `TickRepairRun`, `TickRepairNbt`
+  - Tick inspection and repair: `TickInspector`
   - Block entities: `IslandBlockEntityTicks`, `BlockEntityTickerAccess`, `BlockEntityTickerList`, `BlockEntityTickerPositionIndex`, `BlockEntitySleepDomains`, `BlockEntityIndexRetention`, `BoundedPendingQueue`, `HopperClockHeal`
   - Block events and updates: `IslandBlockEvents`, `BlockEventQueueAccess`, `IslandBlockUpdateAccess`, `GlobalBlockUpdateDrain`, `BlockTickingPassAccess`
   - Chunk pass and spawning: `IslandChunkPassAccess`, `NaturalSpawnChunks`, `SpawnCapLanes`
