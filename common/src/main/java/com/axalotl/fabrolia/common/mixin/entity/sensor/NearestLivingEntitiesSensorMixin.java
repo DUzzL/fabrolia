@@ -31,7 +31,7 @@ public class NearestLivingEntitiesSensorMixin<T extends LivingEntity> {
     private void doTick(ServerLevel level, T body, Operation<Void> original) {
         double d0 = body.getAttributeValue(Attributes.FOLLOW_RANGE);
 
-        // Region-batch fast path (Oxidizium): candidate superset from the
+        // Region-batch fast path (Rustmi): candidate superset from the
         // region's snapshot, re-checked live by the provider — same set as
         // the vanilla query below, just without the section walk. Null →
         // not applicable this sense (not batched / coverage / no provider).

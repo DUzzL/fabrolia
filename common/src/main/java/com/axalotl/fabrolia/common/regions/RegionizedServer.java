@@ -339,9 +339,8 @@ public final class RegionizedServer {
                         + "when /fabrolia regions playerticks is enabled; unsupported player states fail per-player to Main; "
                         + "commands exactly-once "
                         + "(local=island cadence, global=fenced); mods writing across islands are detected "
-                        + "(crossDOMAIN counter) and fail-closed{}; command-block minecarts + posless custom "
-                        + "tickers run at world cadence.",
-                        FabroliaConfig.asyncFailClosed ? " (auto-disable)" : " (override active)");
+                        + "(crossDOMAIN counter) and fail-stop; command-block minecarts + posless custom "
+                        + "tickers run at world cadence.");
             }
         }
         // Shadow clocks only advance in sync mode — in async mode the tick units
@@ -350,40 +349,6 @@ public final class RegionizedServer {
             islandRegistry.advanceShadow(this, level.getGameTime());
         }
         globalDomain.epoch++;
-        // R4 stage B groundwork: periodically report the interior/border split of ticked
-        // entities (measurement only — see FabroliaConfig.fabroliaOptimisticBorderMetric). The
-        // border FRACTION is the input that decides whether dropping the 4-wave ColorGate for
-        // a single-wave interior-parallel scheduler pays off. Ratio is window-size-invariant,
-        // so the frequent reset across levels doesn't skew the percentage.
-        if (FabroliaConfig.fabroliaOptimisticBorderMetric && (globalDomain.epoch % 600L) == 0L) {
-            long b = METRIC_BORDER.getAndSet(0);
-            long i = METRIC_INTERIOR.getAndSet(0);
-            long t = b + i;
-            if (t > 0) {
-                LOGGER.info("[border-metric] interior={} border={} -> {}% border (margin={}b, region={}b)",
-                        i, b, String.format("%.1f", 100.0 * b / t),
-                        FabroliaConfig.fabroliaOptimisticBorderMargin, 1L << (regionizer.grid.shift + 4));
-            }
-        }
-    }
-
-    /** Interior/border classifier counters (metric only). Static: the ratio is what matters. */
-    private static final AtomicLong METRIC_INTERIOR = new AtomicLong();
-    private static final AtomicLong METRIC_BORDER = new AtomicLong();
-
-    /** True if {@code e} sits within {@code fabroliaOptimisticBorderMargin} blocks of its region's
-     *  edge — i.e. its tick MIGHT write a block/entity in a neighbour region. Interior entities
-     *  (false) are provably confined to their own region and could tick fully parallel without
-     *  the ColorGate. Cheap: 4 double compares, no allocation. */
-    private boolean isBorderForMetric(Region region, Entity e) {
-        int shift = regionizer.grid.shift;
-        long size = 1L << (shift + 4);
-        double margin = FabroliaConfig.fabroliaOptimisticBorderMargin;
-        int rx = (int) region.gridKey;
-        int rz = (int) (region.gridKey >>> 32);
-        double relX = e.getX() - (double) (((long) rx) << (shift + 4));
-        double relZ = e.getZ() - (double) (((long) rz) << (shift + 4));
-        return relX < margin || relZ < margin || (size - relX) < margin || (size - relZ) < margin;
     }
 
 
@@ -614,11 +579,6 @@ public final class RegionizedServer {
      *  offer; transition-time foreign offers retain their whole cohort. */
     it.unimi.dsi.fastutil.longs.Long2ObjectMap<EpochDomain> arrivalOwnerSnapshot() {
         return cellDomainSnapshot;
-    }
-
-    /** Island of a chunk via the rebuild-time table. Main thread only. */
-    public int islandForChunk(long packedChunkPos) {
-        return gridToIsland.get(regionizer.grid.keyFor(packedChunkPos));
     }
 
     /** A1 async-islands stage 1: persistent island identities + shadow clocks
@@ -1563,8 +1523,7 @@ public final class RegionizedServer {
         beCellsValid = true;
     }
 
-    /** Island of a grid CELL key (the raw table read; islandForChunk wraps this
-     *  with the chunk→cell conversion). Main thread only. */
+    /** Island of a grid CELL key (the raw rebuild-time table read). Main thread only. */
     public int islandForCell(long gridKey) {
         return gridToIsland.get(gridKey);
     }
@@ -3490,13 +3449,11 @@ public final class RegionizedServer {
      * published under the region-creation WRITE cutoff; every member has
      * {@code r.domain == d} (single-domain dispatch; the ColorGate ignores
      * cross-domain neighbors).
-     * The legacy (non-event) group path remains global-domain-only — async mode
-     * requires the event scheduler (enforced by the tick-head mode latch).
+     * With {@code tickEntities=false} (serial island units and the global lane, i.e.
+     * every production dispatch) the region-group path performs the queue-only join;
+     * the event-driven ready path serves only {@code tickEntities=true}
+     * ({@code islandEntityParallel} and sync mode).
      */
-    CompletableFuture<Void> dispatchEntityPhase(EpochDomain d, List<Region> regions) {
-        return dispatchEntityPhase(d, regions, true);
-    }
-
     CompletableFuture<Void> dispatchEntityPhase(EpochDomain d, List<Region> regions,
                                                          boolean tickEntities) {
         AtomicReference<EntityDispatchPlan> planRef = new AtomicReference<>();
@@ -3618,8 +3575,9 @@ public final class RegionizedServer {
     }
 
     /**
-     * Legacy region-GROUP dispatch (coalescing, {@code regionEventScheduler=false}):
-     * instead of one task+future per region (3×regionCount tasks/tick — measurable
+     * Region-GROUP dispatch (coalescing): used for every queue-only dispatch
+     * ({@code tickEntities=false}) and when {@code regionEventScheduler=false}.
+     * Instead of one task+future per region (3×regionCount tasks/tick — measurable
      * scheduler and GC overhead at ~450 regions), regions are greedily bin-packed by
      * entityCount into ~2×workers balanced groups. A group task processes its regions
      * back-to-back: spin-claim → drain the region's queue inline (its spawn/random
@@ -4443,10 +4401,6 @@ public final class RegionizedServer {
         if (e.isRemoved()) {
             dropFromRegion(region, e);
             return;
-        }
-        if (FabroliaConfig.fabroliaOptimisticBorderMetric) {
-            if (isBorderForMetric(region, e)) METRIC_BORDER.incrementAndGet();
-            else METRIC_INTERIOR.incrementAndGet();
         }
         ParallelProcessor.tickEntity(lvl, e, true);
     }

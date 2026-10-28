@@ -11,7 +11,7 @@ import java.util.List;
  * Pluggable provider for the nearest-living-entities sensor query — the
  * expensive {@code level.getEntitiesOfClass(LivingEntity.class, box, ...)}
  * section walk that {@code NearestLivingEntitiesSensorMixin} performs for
- * every sensing mob. Oxidizium registers a region-batch-backed provider
+ * every sensing mob. Rustmi registers a region-batch-backed provider
  * (candidate superset from the region snapshot, re-checked live); without one
  * — or when the provider declines — the mixin runs the vanilla query.
  *

@@ -165,8 +165,6 @@ class CrossDimLinksTest {
     private RegionizedServer neRs;
 
     private boolean savedCoupling;
-    private int savedGrace;
-    private List<String> savedPairs;
     private long savedGlobalTarget;
     private boolean savedFailClosed;
 
@@ -174,19 +172,14 @@ class CrossDimLinksTest {
     private long dropped0;
     private long anchors0;
     private long suspended0;
-    private long refused0;
     private long endRefusals0;
 
     @BeforeEach
     void setUp() throws Exception {
         savedCoupling = FabroliaConfig.fabroliaCrossDimCoupling;
-        savedGrace = FabroliaConfig.crossDimUnlinkGraceTicks;
-        savedPairs = FabroliaConfig.crossDimLinkedPairs;
         savedGlobalTarget = TemporalControl.globalIslandTargetNanos;
         savedFailClosed = FabroliaConfig.asyncFailClosedTripped;
         FabroliaConfig.fabroliaCrossDimCoupling = true;
-        FabroliaConfig.crossDimUnlinkGraceTicks = 100;
-        FabroliaConfig.crossDimLinkedPairs = FabroliaConfig.defaultCrossDimLinkedPairs();
         TemporalControl.globalIslandTargetNanos = 50_000_000L;
         FabroliaConfig.asyncFailClosedTripped = false;
 
@@ -206,7 +199,6 @@ class CrossDimLinksTest {
         dropped0 = CrossDimLinks.linksDropped;
         anchors0 = CrossDimLinks.anchorsApplied;
         suspended0 = CrossDimLinks.couplingsSuspended;
-        refused0 = CrossDimLinks.refusedPairEntries;
         endRefusals0 = CrossDimLinks.endRefusals;
     }
 
@@ -217,8 +209,6 @@ class CrossDimLinksTest {
                 RegionScheduler.class, "PER_LEVEL").clear();
         setStatic(RegionScheduler.class, "active", false);
         FabroliaConfig.fabroliaCrossDimCoupling = savedCoupling;
-        FabroliaConfig.crossDimUnlinkGraceTicks = savedGrace;
-        FabroliaConfig.crossDimLinkedPairs = savedPairs;
         TemporalControl.globalIslandTargetNanos = savedGlobalTarget;
         FabroliaConfig.asyncFailClosedTripped = savedFailClosed;
     }
@@ -546,23 +536,7 @@ class CrossDimLinksTest {
         assertTrue(ne.pacingGen > neGen, "and the nether member's");
     }
 
-    /** Maintainer test 7 (structural half): the End can never appear. Parse
-     *  refusal for any table entry naming it... */
-    @Test
-    void endPairEntriesAreRefusedAtParse() {
-        FabroliaConfig.crossDimLinkedPairs =
-                new ArrayList<>(List.of("minecraft:overworld=minecraft:the_end"));
-        standardIntersectingTopo(); // geometry WOULD intersect
-        wall(1_000);
-        CrossDimLinks.onRebuild(owRs);
-
-        assertTrue(CrossDimLinks.linksView().isEmpty(),
-                "an End-bearing table must disable linking entirely");
-        assertTrue(CrossDimLinks.refusedPairEntries > refused0, "entry counted as refused");
-        assertNull(owIsland(cellKey(0, 0)).crossDimCoupling);
-    }
-
-    /** ...and by construction: an End level never resolves as a pair member,
+    /** Maintainer test 7: the End can never appear. An End level never resolves as a pair member,
      *  and handing one to the manager directly is refused outright. */
     @Test
     void endLevelIsRefusedByConstruction() throws Exception {

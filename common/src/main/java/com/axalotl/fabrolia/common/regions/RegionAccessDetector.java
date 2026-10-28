@@ -236,21 +236,6 @@ public final class RegionAccessDetector {
         IslandCommands.publishAndPropagate(failure);
     }
 
-    /** TEST-ONLY containment injection (/fabrolia regions debug tripfailclosed,
-     *  perm 4): drives the exact fail-closed latch + marker + live-collapse
-     *  path without a real violation, so containment liveness (rate ladders,
-     *  fences, saves AFTER a trip) is rig-testable. Clearly logged as a drill. */
-    public static void debugTrip() {
-        LOGGER.error("[region-access] DEBUG fail-closed drill requested by operator — no real violation.");
-        if (FabroliaConfig.asyncFailClosed && !FAIL_CLOSED_LATCHED) {
-            FAIL_CLOSED_LATCHED = true;
-            FabroliaConfig.asyncFailClosedTripped = true;
-            LOGGER.error("[region-access] FAIL-CLOSED TRIPPED (DEBUG-DRILL): containment collapses async to "
-                    + "SYNC at the next tick head for THIS session; a restart re-arms async "
-                    + "(no state is persisted — 2026-07-18 policy).");
-        }
-    }
-
     public static String status() {
         return "regionAccess in=" + IN_REGION.get()
                 + " cross=" + CROSS_REGION.get()

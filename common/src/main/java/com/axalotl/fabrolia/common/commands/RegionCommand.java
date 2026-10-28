@@ -905,7 +905,7 @@ public final class RegionCommand {
                             send(ctx, "islanddebug: ", hit > 0 ? ("island#" + id + " artificial cost " + ms + "ms") : "island id not found", false);
                             return hit;
                         }))));
-        dbg.then(literal("crossdomain").requires(PlatformPermission.require("command.regions.toggle", 4))
+        if (DEBUG_COMMANDS) dbg.then(literal("crossdomain").requires(PlatformPermission.require("command.regions.toggle", 4))
                         .executes(ctx -> {
                             // TEST HARNESS ONLY: schedules a deliberately
                             // ownership-violating block write (island A's
@@ -933,21 +933,15 @@ public final class RegionCommand {
                             send(ctx, "debugcrossdomain: ", "need async + 2 islands", false);
                             return 0;
                         }));
-        dbg.then(literal("tripfailclosed").executes(ctx -> {
-                            com.axalotl.fabrolia.common.regions.RegionAccessDetector.debugTrip();
-                            send(ctx, "debug: ", "fail-closed drill latched — async collapses to SYNC at next tick head", false);
-                            return 1;
-                        }));
         dbg.then(boolToggle("eviction", "idle-region eviction",
                         () -> FabroliaConfig.fabroliaRegionEviction,
                         v -> FabroliaConfig.fabroliaRegionEviction = v));
         dbg.then(boolToggle("crossredstone", "cross-region redstone guard",
                         () -> FabroliaConfig.fabroliaRedstoneCrossRegionGuard,
                         v -> FabroliaConfig.fabroliaRedstoneCrossRegionGuard = v));
-        dbg.then(boolToggle("bordermetric", "interior/border classifier metric (R4 stage B; logs border%)",
-                        () -> FabroliaConfig.fabroliaOptimisticBorderMetric,
-                        v -> FabroliaConfig.fabroliaOptimisticBorderMetric = v));
-        dbg.then(boolToggle("eventsched", "R5 event-driven entity dispatch (off = legacy group dispatch)",
+        // Turning the event scheduler off also collapses async islands to sync
+        // (RegionScheduler.asyncModeWantedAtLevelHead), so it is a live mode flip.
+        if (DEBUG_COMMANDS) dbg.then(boolToggle("eventsched", "R5 event-driven entity dispatch (off = legacy group dispatch)",
                         () -> FabroliaConfig.regionEventScheduler,
                         v -> FabroliaConfig.regionEventScheduler = v));
         dbg.then(boolToggle("setIslandBlockEntityTicks", "island block-entity ticks",

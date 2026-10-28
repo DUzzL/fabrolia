@@ -119,7 +119,6 @@ public class FabroliaConfig {
     }
 
     public static void saveConfig() {
-        com.axalotl.fabrolia.common.config.FabroliaConfig.enforceSafetyInvariants();
         disabled.set(com.axalotl.fabrolia.common.config.FabroliaConfig.disabled);
         maxThreads.set(com.axalotl.fabrolia.common.config.FabroliaConfig.maxThreads);
         threadPriority.set(com.axalotl.fabrolia.common.config.FabroliaConfig.threadPriority);

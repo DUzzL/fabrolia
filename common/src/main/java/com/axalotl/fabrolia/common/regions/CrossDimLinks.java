@@ -36,7 +36,7 @@ import java.util.Locale;
  *       {@link DimensionType#getTeleportationScale}, never hardcoded — and
  *       intersected with every Nether island's cells. Intersecting pairs
  *       LINK immediately; a link UNLINKS only after its intersection has been
- *       absent for {@link FabroliaConfig#crossDimUnlinkGraceTicks} wall ticks
+ *       absent for {@link #UNLINK_GRACE_TICKS} wall ticks
  *       (grace-100, the region-eviction precedent), so population flicker
  *       never thrashes it.</li>
  *   <li><b>Cadence coupling</b>: linked members advance their
@@ -89,9 +89,8 @@ import java.util.Locale;
  * matching {@link Level#OVERWORLD}/{@link Level#NETHER} keys ONLY — an End
  * level can never become a pair member, so {@code EndPlatformHandoff} (which
  * has no dimension check of its own and is End-scoped purely by op payload)
- * is untouched structurally, not by promise. Config entries naming the End
- * (or anything else) are refused at parse time, and a defensive guard refuses
- * an End level even if handed one directly. This class never touches the
+ * is untouched structurally, not by promise. A defensive guard refuses an End
+ * level even if handed one directly. This class never touches the
  * transfer lane: no reference to CrossDimArrivals, NetherPortalTransfers
  * or EndPlatformHandoff exists here.
  *
@@ -121,9 +120,14 @@ public final class CrossDimLinks {
 
     private CrossDimLinks() {}
 
-    /** The one supported link-table entry, in both spellings. */
+    /** The one linked dimension pair. */
     static final String SUPPORTED_PAIR = "minecraft:overworld=minecraft:the_nether";
-    static final String SUPPORTED_PAIR_REVERSED = "minecraft:the_nether=minecraft:overworld";
+
+    /** Unlink hysteresis: a link whose intersection disappeared is dropped
+     *  only after this many WALL ticks of continuous absence (the grace-100
+     *  region-eviction precedent); reappearance resets the timer, so
+     *  population flicker never thrashes a link. */
+    static final long UNLINK_GRACE_TICKS = 100;
 
     /**
      * Cadence coupling published to {@code IslandTickUnit.complete()} via
@@ -173,7 +177,6 @@ public final class CrossDimLinks {
      *  single largest allocation source; this runs on the same path). */
     private static final LongOpenHashSet PROJ_SCRATCH = new LongOpenHashSet(64);
     private static final LongOpenHashSet POPULATED_SCRATCH = new LongOpenHashSet(64);
-    private static final java.util.HashSet<String> WARNED_PAIR_ENTRIES = new java.util.HashSet<>(2);
 
     // ---- counters (main-written; read by the status command on main) -------
     static long linksFormed;
@@ -181,7 +184,6 @@ public final class CrossDimLinks {
     static long anchorsApplied;
     static long anchorsDeferred;
     static long couplingsSuspended;
-    static long refusedPairEntries;
     static long endRefusals;
 
     // ---- entry points ------------------------------------------------------
@@ -225,7 +227,6 @@ public final class CrossDimLinks {
         LINKS.clear();
         lastOwRs = null;
         lastNetherRs = null;
-        WARNED_PAIR_ENTRIES.clear(); // fresh scheduler: re-warn once per session
     }
 
     // ---- rebuild pass ------------------------------------------------------
@@ -237,8 +238,8 @@ public final class CrossDimLinks {
             endRefusals++;
             return;
         }
-        if (!FabroliaConfig.fabroliaCrossDimCoupling || !pairConfigured()) {
-            dropAll("coupling disabled or no valid dimension pair configured");
+        if (!FabroliaConfig.fabroliaCrossDimCoupling) {
+            dropAll("coupling disabled");
             return;
         }
         RegionizedServer owRs = null;
@@ -358,7 +359,7 @@ public final class CrossDimLinks {
         }
         // 3. Hysteresis drop: absence must persist for the grace period of
         //    WALL ticks; any reappearance above refreshed lastIntersectWall.
-        long grace = Math.max(0, FabroliaConfig.crossDimUnlinkGraceTicks);
+        long grace = UNLINK_GRACE_TICKS;
         for (int i = LINKS.size() - 1; i >= 0; i--) {
             Link l = LINKS.get(i);
             if (l.lastIntersectWall == wallNow) {
@@ -390,7 +391,7 @@ public final class CrossDimLinks {
         if (owRs == null || netherRs == null) {
             return;
         }
-        if (!FabroliaConfig.fabroliaCrossDimCoupling || !pairConfigured()
+        if (!FabroliaConfig.fabroliaCrossDimCoupling
                 || !owRs.asyncActive || !netherRs.asyncActive) {
             dropAll("coupling disabled or async precondition lost");
             return;
@@ -775,32 +776,6 @@ public final class CrossDimLinks {
         return g != null ? g.shift : RegionGrid.DEFAULT_SHIFT;
     }
 
-    /**
-     * The link table is explicit config; default and only supported value is
-     * {@code minecraft:overworld=minecraft:the_nether}. Anything else —
-     * including ANY entry naming the End — is refused with a one-shot warning.
-     */
-    static boolean pairConfigured() {
-        List<String> table = FabroliaConfig.crossDimLinkedPairs;
-        if (table == null) {
-            return false;
-        }
-        boolean ok = false;
-        for (int i = 0; i < table.size(); i++) {
-            String raw = table.get(i);
-            String norm = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT).replace(" ", "");
-            if (norm.equals(SUPPORTED_PAIR) || norm.equals(SUPPORTED_PAIR_REVERSED)) {
-                ok = true;
-            } else if (WARNED_PAIR_ENTRIES.add(norm)) {
-                refusedPairEntries++;
-                LOGGER.warn("[crossdim] refusing link-table entry '{}' — the only supported pair is "
-                        + "'{}' (the End must never appear: the End-platform handoff gate has no "
-                        + "dimension check of its own)", raw, SUPPORTED_PAIR);
-            }
-        }
-        return ok;
-    }
-
     private static void dropAll(String reason) {
         if (LINKS.isEmpty() && COUPLINGS.isEmpty()) {
             return;
@@ -832,15 +807,14 @@ public final class CrossDimLinks {
         StringBuilder sb = new StringBuilder(256);
         sb.append("crossdim coupling: ")
           .append(FabroliaConfig.fabroliaCrossDimCoupling ? "ON" : "off")
-          .append(" pair=").append(pairConfigured() ? SUPPORTED_PAIR : "<none valid>")
-          .append(" grace=").append(FabroliaConfig.crossDimUnlinkGraceTicks).append('t')
+          .append(" pair=").append(SUPPORTED_PAIR)
+          .append(" grace=").append(UNLINK_GRACE_TICKS).append('t')
           .append(" | links=").append(LINKS.size())
           .append(" formed=").append(linksFormed)
           .append(" dropped=").append(linksDropped)
           .append(" anchors=").append(anchorsApplied)
           .append("(+").append(anchorsDeferred).append(" deferred)")
           .append(" suspended=").append(couplingsSuspended)
-          .append(" refusedEntries=").append(refusedPairEntries)
           .append(" endRefusals=").append(endRefusals);
         RegionizedServer owRs = lastOwRs;
         RegionizedServer netherRs = lastNetherRs;

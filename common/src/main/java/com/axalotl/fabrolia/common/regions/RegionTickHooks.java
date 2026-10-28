@@ -5,7 +5,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Mod-facing hooks around the per-region entity tick — the integration point
- * for region-scoped batch precomputation (Oxidizium's regional cramming
+ * for region-scoped batch precomputation (Rustmi's regional cramming
  * candidate kernel is the first consumer).
  *
  * <p>Contract:

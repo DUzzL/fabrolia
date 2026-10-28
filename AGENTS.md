@@ -81,7 +81,8 @@ export JAVA_HOME=/path/to/jdk-25              # the JDK named by java_version in
   and `teleport_storm.py` drive island and teleport churn (see `tools/bench/README.md`).
   Work directories default to `build/bench` (`FABROLIA_BENCH_HOME`).
 - Fault-injection and stress subcommands of `/fabrolia regions debug` (`wedgemain`,
-  `failunittail`, `offmainpkt`, `chunksender inject|stresstp`) exist only on a server
+  `failunittail`, `offmainpkt`, `crossdomain`, `eventsched`, `chunksender inject|stresstp`)
+  exist only on a server
   started with `-Dfabrolia.debugCommands=true` (`RegionCommand.DEBUG_COMMANDS`).
 - Synchronous region threading (no independent island clocks) is a diagnostic control, not
   a config key: start with `-Dfabrolia.syncMode=true` (`FabroliaConfig.SYNC_MODE_PROPERTY`).

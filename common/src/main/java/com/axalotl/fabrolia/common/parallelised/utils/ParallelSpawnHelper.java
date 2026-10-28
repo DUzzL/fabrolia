@@ -79,7 +79,7 @@ public final class ParallelSpawnHelper {
     private static long[] fabrolia$mobChunkBuf = new long[1024];
     private static int[] fabrolia$mobCatBuf = new int[1024];
 
-    /** Ask the registered {@link LocalCapBridge} provider (Oxidizium, when present + enabled) to
+    /** Ask the registered {@link LocalCapBridge} provider (Rustmi, when present + enabled) to
      *  build this tick's LOCAL-cap arena — SEEDED with the census' per-chunk mob counts in one
      *  native pass — and attach its handle to {@code localMobCap}, so canSpawn/addMob route to the
      *  provider instead of the concurrent maps. The GLOBAL cap is untouched (stays vanilla

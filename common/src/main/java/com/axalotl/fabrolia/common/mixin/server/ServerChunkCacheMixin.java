@@ -1316,7 +1316,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             ProfilerFiller profiler) {
         fabrolia$spawnLaunchedThisTick = false;
         fabrolia$worldBorder = this.level.getWorldBorder();
-        // Belt-and-suspenders: with enableSpawnBarrierOverlap the previous tick's spawn
+        // Belt-and-suspenders: the previous tick's spawn
         // future is normally taken (and awaited) by ServerLevelMixin's entity barrier.
         // If some path skipped the entity phase, don't let last tick's spawn run
         // unsupervised into this tick's phases — await the stale future before reset.
@@ -1547,7 +1547,10 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             tickingChunkConsumer.accept(c);
         }
 
-        boolean rideAlong = FabroliaConfig.enableSpawnBarrierOverlap && !FabroliaConfig.disabled;
+        // The spawn future rides to the entity-phase barrier (one park covers
+        // max(spawn, entities)); a mob spawned mid-entity-phase takes its first tick
+        // next tick, as vanilla does for entities added during entityTickList iteration.
+        boolean rideAlong = !FabroliaConfig.disabled;
         CompletableFuture<Void> combined;
         if (rideAlong) {
             combined = blockTicksFut;

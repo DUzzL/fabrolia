@@ -3,8 +3,8 @@ package com.axalotl.fabrolia.common.utils;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Duck interface implemented by ServerChunkCacheMixin. When
- * {@code FabroliaConfig.enableSpawnBarrierOverlap} is on, the parallel-spawn future launched
+ * Duck interface implemented by ServerChunkCacheMixin. Unless Fabrolia is disabled,
+ * the parallel-spawn future launched
  * in tickChunks is NOT awaited at the end of the chunk phase — ServerLevelMixin's entity
  * barrier takes it via this interface and awaits {@code allOf(entityBatch, spawn)} in a
  * single park. Random/fluid block ticks are still awaited inside the chunk phase (vanilla

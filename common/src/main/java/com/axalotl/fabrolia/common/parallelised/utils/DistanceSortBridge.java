@@ -6,10 +6,10 @@ import java.lang.invoke.MethodType;
 import java.nio.ByteBuffer;
 
 /**
- * Soft bridge to Oxidizium's Rust distance sort (the batch-FFI form of the
+ * Soft bridge to Rustmi's Rust distance sort (the batch-FFI form of the
  * sensor sort: one call computes squared distances AND the stable permutation;
  * LLVM autovectorizes the distance loop, replacing the Vector-API path).
- * Oxidizium absent → null handle → callers keep the pure-Java path.
+ * Rustmi absent → null handle → callers keep the pure-Java path.
  */
 public final class DistanceSortBridge {
 

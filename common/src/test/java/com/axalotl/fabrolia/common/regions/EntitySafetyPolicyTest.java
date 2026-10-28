@@ -160,7 +160,6 @@ class EntitySafetyPolicyTest {
     private static final class Fixture implements AutoCloseable {
         final Set<String> previousPolicy = FabroliaConfig.synchronizedEntities;
         final boolean previousDisabled = FabroliaConfig.disabled;
-        final boolean previousColorGate = FabroliaConfig.fabroliaRegionColorGate;
         final boolean previousShuttingDown;
         final EntityType<?> moddedType;
         final Map<EntityType<?>, Holder.Reference<EntityType<?>>> registeredValues;
@@ -202,7 +201,6 @@ class EntitySafetyPolicyTest {
             FabroliaConfig.synchronizedEntities = previousPolicy;
             FabroliaConfig.onConfigLoaded();
             FabroliaConfig.disabled = previousDisabled;
-            FabroliaConfig.fabroliaRegionColorGate = previousColorGate;
             field(ParallelProcessor.class, "isShuttingDown").setBoolean(null, previousShuttingDown);
         }
     }

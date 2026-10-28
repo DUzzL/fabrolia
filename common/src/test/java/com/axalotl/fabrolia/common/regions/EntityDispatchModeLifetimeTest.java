@@ -207,7 +207,7 @@ final class EntityDispatchModeLifetimeTest {
                     }
                 };
                 CompletableFuture<Void> barrier = fixture.runtime.dispatchEntityPhase(
-                        fixture.domain, fencedMembers);
+                        fixture.domain, fencedMembers, true);
                 assertEquals(0L, releaseQueue.getCount(), "the pre-acceptance overlap was not exercised");
                 fixture.joinWorker();
                 fixture.drainWorker();
@@ -323,7 +323,7 @@ final class EntityDispatchModeLifetimeTest {
 
         CompletableFuture<Void> dispatch() {
             List<Region> members = regionizer.snapshotAtEntityDispatchCut(domain);
-            CompletableFuture<Void> result = runtime.dispatchEntityPhase(domain, members);
+            CompletableFuture<Void> result = runtime.dispatchEntityPhase(domain, members, true);
             assertTrue(domain.entityDispatchPublication.isAccepted());
             return result;
         }

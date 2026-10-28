@@ -320,7 +320,6 @@ public final class RegionScheduler {
                     "RegionScheduler.start requires physical main between server-tick phases");
         }
         boolean regionThreadingEnabled = callSuccessBooleanIfHealthy(() -> {
-            FabroliaConfig.enforceSafetyInvariants();
             if (!FabroliaConfig.enableRegionThreading) {
                 LOGGER.debug("RegionScheduler: enableRegionThreading=false, scheduler dormant");
                 return false;

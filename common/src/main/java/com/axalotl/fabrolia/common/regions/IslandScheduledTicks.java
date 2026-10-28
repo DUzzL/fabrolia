@@ -1850,7 +1850,7 @@ public final class IslandScheduledTicks {
     /** Island of a chunk via the LIVE region map; freshly-populated (post-rebuild)
      *  chunks join their single adjacent island (two are impossible — separation
      *  invariant). The hot partition paths now use the equivalent
-     *  {@link RegionizedServer#islandForChunk} table (rebuilt at tick HEAD together
+     *  {@link RegionizedServer#islandForCell} table (rebuilt at tick HEAD together
      *  with the islands — this method is its reference semantics). Kept public for
      *  external callers and for contexts where the table may be stale. */
     public static int islandOfChunk(RegionizedServer rs, long chunkPos) {

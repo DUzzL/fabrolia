@@ -37,9 +37,6 @@ public class FabroliaConfig {
      *  claimed region — the certification data for the collector unlock.
      *  Observation only; off = one volatile read per setBlock. */
     public static boolean fabroliaDebugRegionAccess = false;
-    /** Not a config key: the color gate is a correctness invariant of region
-     *  threading ({@link #useRegionColorGate()} follows {@code enableRegionThreading}). */
-    public static boolean fabroliaRegionColorGate = true;
     /** Cross-region effect containment. The color gate proves cross-border effects
      *  safe up to ONE region wide (neighbours never tick concurrently); a single-tick
      *  cascade reaching a SAME-COLOR region two cells away (which DOES tick
@@ -62,25 +59,10 @@ public class FabroliaConfig {
      *  the phantom-blocker stamp is the fix. Toggle: config / {@code /fabrolia regions eviction
      *  on|off} — flip off to isolate a regression. */
     public static boolean fabroliaRegionEviction = true;
-    /** R4 stage B groundwork — interior/border classifier METRIC only (no behaviour change).
-     *  When on, every ticked entity is classified interior (footprint provably within its
-     *  region, cannot touch a neighbour region) vs border (within {@link #fabroliaOptimisticBorderMargin}
-     *  blocks of a region edge → may interact cross-region), and the per-window border fraction
-     *  is logged. This number is the make-or-break input for the "optimistic single-wave" design
-     *  (drop the 4-wave ColorGate, run interiors fully parallel, coordinate only the border): a
-     *  low border% means the flip pays off massively; a high one means the border pass would
-     *  bottleneck. Pure measurement — does NOT change scheduling. Toggle: {@code /fabrolia regions
-     *  bordermetric on|off}. */
-    public static volatile boolean fabroliaOptimisticBorderMetric = false;
-    /** Conservative cross-region interaction reach (blocks) used by the border classifier above.
-     *  Covers an entity tick's WRITE reach to neighbour blocks/entities (collision push, melee,
-     *  block place/break ≈ a few blocks); cross-region READS (long-range AI targeting) are
-     *  1-tick-stale-tolerant and intentionally NOT counted as border. 16 = one chunk, generous. */
-    public static volatile double fabroliaOptimisticBorderMargin = 16.0;
     // R4 stage B "optimistic flip" (ColorGate-off + post-barrier serial border pass) was
     // REMOVED 2026-06-30: its serial main border pass (~44% of scattered entities) was a net
-    // 2× regression vs ColorGate's all-parallel 4-wave (user-confirmed). The border metric
-    // above stays for diagnostics.
+    // 2× regression vs ColorGate's all-parallel 4-wave (user-confirmed). Its border
+    // metric was removed 2026-10-28.
     // F1 (fabroliaIslandScheduledTicks, island-partitioned scheduled ticks in
     // synchronous mode) was removed 2026-10-11: its entry point returned early
     // unless async islands were active, where slotPartitionedAsync always takes
@@ -94,16 +76,10 @@ public class FabroliaConfig {
      *  &lt;2 islands → vanilla serial path. */
     public static boolean fabroliaIslandBlockEntityTicks = true;
     // The LOCAL per-player mob cap can be driven by a registered LocalCapBridge provider
-    // (Oxidizium's off-heap Rust arena). Ownership + toggle live in Oxidizium (/oxidizium
-    // spawncap); Fabrolia only exposes the seam. No provider → Java LocalMobCapCalculator (correct
+    // (the external Rustmi mod's off-heap arena). Ownership + toggle live in that mod;
+    // Fabrolia only exposes the seam. No provider → Java LocalMobCapCalculator (correct
     // via the Long2ObjectConcurrentHashMap computeIfAbsent overload fix). Global cap stays Java.
 
-    // Let the parallel-spawn future ride to the entity-phase barrier instead of being
-    // awaited at the end of tickChunks — one park covers max(spawn, entities). Random/
-    // fluid ticks are still awaited before the chunk phase ends (vanilla order). A mob
-    // spawned mid-entity-phase takes its first tick next tick — same guarantee vanilla
-    // gives entities added during entityTickList iteration.
-    public static boolean enableSpawnBarrierOverlap = true;
     public static int regionWorkerCount = -1;
     // R5 event-driven entity scheduler: regions are the tasks; ColorGate.markDone pushes
     // each dependent region the moment its last lower-color blocker completes, and the
@@ -141,16 +117,6 @@ public class FabroliaConfig {
      *  claim topology, transfer lane untouched. Runtime:
      *  /fabrolia regions crossdim on|off. */
     public static volatile boolean fabroliaCrossDimCoupling = true;
-    /** Unlink hysteresis: a link whose intersection disappeared is dropped
-     *  only after this many WALL ticks of continuous absence (the grace-100
-     *  region-eviction precedent); reappearance resets the timer, so
-     *  population flicker never thrashes a link. */
-    public static volatile int crossDimUnlinkGraceTicks = 100;
-    /** Explicit cross-dimension link table. Default and ONLY supported value:
-     *  "minecraft:overworld=minecraft:the_nether". The End must never appear
-     *  (EndPlatformHandoff has no dimension check of its own); CrossDimLinks
-     *  refuses every other entry at parse time. */
-    public static volatile List<String> crossDimLinkedPairs = defaultCrossDimLinkedPairs();
 
     // (task #40 history) fabroliaSpawnProximitySnapshot / fabroliaSpawnProximityInlineWave
     // were removed 2026-08-02 together with the completed-wave proximity snapshot:
@@ -177,14 +143,6 @@ public class FabroliaConfig {
      */
     public static volatile boolean fabroliaSpawnLocalCapReservation = true;
 
-    public static List<String> defaultCrossDimLinkedPairs() {
-        return new ArrayList<>(List.of("minecraft:overworld=minecraft:the_nether"));
-    }
-
-    // Not a config key; read only by the debugTrip drill and one log line.
-    // A REAL detected cross-domain write always fail-stops the current generation; it
-    // is never downgraded to a live async->sync recovery. No command exposes it.
-    public static volatile boolean asyncFailClosed = true;
     // Session-only forensic latch. A real violation sets it before fail-stop;
     // debugTrip uses it to exercise the old mode-collapse drill.
     public static volatile boolean asyncFailClosedTripped = false;
@@ -255,12 +213,6 @@ public class FabroliaConfig {
         return enableRegionThreading;
     }
 
-    public static void enforceSafetyInvariants() {
-        if (enableRegionThreading && !fabroliaRegionColorGate) {
-            fabroliaRegionColorGate = true;
-        }
-    }
-
     public static boolean isNamespaceWildcard(String input) {
         if (input == null) return false;
         int colon = input.indexOf(':');
@@ -321,7 +273,6 @@ public class FabroliaConfig {
     }
 
     public static void onConfigLoaded() {
-        enforceSafetyInvariants();
         rebuildCaches();
         LOGGER.info("Configuration loaded.");
     }

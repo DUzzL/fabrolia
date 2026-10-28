@@ -8,14 +8,14 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Pluggable provider for the LOCAL per-player mob cap ({@code LocalMobCapCalculator} —
- * {@code canSpawn} / {@code addMob} / the {@code playersNearChunk} resolution). Oxidizium
+ * {@code canSpawn} / {@code addMob} / the {@code playersNearChunk} resolution). Rustmi
  * registers a provider backed by an off-heap Send+Sync Rust arena (built once per level tick,
  * read / atomically incremented lock-free by the parallel spawn workers — no concurrent map on
  * the hot path, so the {@code getPlayersNear} computeIfAbsent race class cannot exist).
  *
  * <p>Symbiosis, mirror of {@link SensorCandidateBridge}: Fabrolia15 alone runs its Java
  * {@code LocalMobCapCalculator} (correct via the {@code Long2ObjectConcurrentHashMap}
- * computeIfAbsent overload fix). With Oxidizium present + enabled, the local cap runs on the
+ * computeIfAbsent overload fix). With Rustmi present + enabled, the local cap runs on the
  * Rust arena. The GLOBAL cap always stays in vanilla Java (ServerCore's mob-cap multiplier +
  * phantom-spawning's wrap keep applying). No provider or an explicit decline uses Java;
  * an exception after provider entry propagates through the current tick.

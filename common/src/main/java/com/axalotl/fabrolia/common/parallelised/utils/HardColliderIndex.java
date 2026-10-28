@@ -201,7 +201,7 @@ public final class HardColliderIndex {
      * collidability is NOT — HappyGhast.canBeCollidedWith is true only during
      * its still-timeout (and only once adult), so snapshotting the instance at
      * tracking-start missed every ghast that later became a platform. The
-     * Oxidizium fast path then skipped getEntityCollisions for players
+     * Rustmi fast path then skipped getEntityCollisions for players
      * standing on one; the un-supported player tripped the vanilla floating
      * counter — "Flying is not enabled on this server" kicks (2026-07-10).
      * Any class that OVERRIDES canBeCollidedWith below Entity (26.2 vanilla:
@@ -312,7 +312,7 @@ public final class HardColliderIndex {
 
     /**
      * Any hard collider whose live bounding box, grown by 0.5, intersects the
-     * query box? Called from the Oxidizium/rustmi collision fast path through
+     * query box? Called from the Rustmi collision fast path through
      * a {@code publicLookup().findStatic} MethodHandle — keep this signature.
      */
     public static boolean anyNear(ServerLevel level,

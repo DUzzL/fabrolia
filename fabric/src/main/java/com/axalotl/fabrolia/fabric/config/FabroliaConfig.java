@@ -178,7 +178,6 @@ public class FabroliaConfig {
     }
 
     public static void saveConfig() {
-        com.axalotl.fabrolia.common.config.FabroliaConfig.enforceSafetyInvariants();
         // Strip out any stale keys before rewriting — entries removed from
         // the schema will not silently linger in the file.
         removeUnusedKeys();
