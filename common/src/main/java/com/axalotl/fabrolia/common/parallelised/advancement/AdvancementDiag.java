@@ -59,7 +59,7 @@ public final class AdvancementDiag {
 
     /** Trigger calls evaluated on the player's owner at fire time (islands live). */
     public static final LongAdder TRIGGERS_OWNER = new LongAdder();
-    /** Trigger calls evaluated in a quiescent context (held fence, async off, V2 actor). */
+    /** Trigger calls evaluated in a quiescent context (held fence, async off). */
     public static final LongAdder TRIGGERS_QUIESCENT = new LongAdder();
     /** Trigger-map entries walked at fire time (inspected). */
     public static final LongAdder ENTRIES_INSPECTED = new LongAdder();

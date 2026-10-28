@@ -22,7 +22,6 @@ import net.minecraft.server.level.ServerPlayer;
  *       Main handoff/drain, disconnected, unsupported player type,
  *       constructor-time load), or while Main holds the global fence, every
  *       claim of the player's level, or the claim of the attached island;</li>
- *   <li>the exact V2 player actor (Main parked, region pool fenced);</li>
  *   <li>physical Main whenever no async island is live: lockstep region
  *       workers and pool threads never own a player, which ticks on Main.</li>
  * </ul>
@@ -36,10 +35,6 @@ public final class PlayerTurnOwnership {
 
     public static boolean currentThreadOwns(ServerPlayer player) {
         if (AsyncIslandPlayerTicks.isIslandPlayerTickOf(player)) return true;
-        if (RegionalPlayerEntityTicksV2.inExactPlayerActor()
-                || RegionalPlayerEntityTicksV2.inWorkerPlayerTick()) {
-            return true;
-        }
         MinecraftServer server = com.axalotl.fabrolia.common.ParallelProcessor.getServer();
         boolean physicalMain = server == null
                 ? isPlayerServerThread(player)

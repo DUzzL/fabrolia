@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Exact-actor raid ownership needs a real paused turn, not merely a logical identity. */
+/** Synchronous region threading: only physical Main may own a raid, even during a paused turn. */
 @Isolated
 @Timeout(20)
 class RaidOwnershipTest {
@@ -37,17 +37,17 @@ class RaidOwnershipTest {
     }
 
     @Test
-    void exactActorNeedsItsRealPausedTurnRatherThanOnlyLogicalIdentity() throws Exception {
+    void aForeignThreadNeverOwnsASyncRaidEvenDuringAPausedTurn() throws Exception {
         try (Fixture fixture = new Fixture()) {
             fixture.runtime.asyncActive = false;
-            fixture.onExactActor(false);
+            fixture.onForeignThread();
             fixture.pool.pauseExactTurnAndAwait(() -> {});
             try {
-                fixture.onExactActor(true);
+                fixture.onForeignThread();
             } finally {
                 fixture.pool.resumeExactTurn();
             }
-            fixture.onExactActor(false);
+            fixture.onForeignThread();
         }
     }
 
@@ -109,30 +109,17 @@ class RaidOwnershipTest {
             levels.put(level, runtime);
         }
 
-        @SuppressWarnings("unchecked")
-        void onExactActor(boolean expected) throws Exception {
-            Thread physicalMain = Thread.currentThread();
-            var logicalTurn = (java.util.concurrent.atomic.AtomicReference<Object>)
-                    get(RegionalPlayerEntityTicksV2.class, null, "LOGICAL_TURN");
+        void onForeignThread() throws Exception {
             FutureTask<Void> task = new FutureTask<>(() -> {
-                Class<?> type = Class.forName(RegionalPlayerEntityTicksV2.class.getName() + "$LogicalTurn");
-                var constructor = type.getDeclaredConstructors()[0];
-                constructor.setAccessible(true);
-                Object turn = constructor.newInstance(level.server, 1L, null, physicalMain, Thread.currentThread());
-                assertTrue(logicalTurn.compareAndSet(null, turn));
-                try {
-                    assertEquals(expected, RaidOwnership.canCreate(player, CENTER));
-                    assertEquals(expected, RaidOwnership.ownsRaid(level, CENTER));
-                } finally {
-                    assertTrue(logicalTurn.compareAndSet(turn, null));
-                }
+                assertFalse(RaidOwnership.canCreate(player, CENTER));
+                assertFalse(RaidOwnership.ownsRaid(level, CENTER));
                 return null;
             });
-            Thread actor = new Thread(task, "raid-exact-actor-regression");
-            actor.start();
+            Thread foreign = new Thread(task, "raid-foreign-thread-regression");
+            foreign.start();
             try { task.get(5, TimeUnit.SECONDS); }
-            finally { actor.join(5000); }
-            assertFalse(actor.isAlive());
+            finally { foreign.join(5000); }
+            assertFalse(foreign.isAlive());
         }
 
         @Override public void close() throws Exception {

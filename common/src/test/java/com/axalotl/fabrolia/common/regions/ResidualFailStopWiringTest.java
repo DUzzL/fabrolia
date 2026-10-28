@@ -117,16 +117,15 @@ final class ResidualFailStopWiringTest {
         int passengerCatch = passenger.indexOf("catch (Throwable thrown)", passengerBody);
         int passengerWinner = passenger.indexOf(
                 "failure = RegionScheduler.publishFatalAndSelectWinner(thrown)", passengerCatch);
-        int bodyRelease = passenger.indexOf("finishPlayerEntityBody(entity)", passengerWinner);
-        int guardRelease = passenger.indexOf("guard.fabrolia$endTick()", bodyRelease);
+        int guardRelease = passenger.indexOf("guard.fabrolia$endTick()", passengerWinner);
         int exactRethrow = passenger.indexOf("fabrolia$throwPlayerTickFailure(failure)", guardRelease);
         assertTrue(passengerBody >= 0 && passengerCatch > passengerBody
-                        && passengerWinner > passengerCatch && bodyRelease > passengerWinner
-                        && guardRelease > bodyRelease && exactRethrow > guardRelease,
-                "tickPassenger must select exact W before releasing body/guard ownership");
+                        && passengerWinner > passengerCatch && guardRelease > passengerWinner
+                        && exactRethrow > guardRelease,
+                "tickPassenger must select exact W before releasing guard ownership");
         assertTrue(count(passenger,
-                        "failure = RegionScheduler.publishFatalAndSelectWinner(candidate)") == 2,
-                "each passenger cleanup failure must merge behind and reselect exact W");
+                        "failure = RegionScheduler.publishFatalAndSelectWinner(candidate)") == 1,
+                "the passenger cleanup failure must merge behind and reselect exact W");
 
         String player = source("common/mixin/server/ServerPlayerMixin.java");
         String teleport = section(player,

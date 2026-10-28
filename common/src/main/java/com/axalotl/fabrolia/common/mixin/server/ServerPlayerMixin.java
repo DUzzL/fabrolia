@@ -515,7 +515,7 @@ public abstract class ServerPlayerMixin extends Player implements
     }
 
     /**
-     * Exact A5/V2 turn accounting around ServerPlayer.tick. Advancement triggers in
+     * Exact A5 turn accounting around ServerPlayer.tick. Advancement triggers in
      * the body evaluate and award on the player's owner at fire time
      * (AdvancementBuffer.trigger), so the body's own flushDirty sends their progress
      * in vanilla order.
@@ -525,23 +525,12 @@ public abstract class ServerPlayerMixin extends Player implements
         ServerPlayer self = (ServerPlayer) (Object) this;
         com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks
                 .markServerPlayerTickEntered(self);
-        boolean directLease = com.axalotl.fabrolia.common.regions
-                .RegionalPlayerEntityTicksV2.beginServerPlayerTick(self);
         Throwable failure = null;
         try {
             original.call();
         } catch (Throwable bodyFailure) {
             failure = com.axalotl.fabrolia.common.regions.RegionScheduler
                     .publishFatalAndSelectWinner(bodyFailure);
-        } finally {
-            try {
-                com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                        .endServerPlayerTick(self, directLease);
-            } catch (Throwable cleanup) {
-                failure = com.axalotl.fabrolia.common.regions.RegionScheduler
-                        .publishFatalAndSelectWinner(
-                                fabrolia$mergePlayerTickFailure(failure, cleanup));
-            }
         }
         if (failure != null) ServerPlayerMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
     }

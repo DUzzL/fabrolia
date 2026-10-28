@@ -30,7 +30,7 @@ class RegionalPlayerTickWiringTest {
             assertNotNull(in);
             String json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             assertTrue(json.contains("network.ServerCommonPacketListenerPlayerTickFlushMixin"));
-            assertTrue(json.contains("server.ServerPlayerGameModeAccessor"));
+            assertFalse(json.contains("server.ServerPlayerGameModeAccessor"));
             assertFalse(json.contains("ServerGamePacketRoutingMixin"));
             assertFalse(json.contains("PacketUtilsWorkerMixin"));
         }

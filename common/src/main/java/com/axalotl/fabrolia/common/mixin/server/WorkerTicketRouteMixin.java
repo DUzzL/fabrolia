@@ -37,13 +37,8 @@ import org.spongepowered.asm.mixin.Shadow;
  * Main). Region workers cannot poll that lane; allowing them to poll it would
  * make the re-entered wrapper publish itself forever.
  *
- * <p>The authenticated exact player actor also writes inline: physical Main
- * is parked and the region pool is fenced for its exclusive logical turn.
- * {@code getChunkFutureMainThread} installs an UNKNOWN ticket, runs distance
- * updates, then requires the resulting holder in the same call. Deferring
- * that ticket until Main resumes breaks cold synchronous chunk loads. This
- * authority does not apply to arbitrary workers; the existing ticket-storage
- * monitor and downstream compatibility owner checks remain in force.
+ * <p>The existing ticket-storage monitor and downstream compatibility owner
+ * checks remain in force.
  *
  * <p>Debug logging of each deferral was removed (2026-08-18, operator
  * request — per-renewal lines flood a live server; the incident forensics now
@@ -58,8 +53,7 @@ public abstract class WorkerTicketRouteMixin {
     private void fabrolia$routeWorkerRadiusTicketToMain(TicketType type, ChunkPos pos,
                                                         int radius, Operation<Void> original) {
         if (RegionalPlayerEntityTicksV2.isPhysicalServerThread(
-                this.level.getServer())
-                || RegionalPlayerEntityTicksV2.inExactPlayerActor()) {
+                this.level.getServer())) {
             original.call(type, pos, radius);
             return;
         }
@@ -72,8 +66,7 @@ public abstract class WorkerTicketRouteMixin {
     private void fabrolia$routeWorkerTicketToMain(Ticket ticket, ChunkPos pos,
                                                   Operation<Void> original) {
         if (RegionalPlayerEntityTicksV2.isPhysicalServerThread(
-                this.level.getServer())
-                || RegionalPlayerEntityTicksV2.inExactPlayerActor()) {
+                this.level.getServer())) {
             original.call(ticket, pos);
             return;
         }

@@ -121,9 +121,6 @@ public final class RegionizedServer {
      *  tick HEAD (onLevelTickStart), consumed by rebuild (domain assignment)
      *  and the entity-phase drive later the same tick. */
     public volatile boolean asyncActive;
-    /** One wall-tick v2 batch. Non-null only between entity dispatch and the
-     *  per-level barrier immediately before vanilla block-entity ticking. */
-    volatile RegionalPlayerEntityTicksV2.LevelBatch playerTickV2Batch;
     /** Regions currently carry island domains (forces one reassignment pass
      *  back to globalDomain after an ON→OFF flip). */
     private boolean domainsIslandized;
@@ -292,8 +289,7 @@ public final class RegionizedServer {
                         RegionScheduler.publishFatalAndSelectWinner(markerFailure));
             }
         }
-        boolean wantAsync = RegionScheduler.asyncModeWantedAtLevelHead()
-                && RegionalPlayerEntityTicksV2.asyncActivationAllowedAtLevelHead();
+        boolean wantAsync = RegionScheduler.asyncModeWantedAtLevelHead();
         if (FabroliaConfig.asyncFailClosedTripped && asyncActive) {
             // FAIL-CLOSED CONTAINMENT (2026-07-14 rate-40 wedge): the old rule
             // kept async RUNNING post-trip ("no live collapse") — so the very
@@ -2782,30 +2778,6 @@ public final class RegionizedServer {
         }
     }
 
-    /**
-     * Reconcile the auxiliary region-owned index after the canonical
-     * {@link net.minecraft.world.level.entity.EntityTickList} pass.
-     *
-     * <p>The ordinary region path performs this hand-off lazily in {@code tickOne}
-     * before each entity body. Exact-ordinal player mode deliberately bypasses that
-     * path and walks Mojang's list instead, so moved entities would otherwise remain
-     * assigned to yesterday's cell indefinitely. The exact-turn pool fence is held
-     * while this method runs; the second list walk is read-only with respect to list
-     * membership and includes entities added through Mojang's active/passive COW.
-     */
-    void reconcileCanonicalEntityIndex() {
-        // Rebuild, do not merely move live members: this also purges a stale/duplicate
-        // member left by an earlier exceptional hand-off. No worker can observe the
-        // clear/repopulate interval because the exact-turn fence is still held.
-        for (Region region : regionizer.snapshot()) {
-            region.entities.clear();
-            region.entityCount.set(0L);
-        }
-        level.entityTickList.forEach(entity -> {
-            if (!entity.isRemoved() && entity.level() == level) indexAdd(entity);
-        });
-    }
-
     private static void dropFromRegion(Region r, Entity e) {
         // isRemoved also exposes a claim-local departure view. A still-live
         // reserved source must remain tick-indexed so a refused transition can
@@ -3259,17 +3231,12 @@ public final class RegionizedServer {
     }
 
     private CompletableFuture<Void> dispatchOwnedEntityTicks(boolean tickEntities) {
-        RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            if (playerTickV2Batch != null) {
-                throw new IllegalStateException("regional player level batch was not sealed");
-            }
-            playerTickV2Batch = RegionalPlayerEntityTicksV2.beginLevel(this);
-        });
+        // No arrival cohort is published after a selected W.
+        RegionScheduler.commitSuccessIfHealthy(() -> {});
         // Cross-dimension arrival cohorts for this level's global lane:
         // published BEFORE any dispatch — the vanilla-equivalent boundary.
         CrossDimArrivals.publishGlobal(this);
-        // Main TPS/MSPT remains useful in wall-tick mode (including the exact
-        // player actor, which intentionally requires autonomous islands OFF).
+        // Main TPS/MSPT remains useful in wall-tick mode.
         // The HUD itself renders Island: SYNC when this level is not async.
         RegionScheduler.runSuccessBodyIfHealthy(
                 () -> TpsHud.tick(level.getServer(), level));

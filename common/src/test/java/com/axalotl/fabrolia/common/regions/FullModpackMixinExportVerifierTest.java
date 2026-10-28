@@ -513,21 +513,9 @@ class FullModpackMixinExportVerifierTest {
 
     private static void verifyMinecraftServer(ClassNode server) {
         MethodNode getRunningThread = method(server, "getRunningThread", THREAD_DESC);
-        int ownerHook = generatedCallIndex(getRunningThread, server.name,
-                "$fabrolia$logicalPlayerActorThread");
-        int physicalThread = fieldIndex(getRunningThread, Opcodes.GETFIELD,
-                server.name, "serverThread", "Ljava/lang/Thread;");
-        assertEquals(1, generatedCallCount(getRunningThread, server.name,
-                "$fabrolia$logicalPlayerActorThread"));
-        assertTrue(ownerHook >= 0 && physicalThread > ownerHook,
-                "MinecraftServer logical-owner HEAD hook must precede serverThread fallback");
-
-        MethodNode ownerHandler = generatedMethod(server,
-                "$fabrolia$logicalPlayerActorThread");
-        assertEquals(1, callCount(ownerHandler, PLAYER_TICKS, "logicalServerThread",
-                "(Lnet/minecraft/server/MinecraftServer;)Ljava/lang/Thread;"));
-        assertEquals(1, callCount(ownerHandler, CALLBACK_RETURNABLE,
-                "setReturnValue", "(Ljava/lang/Object;)V"));
+        assertEquals(0, generatedCallCount(getRunningThread, server.name,
+                "$fabrolia$logicalPlayerActorThread"),
+                "MinecraftServer.getRunningThread must stay the physical server thread");
 
         MethodNode outer = method(server, "tickChildren",
                 "(Ljava/util/function/BooleanSupplier;)V");
@@ -617,10 +605,10 @@ class FullModpackMixinExportVerifierTest {
                         "(Ljava/util/function/BooleanSupplier;)V"),
                 "ServerLevel owns segmented admissions; a caller permit would self-deadlock");
 
-        assertC2meSaveThreadSubstitution(server,
-                "preventAsyncSave", "$fabrolia$logicalC2meSaveAllChunksThread");
-        assertC2meSaveThreadSubstitution(server,
-                "preventAsyncSaveAll", "$fabrolia$logicalC2meSaveEverythingThread");
+        assertEquals(0, server.methods.stream()
+                        .filter(candidate -> candidate.name.contains("$fabrolia$logicalC2me"))
+                        .count(),
+                "the exact-actor C2ME thread substitutions must not return");
     }
 
     private static void assertTickChildrenStageComposition(
@@ -771,35 +759,6 @@ class FullModpackMixinExportVerifierTest {
                 "the final transformed class may retain no retry/coalescing state");
     }
 
-    private static void assertC2meSaveThreadSubstitution(ClassNode server,
-                                                          String upstreamHandler,
-                                                          String hookSuffix) {
-        String callbackDesc =
-                "(Lorg/spongepowered/asm/mixin/injection/callback/CallbackInfoReturnable;)V";
-        MethodNode provider = uniqueMethod(server,
-                candidate -> candidate.name.endsWith("$" + upstreamHandler)
-                        && candidate.desc.equals(callbackDesc),
-                "C2ME save catcher " + upstreamHandler);
-        int current = callIndex(provider, THREAD, "currentThread", THREAD_DESC);
-        int hook = generatedCallIndex(provider, server.name, hookSuffix);
-        int physical = fieldIndexAfter(provider, Opcodes.GETFIELD, server.name,
-                "serverThread", "Ljava/lang/Thread;", hook);
-        assertEquals(1, callCount(provider, THREAD, "currentThread", THREAD_DESC));
-        assertEquals(1, generatedCallCount(provider, server.name, hookSuffix));
-        assertEquals(1, fieldCount(provider, Opcodes.GETFIELD, server.name,
-                "serverThread", "Ljava/lang/Thread;"));
-        assertEquals(1, callCount(provider, "java/util/ConcurrentModificationException",
-                "<init>", "(Ljava/lang/String;)V"),
-                "C2ME catcher body must remain active after TargetHandler composition");
-        assertTrue(current >= 0 && hook > current && physical > hook,
-                upstreamHandler + " must compare the actor-substituted thread with serverThread");
-
-        MethodNode handler = generatedMethod(server, hookSuffix);
-        assertEquals(1, callCount(handler, PLAYER_TICKS, "inExactPlayerActor", "()Z"));
-        assertEquals(1, fieldCount(handler, Opcodes.GETFIELD, server.name,
-                "serverThread", "Ljava/lang/Thread;"));
-    }
-
     private static void verifyServerLevel(ClassNode level, ClassNode baseLevel) {
         String tickDesc = "(Ljava/util/function/BooleanSupplier;)V";
         MethodNode outerTick = method(level, "tick", tickDesc);
@@ -810,14 +769,10 @@ class FullModpackMixinExportVerifierTest {
         int entryCut = callIndex(levelTurn, REGION_SCHEDULER,
                 "commitSuccessIfHealthy", "(Ljava/lang/Runnable;)V");
         int levelBody = callIndex(levelTurn, OPERATION, "call", OPERATION_CALL_DESC);
-        int finishTurn = callIndex(levelTurn, PLAYER_TICKS, "finishLevelTurn",
-                "(Lnet/minecraft/server/level/ServerLevel;Ljava/lang/Throwable;)"
-                        + "Ljava/lang/Throwable;");
         int finalCut = callIndexAfter(levelTurn, REGION_SCHEDULER,
-                "commitSuccessIfHealthy", "(Ljava/lang/Runnable;)V", finishTurn);
-        assertTrue(entryCut >= 0 && levelBody > entryCut && finishTurn > levelBody
-                        && finalCut > finishTurn,
-                "ServerLevel needs short entry and post-release terminal cuts");
+                "commitSuccessIfHealthy", "(Ljava/lang/Runnable;)V", levelBody);
+        assertTrue(entryCut >= 0 && levelBody > entryCut && finalCut > levelBody,
+                "ServerLevel needs short entry and post-body terminal cuts");
 
         MethodNode tickBody = uniqueMethod(level,
                 candidate -> candidate.name.startsWith("tick$mixinextras$wrapped$")
@@ -847,26 +802,9 @@ class FullModpackMixinExportVerifierTest {
                 "(Ljava/util/function/Consumer;)V"));
         MethodNode entityListHandler = generatedMethod(level,
                 "$fabrolia$overwriteEntityTicking");
-        assertEquals(1, callCountByName(entityListHandler, PLAYER_TICKS,
-                "beginExactLevelIteration"));
-        assertTrue(callCountByName(entityListHandler, PLAYER_TICKS,
-                        "endExactLevelIteration") >= 1,
-                "compiled normal/exceptional exits must all retain exact-iteration cleanup");
-        assertEquals(1, level.methods.stream()
-                        .filter(candidate -> candidate.name.contains(
-                                "overwriteEntityTicking"))
-                        .mapToInt(candidate -> callCountByName(candidate,
-                                PLAYER_TICKS, "finishLevel"))
-                        .sum(),
-                "the canonical entity-list wrapper must retain one finishLevel call");
-        int pause = callIndexByName(entityListHandler, PLAYER_TICKS,
-                "beginExactLevelIteration");
-        int end = callIndexByName(entityListHandler, PLAYER_TICKS,
-                "endExactLevelIteration");
-        int postThreadLocalCut = callIndexAfter(entityListHandler, REGION_SCHEDULER,
-                "commitSuccessIfHealthy", "(Ljava/lang/Runnable;)V", end);
-        assertTrue(pause >= 0 && end > pause && postThreadLocalCut > end,
-                "the entity-list wrapper must clean up exact iteration before its terminal cut");
+        assertEquals(0, callCountByName(entityListHandler, PLAYER_TICKS,
+                "beginExactLevelIteration"),
+                "the removed exact-player iteration must not return");
 
         assertServerLevelStageComposition(level, tickBody,
                 "$fabrolia$admitEnvironmentTickCacheInvalidation",
@@ -941,14 +879,14 @@ class FullModpackMixinExportVerifierTest {
         MethodNode lambda = method(level, "lambda$tick$0", lambdaDesc);
         int despawn = callIndex(lambda, "net/minecraft/world/entity/Entity",
                 "checkDespawn", "()V");
-        int actorWrapper = generatedCallIndex(lambda, level.name,
+        int ordinalWrapper = generatedCallIndex(lambda, level.name,
                 "$fabrolia$exactOrdinalPlayerBody");
         assertEquals(1, generatedCallCount(lambda, level.name,
                 "$fabrolia$exactOrdinalPlayerBody"));
         assertEquals(0, callCount(lambda, level.name, "guardEntityTick",
                 "(Ljava/util/function/Consumer;Lnet/minecraft/world/entity/Entity;)V"));
-        assertTrue(despawn >= 0 && actorWrapper > despawn,
-                "actor wrapper must stay at the post-checkDespawn canonical guard ordinal");
+        assertTrue(despawn >= 0 && ordinalWrapper > despawn,
+                "ordinal wrapper must stay at the post-checkDespawn canonical guard ordinal");
 
         MethodNode guardBridge = uniqueMethod(level,
                 candidate -> candidate.name.startsWith("mixinextras$bridge$guardEntityTick$")
@@ -957,10 +895,11 @@ class FullModpackMixinExportVerifierTest {
                 "ServerLevel.guardEntityTick operation bridge");
         assertEquals(1, callCount(guardBridge, level.name, "guardEntityTick",
                 "(Ljava/util/function/Consumer;Lnet/minecraft/world/entity/Entity;)V"));
-        MethodNode actorHandler = generatedMethod(level,
+        MethodNode ordinalHandler = generatedMethod(level,
                 "$fabrolia$exactOrdinalPlayerBody");
-        assertEquals(1, callCountByName(actorHandler, PLAYER_TICKS,
-                "executeExactOrdinal"));
+        assertEquals(1, callCountByName(ordinalHandler, REGION_SCHEDULER,
+                "runSuccessBodyIfHealthy"),
+                "the canonical guard body must keep its W-vs-entry admission");
 
         verifyC2meCollisionReplacement(level, baseLevel);
     }
@@ -1002,21 +941,9 @@ class FullModpackMixinExportVerifierTest {
     private static void verifyServerChunkCache(ClassNode cache, ClassNode executor) {
 
         MethodNode getRunningThread = method(executor, "getRunningThread", THREAD_DESC);
-        int hook = generatedCallIndex(getRunningThread, executor.name,
-                "$fabrolia$logicalPlayerActorThread");
-        int physical = fieldIndex(getRunningThread, Opcodes.GETFIELD,
-                cache.name, "mainThread", "Ljava/lang/Thread;");
-        assertEquals(1, generatedCallCount(getRunningThread, executor.name,
-                "$fabrolia$logicalPlayerActorThread"));
-        assertTrue(hook >= 0 && physical > hook,
-                "MainThreadExecutor actor hook must precede physical-main fallback");
-        MethodNode handler = generatedMethod(executor,
-                "$fabrolia$logicalPlayerActorThread");
-        assertEquals(1, callCount(handler, PLAYER_TICKS, "inExactPlayerActor", "()Z"));
-        assertTrue(callCount(handler, THREAD, "currentThread", THREAD_DESC) >= 1,
-                "logical ownership must return the executing thread, not a stored worker");
-        assertEquals(1, callCount(handler, CALLBACK_RETURNABLE,
-                "setReturnValue", "(Ljava/lang/Object;)V"));
+        assertEquals(0, generatedCallCount(getRunningThread, executor.name,
+                "$fabrolia$logicalPlayerActorThread"),
+                "MainThreadExecutor.getRunningThread must stay the physical main thread");
 
         // Portal read/generation scopes must route a chunk read before any other
         // HEAD callback answers it (Fabrolia's off-Main bridge, c2me's shortcut).
@@ -1083,10 +1010,10 @@ class FullModpackMixinExportVerifierTest {
         assertEquals(1, generatedCallCount(sameThread, processor.name,
                 "$fabrolia$logicalPlayerActorThread"));
         assertTrue(current >= 0 && physical > current && hook > physical,
-                "PacketProcessor must actor-extend the completed physical comparison");
+                "PacketProcessor must extend the completed physical comparison for A5 replay");
         MethodNode handler = generatedMethod(processor,
                 "$fabrolia$logicalPlayerActorThread");
-        assertEquals(1, callCount(handler, PLAYER_TICKS, "inExactPlayerActor", "()Z"));
+        assertEquals(0, callCount(handler, PLAYER_TICKS, "inExactPlayerActor", "()Z"));
         assertEquals(1, callCount(handler, A5_PLAYER_TICKS, "inPacketReplay", "()Z"));
     }
 
@@ -4384,22 +4311,10 @@ class FullModpackMixinExportVerifierTest {
         MethodNode send = method(listener, "send",
                 "(Lnet/minecraft/network/protocol/Packet;"
                         + "Lio/netty/channel/ChannelFutureListener;)V");
-        int vanilla = callIndex(send, MINECRAFT_SERVER, "isSameThread", "()Z");
-        int hook = generatedCallIndex(send, listener.name,
-                "$fabrolia$preserveSuspendedFlush");
-        int connectionSend = callIndex(send, "net/minecraft/network/Connection", "send",
-                "(Lnet/minecraft/network/protocol/Packet;"
-                        + "Lio/netty/channel/ChannelFutureListener;Z)V");
         assertEquals(1, callCount(send, MINECRAFT_SERVER, "isSameThread", "()Z"));
-        assertEquals(1, generatedCallCount(send, listener.name,
-                "$fabrolia$preserveSuspendedFlush"));
-        assertTrue(vanilla >= 0 && hook > vanilla && connectionSend > hook,
-                "suspended-flush hook must wrap the vanilla thread decision before send");
-        MethodNode handler = generatedMethod(listener,
-                "$fabrolia$preserveSuspendedFlush");
-        assertEquals(1, callCount(handler, PLAYER_TICKS, "inWorkerPlayerTick", "()Z"));
-        assertEquals(0, callCount(handler, A5_PLAYER_TICKS, "inOwnerTurn", "()Z"),
-                "autonomous A5 sends must retain vanilla off-main flush=true");
+        assertEquals(0, generatedCallCount(send, listener.name,
+                "$fabrolia$preserveSuspendedFlush"),
+                "send must keep vanilla's thread decision; the exact-actor override is gone");
 
         MethodNode disconnect = method(listener, "disconnect",
                 "(Lnet/minecraft/network/DisconnectionDetails;)V");
@@ -5061,17 +4976,16 @@ class FullModpackMixinExportVerifierTest {
         assertEquals(1, generatedCallCount(blockEntity, level.name,
                 "$fabrolia$logicalLoadedBlockEntityThread"));
         assertTrue(current >= 0 && hook > current && physical > hook,
-                "Lithium loaded-block-entity thread comparison is not actor-aware");
+                "Lithium loaded-block-entity thread comparison is not owner-aware");
         MethodNode levelHandler = generatedMethod(level,
                 "$fabrolia$logicalLoadedBlockEntityThread");
-        assertEquals(1, callCount(levelHandler, PLAYER_TICKS, "inExactPlayerActor", "()Z"));
+        assertEquals(0, callCount(levelHandler, PLAYER_TICKS, "inExactPlayerActor", "()Z"));
         assertEquals(1, callCount(levelHandler, A5_PLAYER_TICKS, "inOwnerTurn", "()Z"));
-        int v2Owner = callIndex(levelHandler, PLAYER_TICKS, "inExactPlayerActor", "()Z");
         int a5Owner = callIndex(levelHandler, A5_PLAYER_TICKS, "inOwnerTurn", "()Z");
         int levelThread = fieldIndex(levelHandler, Opcodes.GETFIELD, level.name,
                 "thread", "Ljava/lang/Thread;");
-        assertTrue(v2Owner >= 0 && a5Owner > v2Owner && levelThread > a5Owner,
-                "Lithium loaded-BE hook must authenticate exact v2 OR autonomous A5 before "
+        assertTrue(a5Owner >= 0 && levelThread > a5Owner,
+                "Lithium loaded-BE hook must authenticate the autonomous A5 owner before "
                         + "substituting the physical Level.thread");
         assertEquals(1, fieldCount(levelHandler, Opcodes.GETFIELD, level.name,
                 "thread", "Ljava/lang/Thread;"));
@@ -5083,43 +4997,10 @@ class FullModpackMixinExportVerifierTest {
         assertEquals(1, fieldCount(generatedAccessor, Opcodes.GETFIELD, level.name,
                 "thread", "Ljava/lang/Thread;"));
 
-        assertLithiumTrackerHook(tracker,
-                "onChunkAccessible",
-                "(Lnet/minecraft/server/level/ServerLevel;"
-                        + "Lnet/minecraft/world/level/chunk/LevelChunk;)V",
-                "$fabrolia$logicalAccessibleThread");
-        assertLithiumTrackerHook(tracker,
-                "onChunkInaccessible",
-                "(Lnet/minecraft/server/level/ServerLevel;"
-                        + "Lnet/minecraft/world/level/ChunkPos;)V",
-                "$fabrolia$logicalInaccessibleThread");
-    }
-
-    private static void assertLithiumTrackerHook(ClassNode tracker, String methodName,
-                                                  String desc, String handlerSuffix) {
-        MethodNode target = method(tracker, methodName, desc);
-        List<MethodInsnNode> calls = calls(target);
-        int accessor = callListIndex(calls, call -> call.owner.equals(
-                        "net/caffeinemc/mods/lithium/mixin/util/accessors/LevelAccessor")
-                && call.name.equals("getThread") && call.desc.equals(THREAD_DESC));
-        int hook = callListIndex(calls, call -> call.owner.equals(tracker.name)
-                && call.name.endsWith(handlerSuffix));
-        int current = callListIndex(calls, call -> call.owner.equals(THREAD)
-                && call.name.equals("currentThread") && call.desc.equals(THREAD_DESC));
-        assertEquals(1, callCount(target,
-                "net/caffeinemc/mods/lithium/mixin/util/accessors/LevelAccessor",
-                "getThread", THREAD_DESC));
-        assertEquals(1, generatedCallCount(target, tracker.name, handlerSuffix));
-        assertEquals(accessor + 1, hook,
-                methodName + " must modify the exact accessor return at its caller");
-        assertEquals(hook + 1, current,
-                methodName + " logical thread must feed the existing currentThread compare");
-
-        MethodNode handler = generatedMethod(tracker, handlerSuffix);
-        assertEquals(0, callCount(handler, A5_PLAYER_TICKS, "inOwnerTurn", "()Z"),
-                "Lithium chunk-status callbacks must remain v2-only");
-        assertEquals(1, callCount(handler, PLAYER_TICKS, "inExactPlayerActor", "()Z"));
-        assertEquals(1, callCount(handler, THREAD, "currentThread", THREAD_DESC));
+        assertEquals(0, tracker.methods.stream()
+                        .filter(candidate -> candidate.name.contains("$fabrolia$"))
+                        .count(),
+                "the exact-actor ChunkStatusTracker hooks must not return");
     }
 
     private static void verifyC2meCollisionReplacement(ClassNode serverLevel,
@@ -5152,8 +5033,8 @@ class FullModpackMixinExportVerifierTest {
                 && call.name.equals("inExactPlayerActor") && call.desc.equals("()Z"));
         int original = callListIndex(calls, call -> call.owner.equals(OPERATION)
                 && call.name.equals("call") && call.desc.equals(OPERATION_CALL_DESC));
-        assertTrue(physical >= 0 && current > physical && actor > current && original > actor,
-                "C2ME replacement must preserve physical owner, then add only exact actor, "
+        assertTrue(physical >= 0 && current > physical && actor < 0 && original > current,
+                "C2ME replacement must preserve the physical owner check, "
                         + "then call the original collision seam");
         assertEquals(1, callCount(replacement, OPERATION, "call", OPERATION_CALL_DESC));
 

@@ -43,8 +43,8 @@ import static net.minecraft.commands.Commands.literal;
  *   /fabrolia regions crossdim [on|off]  — Overworld↔Nether link listing +
  *                                          cadence-coupling toggle
  *   /fabrolia regions playerticks on|off — autonomous island player ownership when
- *                                          async is active; exact-ordinal actor otherwise;
- *                                          serverbound handling stays on physical main
+ *                                          async is active; synchronous mode always
+ *                                          ticks players on physical main
  *   /fabrolia regions tps                — action-bar TPS HUD (player)
  *   /fabrolia regions on|off|toggle      — master region-threading switch
  *   /fabrolia regions debug …            — everything diagnostic: flightrec,
@@ -1657,9 +1657,9 @@ public final class RegionCommand {
                     ? "ON — supported real players and exact Carpet fake players are owned by their autonomous island; "
                       + "island-safe packets, entity tick and real listener/tickPlayer use the island FIFO; block use runs on Main; "
                       + "saved and restored automatically after restart"
-                    : "ON — async is currently off, so the synchronous exact-ordinal compatibility actor is used; "
+                    : "ON — async is currently off, so players tick on physical main; "
                       + "switching async on changes venue at the next safe island boundary; saved for restart")
-                : "off — island player ownership and the synchronous exact actor are disabled; "
+                : "off — island player ownership is disabled; "
                   + "players return to MAIN_SYNC at the next safe boundary; saved for restart",
                 true);
         return 1;

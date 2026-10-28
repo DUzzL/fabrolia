@@ -1160,21 +1160,21 @@ public final class RegionScheduler {
         return forLevel(level).dispatchOwnedEntityTicks();
     }
 
-    /** Queue-only barrier used by exact-ordinal player mode. */
+    /** Queue-only pre-entity barrier of the level entity phase. */
     public static CompletableFuture<Void> dispatchPreEntityWork(ServerLevel level) {
         if (!active) return CompletableFuture.completedFuture(null);
         RegionizedServer owner = forLevel(level);
         if (owner == null) {
             throw new IllegalStateException(
-                    "exact player pre-entity dispatch has no active level owner");
+                    "pre-entity dispatch has no active level owner");
         }
         return owner.dispatchPreEntityWork();
     }
 
     /**
-     * Stop every region worker at one lifecycle-lock edge before handing a
-     * canonical EntityTickList slot to the logical-server actor. Publications
-     * remain queued until {@link #resumeExactPlayerTurn()}.
+     * Stop every region worker at one lifecycle-lock edge and give physical Main
+     * an exclusive exact turn. Publications remain queued until
+     * {@link #resumeExactPlayerTurn()}.
      */
     public static void pauseExactPlayerTurn() {
         pauseExactPlayerTurn(false);
@@ -1249,13 +1249,7 @@ public final class RegionScheduler {
             Throwable failure = orphanFatalFailure;
             if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
         }
-        return RegionalPlayerEntityTicksV2.inExactPlayerActor()
-                || current != null && current.ownsPausedExactTurn(Thread.currentThread());
-    }
-
-    static boolean isExactPlayerTurnPausedBy(Thread thread) {
-        RegionWorkerPool current = pool;
-        return current != null && current.ownsPausedExactTurn(thread);
+        return current != null && current.ownsPausedExactTurn(Thread.currentThread());
     }
 
     /**
@@ -1313,10 +1307,8 @@ public final class RegionScheduler {
                 }
             }
         }
-        // Logical server-thread identity alone does not fence region workers.
-        if (physicalServer != null && physicalServer == server
-                && (physicalMain || RegionalPlayerEntityTicksV2
-                        .logicalServerThread(physicalServer) == caller)) {
+        // Server-thread identity alone does not fence region workers.
+        if (physicalServer != null && physicalServer == server && physicalMain) {
             return ownsExactExecutionTurn();
         }
         // Disabled guards or apparent idleness are not quiescence receipts.
@@ -1444,17 +1436,6 @@ public final class RegionScheduler {
         if (!(e.level() instanceof ServerLevel sl)) return;
         RegionizedServer rs = PER_LEVEL.get(sl);
         if (rs != null) rs.reindexMovedTree(e);
-    }
-
-    /** Exact-ordinal mode's post-list auxiliary-index reconciliation. */
-    public static void reconcileCanonicalEntityIndex(ServerLevel level) {
-        if (!active) return;
-        RegionizedServer owner = PER_LEVEL.get(level);
-        if (owner == null) {
-            throw new IllegalStateException(
-                    "canonical entity-index reconciliation lost its level owner");
-        }
-        owner.reconcileCanonicalEntityIndex();
     }
 
     /**
@@ -2531,7 +2512,7 @@ public final class RegionScheduler {
          * missed (it heals once per pending value; EntityBarrierWatchdog fails
          * the unit after 3 s).
          *
-         * <p>Used by the complete drains (exact-ordinal turn, sprint, shutdown)
+         * <p>Used by the complete drains (exact turn, sprint, shutdown)
          * and the tracking tail; the MAIN_SYNC tail never blocks here.
          */
         private void waitForRemaining(boolean heal) {
@@ -3478,78 +3459,6 @@ public final class RegionScheduler {
     }
 
     /**
-     * Run the exact actor's captured vanilla consumer after an atomic W-vs-entry
-     * cut.  The body runs outside both lifecycle monitors and deliberately owns
-     * no ExternalPermit: physical Main retains the paused turn and waits for this
-     * actor synchronously, so such a permit would be both cyclic and unauthorized.
-     */
-    private static void commitPausedExactActorEntryIfHealthy(Thread physicalOwner) {
-        if (physicalOwner == null) throw new NullPointerException("physicalOwner");
-        synchronized (LIFECYCLE_LOCK) {
-            RegionWorkerPool current = pool;
-            if (current == null) {
-                RegionWorkerPool failureGate = failureGateLocked();
-                if (failureGate != null) failureGate.throwIfFailed();
-                if (orphanFatalFailure != null) {
-                    RegionScheduler.<RuntimeException>rethrow(orphanFatalFailure);
-                }
-                IllegalStateException refusal = new IllegalStateException(
-                        "exact player actor lost its active pool generation");
-                if (failureGate != null) {
-                    RegionScheduler.<RuntimeException>rethrow(
-                            failureGate.publishAndSelectFatal(refusal));
-                }
-                orphanFatalFailure = refusal;
-                RegionScheduler.<RuntimeException>rethrow(orphanFatalFailure);
-            }
-            current.commitPausedExactActorEntryIfHealthy(
-                    physicalOwner, Thread.currentThread());
-        }
-    }
-
-    static void runPausedExactActorBodyIfHealthy(Thread physicalOwner, Runnable body) {
-        if (body == null) throw new NullPointerException("body");
-        commitPausedExactActorEntryIfHealthy(physicalOwner);
-        try {
-            body.run();
-        } catch (Throwable thrown) {
-            // Publish before returning control to mod/vanilla callers.  Even a
-            // caller which catches this rethrow cannot reopen the next body.
-            RegionScheduler.<RuntimeException>rethrow(
-                    publishFatalAndSelectWinner(thrown));
-        }
-        // A peer W may win while the already-admitted vanilla body is running.
-        // Refuse a locally clean return before the actor begins its completion
-        // bookkeeping; the caller then publishes/retains W and exhausts cleanup.
-        try {
-            commitSuccessIfHealthy(() -> {});
-        } catch (Throwable terminalFailure) {
-            RegionScheduler.<RuntimeException>rethrow(
-                    publishFatalAndSelectWinner(terminalFailure));
-        }
-    }
-
-    private static boolean callPausedExactActorBooleanIfHealthy(
-            Thread physicalOwner, java.util.function.BooleanSupplier body) {
-        commitPausedExactActorEntryIfHealthy(physicalOwner);
-        boolean result;
-        try {
-            result = body.getAsBoolean();
-        } catch (Throwable thrown) {
-            RegionScheduler.<RuntimeException>rethrow(
-                    publishFatalAndSelectWinner(thrown));
-            return false;
-        }
-        try {
-            commitSuccessIfHealthy(() -> {});
-        } catch (Throwable terminalFailure) {
-            RegionScheduler.<RuntimeException>rethrow(
-                    publishFatalAndSelectWinner(terminalFailure));
-        }
-        return result;
-    }
-
-    /**
      * Select the body gate and, when no live pool admission is required, linearize
      * logical entry directly. A null return is an admitted direct body, not an
      * unchecked pool snapshot. It normally means no pool exists. The one other
@@ -3613,12 +3522,6 @@ public final class RegionScheduler {
      */
     public static void runSuccessBodyIfHealthy(Runnable body) {
         if (body == null) throw new NullPointerException("body");
-        Thread exactPhysicalOwner =
-                RegionalPlayerEntityTicksV2.exactActorPhysicalOwnerOrNull();
-        if (exactPhysicalOwner != null) {
-            runPausedExactActorBodyIfHealthy(exactPhysicalOwner, body);
-            return;
-        }
         RegionWorkerPool causalOwner =
                 RegionWorkerPool.currentThreadCausalOwnerOrNull();
         if (causalOwner != null) {
@@ -3644,11 +3547,6 @@ public final class RegionScheduler {
     public static boolean callSuccessBooleanIfHealthy(
             java.util.function.BooleanSupplier body) {
         if (body == null) throw new NullPointerException("body");
-        Thread exactPhysicalOwner =
-                RegionalPlayerEntityTicksV2.exactActorPhysicalOwnerOrNull();
-        if (exactPhysicalOwner != null) {
-            return callPausedExactActorBooleanIfHealthy(exactPhysicalOwner, body);
-        }
         RegionWorkerPool causalOwner =
                 RegionWorkerPool.currentThreadCausalOwnerOrNull();
         if (causalOwner != null) {

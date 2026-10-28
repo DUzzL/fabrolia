@@ -91,15 +91,12 @@ final class RegionizedSuccessReceiptWiringTest {
                 "private CompletableFuture<Void> dispatchOwnedEntityTicks(",
                 "/**\n     * A2 core:");
 
-        int batchGate = drive.indexOf("RegionScheduler.runSuccessBodyIfHealthy");
-        int beginLevel = drive.indexOf(
-                "RegionalPlayerEntityTicksV2.beginLevel(this)", batchGate);
-        int batchStore = drive.indexOf("playerTickV2Batch =", batchGate);
-        int arrivals = drive.indexOf("CrossDimArrivals.publishGlobal(this)", batchStore);
-        assertTrue(batchGate >= 0 && beginLevel > batchGate
-                        && batchStore >= batchGate && batchStore < beginLevel
-                        && arrivals > beginLevel,
-                "player batch construction/publication must win before global arrivals");
+        int arrivalsCut = drive.indexOf("RegionScheduler.commitSuccessIfHealthy(() -> {});");
+        int arrivals = drive.indexOf("CrossDimArrivals.publishGlobal(this)", arrivalsCut);
+        assertTrue(arrivalsCut >= 0 && arrivals > arrivalsCut,
+                "a success cut must win before global arrivals are published");
+        assertFalse(drive.contains("playerTickV2Batch"),
+                "the removed exact-player level batch must not return");
 
         for (String admittedCall : java.util.List.of(
                 "() -> TpsHud.tick(level.getServer(), level)",

@@ -63,7 +63,7 @@ public abstract class ServerLevelNearestPlayerMixin implements HardColliderIndex
         // MAIN_SYNC safe point outside the entity phase (no claim, fence or
         // accepted body held here): an island stopped by a service request is
         // served now instead of after this level's chunk tick. Async levels
-        // only — exact-ordinal levels drain completely in their entity phase.
+        // only.
         RegionizedServer rs = RegionScheduler.forLevel((ServerLevel) (Object) this);
         if (rs != null && rs.asyncActive) {
             if (com.axalotl.fabrolia.common.regions.IslandCommands.hasRoutedPending()) {

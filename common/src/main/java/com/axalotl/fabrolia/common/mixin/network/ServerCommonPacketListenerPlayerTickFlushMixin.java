@@ -4,7 +4,6 @@ import com.axalotl.fabrolia.common.regions.FabroliaConnectionEventLoop;
 import com.axalotl.fabrolia.common.regions.FabroliaChunkForgetPublisher;
 import com.axalotl.fabrolia.common.regions.FabroliaFullChunkPublisher;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
-import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import net.minecraft.network.Connection;
 import net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket;
 import net.minecraft.server.MinecraftServer;
@@ -12,14 +11,13 @@ import net.minecraft.server.network.ServerCommonPacketListenerImpl;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.injection.At;
 
 /**
- * Preserves vanilla tickChildren's suspended-flush decision only for the narrowly
- * scoped, Main-awaited exact actor turn. Autonomous island owners deliberately keep
- * vanilla's ordinary off-main {@code flush=true}: otherwise their outbound stream would
- * still be released only by the slower physical-Main connection pass and a healthy
- * 20 TPS player island would remain visually capped by Main.
+ * Ordered chunk publication surfaces of the server packet listener. Autonomous island
+ * owners deliberately keep vanilla's ordinary off-main {@code flush=true} in
+ * {@code send}: otherwise their outbound stream would still be released only by the
+ * slower physical-Main connection pass and a healthy 20 TPS player island would remain
+ * visually capped by Main.
  */
 @Mixin(ServerCommonPacketListenerImpl.class)
 public abstract class ServerCommonPacketListenerPlayerTickFlushMixin
@@ -65,14 +63,5 @@ public abstract class ServerCommonPacketListenerPlayerTickFlushMixin
         receipt.publish(
                 ((FabroliaConnectionEventLoop) connection)::fabrolia$enqueueEventLoopTask,
                 () -> self.send(packet));
-    }
-
-    @ModifyExpressionValue(
-            method = "send(Lnet/minecraft/network/protocol/Packet;Lio/netty/channel/ChannelFutureListener;)V",
-            at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/MinecraftServer;isSameThread()Z"),
-            require = 1)
-    private boolean fabrolia$preserveSuspendedFlush(boolean original) {
-        return original || RegionalPlayerEntityTicksV2.inWorkerPlayerTick();
     }
 }

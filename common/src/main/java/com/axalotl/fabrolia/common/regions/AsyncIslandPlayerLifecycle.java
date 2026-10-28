@@ -10,8 +10,7 @@ import java.util.IdentityHashMap;
 /**
  * Lifecycle exclusion for A5-owned players.
  *
- * <p>The synchronous player actor reserves each entity separately.  An autonomous
- * island instead owns the whole early/BE/late turn with {@link IslandRegistry.PIsland#unitClaim},
+ * <p>An autonomous island owns the whole early/BE/late turn with {@link IslandRegistry.PIsland#unitClaim},
  * so a physical-main lifecycle writer must quiesce that claim before it replaces,
  * removes, teleports or changes the ride topology of a player.  Mutations reached
  * from the player's own island turn are reentrant and must never try to claim the

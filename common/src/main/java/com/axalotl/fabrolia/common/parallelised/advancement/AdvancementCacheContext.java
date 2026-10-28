@@ -97,7 +97,7 @@ public final class AdvancementCacheContext {
     /**
      * Evaluates with vanilla's complete player serialization. Callers have just
      * established quiescent ownership ({@link AdvancementOwnership#quiescentContext}):
-     * a held fence, no live island, or the V2 actor.
+     * a held fence or no live island.
      */
     static <A, B, C> Object evaluateQuiescent(Evaluation<A, B, C> body, A a, B b, C c) {
         Frame frame = FRAME.get();

@@ -180,13 +180,12 @@ public abstract class CommandsMixin {
     /**
      * Thread ownership, not the current async setting, selects the API venue.
      * inRoutedBatch is Main-confined state and cannot authenticate a foreign
-     * caller. Exact actors are logical owners, not ordinary external threads.
+     * caller.
      */
     @org.spongepowered.asm.mixin.Unique
     private static boolean fabrolia$isForeignCommand(MinecraftServer server) {
         return server != null
                 && !(Thread.currentThread() instanceof RegionWorkerThread)
-                && !RegionalPlayerEntityTicksV2.inExactPlayerActor()
                 && !RegionalPlayerEntityTicksV2.isPhysicalServerThread(server);
     }
 

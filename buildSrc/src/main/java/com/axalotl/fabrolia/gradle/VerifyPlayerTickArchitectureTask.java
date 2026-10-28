@@ -72,7 +72,9 @@ public abstract class VerifyPlayerTickArchitectureTask extends DefaultTask {
             "com/axalotl/fabrolia/common/regions/PlayerOwnership",
             "com/axalotl/fabrolia/common/parallelised/utils/FabroliaListenerLane",
             "com/axalotl/fabrolia/common/mixin/server/ServerGamePacketRoutingMixin",
-            "com/axalotl/fabrolia/common/mixin/network/PacketUtilsWorkerMixin");
+            "com/axalotl/fabrolia/common/mixin/network/PacketUtilsWorkerMixin",
+            "com/axalotl/fabrolia/common/regions/PlayerTickActor",
+            "com/axalotl/fabrolia/common/regions/PlayerTickPhase");
 
     private static final Pattern VERSION = Pattern.compile(
             "\\\"version\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");

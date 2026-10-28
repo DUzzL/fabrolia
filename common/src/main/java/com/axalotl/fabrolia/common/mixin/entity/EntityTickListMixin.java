@@ -57,9 +57,8 @@ public class EntityTickListMixin implements EntityTickListSnapshotAccess {
 
     /**
      * Preserve Mojang's exact active/passive linked-map semantics while making the
-     * state transition safe when one consumer body migrates to the player actor.
-     * The consumer itself must run outside this monitor: main waits for the actor,
-     * and that actor may legitimately add/remove an entity before returning.
+     * state transition safe. The consumer itself must run outside this monitor: it
+     * may legitimately add/remove an entity before returning.
      */
     @Unique
     private void fabrolia$ensureMutableActive() {

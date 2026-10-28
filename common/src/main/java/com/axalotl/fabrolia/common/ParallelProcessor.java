@@ -227,9 +227,7 @@ public final class ParallelProcessor {
         // same semantic as Fabrolia-Tick-Pool workers — both count as "on a server
         // execution thread" for code that branches on this check.
         return t instanceof FabroliaForkJoinWorkerThread
-                || RegionScheduler.isRegionWorker(t)
-                || com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .inExactPlayerActor();
+                || RegionScheduler.isRegionWorker(t);
     }
 
     public static int getPoolSize() {
@@ -898,14 +896,6 @@ public final class ParallelProcessor {
     public static void stop() {
         isShuttingDown = true;
         Throwable failure = null;
-
-        // The exact-ordinal player actor is a serial extension of the server turn.
-        // Never tear down shared pools underneath an accepted player body.
-        try {
-            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2.shutdownActor();
-        } catch (Throwable cleanup) {
-            failure = fabrolia$mergeFailure(failure, cleanup);
-        }
 
         ExecutorService stoppingExecutor = executor;
         if (stoppingExecutor != null) {

@@ -12,13 +12,11 @@ import net.minecraft.world.level.Level;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -161,20 +159,18 @@ class FabroliaIslandOwnershipTest {
     }
 
     @Test
-    void exactPoolPauseAuthenticatesMainAndOnlyTheMatchingLiveActor() throws Exception {
+    void exactPoolPauseAuthenticatesOnlyPhysicalMain() throws Exception {
         try (Fixture fixture = new Fixture(false)) {
             assertFalse(fixture.owns(OWN), "wall mode alone does not exclude parallel bodies");
-            fixture.actorQuery(false);
             fixture.pool.pauseExactTurnAndAwait(() -> {});
             try {
                 assertTrue(fixture.owns(OWN));
-                onThread(false, () -> assertFalse(fixture.owns(OWN)));
-                fixture.actorQuery(true);
+                onThread(false, () -> assertFalse(fixture.owns(OWN),
+                        "the pool pause authorizes its physical owner, not another thread"));
             } finally {
                 fixture.pool.resumeExactTurn();
             }
             assertFalse(fixture.owns(OWN));
-            fixture.actorQuery(false);
         }
     }
 
@@ -334,14 +330,12 @@ class FabroliaIslandOwnershipTest {
         final RegionWorkerPool pool = new RegionWorkerPool(1);
         final TestLevel level = TestLevel.create(server);
         final TestLevel otherLevel = TestLevel.create(server);
-        final TestLevel foreignServerLevel = TestLevel.create(serverOwnedBy(physicalMain));
         final RegionizedServer runtime = new RegionizedServer(level, new RegionGrid(3));
         final IslandRegistry.PIsland own = new IslandRegistry.PIsland(1, 0);
         final IslandRegistry.PIsland other = new IslandRegistry.PIsland(2, 0);
         final Region ownRegion;
         final Region otherRegion;
         final Map<ServerLevel, RegionizedServer> levels;
-        final AtomicReference<Object> logicalTurn;
         final Object previousPool = get(RegionScheduler.class, null, "pool");
         final Object previousServer = get(RegionScheduler.class, null, "server");
         final Object previousActive = get(RegionScheduler.class, null, "active");
@@ -351,9 +345,6 @@ class FabroliaIslandOwnershipTest {
             assertNull(previousPool, "fixture requires no live scheduler generation");
             levels = (Map<ServerLevel, RegionizedServer>) get(
                     RegionScheduler.class, null, "PER_LEVEL");
-            logicalTurn = (AtomicReference<Object>) get(
-                    RegionalPlayerEntityTicksV2.class, null, "LOGICAL_TURN");
-            assertNull(logicalTurn.get());
             runtime.asyncActive = autonomous;
             runtime.globalDomain.epoch = 8;
             runtime.globalDomain.entityDispatchCutEpoch = 7;
@@ -383,26 +374,6 @@ class FabroliaIslandOwnershipTest {
 
         boolean owns(BlockPos pos) {
             return FabroliaIslandApi.ownsCurrentContext(level, pos);
-        }
-
-        void actorQuery(boolean expected) throws Exception {
-            onThread(false, () -> {
-                Class<?> type = Class.forName(
-                        RegionalPlayerEntityTicksV2.class.getName() + "$LogicalTurn");
-                Constructor<?> constructor = type.getDeclaredConstructors()[0];
-                constructor.setAccessible(true);
-                Object turn = constructor.newInstance(
-                        server, 1L, null, physicalMain, Thread.currentThread());
-                assertTrue(logicalTurn.compareAndSet(null, turn));
-                try {
-                    if (expected) assertTrue(owns(OWN));
-                    else assertFalse(owns(OWN), "a logical stamp cannot outlive the real pool pause");
-                    assertFalse(FabroliaIslandApi.ownsCurrentContext(foreignServerLevel, OWN),
-                            "an authenticated actor does not own another server");
-                } finally {
-                    assertTrue(logicalTurn.compareAndSet(turn, null));
-                }
-            });
         }
 
         @Override

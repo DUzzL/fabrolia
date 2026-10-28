@@ -32,7 +32,7 @@ import java.util.Optional;
  *       broadcast listeners (chat bridges, Vanish): physical Main only, no
  *       fence needed.</li>
  * </ul>
- * In a quiescent context (held fence, no live island, V2 actor) every piece
+ * In a quiescent context (held fence, no live island) every piece
  * runs exactly as vanilla. While a player has routed work outstanding, its later
  * grants and announcements follow that work through the same FIFO.
  */

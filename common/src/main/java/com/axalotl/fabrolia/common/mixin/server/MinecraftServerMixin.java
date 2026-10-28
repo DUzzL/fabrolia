@@ -121,14 +121,6 @@ public class MinecraftServerMixin {
         RegionScheduler.throwWorkerFailureIfAny();
     }
 
-    @Inject(method = "getRunningThread()Ljava/lang/Thread;",
-            at = @At("HEAD"), cancellable = true, require = 1)
-    private void fabrolia$logicalPlayerActorThread(CallbackInfoReturnable<Thread> cir) {
-        MinecraftServer self = (MinecraftServer) (Object) this;
-        Thread actor = RegionalPlayerEntityTicksV2.logicalServerThread(self);
-        if (actor != null) cir.setReturnValue(actor);
-    }
-
     @WrapMethod(method = "tickChildren(Ljava/util/function/BooleanSupplier;)V")
     private void fabrolia$regionalPlayerServerPhase(BooleanSupplier haveTime,
                                                      Operation<Void> original) {
@@ -218,7 +210,7 @@ public class MinecraftServerMixin {
 
     /*
      * The enabled A5 path cannot retain one external success-body permit around
-     * all of tickChildren: ServerLevel's exact-ordinal fence and the connection
+     * all of tickChildren: ServerLevel's pool fixed points and the connection
      * fixed point must be allowed to await the pool without waiting on that same
      * permit.  Each otherwise-raw top-level vanilla stage therefore gets its own
      * W-vs-entry cut. ServerFunctionManager.tick and ServerLevel.tick segment
@@ -434,39 +426,9 @@ public class MinecraftServerMixin {
         }
     }
 
-    @WrapMethod(method = "reloadResources")
-    private java.util.concurrent.CompletableFuture<Void> fabrolia$reloadOnPhysicalMain(
-            java.util.Collection<String> packs,
-            Operation<java.util.concurrent.CompletableFuture<Void>> original) {
-        MinecraftServer self = (MinecraftServer) (Object) this;
-        if (RegionalPlayerEntityTicksV2.isPhysicalServerThread(self)
-                || !self.isSameThread()) {
-            return original.call(packs);
-        }
-        // An exact player actor is logically same-thread, so vanilla's executor
-        // would otherwise run reload preparation/application inline on that actor.
-        // Return the future, never wait for physical Main while it awaits this turn.
-        java.util.List<String> selected = java.util.List.copyOf(packs);
-        java.util.concurrent.CompletableFuture<Void> result =
-                new java.util.concurrent.CompletableFuture<>();
-        RegionScheduler.enqueueGlobalMainOnly(RegionScheduler.cancellableRoot(() -> {
-            try {
-                original.call(selected).whenComplete((ignored, failure) -> {
-                    if (failure == null) result.complete(null);
-                    else result.completeExceptionally(failure);
-                });
-            } catch (Throwable failure) {
-                result.completeExceptionally(failure);
-                throw failure;
-            }
-        }, result::completeExceptionally));
-        return result;
-    }
-
     @Redirect(method = "reloadResources", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/MinecraftServer;isSameThread()Z"))
     private boolean onServerExecutionThreadPatch(MinecraftServer minecraftServer) {
-        // managedBlock consumes the server queue. Logical player-actor identity
-        // grants gameplay authority, never permission to pump physical-Main work.
+        // managedBlock consumes the server queue: only physical Main may pump it.
         return RegionalPlayerEntityTicksV2.isPhysicalServerThread(minecraftServer);
     }
 }

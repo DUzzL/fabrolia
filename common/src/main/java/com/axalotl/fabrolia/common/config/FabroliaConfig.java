@@ -22,15 +22,15 @@ public class FabroliaConfig {
     public static boolean enableFabroliaDespawn = true;
     public static volatile boolean enableRegionThreading = true;
     /**
-     * Persisted operator preference for the exact-ordinal player-tick actor.
+     * Persisted operator preference for island player ticks (A5).
      *
      * <p>This is deliberately separate from the runtime safety gate in
      * {@code RegionalPlayerEntityTicksV2}: the preference survives scheduler stops and
      * server restarts, while the runtime gate may still fail closed when region
      * threading or another prerequisite is unavailable. With async islands enabled
-     * the same preference selects the autonomous per-island player owner; otherwise it
-     * selects the awaited exact-ordinal compatibility actor. On by default since
-     * 3.1.11 (the production setting); a saved {@code false} is kept.
+     * the preference selects the autonomous per-island player owner. Synchronous
+     * region threading ignores it and always ticks players on physical main. On by
+     * default since 3.1.11 (the production setting); a saved {@code false} is kept.
      */
     public static volatile boolean enablePlayerTickActor = true;
     /** R4 phase 0: count/log block writes landing outside the writing worker's

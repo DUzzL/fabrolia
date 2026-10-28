@@ -37,9 +37,8 @@ import java.util.concurrent.atomic.AtomicLongArray;
  *
  * <p>One instance per {@link RegionWorkerThread}, thread-confined, cleared after
  * every worker step so no unloaded chunk stays referenced. Only FULL requests
- * of plain worker bodies use it: datapack function partitions and the exact
- * player actor keep the uncached path (the actor is logical Main for C2ME's
- * shortcut and vanilla's own cache; partition bodies stay out by policy).
+ * of plain worker bodies use it: datapack function partitions keep the
+ * uncached path by policy.
  * Values are opaque here; the mixin stores LevelChunks.
  */
 public final class WorkerChunkCache {
@@ -65,7 +64,7 @@ public final class WorkerChunkCache {
     public static WorkerChunkCache forCurrentThread() {
         if (!(Thread.currentThread() instanceof RegionWorkerThread worker)) return null;
         WorkerChunkCache cache = worker.chunkCache;
-        if (worker.functionScope != null || RegionalPlayerEntityTicksV2.inExactPlayerActor()) {
+        if (worker.functionScope != null) {
             cache.armedSource = null;
             return null;
         }
