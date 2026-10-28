@@ -500,6 +500,8 @@ public final class RegionScheduler {
                 Throwable orphan = orphanFatalFailure;
                 if (orphan == null) {
                     orphanFatalFailure = failure;
+                    // The retired generation already reported its own winner.
+                    if (failure != retiredWinner) FailStopCrashReports.winnerSelected(failure);
                 } else {
                     failure = FailStops.mergeFailureCapped(orphan, failure);
                 }
@@ -832,6 +834,8 @@ public final class RegionScheduler {
                 Throwable orphan = orphanFatalFailure;
                 if (orphan == null) {
                     orphanFatalFailure = clearFailure;
+                    // The retired generation already reported its own winner.
+                    if (clearFailure != retiredWinner) FailStopCrashReports.winnerSelected(clearFailure);
                 } else {
                     clearFailure = FailStops.mergeFailureCapped(orphan, clearFailure);
                 }
@@ -3433,7 +3437,10 @@ public final class RegionScheduler {
                 commit.run();
                 return;
             } catch (Throwable thrown) {
-                if (orphanFatalFailure == null) orphanFatalFailure = thrown;
+                if (orphanFatalFailure == null) {
+                    orphanFatalFailure = thrown;
+                    FailStopCrashReports.winnerSelected(thrown);
+                }
                 FailStops.<RuntimeException>rethrow(orphanFatalFailure);
             }
         }
@@ -3561,6 +3568,7 @@ public final class RegionScheduler {
                 p.publishFatalFailure(failure);
             } else if (orphanFatalFailure == null) {
                 orphanFatalFailure = failure;
+                FailStopCrashReports.winnerSelected(failure);
             }
         }
     }

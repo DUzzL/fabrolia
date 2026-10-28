@@ -299,6 +299,7 @@ All are in `C/regions/RegionScheduler.java`; the pool-side twins are in `RegionW
 | `runSuccessBodyIfHealthy(Runnable)` / `callSuccessBooleanIfHealthy` | Running any fallible stage, such as a vanilla sub-phase or a hook body. It enters the body only if no fatal has won first. It never runs the body while holding the lifecycle monitor. |
 | `commitSuccessIfHealthy(Runnable)` | Publishing a prepared success: only fixed, non-blocking field/atomic writes. Do fallible queue publication before it. `commitSuccessIfHealthy(() -> {})` is the post-cleanup success cut. |
 | `publishFatalAndSelectWinner(Throwable)` | In a catch on Main: publish the failure and get the authoritative winner to rethrow. A concurrent earlier winner stays primary. |
+| `FailStopCrashReports.winnerSelected(Throwable)` | Only where a winner slot (`RegionWorkerPool.fatalFailure`, `orphanFatalFailure`) goes from null to set. Starts the crash-report writer; never throws or blocks. |
 | `throwWorkerFailureIfAny()` | At poll points (Main task poll, connection tick, pump loops) to surface a worker failure unchanged. Not an admission gate: check-then-run is not atomic (`CommandEntityCatchEdgeWiringTest`). |
 
 Canonical shape: `try { runSuccessBodyIfHealthy(body) } catch (t) { w = publishFatalAndSelectWinner(t); cleanup; commitSuccessIfHealthy(() -> {}); throw w; }`. Examples: `MinecraftServerMixin.fabrolia$regionalPlayerServerPhase`, `RegionizedServer.rebuildIslandsIfDirty`.
@@ -345,13 +346,13 @@ Cleanup failures are attached to the selected primary with `FailStops.mergeFailu
 
 ## 10. `C/regions/` package index (grouped by topic)
 
-All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.java`.
+All 162 files are listed here, grouped by topic. Each name is `C/regions/<Name>.java`.
 
 - **Scheduler core:**
   - Scheduling and workers: `RegionScheduler`, `RegionWorkerPool`, `RegionWorkerThread`, `RegionizedServer`, `RegionizedTaskQueue`, `RegionTaskFanIn`, `RegionTickHooks`, `RegionTickingAccess`
   - Regions and grid: `Region`, `RegionState`, `RegionGrid`, `RegionKeyed`, `ChunkRegionKeyed`, `ThreadedRegionizer`, `ColorGate`, `EpochDomain`, `LevelAccess`
   - Guards and locks: `CrossRegionGuard`, `RegionAccessDetector`, `DetectorEpochHolder`, `FabroliaLocks`, `OwnerBusyException`, `RegionMainBlockingWaitGuard`
-  - Fail-stop helpers: `FailStops` (shared failure merge and exact rethrow)
+  - Fail-stop helpers: `FailStops` (shared failure merge and exact rethrow), `FailStopCrashReports` (one crash report per selected winner)
 - **Islands, time, metrics:**
   - Islands and clocks: `IslandRegistry`, `IslandTickUnit`, `IslandUnitAdmission`, `IslandClock`, `RawGameTime`, `TemporalControl`
   - Views: `CompletedSimulationView`, `CompletedChunkLevels`
@@ -415,8 +416,13 @@ All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   `stopServer` before it saves players and worlds. Vanilla saves after a tick crash. This
   fail-stop shape is deliberate and wiring-tested; a change must audit every save path
   under a failed generation.
-- A Fabrolia fail-stop does not end the process: there is no crash report, and the server
-  keeps failing tasks until it is stopped. After a fail-stop, a stop can hang when an
+- A Fabrolia fail-stop does not end the process: the server keeps failing tasks until it
+  is stopped. It does write one vanilla crash report per selected winner
+  (`crash-reports/crash-<date>-server.txt`, title "Fabrolia fail-stop", one ERROR log
+  line with the path) through `FailStopCrashReports`, called from every first-set edge
+  of a pool's `fatalFailure` and of the scheduler's orphan slot; the write runs on a
+  daemon thread and can never change the winner (`-Dfabrolia.failStopCrashReports=false`
+  turns it off; the unit-test task does). After a fail-stop, a stop can hang when an
   RCON command is in flight (vanilla's `GenericThread.stop` waits for the RCON thread,
   which waits for the halted Main).
 - The vanilla watchdog measures the tick schedule's backlog, not one tick: with Main below
