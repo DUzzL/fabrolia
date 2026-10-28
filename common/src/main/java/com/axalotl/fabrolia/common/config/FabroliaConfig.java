@@ -209,8 +209,16 @@ public class FabroliaConfig {
         return Math.max(1, cores - 2);
     }
 
+    /**
+     * The color gate is a correctness invariant of region threading: it stays on
+     * while the scheduler is still active. {@code /fabrolia regions off} persists
+     * {@code enableRegionThreading=false} before {@code RegionScheduler.stop()}
+     * drains the running units; those units must keep neighbours exclusive and
+     * re-arm dependents until the pool is gone.
+     */
     public static boolean useRegionColorGate() {
-        return enableRegionThreading;
+        return enableRegionThreading
+                || com.axalotl.fabrolia.common.regions.RegionScheduler.isActive();
     }
 
     public static boolean isNamespaceWildcard(String input) {

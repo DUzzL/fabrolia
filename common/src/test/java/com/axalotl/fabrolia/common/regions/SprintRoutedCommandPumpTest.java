@@ -94,8 +94,9 @@ class SprintRoutedCommandPumpTest {
 
     @Test
     void sprintUnitBarrierAwaitMustServiceRoutedCommandBatch() throws Exception {
-        // healColorGate stays inert (skeleton rs has no heal snapshot); the
-        // routed-batch machinery is what this test exercises.
+        // healColorGate runs over an empty regionizer (the color gate stays on
+        // while the scheduler is active); the routed-batch machinery is what
+        // this test exercises.
         savedRegionThreading = FabroliaConfig.enableRegionThreading;
         FabroliaConfig.enableRegionThreading = false;
 
@@ -106,6 +107,7 @@ class SprintRoutedCommandPumpTest {
         RegionizedServer rs = (RegionizedServer) UNSAFE.allocateInstance(RegionizedServer.class);
         rs.asyncActive = true;
         setField(rs, RegionizedServer.class, "islandRegistry", new IslandRegistry());
+        setField(rs, RegionizedServer.class, "regionizer", new ThreadedRegionizer(level, new RegionGrid(3)));
         setStatic(RegionScheduler.class, "active", true);
         SprintRoutedCommandPumpTest.<Map<ServerLevel, RegionizedServer>>getStatic(
                 RegionScheduler.class, "PER_LEVEL").put(level, rs);
