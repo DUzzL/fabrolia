@@ -111,6 +111,34 @@ final class PetOwnerTeleportFenceTest {
                 "the re-key uses indexMove (tick-mark carry) for the whole tree");
     }
 
+    @Test
+    void sameLevelTeleportUnderAllClaimsReindexesBeforeTheOldIslandVisits() throws Exception {
+        // teleport_storm --anchors: a fenced /tp left the old key, the old island's
+        // lazy re-key moved the player into the running owner's index and the
+        // owner ticked it as well ("A5 entity ordinal overlapped another island body").
+        String mixin = source("common/mixin/entity/EntityMixin.java");
+        int hook = mixin.indexOf("method = \"teleportSetPosition(");
+        int tail = mixin.indexOf("@At(\"TAIL\")", hook);
+        int call = mixin.indexOf("RegionScheduler.reindexTeleportedTree(", tail);
+        assertTrue(hook >= 0 && tail > hook && call > tail,
+                "every same-level teleport ends in teleportSetPosition and re-keys at its tail");
+
+        String scheduler = source("common/regions/RegionScheduler.java");
+        int entry = scheduler.indexOf("public static void reindexTeleportedTree(Entity e)");
+        int guard = scheduler.indexOf("rs.currentThreadHoldsAllClaims()", entry);
+        int rekey = scheduler.indexOf("rs.reindexTeleportedTree(e)", entry);
+        assertTrue(entry >= 0 && guard > entry && rekey > guard,
+                "only a thread holding every island claim of the level re-keys eagerly");
+
+        String server = source("common/regions/RegionizedServer.java");
+        int method = server.indexOf("void reindexTeleportedTree(Entity e)");
+        int indexed = server.indexOf("from.entities.contains(e)", method);
+        int move = server.indexOf("indexMove(e, from, current)", indexed);
+        int passengers = server.indexOf("reindexTeleportedTree(passenger)", move);
+        assertTrue(method >= 0 && indexed > method && move > indexed && passengers > move,
+                "only an entity indexed in this level moves, with the tick-mark carry, tree-wide");
+    }
+
     private static final class Fixture {
         final RegionizedServer runtime;
         final ThreadedRegionizer regionizer;

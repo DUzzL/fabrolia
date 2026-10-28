@@ -489,4 +489,16 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
             return null;
         });
     }
+
+    /** Same-level teleport under all island claims: re-key the region index at
+     *  once (RegionScheduler.reindexTeleportedTree). */
+    @Inject(method = "teleportSetPosition(Lnet/minecraft/world/entity/PositionMoveRotation;"
+            + "Lnet/minecraft/world/entity/PositionMoveRotation;Ljava/util/Set;)V",
+            at = @At("TAIL"), require = 1)
+    private void fabrolia$reindexTeleported(net.minecraft.world.entity.PositionMoveRotation from,
+                                            net.minecraft.world.entity.PositionMoveRotation to,
+                                            java.util.Set<net.minecraft.world.entity.Relative> relatives,
+                                            CallbackInfo ci) {
+        RegionScheduler.reindexTeleportedTree((Entity) (Object) this);
+    }
 }

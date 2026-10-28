@@ -2721,6 +2721,24 @@ public final class RegionizedServer {
         for (Entity passenger : e.getPassengers()) reindexMovedTree(passenger);
     }
 
+    /**
+     * {@link #reindexMovedTree} for a teleport under all of this level's claims.
+     * Only an entity that is indexed in THIS level moves: a cross-dimension
+     * transition also ends in {@code teleportSetPosition} and re-indexes through
+     * its own lifecycle.
+     */
+    void reindexTeleportedTree(Entity e) {
+        if (!e.isRemoved() && e.level() == level) {
+            long stored = ((RegionKeyed) e).fabrolia$getRegionKey();
+            long current = regionizer.grid.keyFor(e.chunkPosition().pack());
+            if (stored != RegionKeyed.NO_REGION && stored != current) {
+                Region from = regionizer.peekByGridKey(stored);
+                if (from != null && from.entities.contains(e)) indexMove(e, from, current);
+            }
+        }
+        for (Entity passenger : e.getPassengers()) reindexTeleportedTree(passenger);
+    }
+
     private void indexMove(Entity e, Region from, long newKey) {
         if (from.entities.remove(e)) from.entityCount.decrementAndGet();
         Region to = regionizer.admitEntity(newKey, e);

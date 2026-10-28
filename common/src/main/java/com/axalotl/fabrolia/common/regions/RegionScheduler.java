@@ -1424,6 +1424,22 @@ public final class RegionScheduler {
     }
 
     /**
+     * A same-level teleport (every one ends in {@code Entity.teleportSetPosition})
+     * that runs while this thread holds every island claim of the level: Main under
+     * a command, pearl or MAIN_SYNC fence. Re-key the moved tree now. Left to the
+     * lazy re-key, the next visit comes from the OLD island: its worker would move
+     * the entity into the new owner's region index while that island's unit runs,
+     * and the new owner would tick it in the same window (an A5 player then fails
+     * with "A5 entity ordinal overlapped another island body"). A teleport without
+     * all claims stays inside its own island and keeps the lazy path.
+     */
+    public static void reindexTeleportedTree(Entity e) {
+        if (!active || !(e.level() instanceof ServerLevel sl)) return;
+        RegionizedServer rs = PER_LEVEL.get(sl);
+        if (rs != null && rs.currentThreadHoldsAllClaims()) rs.reindexTeleportedTree(e);
+    }
+
+    /**
      * Per-region FULL-chunk population, driven by the loader's reliable chunk load/unload
      * event (Fabric {@code ServerChunkEvents}, NeoForge {@code ChunkEvent}). A LevelChunk
      * is exactly a FULL chunk, so its load/unload IS the FULL gain/loss — symmetric and
