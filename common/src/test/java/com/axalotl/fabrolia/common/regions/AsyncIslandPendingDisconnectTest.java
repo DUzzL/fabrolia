@@ -236,7 +236,8 @@ class AsyncIslandPendingDisconnectTest {
             replacement.connection = fixture.listener;
             fixture.listener.player = replacement;
             assertThrows(IllegalStateException.class, () -> invoke("markMainFallback",
-                    new Class<?>[]{ServerPlayer.class, boolean.class}, replacement, true));
+                    new Class<?>[]{ServerPlayer.class, boolean.class, String.class},
+                    replacement, true, "test"));
             assertEquals(List.of(), fixture.bodies);
         }
     }
@@ -384,7 +385,8 @@ class AsyncIslandPendingDisconnectTest {
 
         boolean consumeOrdinal() throws Exception {
             return (boolean) invoke("markMainFallback",
-                    new Class<?>[]{ServerPlayer.class, boolean.class}, player, true);
+                    new Class<?>[]{ServerPlayer.class, boolean.class, String.class},
+                    player, true, "test");
         }
 
         void pumpMain() {

@@ -345,6 +345,9 @@ public final class AsyncIslandPlayerTicks {
                                                 RoutedPlayerMutation mutation) {
         boolean asyncLive = IslandCommands.requiresMainFence();
         boolean tookFence = asyncLive && IslandCommands.quiesceAllExcept(null);
+        // Diagnostics only: one count per all-island fence this mutation took.
+        // A mutation nested in an already held fence window takes none.
+        if (tookFence) MainFallbackStats.FENCES.increment(operation);
         if (asyncLive && !tookFence && !IslandCommands.fenceWindowHeld()) {
             throw new IllegalStateException(
                     "A5 routed player mutation '" + operation
@@ -765,6 +768,9 @@ public final class AsyncIslandPlayerTicks {
             state.trackingTopologyGap = receipt;
             state.eligible = false;
             state.lifecycleInvalidated = true;
+            if (phase == IslandPlayerTurnSession.Phase.ISLAND_READY) {
+                MainFallbackStats.HANDOFFS.increment("topology gap");
+            }
             if (phase == IslandPlayerTurnSession.Phase.ISLAND_READY
                     && !scheduleMainHandoffLocked(state, player, false)) {
                 state.trackingTopologyGap = null;
@@ -1141,7 +1147,8 @@ public final class AsyncIslandPlayerTicks {
                 || !rs.regionMatches(region, player.chunkPosition())
                 || rs.islandOwnerOfChunk(currentChunk) != island
                 || !eligible(player, level, kind)) {
-            return markMainFallback(player, true);
+            return markMainFallback(player, true, earlyAdmissionFallbackCause(
+                    rs, region, island, kind, player, level, currentChunk));
         }
 
         PlayerState state = state(player);
@@ -1152,7 +1159,7 @@ public final class AsyncIslandPlayerTicks {
         IslandTrackedEntityAccess playerTracker =
                 IslandEntityTracking.currentPlayerTracker(player);
         if (playerTracker == null) {
-            return markMainFallback(player, true);
+            return markMainFallback(player, true, "no player tracker");
         }
         // Tracker publication always nests PlayerState (tracker -> state). Hold the
         // self tracker across owner installation so no sendChanges route can observe
@@ -1184,7 +1191,7 @@ public final class AsyncIslandPlayerTicks {
             }
         }
         if (owner == null) {
-            return markMainFallback(player, true);
+            return markMainFallback(player, true, "owner refused");
         }
 
         if (reserved.isEmpty()) {
@@ -1194,7 +1201,7 @@ public final class AsyncIslandPlayerTicks {
                     && observed.ledger().lastTerminalToken() == token)) {
                 return true;
             }
-            return markMainFallback(player, true);
+            return markMainFallback(player, true, "reservation refused");
         }
         IslandPlayerTurnSession.EarlyPermit<InboundPacket> permit = reserved.get();
         if (!stillCurrent(owner, player, rs, island, region.domain)) {
@@ -1214,7 +1221,7 @@ public final class AsyncIslandPlayerTicks {
                 throw new IllegalStateException(
                         "A5 stale early reservation could not restore its exact token");
             }
-            return markMainFallback(player, true);
+            return markMainFallback(player, true, "stale reservation");
         }
 
         TurnContext context = new TurnContext(state, player, island, owner, permit, false);
@@ -1793,6 +1800,9 @@ public final class AsyncIslandPlayerTicks {
             }
             if (view.phase() == IslandPlayerTurnSession.Phase.ISLAND_READY
                     || isMainHandoffPhase(view.phase())) {
+                if (view.phase() == IslandPlayerTurnSession.Phase.ISLAND_READY) {
+                    MainFallbackStats.HANDOFFS.increment("post-physics topology loss");
+                }
                 scheduleMainHandoffLocked(pending.state, pending.player, false);
                 return;
             }
@@ -1995,6 +2005,17 @@ public final class AsyncIslandPlayerTicks {
             // MAIN_HANDOFF, MAIN_DRAINING, a temporary compatibility fallback and a
             // respawn/shadow successor. A single Main task drains this FIFO before a
             // new island attach is allowed, closing the old vanilla scheduling gap.
+            if (policy == AsyncIslandPacketPolicy.Lane.MAIN_FIFO && owner != null
+                    && !handingOff && view.phase() != IslandPlayerTurnSession.Phase.MAIN
+                    && !state.mainIngressScheduled && state.mainIngress.isEmpty()) {
+                // Diagnostics only: this packet is what moves an island-owned
+                // session to Main (now, or at its running body's terminal edge).
+                if (hasInvalidBlockAckSequence(packet)) {
+                    MainFallbackStats.invalidAckPacket(packet);
+                } else {
+                    MainFallbackStats.mainLanePacket(packet);
+                }
+            }
             enqueueMainIngressLocked(state, game, inbound);
             // A MAIN_FIFO decision creates one ordered boundary, not a permanent
             // venue switch. If the old owner is quiescent, start its handoff now; if
@@ -2345,6 +2366,8 @@ public final class AsyncIslandPlayerTicks {
         // releases a frame it acquired itself.
         boolean asyncLive = IslandCommands.requiresMainFence();
         boolean tookFence = asyncLive && IslandCommands.quiesceAllExcept(null);
+        // Diagnostics only: count the all-island fence this disconnect took.
+        if (tookFence) MainFallbackStats.FENCES.increment("player disconnect");
         if (asyncLive && !tookFence && !IslandCommands.fenceWindowHeld()) {
             throw new IllegalStateException(
                     "A5 physical-Main disconnect could not establish its Main fence");
@@ -2645,6 +2668,7 @@ public final class AsyncIslandPlayerTicks {
         IslandPlayerTurnSession.View view = state.session.view();
         if (view.phase() == IslandPlayerTurnSession.Phase.ISLAND_READY
                 && !netherOwnsQuarantinedSuffixLocked(state, reservation.player)) {
+            MainFallbackStats.HANDOFFS.increment("nether portal");
             scheduleMainHandoffLocked(state, reservation.player, false);
         }
     }
@@ -2790,6 +2814,8 @@ public final class AsyncIslandPlayerTicks {
         }
         boolean asyncLive = IslandCommands.requiresMainFence();
         boolean tookFence = asyncLive && IslandCommands.quiesceAllExcept(null);
+        // Diagnostics only: count the all-island fence this disconnect took.
+        if (tookFence) MainFallbackStats.FENCES.increment("deferred player disconnect");
         if (asyncLive && !tookFence && !IslandCommands.fenceWindowHeld()) {
             throw new IllegalStateException(
                     "A5 deferred disconnect could not establish its Main fence");
@@ -2934,6 +2960,7 @@ public final class AsyncIslandPlayerTicks {
                     && owner != null
                     && owner.playerIdentity() instanceof ServerPlayer oldPlayer
                     && !netherOwnsQuarantinedSuffixLocked(state, oldPlayer)) {
+                MainFallbackStats.HANDOFFS.increment("routed mutation");
                 scheduleMainHandoffLocked(state, oldPlayer, false);
             }
             PACKETS_QUEUED.increment();
@@ -3045,6 +3072,10 @@ public final class AsyncIslandPlayerTicks {
                         // non-disconnectible when that task reaches physical Main.
                         state.eligible = false;
                     } else {
+                        if (state.session.view().phase()
+                                == IslandPlayerTurnSession.Phase.ISLAND_READY) {
+                            MainFallbackStats.HANDOFFS.increment("island cleared");
+                        }
                         scheduleMainHandoffLocked(state, player, false);
                     }
                 } else {
@@ -3359,6 +3390,9 @@ public final class AsyncIslandPlayerTicks {
             IslandPlayerTurnSession.Phase phase = view.phase();
             if (phase == IslandPlayerTurnSession.Phase.ISLAND_READY
                     || isMainHandoffPhase(phase)) {
+                if (phase == IslandPlayerTurnSession.Phase.ISLAND_READY) {
+                    MainFallbackStats.HANDOFFS.increment("lifecycle mutation");
+                }
                 scheduleMainHandoffLocked(state, player, false);
             }
         }
@@ -3428,6 +3462,7 @@ public final class AsyncIslandPlayerTicks {
                             }
                             context.state.mainInteractionPacket = inbound;
                         }
+                        MainFallbackStats.interactionPacket(inbound.packet);
                         return;
                     }
                     replay.packetBodyEntered = true;
@@ -3936,6 +3971,55 @@ public final class AsyncIslandPlayerTicks {
                 : currentLifecycle == ownerLifecycle;
     }
 
+    /**
+     * Fallback-path diagnosis only: names the first {@link #eligible} condition that
+     * fails, as a constant string. Re-reads live player state, so a racing change
+     * reports {@code "unknown"}; it never decides anything.
+     */
+    private static String ineligibleCause(ServerPlayer player, ServerLevel level,
+                                          IslandPlayerTurnSession.PlayerKind kind) {
+        if (player.level() != level) return "level changed";
+        if (player.isRemoved()) return "removed";
+        if (player.isChangingDimension()) return "changing dimension";
+        if (player.getVehicle() != null) return "riding";
+        if (!player.getPassengers().isEmpty()) return "has passengers";
+        if (player.getCamera() != player) return "spectating camera";
+        PortalProcessor portalProcess = player.portalProcess;
+        if (portalProcess != null && !(portalProcess.portal instanceof NetherPortalBlock)) {
+            return "non-nether portal";
+        }
+        if (player.connection == null || player.connection.player != player) {
+            return "listener detached";
+        }
+        if (!PlayerTickKnownModEnvelope.idleForAsync(player, kind)) return "mod envelope busy";
+        if (player instanceof ParallelProcessor.TickGuard guard && guard.fabrolia$isPortalPending()) {
+            return "portal pending";
+        }
+        if (kind != IslandPlayerTurnSession.PlayerKind.CARPET
+                && (!player.connection.hasClientLoaded() || player.hasDisconnected())) {
+            return "client not loaded";
+        }
+        return "unknown";
+    }
+
+    /** Fallback-path diagnosis for the region admission of {@link #tryRunEarly}. */
+    private static String earlyAdmissionFallbackCause(
+            RegionizedServer rs, Region region, IslandRegistry.PIsland island,
+            IslandPlayerTurnSession.PlayerKind kind, ServerPlayer player,
+            ServerLevel level, long currentChunk) {
+        if (!enabledForAsync(rs)) return "async player ticks off";
+        if (island == null || island.retired || region.domain != island.domain) {
+            return "no live island";
+        }
+        if (kind == null) return "unsupported player class";
+        if (region.state() != RegionState.ACTIVE) return "region inactive";
+        if (!rs.regionMatches(region, player.chunkPosition())
+                || rs.islandOwnerOfChunk(currentChunk) != island) {
+            return "chunk owned elsewhere";
+        }
+        return ineligibleCause(player, level, kind);
+    }
+
     private static boolean eligible(ServerPlayer player, ServerLevel level,
                                     IslandPlayerTurnSession.PlayerKind kind) {
         PortalProcessor portalProcess = player.portalProcess;
@@ -3990,8 +4074,10 @@ public final class AsyncIslandPlayerTicks {
      * @return true when an ordered ISLAND->MAIN handoff owns this ordinal or an
      * authenticated disconnect cancels it before entry; neither may reach MAIN_SYNC.
      */
-    private static boolean markMainFallback(ServerPlayer player, boolean scheduleEntityTick) {
+    private static boolean markMainFallback(ServerPlayer player, boolean scheduleEntityTick,
+                                            String cause) {
         MAIN_FALLBACKS.increment();
+        MainFallbackStats.FALLBACKS.increment(cause);
         if (!(player instanceof AsyncIslandPlayerAccess) || !enabledForAsync()) return false;
         PlayerState state = state(player);
         ServerGamePacketListenerImpl listener = player.connection;
@@ -4069,6 +4155,7 @@ public final class AsyncIslandPlayerTicks {
                     newMainEntityOrdinalLocked(state, listener, player));
             if (netherOwnsQuarantinedSuffixLocked(state, player)) return true;
             if (scheduleMainHandoffLocked(state, player, false)) {
+                MainFallbackStats.HANDOFFS.increment(cause);
                 return true;
             }
             state.eligible = false;

@@ -9,6 +9,7 @@ import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionViz;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
 import com.axalotl.fabrolia.common.regions.FailStops;
+import com.axalotl.fabrolia.common.regions.MainFallbackStats;
 import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
@@ -799,6 +800,16 @@ public final class RegionCommand {
                             org.slf4j.LoggerFactory.getLogger("fabrolia").info(out);
                             return 1;
                         }));
+        dbg.then(literal("fallbacks").requires(PlatformPermission.require("command.regions.toggle", 4))
+                        .executes(ctx -> {
+                            ctx.getSource().sendSystemMessage(fallbackReport());
+                            return 1;
+                        })
+                        .then(literal("reset").executes(ctx -> {
+                            MainFallbackStats.resetAll();
+                            send(ctx, "main fallback counters: ", "reset", false);
+                            return 1;
+                        })));
         dbg.then(literal("cmdstats").requires(PlatformPermission.require("command.regions", 0))
                         .executes(ctx -> {
                             String out = com.axalotl.fabrolia.common.regions.IslandCommands.stats();
@@ -1084,6 +1095,32 @@ public final class RegionCommand {
         msg.append(Component.literal("\n separation: Chebyshev>=3 regions (>=16-chunk void)")
                 .withStyle(ChatFormatting.DARK_GRAY));
         src.sendSuccess(() -> msg, false);
+    }
+
+    private static final int FALLBACK_TOP = 10;
+
+    /** {@code regions debug fallbacks}: A5 Main handoffs, Main fallbacks and fences by cause. */
+    private static MutableComponent fallbackReport() {
+        InfoText out = InfoText.titled("Main fallbacks by cause");
+        fallbackSection(out, "Island-to-Main handoffs", MainFallbackStats.HANDOFFS);
+        fallbackSection(out, "Main entity-tick fallbacks", MainFallbackStats.FALLBACKS);
+        fallbackSection(out, "All-island fences", MainFallbackStats.FENCES);
+        out.note("Counted since start or the last reset; top " + FALLBACK_TOP + " per section.");
+        out.more("/fabrolia regions debug fallbacks reset");
+        return out.build();
+    }
+
+    private static void fallbackSection(InfoText out, String name,
+                                        MainFallbackStats.CauseCounter counter) {
+        out.section(name + " (" + InfoText.count(counter.total()) + ")");
+        List<MainFallbackStats.Entry> top = counter.top(FALLBACK_TOP, MainFallbackStats::describe);
+        if (top.isEmpty()) {
+            out.note("none");
+            return;
+        }
+        for (MainFallbackStats.Entry e : top) {
+            out.line(e.cause(), InfoText.text(InfoText.count(e.count()), ChatFormatting.WHITE));
+        }
     }
 
     private static void summary(CommandSourceStack src) {
