@@ -1,6 +1,6 @@
 package com.axalotl.fabrolia.common.parallelised.utils;
 
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Global "anything-moved-or-changed" counter used to short-circuit VMP's
@@ -23,11 +23,19 @@ import java.util.concurrent.atomic.AtomicLong;
  * to its {@code ServerLevel} which VMP doesn't expose.
  */
 public final class FabroliaTrackingDirtyFlag {
-    private static final AtomicLong COUNTER = new AtomicLong(1);
+    // Every worker bumps this on each entity move: a striped adder keeps the
+    // writers off one cache line. sum() includes every increment that completed
+    // before it started, so a move is never missed, at most seen one read later
+    // when it races the read (as with a single atomic).
+    private static final LongAdder COUNTER = new LongAdder();
+
+    static {
+        COUNTER.increment();
+    }
 
     private FabroliaTrackingDirtyFlag() {}
 
-    public static void markDirty() { COUNTER.incrementAndGet(); }
+    public static void markDirty() { COUNTER.increment(); }
 
-    public static long current() { return COUNTER.get(); }
+    public static long current() { return COUNTER.sum(); }
 }

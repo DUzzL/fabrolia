@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * R4 phase 0 — the certification instrument (the WorldThreader idea adapted
@@ -22,14 +23,14 @@ public final class RegionAccessDetector {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("Fabrolia-RegionAccess");
 
-    private static final AtomicLong IN_REGION = new AtomicLong();
-    private static final AtomicLong CROSS_REGION = new AtomicLong();
+    private static final LongAdder IN_REGION = new LongAdder();
+    private static final LongAdder CROSS_REGION = new LongAdder();
     /** Cross-region write while ANOTHER thread claimed the TARGET region —
      *  the actually-dangerous case. With the color gate on this MUST be 0.
      *  A claim held by the writer itself is not concurrent: the serial island
      *  entity pass claims every region of its island on its own worker. */
     private static final AtomicLong CROSS_UNSAFE = new AtomicLong();
-    private static final AtomicLong OFF_WORKER = new AtomicLong();
+    private static final LongAdder OFF_WORKER = new LongAdder();
     /** A7 islands mode: writes that left the writer's TIMELINE — landed in a
      *  region whose domain differs from the execution context's. With async
      *  islands on, every such hit violates the separation invariant, whether
@@ -51,7 +52,7 @@ public final class RegionAccessDetector {
         }
         Thread t = Thread.currentThread();
         if (!(t instanceof RegionWorkerThread w)) {
-            OFF_WORKER.incrementAndGet();   // main / pool / IO — out of scope
+            OFF_WORKER.increment();   // main / pool / IO — out of scope
             return;
         }
         Region r = w.currentRegion;
@@ -62,12 +63,12 @@ public final class RegionAccessDetector {
             // island task pass silently. Classify by domain.
             EpochDomain mine = w.currentDomain;
             if (mine == null || mine.owner == null) {
-                OFF_WORKER.incrementAndGet();
+                OFF_WORKER.increment();
                 return;
             }
             RegionizedServer rsd = RegionScheduler.forLevel(mine.owner.domainLevel());
             if (rsd == null) {
-                OFF_WORKER.incrementAndGet();
+                OFF_WORKER.increment();
                 return;
             }
             long wk = rsd.regionizer().grid.keyFor(pos.getX() >> 4, pos.getZ() >> 4);
@@ -76,21 +77,21 @@ public final class RegionAccessDetector {
             if (theirs != null && theirs != mine) {
                 recordCrossDomain(pos, w, null, target, mine, theirs);
             } else {
-                IN_REGION.incrementAndGet();
+                IN_REGION.increment();
             }
             return;
         }
         RegionizedServer rs = RegionScheduler.forLevel(r.level);
         if (rs == null) {
-            OFF_WORKER.incrementAndGet();
+            OFF_WORKER.increment();
             return;
         }
         long writeKey = rs.regionizer().grid.keyFor(pos.getX() >> 4, pos.getZ() >> 4);
         if (writeKey == r.gridKey) {
-            IN_REGION.incrementAndGet();
+            IN_REGION.increment();
             return;
         }
-        CROSS_REGION.incrementAndGet();
+        CROSS_REGION.increment();
         Region target = rs.regionizer().peekByGridKey(writeKey);
         Thread holder = target != null ? target.currentWorker() : null;
         boolean unsafeCross = holder != null && holder != t;
@@ -237,10 +238,10 @@ public final class RegionAccessDetector {
     }
 
     public static String status() {
-        return "regionAccess in=" + IN_REGION.get()
-                + " cross=" + CROSS_REGION.get()
+        return "regionAccess in=" + IN_REGION.sum()
+                + " cross=" + CROSS_REGION.sum()
                 + " crossUNSAFE=" + CROSS_UNSAFE.get()
                 + " crossDOMAIN=" + CROSS_DOMAIN.get()
-                + " offWorker=" + OFF_WORKER.get();
+                + " offWorker=" + OFF_WORKER.sum();
     }
 }
