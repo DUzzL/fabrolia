@@ -75,7 +75,7 @@ public final class CarpetPlayerMutationRouter {
                 mutation.run();
             } catch (Throwable thrown) {
                 Throwable winner = RegionScheduler.publishFatalAndSelectWinner(thrown);
-                CarpetPlayerMutationRouter.<RuntimeException>rethrow(winner);
+                FailStops.<RuntimeException>rethrow(winner);
             }
         }
     }
@@ -92,10 +92,5 @@ public final class CarpetPlayerMutationRouter {
                 "Routed Carpet /player mutation '" + routed.operation + "' for "
                         + routed.player.getGameProfile().name() + " failed: " + reason,
                 cause);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

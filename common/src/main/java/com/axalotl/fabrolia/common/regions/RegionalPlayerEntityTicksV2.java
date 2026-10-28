@@ -88,7 +88,7 @@ public final class RegionalPlayerEntityTicksV2 {
                 failure = quiesced.get(i).releaseAllIslands(failure);
             } catch (Throwable cleanup) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailureCapped(failure, cleanup));
             }
         }
         if (failure == null) {
@@ -241,20 +241,6 @@ public final class RegionalPlayerEntityTicksV2 {
         return null;
     }
 
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (secondary == null) return primary;
-        if (primary == null) return secondary;
-        if (primary != secondary) {
-            try {
-                if (primary.getSuppressed().length < 8) primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Suppression is diagnostic only. A secondary allocation failure must
-                // never prevent the remaining leases/TLs/claims from being released.
-            }
-        }
-        return primary;
-    }
-
     /**
      * Kind of a player lifecycle mutation (teleport, respawn, removal, death).
      * Only autonomous island turns need a lifecycle scope: synchronous region
@@ -289,7 +275,7 @@ public final class RegionalPlayerEntityTicksV2 {
                 failure = asyncScope.finish(failure);
             } catch (Throwable cleanup) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailureCapped(failure, cleanup));
             }
             rethrow(RegionScheduler.publishFatalAndSelectWinner(failure));
             return LifecycleLeaseScope.NOOP;
@@ -318,19 +304,14 @@ public final class RegionalPlayerEntityTicksV2 {
             try {
                 return asyncScope.finish(failure);
             } catch (Throwable cleanup) {
-                Throwable candidate = mergeFailure(failure, cleanup);
+                Throwable candidate = FailStops.mergeFailureCapped(failure, cleanup);
                 return RegionScheduler.publishFatalAndSelectWinner(candidate);
             }
         }
     }
 
     private static void rethrow(Throwable failure) {
-        if (failure != null) RegionalPlayerEntityTicksV2.<RuntimeException>sneakyThrow(failure);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void sneakyThrow(Throwable failure) throws T {
-        throw (T) failure;
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Allocation-free marker of an open tickChildren phase. */

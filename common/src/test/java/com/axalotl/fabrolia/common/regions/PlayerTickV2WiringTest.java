@@ -83,11 +83,8 @@ class PlayerTickV2WiringTest {
 
     @Test
     void exceptionalFailureMergePreservesPrimaryWhenLaterCleanupIsClean() throws Exception {
-        var merge = RegionalPlayerEntityTicksV2.class.getDeclaredMethod(
-                "mergeFailure", Throwable.class, Throwable.class);
-        merge.setAccessible(true);
         RuntimeException primary = new RuntimeException("exact world failure");
-        assertSame(primary, merge.invoke(null, primary, null));
+        assertSame(primary, FailStops.mergeFailureCapped(primary, null));
         assertEquals(0, primary.getSuppressed().length);
     }
 
@@ -175,7 +172,9 @@ class PlayerTickV2WiringTest {
     @Test
     void failureMergeAndQueueOnlyEpochAreWired() throws Exception {
         ClassNode coordinator = readClass(RegionalPlayerEntityTicksV2.class);
-        MethodNode mergeFailure = method(coordinator, "mergeFailure",
+        assertTrue(calls(coordinator, internal(FailStops.class), "mergeFailureCapped"),
+                "actor cleanup must merge through the capped diagnostic suppression");
+        MethodNode mergeFailure = method(readClass(FailStops.class), "mergeFailureCapped",
                 "(Ljava/lang/Throwable;Ljava/lang/Throwable;)Ljava/lang/Throwable;");
         int readSuppressed = callIndex(mergeFailure, "java/lang/Throwable", "getSuppressed");
         int addSuppressed = callIndex(mergeFailure, "java/lang/Throwable", "addSuppressed");
@@ -372,7 +371,7 @@ class PlayerTickV2WiringTest {
         int cleanupCommit = callIndex(functionGate, internal(RegionScheduler.class),
                 "commitSuccessIfHealthy");
         int exactRethrow = callIndex(functionGate,
-                internal(ServerFunctionManagerMixin.class), "fabrolia$rethrow");
+                internal(FailStops.class), "rethrow");
         assertEquals(1, callCount(functionGate, internal(RegionScheduler.class),
                 "commitSuccessIfHealthy"));
         assertTrue(markerReset >= 0 && cleanupCommit > markerReset

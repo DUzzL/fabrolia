@@ -99,7 +99,7 @@ public final class NetherSourceCohorts<T> {
                 failure = thrown;
             }
         }
-        if (failure != null) NetherSourceCohorts.<RuntimeException>rethrow(prepared.cancel(failure));
+        if (failure != null) FailStops.<RuntimeException>rethrow(prepared.cancel(failure));
         return prepared;
     }
 
@@ -245,10 +245,5 @@ public final class NetherSourceCohorts<T> {
             }
             ATTEMPT.setRelease(owner, 0);
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <E extends Throwable> void rethrow(Throwable failure) throws E {
-        throw (E) failure;
     }
 }

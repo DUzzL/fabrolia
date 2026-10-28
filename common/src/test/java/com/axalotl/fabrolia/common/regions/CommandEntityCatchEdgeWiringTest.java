@@ -30,8 +30,7 @@ final class CommandEntityCatchEdgeWiringTest {
                         + "vanilla body against peer W before marker cleanup");
         assertBodyCatchBeforeCleanup(source, "fabrolia$fenceFunction(",
                 "original.call(function, source)", "if (failure != null)");
-        String function = section(source, "fabrolia$fenceFunction(",
-                "@org.spongepowered.asm.mixin.Unique");
+        String function = section(source, "fabrolia$fenceFunction(", "\n    }\n");
         assertTrue(function.contains("RegionScheduler.runSuccessBodyIfHealthy(")
                         && function.contains("RegionScheduler.commitSuccessIfHealthy("),
                 "function body and metrics need separate healthy cuts");
@@ -41,8 +40,7 @@ final class CommandEntityCatchEdgeWiringTest {
     @Test
     void spawnPackFailurePublishesBeforeReturningItsReservation() throws Exception {
         String source = source("common/mixin/entity/spawn/NaturalSpawnerMixin.java");
-        String body = section(source, "fabrolia$releasePackAfterSpawn(",
-                "private static Throwable fabrolia$mergeFailure");
+        String body = section(source, "fabrolia$releasePackAfterSpawn(", "\n    }\n");
         int noToken = body.indexOf("if (token == 0)");
         int noTokenAdmission = body.indexOf(
                 "RegionScheduler.runSuccessBodyIfHealthy(", noToken);
@@ -64,7 +62,7 @@ final class CommandEntityCatchEdgeWiringTest {
                 "failure = RegionScheduler.publishFatalAndSelectWinner(", cleanupCatch);
         int terminal = body.indexOf(
                 "RegionScheduler.commitSuccessIfHealthy(() -> {})", cleanupCatch);
-        int rethrow = body.indexOf("fabrolia$rethrow(failure)", terminal);
+        int rethrow = body.indexOf("FailStops.<RuntimeException>rethrow(failure)", terminal);
         assertTrue(noToken >= 0 && noTokenAdmission > noToken
                         && noTokenBody > noTokenAdmission && tokenClear > noTokenBody
                         && admission > tokenClear && pack > admission && bodyCatch > pack
@@ -81,8 +79,7 @@ final class CommandEntityCatchEdgeWiringTest {
     @Test
     void sleepWakeBodyIsAtomicAndFenceCleanupCannotHideW() throws Exception {
         String source = source("common/mixin/world/SleepWakeMixin.java");
-        String body = section(source, "fabrolia$ownerSafeWake(",
-                "@SuppressWarnings(\"unchecked\")");
+        String body = section(source, "fabrolia$ownerSafeWake(", "\n    }\n");
         int quiesce = body.indexOf("rs.quiesceAllIslands()");
         int admission = body.indexOf(
                 "RegionScheduler.runSuccessBodyIfHealthy(original::call)", quiesce);

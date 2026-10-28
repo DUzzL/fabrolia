@@ -136,7 +136,7 @@ public final class NetherPortalPlayerAccess {
                 if (reservation.publicationClosed) continue;
                 RegionScheduler.throwWorkerFailureIfAny();
                 if (reservation.failure != null)
-                    return NetherPortalPlayerAccess.<Boolean, RuntimeException>rethrow(reservation.failure);
+                    return FailStops.<Boolean, RuntimeException>rethrowValue(reservation.failure);
                 if (reservation.canceled)
                     throw new IllegalStateException("Canceled Nether arrival cannot accept publication");
                 Objects.requireNonNull(publication);
@@ -273,7 +273,7 @@ public final class NetherPortalPlayerAccess {
             failure = RegionScheduler.publishFatalAndSelectWinner(problem);
         }
         if (tookFence) failure = IslandCommands.releaseAllExcept(failure);
-        if (failure != null) NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<Void, RuntimeException>rethrowValue(failure);
     }
 
     private static void changeCameraBody(ServerPlayer player, Entity target, Runnable body) {
@@ -309,7 +309,7 @@ public final class NetherPortalPlayerAccess {
         } catch (Throwable problem) {
             failure = RegionScheduler.publishFatalAndSelectWinner(problem);
         }
-        if (failure != null) NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(
+        if (failure != null) FailStops.<Void, RuntimeException>rethrowValue(
                 RegionScheduler.publishFatalAndSelectWinner(failure));
     }
 
@@ -446,7 +446,7 @@ public final class NetherPortalPlayerAccess {
                 }
             }
         }
-        if (failure != null) return NetherPortalPlayerAccess.<T, RuntimeException>rethrow(failure);
+        if (failure != null) return FailStops.<T, RuntimeException>rethrowValue(failure);
         return result;
     }
 
@@ -496,7 +496,7 @@ public final class NetherPortalPlayerAccess {
             // No arrival can exist before worker entry; cancellation still runs outside the monitor.
             Throwable winner = RegionScheduler.publishFatalAndSelectWinner(failure);
             reservation.cancel(winner);
-            return NetherPortalPlayerAccess.<Reservation, RuntimeException>rethrow(winner);
+            return FailStops.<Reservation, RuntimeException>rethrowValue(winner);
         }
     }
 
@@ -754,7 +754,7 @@ public final class NetherPortalPlayerAccess {
             }
             // Entry has not published an arrival; keep cleanup outside the monitor regardless.
             cancel(winner);
-            return NetherPortalPlayerAccess.<Scope, RuntimeException>rethrow(winner);
+            return FailStops.<Scope, RuntimeException>rethrowValue(winner);
         }
 
         private void requireWorker() {
@@ -767,7 +767,7 @@ public final class NetherPortalPlayerAccess {
         /** Append a later arrival callback without granting any source or island authority. */
         public synchronized boolean deferMetadata(Runnable operation) {
             RegionScheduler.throwWorkerFailureIfAny();
-            if (failure != null) return NetherPortalPlayerAccess.<Boolean, RuntimeException>rethrow(failure);
+            if (failure != null) return FailStops.<Boolean, RuntimeException>rethrowValue(failure);
             if (canceled) throw new IllegalStateException("Canceled Nether metadata cannot accept a success body");
             if (metadataClosed || terminal) return false;
             if (CURRENT.get() == this) requireWorker();
@@ -824,7 +824,7 @@ public final class NetherPortalPlayerAccess {
                 }
             }
             cancel(winner);
-            NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(winner);
+            FailStops.<Void, RuntimeException>rethrowValue(winner);
         }
 
         private boolean runMetadata() {
@@ -874,7 +874,7 @@ public final class NetherPortalPlayerAccess {
                 cancellationFailure = failure;
             }
             if (cancelNow) cancel(cancellationFailure);
-            if (thrown != null) NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(thrown);
+            if (thrown != null) FailStops.<Void, RuntimeException>rethrowValue(thrown);
             return metadataCompleted || terminal;
         }
 
@@ -895,7 +895,7 @@ public final class NetherPortalPlayerAccess {
                 }
             });
             Throwable problem = settleArrivalPublications(true, null);
-            if (problem != null) NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(problem);
+            if (problem != null) FailStops.<Void, RuntimeException>rethrowValue(problem);
         }
 
         private Throwable settleArrivalPublications(boolean publish, Throwable problem) {
@@ -945,7 +945,7 @@ public final class NetherPortalPlayerAccess {
             synchronized (this) {
                 if (terminal && problem == null && failure == null) return;
                 if (!terminal && problem == null && entered) {
-                    NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(
+                    FailStops.<Void, RuntimeException>rethrowValue(
                             RegionScheduler.publishFatalAndSelectWinner(new IllegalStateException(
                                     "An entered Nether player must settle metadata before healthy cancellation")));
                 }
@@ -988,11 +988,11 @@ public final class NetherPortalPlayerAccess {
                 } catch (Throwable rejected) {
                     Throwable winner = RegionScheduler.publishFatalAndSelectWinner(rejected);
                     cancel(winner);
-                    NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(winner);
+                    FailStops.<Void, RuntimeException>rethrowValue(winner);
                 }
             }
             if (cleanupFailure != null || publicationFailure != null && publicationFailure != failure)
-                NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(publicationFailure);
+                FailStops.<Void, RuntimeException>rethrowValue(publicationFailure);
         }
 
 
@@ -1023,7 +1023,7 @@ public final class NetherPortalPlayerAccess {
                     terminal = true;
                 }
             }
-            if (problem != null) NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(problem);
+            if (problem != null) FailStops.<Void, RuntimeException>rethrowValue(problem);
         }
 
         private void deliverDisconnects() {
@@ -1089,7 +1089,7 @@ public final class NetherPortalPlayerAccess {
                     cleanupFailure = RegionScheduler.publishFatalAndSelectWinner(problem);
                 }
             }
-            if (cleanupFailure != null) NetherPortalPlayerAccess.<Void, RuntimeException>rethrow(cleanupFailure);
+            if (cleanupFailure != null) FailStops.<Void, RuntimeException>rethrowValue(cleanupFailure);
         }
     }
 
@@ -1114,10 +1114,5 @@ public final class NetherPortalPlayerAccess {
             }
             if (cancelNow) current.cancel(failure);
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <R, T extends Throwable> R rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

@@ -170,7 +170,7 @@ public final class NetherPortalTransfers {
         } catch (Throwable thrown) {
             Throwable winner = RegionScheduler.publishFatalAndSelectWinner(thrown);
             transfer.cancel(winner);
-            NetherPortalTransfers.<RuntimeException>rethrow(winner);
+            FailStops.<RuntimeException>rethrow(winner);
         } finally {
             transfer.finishCapture();
         }
@@ -214,7 +214,7 @@ public final class NetherPortalTransfers {
             RegionScheduler.commitSuccessIfHealthy(seal::commit);
         } catch (Throwable thrown) {
             Throwable failure = seal.cancel(RegionScheduler.publishFatalAndSelectWinner(thrown));
-            NetherPortalTransfers.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -331,7 +331,7 @@ public final class NetherPortalTransfers {
                     cohort.close();
                 }
             } catch (Throwable failure) {
-                NetherPortalTransfers.<RuntimeException>rethrow(RegionScheduler.publishFatalAndSelectWinner(failure));
+                FailStops.<RuntimeException>rethrow(RegionScheduler.publishFatalAndSelectWinner(failure));
             } finally {
                 NetherPortalPreparation.serviceClaimFree();
             }
@@ -498,9 +498,9 @@ public final class NetherPortalTransfers {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
             for (Transfer transfer : live) {
                 try { transfer.cancel(failure); }
-                catch (Throwable cleanup) { failure = merge(failure, cleanup); }
+                catch (Throwable cleanup) { failure = FailStops.mergeFailure(failure, cleanup); }
             }
-            NetherPortalTransfers.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
             return false;
         } finally {
             ACTIVE.set(null);
@@ -509,7 +509,7 @@ public final class NetherPortalTransfers {
                     if (!transfer.bodyEntered && !transfer.resumePoses.isEmpty()) {
                         ACTIVE.set(new Scope(transfer, claims));
                         try { transfer.restoreResumePose(); }
-                        catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(merge(failure, cleanup)); }
+                        catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailure(failure, cleanup)); }
                         finally { ACTIVE.set(null); }
                     }
                 }
@@ -517,20 +517,20 @@ public final class NetherPortalTransfers {
             for (Transfer transfer : playerClaims) {
                 if (!transfer.bodyEntered) {
                     try { transfer.players.releaseExecution(); }
-                    catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(merge(failure, cleanup)); }
+                    catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailure(failure, cleanup)); }
                 }
             }
             if (claims != null) {
                 try { claims.close(); }
-                catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(merge(failure, cleanup)); }
+                catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailure(failure, cleanup)); }
             }
             for (Transfer transfer : live) {
                 try {
                     if (transfer.denied) transfer.cancel(null);
                     transfer.endAttempt();
-                } catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(merge(failure, cleanup)); }
+                } catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailure(failure, cleanup)); }
             }
-            if (failure != null) NetherPortalTransfers.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -869,10 +869,10 @@ public final class NetherPortalTransfers {
             // still prevents a competing player body. Cancellation may dispatch
             // a real disconnect synchronously on Main.
             try { release(); }
-            catch (Throwable cleanup) { primary = RegionScheduler.publishFatalAndSelectWinner(merge(primary, cleanup)); }
+            catch (Throwable cleanup) { primary = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailure(primary, cleanup)); }
             try { if (players != null) players.cancel(primary); }
-            catch (Throwable cleanup) { primary = RegionScheduler.publishFatalAndSelectWinner(merge(primary, cleanup)); }
-            if (primary != null && primary != cancellationFailure) NetherPortalTransfers.<RuntimeException>rethrow(primary);
+            catch (Throwable cleanup) { primary = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailure(primary, cleanup)); }
+            if (primary != null && primary != cancellationFailure) FailStops.<RuntimeException>rethrow(primary);
         }
 
         void release() {
@@ -884,17 +884,17 @@ public final class NetherPortalTransfers {
             for (Entity entity : entities) {
                 try {
                     releaseSource(entity);
-                } catch (Throwable cleanup) { failure = merge(failure, cleanup); }
+                } catch (Throwable cleanup) { failure = FailStops.mergeFailure(failure, cleanup); }
             }
             for (Entity entity : custodyEntities) {
                 try {
                     releaseSource(entity);
-                } catch (Throwable cleanup) { failure = merge(failure, cleanup); }
+                } catch (Throwable cleanup) { failure = FailStops.mergeFailure(failure, cleanup); }
             }
             if (entities.isEmpty()) SOURCES.remove(root.getUUID(), this);
             try { if (preparation != null) preparation.close(); }
-            catch (Throwable cleanup) { failure = merge(failure, cleanup); }
-            if (failure != null) NetherPortalTransfers.<RuntimeException>rethrow(
+            catch (Throwable cleanup) { failure = FailStops.mergeFailure(failure, cleanup); }
+            if (failure != null) FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
         }
 
@@ -1005,8 +1005,8 @@ public final class NetherPortalTransfers {
                 return claims;
             } catch (Throwable thrown) {
                 Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
-                try { claims.close(); } catch (Throwable cleanup) { failure = merge(failure, cleanup); }
-                NetherPortalTransfers.<RuntimeException>rethrow(failure);
+                try { claims.close(); } catch (Throwable cleanup) { failure = FailStops.mergeFailure(failure, cleanup); }
+                FailStops.<RuntimeException>rethrow(failure);
                 return null;
             }
             finally {
@@ -1074,13 +1074,13 @@ public final class NetherPortalTransfers {
             for (int i = acquired.size() - 1; i >= 0; i--) {
                 IslandRegistry.PIsland owner = acquired.get(i);
                 try { owner.clearClaim(); }
-                catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(merge(failure, cleanup)); }
+                catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailure(failure, cleanup)); }
                 try { owner.unitClaim.set(false); }
-                catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(merge(failure, cleanup)); }
+                catch (Throwable cleanup) { failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailure(failure, cleanup)); }
             }
             owners.clear();
             acquired.clear();
-            if (failure != null) NetherPortalTransfers.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -1344,7 +1344,7 @@ public final class NetherPortalTransfers {
         failure = RegionScheduler.publishFatalAndSelectWinner(failure);
         for (Transfer transfer : Set.copyOf(SOURCES.values())) {
             try { transfer.cancel(failure); }
-            catch (Throwable cleanup) { failure = merge(failure, cleanup); }
+            catch (Throwable cleanup) { failure = FailStops.mergeFailure(failure, cleanup); }
         }
         DOMAINS.clear();
         for (Source source : QUEUED_SOURCES) forgetQueued(source);
@@ -1369,10 +1369,4 @@ public final class NetherPortalTransfers {
             else if (chunk.level == level && !SOURCES.containsKey(entry.getKey())) sink.accept(chunk.chunkKey);
         }
     }
-    private static Throwable merge(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (primary != secondary) try { primary.addSuppressed(secondary); } catch (Throwable ignored) {}
-        return primary;
-    }
-    @SuppressWarnings("unchecked") private static <E extends Throwable> void rethrow(Throwable failure) throws E { throw (E) failure; }
 }

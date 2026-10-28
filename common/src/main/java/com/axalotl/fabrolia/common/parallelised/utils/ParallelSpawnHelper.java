@@ -4,6 +4,7 @@ import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.utils.LocalCapBridge;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.axalotl.fabrolia.api.spawn.FabroliaLocalCapView;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
@@ -51,7 +52,7 @@ public final class ParallelSpawnHelper {
         } catch (Throwable cleanup) {
             failure = failure == null ? cleanup : fabrolia$mergeFailure(failure, cleanup);
         }
-        if (failure != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Mandatory cleanup preserves the exact already-selected winner, never retries free. */
@@ -231,7 +232,7 @@ public final class ParallelSpawnHelper {
             if (h != 0L && !published) {
                 winner = fabrolia$freeUnpublishedArena(p, arena, h, winner);
             }
-            ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(winner);
+            FailStops.<RuntimeException>rethrow(winner);
         }
         // SHADOW-SEED the Java maps on the producer owner: this cookie can
         // outlive its arena — the handle is detached at the NEXT tick's build
@@ -477,7 +478,7 @@ public final class ParallelSpawnHelper {
                     }
                 }
             }
-            ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -583,11 +584,6 @@ public final class ParallelSpawnHelper {
         return primary;
     }
 
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
     /** First-wins failure gate of one census fan-out (SpawnCensus.reduce). */
     static final class SpawnFanoutGate {
         private Throwable failure;
@@ -598,26 +594,26 @@ public final class ParallelSpawnHelper {
                 RegionScheduler.runSuccessBodyIfHealthy(() -> {
                     synchronized (this) {
                         if (failure != null) {
-                            ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(failure);
+                            FailStops.<RuntimeException>rethrow(failure);
                         }
                     }
                     body.run();
                 });
             } catch (Throwable thrown) {
-                ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(publishFailure(thrown));
+                FailStops.<RuntimeException>rethrow(publishFailure(thrown));
             }
         }
 
         void admitNext() {
             Throwable observed = failureOrNull();
-            if (observed != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(observed);
+            if (observed != null) FailStops.<RuntimeException>rethrow(observed);
             try {
                 RegionScheduler.throwWorkerFailureIfAny();
             } catch (Throwable fatal) {
-                ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(publishFailure(fatal));
+                FailStops.<RuntimeException>rethrow(publishFailure(fatal));
             }
             observed = failureOrNull();
-            if (observed != null) ParallelSpawnHelper.<RuntimeException>fabrolia$rethrow(observed);
+            if (observed != null) FailStops.<RuntimeException>rethrow(observed);
         }
 
         synchronized Throwable failureOrNull() {

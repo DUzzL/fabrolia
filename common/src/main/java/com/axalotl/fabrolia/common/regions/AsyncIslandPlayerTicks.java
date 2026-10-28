@@ -368,7 +368,7 @@ public final class AsyncIslandPlayerTicks {
                 failure = publishFatalFailure(peerFailure);
             }
         }
-        if (failure != null) throwUnchecked(publishFatalFailure(failure));
+        if (failure != null) FailStops.rethrow(publishFatalFailure(failure));
     }
 
     /** Linearizes a physical-Main listener/command body against island attach. */
@@ -385,14 +385,14 @@ public final class AsyncIslandPlayerTicks {
 
         public Throwable finish(Throwable primary) {
             if (finished) {
-                return merge(primary, new IllegalStateException(
+                return FailStops.mergeFailure(primary, new IllegalStateException(
                         "A5 Main execution lease finished twice"));
             }
             finished = true;
             if (!runOriginal || state == null) return primary;
             synchronized (state) {
                 if (state.mainExecutionLeases <= 0) {
-                    return publishFatalFailure(merge(primary, new IllegalStateException(
+                    return publishFatalFailure(FailStops.mergeFailure(primary, new IllegalStateException(
                             "A5 Main execution lease accounting underflow")));
                 }
                 state.mainExecutionLeases--;
@@ -418,7 +418,7 @@ public final class AsyncIslandPlayerTicks {
             try {
                 failure = finish(failure);
             } catch (Throwable cleanup) {
-                failure = merge(failure, cleanup);
+                failure = FailStops.mergeFailure(failure, cleanup);
             }
             if (failure == null) {
                 try {
@@ -429,7 +429,7 @@ public final class AsyncIslandPlayerTicks {
                 }
             }
             if (failure != null) {
-                throwUnchecked(state == null ? failure : publishFatalFailure(failure));
+                FailStops.rethrow(state == null ? failure : publishFatalFailure(failure));
             }
         }
 
@@ -461,7 +461,7 @@ public final class AsyncIslandPlayerTicks {
             try {
                 close();
             } catch (Throwable cleanup) {
-                failure = merge(failure, cleanup);
+                failure = FailStops.mergeFailure(failure, cleanup);
             }
             if (failure == null) {
                 try {
@@ -472,7 +472,7 @@ public final class AsyncIslandPlayerTicks {
                 }
             }
             if (failure != null) {
-                throwUnchecked(state == null ? failure : publishFatalFailure(failure));
+                FailStops.rethrow(state == null ? failure : publishFatalFailure(failure));
             }
         }
 
@@ -496,7 +496,7 @@ public final class AsyncIslandPlayerTicks {
                 failure = IslandCommands.releaseAllExcept(failure);
             }
             if (failure != null) {
-                throwUnchecked(state == null ? failure : publishFatalFailure(failure));
+                FailStops.rethrow(state == null ? failure : publishFatalFailure(failure));
             }
         }
     }
@@ -680,12 +680,12 @@ public final class AsyncIslandPlayerTicks {
                 try {
                     IslandCommands.mainRelease(owner);
                 } catch (Throwable cleanup) {
-                    failure = publishFatalFailure(merge(failure, cleanup));
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                 }
             }
             failure = lease.finish(failure);
         }
-        if (failure != null) throwUnchecked(publishFatalFailure(failure));
+        if (failure != null) FailStops.rethrow(publishFatalFailure(failure));
         RegionScheduler.commitSuccessIfHealthy(() -> {});
         return ran;
     }
@@ -1070,7 +1070,7 @@ public final class AsyncIslandPlayerTicks {
                 // generation winner before releasing the exact PlayerState ownership
                 // edge; a later tracker/player publication must not observe a partially
                 // advanced tracker state.
-                throwUnchecked(publishFatalFailure(failure));
+                FailStops.rethrow(publishFatalFailure(failure));
             }
             return true;
         }
@@ -1297,7 +1297,7 @@ public final class AsyncIslandPlayerTicks {
                 TURN.remove();
             }
         } catch (Throwable cleanup) {
-            failure = publishFatalFailure(merge(failure, cleanup));
+            failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
         }
 
         if (failure == null
@@ -1364,17 +1364,17 @@ public final class AsyncIslandPlayerTicks {
                     }
                 }
             } catch (Throwable cleanup) {
-                failure = publishFatalFailure(merge(failure, cleanup));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
             }
             try {
                 state.eligible = false;
                 FAILURES.increment();
             } catch (Throwable cleanup) {
-                failure = publishFatalFailure(merge(failure, cleanup));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
             }
             // The exact selected W escapes this invocation. No recovery handoff or
             // later player body may be published from the failure branch.
-            throwUnchecked(publishFatalFailure(failure));
+            FailStops.rethrow(publishFatalFailure(failure));
         }
         return true;
     }
@@ -1503,14 +1503,14 @@ public final class AsyncIslandPlayerTicks {
                 try {
                     NetherPortalTransfers.abortTickLocalTransfers();
                 } catch (Throwable cleanup) {
-                    failure = publishFatalFailure(merge(failure, cleanup));
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                 }
             }
             try {
                 if (TURN.get() == context) TURN.remove();
                 else if (TURN.get() != null) TURN.remove();
             } catch (Throwable cleanup) {
-                failure = publishFatalFailure(merge(failure, cleanup));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
             }
             if (failure == null) {
                 try {
@@ -1525,12 +1525,12 @@ public final class AsyncIslandPlayerTicks {
                     failure = cleanupKnownListenerFailureState(pending.player, failure);
                     failure = publishFatalFailure(failure);
                 } catch (Throwable cleanup) {
-                    failure = publishFatalFailure(merge(failure, cleanup));
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                 }
                 try {
                     pending.state.session.containIslandFailure(pending.permit);
                 } catch (Throwable cleanup) {
-                    failure = publishFatalFailure(merge(failure, cleanup));
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                 }
                 try {
                     synchronized (pending.state) {
@@ -1539,12 +1539,12 @@ public final class AsyncIslandPlayerTicks {
                     }
                     FAILURES.increment();
                 } catch (Throwable cleanup) {
-                    failure = publishFatalFailure(merge(failure, cleanup));
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                 }
                 // Stop at the first failed late body. The enclosing island unit
                 // performs only mandatory cleanup; this invocation already selected
                 // and now rethrows the exact global W before another late stage.
-                throwUnchecked(publishFatalFailure(failure));
+                FailStops.rethrow(publishFatalFailure(failure));
             }
             return true;
     }
@@ -1561,7 +1561,7 @@ public final class AsyncIslandPlayerTicks {
         try {
             pending.state.eligible = false;
         } catch (Throwable cleanup) {
-            failure = publishFatalFailure(merge(failure, cleanup));
+            failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
         }
         try {
             IslandPlayerTurnSession.AfterBodyResult contained =
@@ -1571,7 +1571,7 @@ public final class AsyncIslandPlayerTicks {
                 throw new IllegalStateException(containmentMessage);
             }
         } catch (Throwable cleanup) {
-            failure = publishFatalFailure(merge(failure, cleanup));
+            failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
         }
         return AsyncIslandPlayerTicks.<RuntimeException>rethrowAs(
                 publishFatalFailure(failure));
@@ -2311,9 +2311,9 @@ public final class AsyncIslandPlayerTicks {
                     state.mainDisconnectPending = false;
                 }
             } catch (Throwable cleanup) {
-                failure = publishFatalFailure(merge(failure, cleanup));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
             }
-            throwUnchecked(publishFatalFailure(failure));
+            FailStops.rethrow(publishFatalFailure(failure));
             return true;
         }
     }
@@ -2409,7 +2409,7 @@ public final class AsyncIslandPlayerTicks {
                 scope.releaseGlobalFence = false;
                 failure = IslandCommands.releaseAllExcept(failure);
             }
-            throwUnchecked(publishFatalFailure(failure));
+            FailStops.rethrow(publishFatalFailure(failure));
             return scope;
         }
     }
@@ -2463,7 +2463,7 @@ public final class AsyncIslandPlayerTicks {
                     }
                 }
             } catch (Throwable failure) {
-                throwUnchecked(publishFatalFailure(failure));
+                FailStops.rethrow(publishFatalFailure(failure));
             }
         }
     }
@@ -2701,9 +2701,9 @@ public final class AsyncIslandPlayerTicks {
         try {
             failure = containMainHandoffFailure(state, handoff, failure);
         } catch (Throwable cleanup) {
-            failure = publishFatalFailure(merge(failure, cleanup));
+            failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
         }
-        if (failure != null) throwUnchecked(publishFatalFailure(failure));
+        if (failure != null) FailStops.rethrow(publishFatalFailure(failure));
         return reservation.ready();
     }
 
@@ -2825,7 +2825,7 @@ public final class AsyncIslandPlayerTicks {
             try {
                 disconnect.run();
             } catch (Throwable teardownFailure) {
-                failure = publishFatalFailure(merge(failure, teardownFailure));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, teardownFailure));
             }
         }
         try {
@@ -2846,12 +2846,12 @@ public final class AsyncIslandPlayerTicks {
                 }
             }
         } catch (Throwable cleanup) {
-            failure = publishFatalFailure(merge(failure, cleanup));
+            failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
         }
         if (tookFence) {
             failure = IslandCommands.releaseAllExcept(failure);
         }
-        if (failure != null) throwUnchecked(publishFatalFailure(failure));
+        if (failure != null) FailStops.rethrow(publishFatalFailure(failure));
     }
 
     /**
@@ -3200,7 +3200,7 @@ public final class AsyncIslandPlayerTicks {
                 throw new IllegalStateException("A5 lifecycle body depth underflow");
             }
             if (primary != null) {
-                state.lifecycleMutationFailure = merge(
+                state.lifecycleMutationFailure = FailStops.mergeFailure(
                         state.lifecycleMutationFailure, primary);
             }
             token.armed = false;
@@ -3452,7 +3452,7 @@ public final class AsyncIslandPlayerTicks {
             try {
                 PACKET_REPLAY.remove();
             } catch (Throwable cleanup) {
-                failure = publishFatalFailure(merge(failure, cleanup));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                 if (restoreFrom < 0) restoreFrom = index + 1;
             }
             if (restoreFrom >= 0) {
@@ -3460,10 +3460,10 @@ public final class AsyncIslandPlayerTicks {
                     restoreIslandReplaySuffix(
                             context, packets, restoreFrom, false);
                 } catch (Throwable cleanup) {
-                    failure = publishFatalFailure(merge(failure, cleanup));
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                 }
             }
-            if (failure != null) throwUnchecked(publishFatalFailure(failure));
+            if (failure != null) FailStops.rethrow(publishFatalFailure(failure));
             if (context.state.mainDisconnectPending) {
                 restoreIslandReplaySuffix(context, packets, index + 1, false);
                 return ReplayDisposition.DISCONNECT;
@@ -3500,7 +3500,7 @@ public final class AsyncIslandPlayerTicks {
                 restoreIslandReplaySuffix(
                         context, packets, restoreFrom, false);
             } catch (Throwable cleanup) {
-                failure = publishFatalFailure(merge(failure, cleanup));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
             }
         }
         return AsyncIslandPlayerTicks.<RuntimeException>rethrowAs(
@@ -3621,7 +3621,7 @@ public final class AsyncIslandPlayerTicks {
                 contained[0] = failure;
             }
         });
-        if (contained[0] != null) throwUnchecked(contained[0]);
+        if (contained[0] != null) FailStops.rethrow(contained[0]);
     }
 
     /**
@@ -4311,7 +4311,7 @@ public final class AsyncIslandPlayerTicks {
                 try {
                     failure = abortUnfinishedMainHandoff(state, handoff, failure);
                 } catch (Throwable cleanup) {
-                    failure = merge(failure, cleanup);
+                    failure = FailStops.mergeFailure(failure, cleanup);
                 }
             } else {
                 failure = cancelAndAbortMainHandoff(closer, failure);
@@ -4410,7 +4410,7 @@ public final class AsyncIslandPlayerTicks {
             if (executionState == CANCELLED || executionState == TERMINAL) {
                 return primary;
             }
-            return merge(primary, new IllegalStateException(
+            return FailStops.mergeFailure(primary, new IllegalStateException(
                     "A5 terminal handoff cancellation crossed accepted body entry"));
         }
 
@@ -4473,7 +4473,7 @@ public final class AsyncIslandPlayerTicks {
                 }
             }
             if (failure != null) {
-                throwUnchecked(publishFatalFailure(failure));
+                FailStops.rethrow(publishFatalFailure(failure));
             }
         }
     }
@@ -4798,7 +4798,7 @@ public final class AsyncIslandPlayerTicks {
                         failure = containMainHandoffFailure(
                                 state, handoff, failure);
                     } catch (Throwable cleanup) {
-                        failure = merge(failure, cleanup);
+                        failure = FailStops.mergeFailure(failure, cleanup);
                     }
                     executionState = TERMINAL;
                 }
@@ -4852,7 +4852,7 @@ public final class AsyncIslandPlayerTicks {
                     failure = cancelAndAbortMainHandoff(closer, failure);
                 }
             } catch (Throwable cleanup) {
-                failure = merge(failure, cleanup);
+                failure = FailStops.mergeFailure(failure, cleanup);
             }
         }
         return failure;
@@ -4864,13 +4864,13 @@ public final class AsyncIslandPlayerTicks {
         try {
             closer.cancelBeforePublication(failure);
         } catch (Throwable cleanup) {
-            failure = merge(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         try {
             failure = abortUnfinishedMainHandoff(
                     closer.state, closer.handoff, failure);
         } catch (Throwable cleanup) {
-            failure = merge(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         return failure;
     }
@@ -4911,11 +4911,11 @@ public final class AsyncIslandPlayerTicks {
             }
             IslandPlayerTurnSession.Phase phase = state.session.phase();
             if (phase == IslandPlayerTurnSession.Phase.MAIN_HANDOFF) {
-                return merge(failure, new IllegalStateException(
+                return FailStops.mergeFailure(failure, new IllegalStateException(
                         "A5 rejected Main-handoff continuation stranded its current claim"));
             }
             if (phase == IslandPlayerTurnSession.Phase.MAIN_DRAINING) {
-                return merge(failure, new IllegalStateException(
+                return FailStops.mergeFailure(failure, new IllegalStateException(
                         "A5 Main-handoff failure stranded its detached FIFO before MAIN"));
             }
             // MAIN/DISCONNECTED (or an already rolled-back stale claim) is a
@@ -5062,9 +5062,9 @@ public final class AsyncIslandPlayerTicks {
             try {
                 state.mainIngressScheduled = false;
             } catch (Throwable cleanup) {
-                failure = publishFatalFailure(merge(failure, cleanup));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
             }
-            throwUnchecked(publishFatalFailure(failure));
+            FailStops.rethrow(publishFatalFailure(failure));
         }
     }
 
@@ -5415,7 +5415,7 @@ public final class AsyncIslandPlayerTicks {
     }
 
     private static void failExactMainCommand(String message) {
-        throwUnchecked(publishFatalFailure(new IllegalStateException(message)));
+        FailStops.rethrow(publishFatalFailure(new IllegalStateException(message)));
     }
 
     /** Candidate selected by pollMainIngressLocked, without removing its body. */
@@ -5513,7 +5513,7 @@ public final class AsyncIslandPlayerTicks {
                         disconnectedReturn = true;
                         break;
                     }
-                    failure = publishFatalFailure(merge(failure,
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure,
                             new IllegalStateException(
                                     "A5 Main ingress lost its listener gate")));
                     break;
@@ -5525,7 +5525,7 @@ public final class AsyncIslandPlayerTicks {
                     // handoff/terminal edge. Returning normally and replaying the
                     // same ingress on tick+1 would hide that ordering failure and
                     // manufacture a skipped-tick successor.
-                    failure = publishFatalFailure(merge(failure,
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure,
                             new IllegalStateException(
                                     "A5 Main ingress overtook its MAIN ownership edge: "
                                             + phase)));
@@ -5568,7 +5568,7 @@ public final class AsyncIslandPlayerTicks {
                 }
                 if (inbound.entityOrdinal()) {
                     if (state.mainIngressHandlerActive) {
-                        failure = publishFatalFailure(merge(failure,
+                        failure = publishFatalFailure(FailStops.mergeFailure(failure,
                                 new IllegalStateException(
                                         "A5 Main entity ordinal overlapped a packet handler")));
                         break;
@@ -5587,7 +5587,7 @@ public final class AsyncIslandPlayerTicks {
                             state.mainIngress.pollFirst();
                             accountMainEntityOrdinalCompletionLocked(state, inbound);
                         } catch (Throwable retirementFailure) {
-                            failure = publishFatalFailure(merge(
+                            failure = publishFatalFailure(FailStops.mergeFailure(
                                     failure, retirementFailure));
                             break;
                         }
@@ -5606,20 +5606,20 @@ public final class AsyncIslandPlayerTicks {
                         state.mainEntityFallbackPending = true;
                         entityFallback = fallbackPlayer(inbound);
                     } catch (Throwable activationFailure) {
-                        failure = publishFatalFailure(merge(
+                        failure = publishFatalFailure(FailStops.mergeFailure(
                                 failure, activationFailure));
                     }
                     break;
                 }
                 if (state.mainIngressHandlerActive) {
-                    failure = publishFatalFailure(merge(failure,
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure,
                             new IllegalStateException(
                                     "A5 Main ingress entered two handler bodies concurrently")));
                     break;
                 }
                 if (state.mainEntityFallbackPending
                         || state.activeMainEntityFallback != null) {
-                    failure = publishFatalFailure(merge(failure,
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure,
                             new IllegalStateException(
                                     "A5 Main packet handler overlapped an entity ordinal")));
                     break;
@@ -5695,7 +5695,7 @@ public final class AsyncIslandPlayerTicks {
             }
             synchronized (state) {
                 if (!state.mainIngressHandlerActive) {
-                    packetFailure = publishFatalFailure(merge(packetFailure,
+                    packetFailure = publishFatalFailure(FailStops.mergeFailure(packetFailure,
                             new IllegalStateException(
                                     "A5 Main ingress handler marker disappeared")));
                 }
@@ -5708,16 +5708,16 @@ public final class AsyncIslandPlayerTicks {
                         restoreMainIngressBeforeBodyLocked(state, inbound);
                     } catch (Throwable cleanup) {
                         packetFailure = publishFatalFailure(
-                                merge(packetFailure, cleanup));
+                                FailStops.mergeFailure(packetFailure, cleanup));
                     }
                 }
             }
             if (packetFailure != null) {
-                failure = publishFatalFailure(merge(failure, packetFailure));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, packetFailure));
                 try {
                     FAILURES.increment();
                 } catch (Throwable cleanup) {
-                    failure = publishFatalFailure(merge(failure, cleanup));
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                 }
                 // Retain the listener-chain admission marker and untouched FIFO.
                 // The fail-stop boundary, not a successor task/body, owns the suffix.
@@ -5741,10 +5741,10 @@ public final class AsyncIslandPlayerTicks {
         try {
             if (venueClaim != null) IslandCommands.mainRelease(venueClaim);
         } catch (Throwable releaseFailure) {
-            failure = publishFatalFailure(merge(failure, releaseFailure));
+            failure = publishFatalFailure(FailStops.mergeFailure(failure, releaseFailure));
         }
         if (disconnectedReturn) {
-            if (failure != null) throwUnchecked(publishFatalFailure(failure));
+            if (failure != null) FailStops.rethrow(publishFatalFailure(failure));
             return;
         }
         if (failure != null) failure = publishFatalFailure(failure);
@@ -5752,10 +5752,10 @@ public final class AsyncIslandPlayerTicks {
             try {
                 publishMainEntityFallback(state, listener, entityFallback);
             } catch (Throwable publicationFailure) {
-                failure = publishFatalFailure(merge(failure, publicationFailure));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, publicationFailure));
             }
         }
-        if (failure != null) throwUnchecked(publishFatalFailure(failure));
+        if (failure != null) FailStops.rethrow(publishFatalFailure(failure));
         if (entityFallback == null) {
             scheduleFirstDeferredMainCommand(state, listener);
             finishReadyTrackingTopologyGap(state);
@@ -5852,9 +5852,9 @@ public final class AsyncIslandPlayerTicks {
                     verifyMainEntityOrdinalAccountingLocked(state);
                 }
             } catch (Throwable cleanup) {
-                failure = publishFatalFailure(merge(failure, cleanup));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
             }
-            throwUnchecked(publishFatalFailure(failure));
+            FailStops.rethrow(publishFatalFailure(failure));
         }
     }
 
@@ -5952,7 +5952,7 @@ public final class AsyncIslandPlayerTicks {
             } catch (Throwable failure) {
                 // This callback follows an entered MAIN_SYNC entity body.  Keep the
                 // listener-chain monitor held until its exact W is globally visible.
-                throwUnchecked(publishFatalFailure(failure));
+                FailStops.rethrow(publishFatalFailure(failure));
             }
         }
         if (drainInline) drainMainIngress(state, listener);
@@ -6034,7 +6034,7 @@ public final class AsyncIslandPlayerTicks {
         synchronized (state) {
             packets = state.session.completeMainHandoff(handoff).orElse(null);
             if (packets == null) {
-                throwUnchecked(publishFatalFailure(new IllegalStateException(
+                FailStops.rethrow(publishFatalFailure(new IllegalStateException(
                         "A5 Main closer lost its exact MAIN_HANDOFF transaction")));
             }
         }
@@ -6046,7 +6046,7 @@ public final class AsyncIslandPlayerTicks {
                         instanceof ServerGamePacketListenerImpl game ? game : null;
         synchronized (state) {
             if (listener == null) {
-                failure = publishFatalFailure(merge(failure, new IllegalStateException(
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, new IllegalStateException(
                         "A5 MAIN handoff lost its play-listener identity")));
             } else {
                 // Do not replay the old island prefix in a private side loop. Moving
@@ -6056,7 +6056,7 @@ public final class AsyncIslandPlayerTicks {
                 try {
                     prependMainIngressLocked(state, listener, packets);
                 } catch (Throwable cleanup) {
-                    failure = publishFatalFailure(merge(failure, cleanup));
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                 }
             }
 
@@ -6082,7 +6082,7 @@ public final class AsyncIslandPlayerTicks {
                 }
                 clearTrackingPublicationBindingLocked(state);
             } catch (Throwable cleanup) {
-                failure = publishFatalFailure(merge(failure, cleanup));
+                failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
             }
 
             if (failure != null) {
@@ -6107,7 +6107,7 @@ public final class AsyncIslandPlayerTicks {
                     // has published DISCONNECTED and cleaned every admission marker.
                     terminalDisconnect = state.session.view().phase()
                             == IslandPlayerTurnSession.Phase.DISCONNECTED;
-                    failure = publishFatalFailure(merge(failure, cleanup));
+                    failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                 }
             }
 
@@ -6131,7 +6131,7 @@ public final class AsyncIslandPlayerTicks {
                                     newMainEntityOrdinalLocked(
                                             state, listener, listener.player));
                         } catch (Throwable cleanup) {
-                            failure = publishFatalFailure(merge(failure, cleanup));
+                            failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                         }
                     }
                     if (failure == null && !state.mainIngress.isEmpty()) {
@@ -6143,7 +6143,7 @@ public final class AsyncIslandPlayerTicks {
                         try {
                             armMainIngressIfRequiredLocked(state, listener);
                         } catch (Throwable cleanup) {
-                            failure = publishFatalFailure(merge(failure, cleanup));
+                            failure = publishFatalFailure(FailStops.mergeFailure(failure, cleanup));
                         }
                     }
                 }
@@ -6153,7 +6153,7 @@ public final class AsyncIslandPlayerTicks {
             }
             if (failure != null || terminalDisconnect) topologyGap = null;
         }
-        if (failure != null) throwUnchecked(publishFatalFailure(failure));
+        if (failure != null) FailStops.rethrow(publishFatalFailure(failure));
         if (topologyGap != null) {
             IslandEntityTracking.finishTopologyGapPublicationOnMain(topologyGap);
         }
@@ -6214,14 +6214,6 @@ public final class AsyncIslandPlayerTicks {
                 || phase == IslandPlayerTurnSession.Phase.TRANSFERRING;
     }
 
-    private static Throwable merge(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try { primary.addSuppressed(secondary); } catch (Throwable ignored) {}
-        }
-        return primary;
-    }
-
     /**
      * Vanilla's BlockableEventLoop logs ordinary task exceptions and continues.
      * Publish the exact primary into Fabrolia's first-wins server-fatal slot before
@@ -6238,7 +6230,7 @@ public final class AsyncIslandPlayerTicks {
         try {
             RegionScheduler.runSuccessBodyIfHealthy(task);
         } catch (Throwable failure) {
-            throwUnchecked(publishFatalFailure(failure));
+            FailStops.rethrow(publishFatalFailure(failure));
         }
     }
 
@@ -6260,18 +6252,13 @@ public final class AsyncIslandPlayerTicks {
         } catch (ClassNotFoundException ignored) {
             // Optional compatibility branch.
         } catch (Throwable cleanup) {
-            primary = merge(primary, cleanup);
+            primary = FailStops.mergeFailure(primary, cleanup);
         }
         return primary;
     }
 
     @SuppressWarnings("unchecked")
     private static <T extends Throwable> T rethrowAs(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void throwUnchecked(Throwable failure) throws T {
         throw (T) failure;
     }
 }

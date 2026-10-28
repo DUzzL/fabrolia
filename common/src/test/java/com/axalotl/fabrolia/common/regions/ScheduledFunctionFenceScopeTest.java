@@ -75,8 +75,7 @@ final class ScheduledFunctionFenceScopeTest {
 
         String functions = source(
                 "common/mixin/commands/ServerFunctionManagerMixin.java");
-        String fence = section(functions, "fabrolia$fenceFunction(",
-                "@org.spongepowered.asm.mixin.Unique", 0);
+        String fence = section(functions, "fabrolia$fenceFunction(", "\n    }\n", 0);
         assertTrue(fence.contains("IslandCommands.inMainScheduledFunctionCallback()"));
         assertTrue(fence.contains("|| sticky;"),
                 "the monitor-free deferred reward batch must use the unbounded exact fence");

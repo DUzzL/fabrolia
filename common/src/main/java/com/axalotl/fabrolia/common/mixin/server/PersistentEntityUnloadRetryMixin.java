@@ -1,6 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.regions.IslandUnitAdmission;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
@@ -135,7 +136,7 @@ public abstract class PersistentEntityUnloadRetryMixin
             } catch (Throwable bodyFailure) {
                 Throwable winner = com.axalotl.fabrolia.common.regions.RegionScheduler
                         .publishFatalAndSelectWinner(bodyFailure);
-                PersistentEntityUnloadRetryMixin.<RuntimeException>fabrolia$rethrow(winner);
+                FailStops.<RuntimeException>rethrow(winner);
                 return false;
             }
             if (insidePass) {
@@ -561,7 +562,7 @@ public abstract class PersistentEntityUnloadRetryMixin
                     }
                 } catch (Throwable cleanup) {
                     failure = com.axalotl.fabrolia.common.regions.RegionScheduler
-                            .publishFatalAndSelectWinner(fabrolia$mergeFailure(failure, cleanup));
+                            .publishFatalAndSelectWinner(FailStops.mergeFailure(failure, cleanup));
                 }
             }
             if (failure != null) com.axalotl.fabrolia.common.regions.IslandCommands.publishAndPropagate(failure);
@@ -623,17 +624,17 @@ public abstract class PersistentEntityUnloadRetryMixin
             try {
                 fabrolia$insideProcessUnloads.remove();
             } catch (Throwable cleanupFailure) {
-                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+                failure = FailStops.publishMergedFailure(failure, cleanupFailure);
             }
             try {
                 retries.clear();
             } catch (Throwable cleanupFailure) {
-                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+                failure = FailStops.publishMergedFailure(failure, cleanupFailure);
             }
             try {
                 fabrolia$unloadRetries.remove();
             } catch (Throwable cleanupFailure) {
-                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+                failure = FailStops.publishMergedFailure(failure, cleanupFailure);
             }
             if (failure == null) {
                 try {
@@ -645,7 +646,7 @@ public abstract class PersistentEntityUnloadRetryMixin
                 }
             }
             if (failure != null) {
-                PersistentEntityUnloadRetryMixin.<RuntimeException>fabrolia$rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
             if (restored[0] > 0) {
                 int restoredCount = restored[0];
@@ -688,31 +689,5 @@ public abstract class PersistentEntityUnloadRetryMixin
                 });
             }
         }
-    }
-
-    @Unique
-    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && cleanup != primary) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-                // Mandatory ThreadLocal cleanup cannot replace the unload primary.
-            }
-        }
-        return primary;
-    }
-
-    @Unique
-    private static Throwable fabrolia$publishMergedFailure(
-            Throwable primary, Throwable cleanup) {
-        return com.axalotl.fabrolia.common.regions.RegionScheduler
-                .publishFatalAndSelectWinner(fabrolia$mergeFailure(primary, cleanup));
-    }
-
-    @Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

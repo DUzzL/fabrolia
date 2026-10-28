@@ -188,7 +188,7 @@ public final class ChunkDelivery {
                                 + "] connGen=" + connGen + " trackingGen=" + trackingGen);
                 Throwable winner = publishFatalPreserving(failure);
                 cas(St.RESERVED, St.CANCELLED);
-                ChunkDelivery.<RuntimeException>rethrow(winner);
+                FailStops.<RuntimeException>rethrow(winner);
                 return null;
             }
             e.refs.incrementAndGet(); // reservation's own strong reference
@@ -333,7 +333,7 @@ public final class ChunkDelivery {
                             mergeFailure(failure, cleanupFailure));
                 }
                 if (failure != null) {
-                    ChunkDelivery.<RuntimeException>rethrow(
+                    FailStops.<RuntimeException>rethrow(
                             publishFatalPreserving(failure));
                 }
                 return EnqueueResult.SENT;
@@ -355,7 +355,7 @@ public final class ChunkDelivery {
                                     + rec.owner.player.getUUID() + " chunk=["
                                     + ChunkPos.getX(rec.chunkKey) + ","
                                     + ChunkPos.getZ(rec.chunkKey) + "] state=" + state);
-                    ChunkDelivery.<RuntimeException>rethrow(
+                    FailStops.<RuntimeException>rethrow(
                             publishFatalPreserving(failure));
                 }
             }
@@ -628,7 +628,7 @@ public final class ChunkDelivery {
 
         private void finishPublicationOnMain(Throwable publicationFailure) {
             if (publicationFailure != null) {
-                ChunkDelivery.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         publishFatalPreserving(publicationFailure));
             }
         }
@@ -672,7 +672,7 @@ public final class ChunkDelivery {
                             reservations, terminalFailure);
                     failure = publishFatalPreserving(terminalFailure);
                 }
-                ChunkDelivery.<RuntimeException>rethrow(terminalFailure);
+                FailStops.<RuntimeException>rethrow(terminalFailure);
             }
             if (emptyPublication) {
                 try {
@@ -688,7 +688,7 @@ public final class ChunkDelivery {
                     failure = publishFatalPreserving(terminalFailure);
                     state = FAILED;
                 }
-                ChunkDelivery.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
             if (state == DISCARDED) {
                 terminalizeReservationsWithoutFailure(reservations);
@@ -748,14 +748,14 @@ public final class ChunkDelivery {
                     failure = publishFatalPreserving(terminalFailure);
                     state = FAILED;
                 }
-                ChunkDelivery.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 
         int applySuccessOnMain() {
             synchronized (this) {
                 if (state == FAILED) {
-                    ChunkDelivery.<RuntimeException>rethrow(
+                    FailStops.<RuntimeException>rethrow(
                             publishFatalPreserving(failure));
                 }
                 if (state != SUCCEEDED) {
@@ -825,7 +825,7 @@ public final class ChunkDelivery {
                             reservations, applyFailure);
                     failure = publishFatalPreserving(applyFailure);
                     state = FAILED;
-                    ChunkDelivery.<RuntimeException>rethrow(failure);
+                    FailStops.<RuntimeException>rethrow(failure);
                 }
                 return admittedCount;
             }
@@ -1039,7 +1039,7 @@ public final class ChunkDelivery {
         });
         if (removed[0]) ps.candidates.changed();
         if (offerFailure[0] != null) {
-            ChunkDelivery.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishFatalPreserving(offerFailure[0]));
         }
         if (removed[0]) {
@@ -1162,7 +1162,7 @@ public final class ChunkDelivery {
                 }
             }
             if (failure != null) {
-                ChunkDelivery.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
             return;
         }
@@ -1365,7 +1365,7 @@ public final class ChunkDelivery {
                 } catch (Throwable cleanup) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
                 }
-                if (failure != null) ChunkDelivery.<RuntimeException>rethrow(failure);
+                if (failure != null) FailStops.<RuntimeException>rethrow(failure);
             } else {
                 return;
             }
@@ -1405,7 +1405,7 @@ public final class ChunkDelivery {
         } catch (Throwable selectionFailure) {
             Throwable failure = publishFatalPreserving(selectionFailure);
             failure = terminalizeReservations(reservations, failure);
-            ChunkDelivery.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishFatalPreserving(failure));
             return 0;
         }
@@ -1420,7 +1420,7 @@ public final class ChunkDelivery {
             } catch (Throwable cancellationFailure) {
                 Throwable failure = publishFatalPreserving(cancellationFailure);
                 failure = terminalizeReservations(reservations, failure);
-                ChunkDelivery.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         publishFatalPreserving(failure));
             }
         }
@@ -1436,7 +1436,7 @@ public final class ChunkDelivery {
         } catch (Throwable constructionFailure) {
             Throwable failure = publishFatalPreserving(constructionFailure);
             failure = terminalizeReservations(reservations, failure);
-            ChunkDelivery.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishFatalPreserving(failure));
             return 0;
         }
@@ -1509,7 +1509,7 @@ public final class ChunkDelivery {
                 failure = publishFatalPreserving(
                         mergeFailure(failure, cleanupFailure));
             }
-            ChunkDelivery.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishFatalPreserving(failure));
         }
     }
@@ -1563,7 +1563,7 @@ public final class ChunkDelivery {
             Throwable failure = publishFatalPreserving(new IllegalStateException(
                     "chunk ACK observed an uncommitted batch publication"));
             b.cancelPublication();
-            ChunkDelivery.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
         ps.lastAckNanos = System.nanoTime();
         for (int i = 0; i < b.count; i++) {
@@ -1865,7 +1865,7 @@ public final class ChunkDelivery {
             }
         }
         if (failure != null) {
-            ChunkDelivery.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishFatalPreserving(failure));
         }
     }
@@ -1888,11 +1888,6 @@ public final class ChunkDelivery {
      * the exact simulation/transport primary. */
     private static Throwable publishFatalPreserving(Throwable primary) {
         return RegionScheduler.publishFatalAndSelectWinner(primary);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
     public static String traceCmd(ServerPlayer p, int cx, int cz) {

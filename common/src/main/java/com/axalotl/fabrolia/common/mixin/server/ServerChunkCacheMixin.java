@@ -64,6 +64,7 @@ import com.axalotl.fabrolia.common.regions.IslandChunkPassAccess;
 import com.axalotl.fabrolia.common.regions.NaturalSpawnChunks;
 import com.axalotl.fabrolia.common.regions.SpawnCapLanes;
 import com.axalotl.fabrolia.common.parallelised.utils.ParallelSpawnHelper;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.axalotl.fabrolia.api.spawn.FabroliaSpawnStateView;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 
@@ -162,7 +163,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             } catch (Throwable cleanup) {
                 failure = failure == null
                         ? fabrolia$publishFatalAndSelectWinner(cleanup)
-                        : fabrolia$mergeFailure(failure, cleanup);
+                        : FailStops.mergeFailureCapped(failure, cleanup);
             }
         }
         if (failure == null) {
@@ -176,7 +177,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             }
         }
         if (failure != null) {
-            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -451,7 +452,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 }
             } catch (Throwable t) {
                 Throwable winner = fabrolia$completeFutureAfterFatalPublication(outer, t);
-                ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(winner);
+                FailStops.<RuntimeException>rethrow(winner);
             }
         });
         RegionScheduler.wakeWorkers();
@@ -600,7 +601,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             return Boolean.TRUE.equals(fabrolia$servercoreRandomTickDistance.invoke(features));
         } catch (java.lang.reflect.InvocationTargetException targetFailure) {
             Throwable cause = targetFailure.getCause();
-            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(
+            FailStops.<RuntimeException>rethrow(
                     cause != null ? cause : targetFailure);
             return true;
         } catch (IllegalAccessException | IllegalArgumentException unavailable) {
@@ -673,7 +674,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                     }
                 } catch (Throwable failure) {
                     Throwable winner = fabrolia$completeFutureAfterFatalPublication(cf, failure);
-                    ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(winner);
+                    FailStops.<RuntimeException>rethrow(winner);
                 }
                 fabrolia$completeFutureAfterHealthyCommit(
                         cf, null,
@@ -762,7 +763,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                     fabrolia$runChunksSerial(list, action);
                 } catch (Throwable failure) {
                     Throwable winner = fabrolia$completeFutureAfterFatalPublication(cf, failure);
-                    ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(winner);
+                    FailStops.<RuntimeException>rethrow(winner);
                 }
                 fabrolia$completeFutureAfterHealthyCommit(
                         cf, null,
@@ -989,7 +990,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 // failure while terminalizing may not strand an OFFERING task.
                 publication.cancel();
             }
-            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
         return chunkFuture;
     }
@@ -1045,7 +1046,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             try {
                 chunkFuture.join();
             } catch (Throwable transported) {
-                ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(
+                FailStops.<RuntimeException>rethrow(
                         fabrolia$unwrapCompletion(transported));
             }
             throw new IllegalStateException(
@@ -1070,7 +1071,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         } catch (Throwable requestFailure) {
             Throwable failure = fabrolia$completeChunkRequestFailure(
                     chunkFuture, requestFailure);
-            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -1085,11 +1086,11 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         failure = fabrolia$publishFatalAndSelectWinner(failure);
         try {
             if (!target.completeExceptionally(failure)) {
-                failure = fabrolia$mergeFailure(failure, new IllegalStateException(
+                failure = FailStops.mergeFailureCapped(failure, new IllegalStateException(
                         "chunk bridge failure completed an already-terminal request"));
             }
         } catch (Throwable completionFailure) {
-            failure = fabrolia$mergeFailure(failure, completionFailure);
+            failure = FailStops.mergeFailureCapped(failure, completionFailure);
         }
         return failure;
     }
@@ -1190,7 +1191,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         try {
             result = done.future().join();
         } catch (java.util.concurrent.CompletionException wrapped) {
-            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(
+            FailStops.<RuntimeException>rethrow(
                     fabrolia$unwrapCompletion(wrapped));
             return null;
         }
@@ -1587,7 +1588,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             }
         }
         if (failure != null) {
-            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
         }
     }
@@ -1650,7 +1651,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             if (failure == null) {
                 failure = globalWinner;
             } else if (failure != globalWinner) {
-                failure = fabrolia$mergeFailure(globalWinner, failure);
+                failure = FailStops.mergeFailureCapped(globalWinner, failure);
             }
         }
         failure = fabrolia$observeFlatFutureFailure(first, failure);
@@ -1658,7 +1659,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             failure = fabrolia$observeFlatFutureFailure(second, failure);
         }
         if (failure != null) {
-            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -1715,7 +1716,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                                                              Throwable progressFailure) {
         return failure == null
                 ? fabrolia$publishFatalAndSelectWinner(progressFailure)
-                : fabrolia$mergeFailure(failure, progressFailure);
+                : FailStops.mergeFailureCapped(failure, progressFailure);
     }
 
 
@@ -1732,7 +1733,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         } catch (Throwable completionFailure) {
             Throwable winner = fabrolia$completeFutureAfterFatalPublication(
                     target, completionFailure);
-            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(winner);
+            FailStops.<RuntimeException>rethrow(winner);
         }
     }
 
@@ -1744,13 +1745,13 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 candidate);
         try {
             if (!target.completeExceptionally(winner)) {
-                winner = fabrolia$mergeFailure(winner, new IllegalStateException(
+                winner = FailStops.mergeFailureCapped(winner, new IllegalStateException(
                         "chunk work failure reached an already-terminal future"));
             }
         } catch (Throwable terminalFailure) {
             // Future terminalization is cleanup. It cannot replace or trigger
             // a second attempt of the exact entered vanilla operation.
-            winner = fabrolia$mergeFailure(winner, terminalFailure);
+            winner = FailStops.mergeFailureCapped(winner, terminalFailure);
         }
         return winner;
     }
@@ -1787,26 +1788,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
     }
 
     @Unique
-    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && cleanup != primary) {
-            try {
-                if (primary.getSuppressed().length >= 8) return primary;
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-                // Cleanup diagnostics cannot replace the exact tick failure.
-            }
-        }
-        return primary;
-    }
-
-    @Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
-    @Unique
     @FunctionalInterface
     interface FabroliaFlatBatch {
         void run(FabroliaFlatFailureGate failureGate, int batchIndex);
@@ -1836,13 +1817,13 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 RegionScheduler.runSuccessBodyIfHealthy(() -> {
                     synchronized (this) {
                         if (this.failure != null) {
-                            ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(this.failure);
+                            FailStops.<RuntimeException>rethrow(this.failure);
                         }
                     }
                     body.run();
                 });
             } catch (Throwable thrown) {
-                ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(publishFailure(thrown));
+                FailStops.<RuntimeException>rethrow(publishFailure(thrown));
             }
         }
 
@@ -1864,7 +1845,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                     } catch (Throwable cancellationFailure) {
                         if (cancellationFailure != this.failure
                                 && this.suppressedCleanup < MAX_SUPPRESSED) {
-                            fabrolia$mergeFailure(this.failure, cancellationFailure);
+                            FailStops.mergeFailureCapped(this.failure, cancellationFailure);
                             this.suppressedCleanup++;
                         }
                     }
@@ -1890,7 +1871,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             if (remaining < 0) {
                 Throwable duplicate = publishFailure(new IllegalStateException(
                         "flat chunk fan-out obligation completed more than once"));
-                ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(duplicate);
+                FailStops.<RuntimeException>rethrow(duplicate);
             }
             if (remaining == 0) {
                 Throwable terminalFailure = failureOrNull();
@@ -1948,7 +1929,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 if (this.state.get() != CANCELLED) {
                     Throwable duplicate = this.gate.publishFailure(new IllegalStateException(
                             "flat chunk fan-out task executed more than once"));
-                    ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(duplicate);
+                    FailStops.<RuntimeException>rethrow(duplicate);
                 }
                 return;
             }
@@ -1962,7 +1943,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                 this.gate.finishTask();
             }
             if (failure != null) {
-                ServerChunkCacheMixin.<RuntimeException>fabrolia$rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 

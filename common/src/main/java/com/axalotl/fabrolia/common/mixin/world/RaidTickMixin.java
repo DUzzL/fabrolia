@@ -7,6 +7,7 @@ import com.axalotl.fabrolia.common.regions.RegionizedServer;
 import com.axalotl.fabrolia.common.regions.RaidOwnerAccess;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import net.minecraft.advancements.triggers.CriteriaTriggers;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.stats.Stats;
@@ -155,7 +156,7 @@ public abstract class RaidTickMixin implements RaidOwnerAccess {
             IslandCommands.mainRelease(owner);
         } catch (Throwable cleanupFailure) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
-                    fabrolia$mergeFailure(failure, cleanupFailure));
+                    FailStops.mergeFailure(failure, cleanupFailure));
         }
         if (failure == null) {
             try {
@@ -169,17 +170,5 @@ public abstract class RaidTickMixin implements RaidOwnerAccess {
         if (failure != null) {
             IslandCommands.publishAndPropagate(failure);
         }
-    }
-
-    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && cleanup != primary) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-                // Already fail-stop; suppression must not replace the raid primary.
-            }
-        }
-        return primary;
     }
 }

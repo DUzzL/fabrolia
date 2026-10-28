@@ -3,6 +3,7 @@ package com.axalotl.fabrolia.common.parallelised.advancement;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import net.minecraft.advancements.AdvancementRewards;
 import net.minecraft.advancements.predicates.entity.EntityPredicate;
 import net.minecraft.advancements.triggers.CriterionTrigger;
@@ -458,10 +459,10 @@ public final class AdvancementBuffer {
         try {
             AdvancementBatchScope.exitRewardBody();
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         if (failure != null) {
-            AdvancementBuffer.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -481,10 +482,10 @@ public final class AdvancementBuffer {
         try {
             AdvancementBatchScope.end();
         } catch (Throwable cleanup) {
-            failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
+            failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailure(failure, cleanup));
         }
         if (failure != null) {
-            AdvancementBuffer.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
         fabrolia$commitBarrierNanos(start);
     }
@@ -498,7 +499,7 @@ public final class AdvancementBuffer {
         } catch (Throwable successFailure) {
             failure = RegionScheduler.publishFatalAndSelectWinner(successFailure);
         }
-        if (failure != null) AdvancementBuffer.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     // ------------------------------------------------------------------ drain points
@@ -559,7 +560,7 @@ public final class AdvancementBuffer {
             }
         }
         // The window never opened for its caller: close it here, primary first.
-        AdvancementBuffer.<RuntimeException>rethrow(fabrolia$closeTickHeadWindow(failure));
+        FailStops.<RuntimeException>rethrow(fabrolia$closeTickHeadWindow(failure));
         return false;
     }
 
@@ -594,7 +595,7 @@ public final class AdvancementBuffer {
         try {
             AdvancementBatchScope.end();
         } catch (Throwable cleanup) {
-            failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
+            failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailure(failure, cleanup));
         }
         return failure;
     }
@@ -659,22 +660,5 @@ public final class AdvancementBuffer {
                     + " (routed=" + ROUTED.size() + ", backlog=" + BACKLOG.size()
                     + ", backlogTotal=" + BACKLOG_TOTAL.get() + ")");
         }
-    }
-
-    private static Throwable mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && cleanup != primary) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-                // Cleanup diagnostics must never replace the exact tick failure.
-            }
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

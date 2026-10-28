@@ -99,7 +99,7 @@ public final class RegionWorkerPool {
     /** Rethrow the generation's exact first worker failure on the caller. */
     void throwIfFailed() {
         Throwable failure = fatalFailure;
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     boolean hasFatalFailure() {
@@ -130,7 +130,7 @@ public final class RegionWorkerPool {
         if (candidate == null) candidate = new NullPointerException("fatal failure");
         publishFatalFailure(candidate);
         Throwable winner = fatalFailure;
-        return winner == candidate ? winner : mergeFailure(winner, candidate);
+        return winner == candidate ? winner : FailStops.mergeFailureCapped(winner, candidate);
     }
 
     /**
@@ -174,7 +174,7 @@ public final class RegionWorkerPool {
         if (selectedHere) {
             for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
         }
-        RegionWorkerPool.<RuntimeException>rethrow(failure);
+        FailStops.<RuntimeException>rethrow(failure);
     }
 
     /**
@@ -227,7 +227,7 @@ public final class RegionWorkerPool {
                 awaitLifecycleChange();
             }
             Throwable failure = fatalFailure;
-            if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
             if (!running || !accepting || stopping || terminated
                     || rootAdmissionClosed) {
                 return false;
@@ -255,7 +255,7 @@ public final class RegionWorkerPool {
             failure = thrown;
         }
         failure = finishCausalSuccessBody(authority, failure);
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Run one already-accepted external obligation and always terminalize its permit. */
@@ -285,7 +285,7 @@ public final class RegionWorkerPool {
                     restoreCausalAuthority(previousAuthority);
                 } catch (Throwable cleanup) {
                     failure = publishAndSelectFatal(
-                            mergeFailure(failure, cleanup));
+                            FailStops.mergeFailureCapped(failure, cleanup));
                 }
             }
             if (entered) {
@@ -296,7 +296,7 @@ public final class RegionWorkerPool {
                 if (failure != null) failure = publishAndSelectFatal(failure);
             }
         }
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Boolean-returning, allocation-free form used by hot publication paths. */
@@ -336,7 +336,7 @@ public final class RegionWorkerPool {
                     restoreCausalAuthority(previousAuthority);
                 } catch (Throwable cleanup) {
                     failure = publishAndSelectFatal(
-                            mergeFailure(failure, cleanup));
+                            FailStops.mergeFailureCapped(failure, cleanup));
                 }
             }
             if (entered) {
@@ -347,7 +347,7 @@ public final class RegionWorkerPool {
                 if (failure != null) failure = publishAndSelectFatal(failure);
             }
         }
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         return result;
     }
 
@@ -363,7 +363,7 @@ public final class RegionWorkerPool {
             failure = thrown;
         }
         failure = finishCausalSuccessBody(authority, failure);
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         return result;
     }
 
@@ -371,7 +371,7 @@ public final class RegionWorkerPool {
     private void beginCausalSuccessBodyIfHealthy(StepToken authority) {
         if (authority == null || authority.owner != this || !authority.active
                 || CAUSAL_STEP.get() != authority) {
-            RegionWorkerPool.<RuntimeException>rethrow(publishAndSelectFatal(
+            FailStops.<RuntimeException>rethrow(publishAndSelectFatal(
                     new IllegalStateException(
                             "causal success-only body lost its enclosing pool step")));
         }
@@ -379,7 +379,7 @@ public final class RegionWorkerPool {
         // already published refuses entry; a later W cannot revoke work which the
         // enclosing exact step has already admitted.
         Throwable failure = fatalFailure;
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /**
@@ -391,7 +391,7 @@ public final class RegionWorkerPool {
         Throwable result = primary;
         if (authority == null || authority.owner != this || !authority.active
                 || CAUSAL_STEP.get() != authority) {
-            result = mergeFailure(result, new IllegalStateException(
+            result = FailStops.mergeFailureCapped(result, new IllegalStateException(
                     "causal success-only body escaped its enclosing pool step"));
         }
         // A local Throwable competes for the exact W through the canonical
@@ -455,7 +455,7 @@ public final class RegionWorkerPool {
         boolean interrupted = false;
         synchronized (lifecycleLock) {
             if (fatalFailure != null) {
-                RegionWorkerPool.<RuntimeException>rethrow(fatalFailure);
+                FailStops.<RuntimeException>rethrow(fatalFailure);
             }
             if (!running || !accepting || stopping || terminated) {
                 throw new IllegalStateException(
@@ -550,7 +550,7 @@ public final class RegionWorkerPool {
                     if (worker != null) LockSupport.unpark(worker);
                 }
                 if (interrupted) Thread.currentThread().interrupt();
-                RegionWorkerPool.<RuntimeException>rethrow(winner);
+                FailStops.<RuntimeException>rethrow(winner);
             }
             if (validatingPausedCut) {
                 synchronized (lifecycleLock) {
@@ -571,7 +571,7 @@ public final class RegionWorkerPool {
         }
         if (interrupted) Thread.currentThread().interrupt();
         if (fatalDuringPause != null) {
-            RegionWorkerPool.<RuntimeException>rethrow(fatalDuringPause);
+            FailStops.<RuntimeException>rethrow(fatalDuringPause);
         }
         return true;
     }
@@ -660,7 +660,7 @@ public final class RegionWorkerPool {
         }
         if (invariantFailure != null) {
             failure = publishAndSelectFatal(
-                    mergeFailure(failure, invariantFailure));
+                    FailStops.mergeFailureCapped(failure, invariantFailure));
             failure = replayExactRoots(stray, failure);
         }
 
@@ -674,7 +674,7 @@ public final class RegionWorkerPool {
         }
         for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
         if (interrupted) Thread.currentThread().interrupt();
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     private Throwable replayExactRoots(ArrayList<Runnable> roots, Throwable primary) {
@@ -753,7 +753,7 @@ public final class RegionWorkerPool {
                     failure = primary;
                     selectedHere = true;
                 } else if (failure != primary) {
-                    failure = mergeFailure(failure, primary);
+                    failure = FailStops.mergeFailureCapped(failure, primary);
                 }
             }
             if (exactRootAdmissions <= 0L) {
@@ -765,7 +765,7 @@ public final class RegionWorkerPool {
                     failure = underflow;
                     selectedHere = true;
                 } else {
-                    failure = mergeFailure(failure, underflow);
+                    failure = FailStops.mergeFailureCapped(failure, underflow);
                 }
             } else {
                 exactRootAdmissions--;
@@ -836,10 +836,10 @@ public final class RegionWorkerPool {
                     CAUSAL_STEP.set(previous);
                 } catch (Throwable cleanup) {
                     failure = publishAndSelectFatal(
-                            mergeFailure(failure, cleanup));
+                            FailStops.mergeFailureCapped(failure, cleanup));
                 }
             }
-            if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         };
     }
 
@@ -865,7 +865,7 @@ public final class RegionWorkerPool {
                 if (failure != null) failure = publishAndSelectFatal(failure);
             }
         }
-        RegionWorkerPool.<RuntimeException>rethrow(failure);
+        FailStops.<RuntimeException>rethrow(failure);
     }
 
     /**
@@ -921,7 +921,7 @@ public final class RegionWorkerPool {
             // Monitor-entry/exit failure did not expose an untracked body. Select W
             // before cancelling any permit which was nevertheless half-published.
             failure = publishAndSelectFatal(
-                    mergeFailure(failure, boundaryFailure));
+                    FailStops.mergeFailureCapped(failure, boundaryFailure));
         }
         if (selectedHere) {
             for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
@@ -930,7 +930,7 @@ public final class RegionWorkerPool {
             if (permit != null) {
                 failure = permit.cancelPublication(failure);
             }
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return permit;
@@ -992,7 +992,7 @@ public final class RegionWorkerPool {
                     try {
                         LOGGER.error("Uncaught in {}", thr.getName(), ex);
                     } catch (Throwable diagnosticFailure) {
-                        mergeFailure(ex, diagnosticFailure);
+                        FailStops.mergeFailureCapped(ex, diagnosticFailure);
                     }
                 });
                 workers[i] = t;
@@ -1057,7 +1057,7 @@ public final class RegionWorkerPool {
             if (terminated) {
                 if (interrupted) Thread.currentThread().interrupt();
                 if (terminationFailure != null) {
-                    RegionWorkerPool.<RuntimeException>rethrow(terminationFailure);
+                    FailStops.<RuntimeException>rethrow(terminationFailure);
                 }
                 return;
             }
@@ -1098,7 +1098,7 @@ public final class RegionWorkerPool {
                     // normal queue drain into fail-stop cleanup.  Queued bodies
                     // are not legal recovery work; only already-entered steps
                     // may reach their finally chains.
-                    failure = mergeFailure(observedFatal, failure);
+                    failure = FailStops.mergeFailureCapped(observedFatal, failure);
                     failure = finishFailedGenerationCancellation(progress, failure);
                     break;
                 }
@@ -1106,7 +1106,7 @@ public final class RegionWorkerPool {
                     progress.run();
                 } catch (Throwable progressFailure) {
                     failure = publishAndSelectFatal(
-                            mergeFailure(failure, progressFailure));
+                            FailStops.mergeFailureCapped(failure, progressFailure));
                     // The progress body itself partially entered and failed.
                     // Transition directly to failed-generation cleanup and
                     // never invoke that body a second time.
@@ -1173,7 +1173,7 @@ public final class RegionWorkerPool {
                                 external, admissions, activityEpoch, steps, readySize, globalSize,
                                 mainOnlySize, mainSafeSize, unitSize);
                     } catch (Throwable diagnosticFailure) {
-                        failure = mergeFailure(failure, diagnosticFailure);
+                        failure = FailStops.mergeFailureCapped(failure, diagnosticFailure);
                     }
                     nextDrainDiagnostic = now + 15_000_000_000L;
                 }
@@ -1201,7 +1201,7 @@ public final class RegionWorkerPool {
                                         + "teardown remains closed; stack:{}",
                                 t.getName(), st);
                     } catch (Throwable diagnosticFailure) {
-                        failure = mergeFailure(failure, diagnosticFailure);
+                        failure = FailStops.mergeFailureCapped(failure, diagnosticFailure);
                     }
                     nextWorkerDiagnostic = now + 15_000_000_000L;
                 }
@@ -1210,19 +1210,19 @@ public final class RegionWorkerPool {
         try {
             LOGGER.info("RegionWorkerPool: stopped");
         } catch (Throwable diagnosticFailure) {
-            failure = mergeFailure(failure, diagnosticFailure);
+            failure = FailStops.mergeFailureCapped(failure, diagnosticFailure);
         }
         synchronized (lifecycleLock) {
             stoppingOwner = null;
             stopping = false;
-            failure = mergeFailure(failure, publicationFailure);
+            failure = FailStops.mergeFailureCapped(failure, publicationFailure);
             publicationFailure = null;
             terminationFailure = failure;
             terminated = true;
             signalLifecycleWaiters();
         }
         if (interrupted) Thread.currentThread().interrupt();
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     private Throwable finishFailedGenerationCancellation(
@@ -1244,7 +1244,7 @@ public final class RegionWorkerPool {
                     progress.run();
                 } catch (Throwable progressFailure) {
                     failure = publishAndSelectFatal(
-                            mergeFailure(failure, progressFailure));
+                            FailStops.mergeFailureCapped(failure, progressFailure));
                     // A partial cleanup-progress pass is never replayed. From
                     // here only already-running bodies may reach their finally.
                     progressAllowed = false;
@@ -1290,7 +1290,7 @@ public final class RegionWorkerPool {
                                     + "(externalObligations={}, rootAdmissions={}, activeSteps={})",
                             external, admissions, steps);
                 } catch (Throwable diagnosticFailure) {
-                    failure = mergeFailure(failure, diagnosticFailure);
+                    failure = FailStops.mergeFailureCapped(failure, diagnosticFailure);
                 }
                 nextCancellationDiagnostic = now + 15_000_000_000L;
             }
@@ -1318,28 +1318,28 @@ public final class RegionWorkerPool {
                 failure = cancelQueuedEntry(queued, failure);
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         try {
             while ((queued = mainOnlyTasks.poll()) != null) {
                 failure = cancelQueuedEntry(queued, failure);
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         try {
             while ((queued = mainSafeTasks.poll()) != null) {
                 failure = cancelQueuedEntry(queued, failure);
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         try {
             while ((queued = unitTasks.poll()) != null) {
                 failure = cancelQueuedEntry(queued, failure);
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         try {
             ArrayList<Runnable> deferred;
@@ -1350,7 +1350,7 @@ public final class RegionWorkerPool {
                 failure = cancelQueuedEntry(deferred.get(i), failure);
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         // Ready entries are scheduling hints, not bodies/obligations. Their region and
         // help queues are detached by RegionScheduler below. A tagged hint nevertheless
@@ -1362,16 +1362,16 @@ public final class RegionWorkerPool {
                 try {
                     readyEntry.cancelPublication();
                 } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
+                    failure = FailStops.mergeFailureCapped(failure, cleanup);
                 }
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         try {
             return RegionScheduler.cancelFailedGenerationQueues(this, failure);
         } catch (Throwable cleanup) {
-            return mergeFailure(failure, cleanup);
+            return FailStops.mergeFailureCapped(failure, cleanup);
         }
     }
 
@@ -1588,7 +1588,7 @@ public final class RegionWorkerPool {
             Throwable failure = publishAndSelectFatal(
                     publicationFailure);
             entry.cancelPublication();
-            RegionWorkerPool.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
         return entry;
     }
@@ -1608,7 +1608,7 @@ public final class RegionWorkerPool {
         } catch (Throwable publicationFailure) {
             Throwable failure = publishAndSelectFatal(publicationFailure);
             if (entry != null) entry.cancelPublication();
-            RegionWorkerPool.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -1695,7 +1695,7 @@ public final class RegionWorkerPool {
         if (failure != null) {
             if (publication != null) publication.cancelPublication();
             if (deferred != null) failure = deferred.cancelPublication(failure);
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return accepted;
@@ -1779,9 +1779,9 @@ public final class RegionWorkerPool {
                 recordExternalPublicationFailure(failure);
             } catch (Throwable bookkeepingFailure) {
                 failure = publishAndSelectFatal(
-                        mergeFailure(failure, bookkeepingFailure));
+                        FailStops.mergeFailureCapped(failure, bookkeepingFailure));
             }
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return accepted;
@@ -1838,9 +1838,9 @@ public final class RegionWorkerPool {
                 recordExternalPublicationFailure(failure);
             } catch (Throwable bookkeepingFailure) {
                 failure = publishAndSelectFatal(
-                        mergeFailure(failure, bookkeepingFailure));
+                        FailStops.mergeFailureCapped(failure, bookkeepingFailure));
             }
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return accepted;
@@ -1888,7 +1888,7 @@ public final class RegionWorkerPool {
             }
         } catch (Throwable boundaryFailure) {
             failure = publishAndSelectFatal(
-                    mergeFailure(failure, boundaryFailure));
+                    FailStops.mergeFailureCapped(failure, boundaryFailure));
         }
         if (selectedHere) {
             for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
@@ -1897,7 +1897,7 @@ public final class RegionWorkerPool {
             if (permit != null) {
                 failure = permit.cancelPublication(failure);
             }
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return permit;
@@ -1921,7 +1921,7 @@ public final class RegionWorkerPool {
                 permit == null ? null : permit.publication, null, null);
         if (failure != null) {
             if (permit != null) failure = permit.cancelPublication(failure);
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return permit;
@@ -1980,9 +1980,9 @@ public final class RegionWorkerPool {
                 recordExternalPublicationFailure(failure);
             } catch (Throwable bookkeepingFailure) {
                 failure = publishAndSelectFatal(
-                        mergeFailure(failure, bookkeepingFailure));
+                        FailStops.mergeFailureCapped(failure, bookkeepingFailure));
             }
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return accepted;
@@ -2065,7 +2065,7 @@ public final class RegionWorkerPool {
                 executor.execute(publication);
             }
         } catch (Throwable publicationFailure) {
-            failure = publishAndSelectFatal(mergeFailure(failure, publicationFailure));
+            failure = publishAndSelectFatal(FailStops.mergeFailureCapped(failure, publicationFailure));
         }
         if (publication != null) publication.publishing = false;
         if (failure != null) {
@@ -2080,9 +2080,9 @@ public final class RegionWorkerPool {
                 recordExternalPublicationFailure(failure);
             } catch (Throwable bookkeepingFailure) {
                 failure = publishAndSelectFatal(
-                        mergeFailure(failure, bookkeepingFailure));
+                        FailStops.mergeFailureCapped(failure, bookkeepingFailure));
             }
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         if (publication != null && publication.inlineRequested) publication.target.run();
@@ -2106,7 +2106,7 @@ public final class RegionWorkerPool {
 
     private void recordExternalPublicationFailure(Throwable failure) {
         synchronized (lifecycleLock) {
-            publicationFailure = mergeFailure(publicationFailure, failure);
+            publicationFailure = FailStops.mergeFailureCapped(publicationFailure, failure);
         }
         publishFatalFailure(failure);
     }
@@ -2151,11 +2151,11 @@ public final class RegionWorkerPool {
             Throwable failure = primary;
             try {
                 if (!cancelBeforeRun()) {
-                    failure = mergeFailure(failure, new IllegalStateException(
+                    failure = FailStops.mergeFailureCapped(failure, new IllegalStateException(
                             "external permit escaped before publication commit"));
                 }
             } catch (Throwable cleanup) {
-                failure = mergeFailure(failure, cleanup);
+                failure = FailStops.mergeFailureCapped(failure, cleanup);
             }
             return failure;
         }
@@ -2191,13 +2191,13 @@ public final class RegionWorkerPool {
                     Throwable failure = fatal;
                     try {
                         if (!cancelBeforeRun()) {
-                            failure = mergeFailure(failure, new IllegalStateException(
+                            failure = FailStops.mergeFailureCapped(failure, new IllegalStateException(
                                     "detached MAIN_SYNC permit was not QUEUED at fatal cut"));
                         }
                     } catch (Throwable cleanup) {
-                        failure = mergeFailure(failure, cleanup);
+                        failure = FailStops.mergeFailureCapped(failure, cleanup);
                     }
-                    RegionWorkerPool.<RuntimeException>rethrow(failure);
+                    FailStops.<RuntimeException>rethrow(failure);
                     return false;
                 }
                 return beginLocked();
@@ -2224,16 +2224,16 @@ public final class RegionWorkerPool {
                 result = fatalFailure;
                 if (result == null) result = primary;
                 else if (primary != null && primary != result) {
-                    result = mergeFailure(result, primary);
+                    result = FailStops.mergeFailureCapped(result, primary);
                 }
                 boolean terminalized = state.compareAndSet(RUNNING, TERMINAL);
                 if (!terminalized) {
-                    result = mergeFailure(result, new IllegalStateException(
+                    result = FailStops.mergeFailureCapped(result, new IllegalStateException(
                             "external pool permit closed outside RUNNING"));
                 }
                 if (terminalized) {
                     if (externalObligations <= 0L) {
-                        result = mergeFailure(result, new IllegalStateException(
+                        result = FailStops.mergeFailureCapped(result, new IllegalStateException(
                                 "external pool obligation completed twice or without admission"));
                     } else {
                         externalObligations--;
@@ -2241,7 +2241,7 @@ public final class RegionWorkerPool {
                     if (recordShutdownActivity) shutdownActivityEpoch++;
                     if (causalAuthority != null) {
                         if (!causalAuthority.active) {
-                            result = mergeFailure(result, new IllegalStateException(
+                            result = FailStops.mergeFailureCapped(result, new IllegalStateException(
                                     "causal execution authority completed twice"));
                         } else {
                             causalAuthority.active = false;
@@ -2273,7 +2273,7 @@ public final class RegionWorkerPool {
                 if (regionalQueue) queuedRegionalObligations--;
                 if (causalAuthority != null) {
                     if (!causalAuthority.active) {
-                        failure = mergeFailure(failure, new IllegalStateException(
+                        failure = FailStops.mergeFailureCapped(failure, new IllegalStateException(
                                 "causal execution authority completed twice"));
                     } else {
                         causalAuthority.active = false;
@@ -2282,7 +2282,7 @@ public final class RegionWorkerPool {
                 signalLifecycleWaiters();
             }
             if (failure != null) {
-                RegionWorkerPool.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
     }
@@ -2344,7 +2344,7 @@ public final class RegionWorkerPool {
             try {
                 owner.finishClaimTransaction();
             } catch (Throwable cleanup) {
-                return mergeFailure(primary, cleanup);
+                return FailStops.mergeFailureCapped(primary, cleanup);
             }
             return primary;
         }
@@ -2361,27 +2361,27 @@ public final class RegionWorkerPool {
                 try {
                     cancellable.cancelQueuedBeforeStart();
                 } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
+                    failure = FailStops.mergeFailureCapped(failure, cleanup);
                 }
             }
             try {
                 if (!permit.cancelBeforeRun()) {
-                    failure = mergeFailure(failure, new IllegalStateException(
+                    failure = FailStops.mergeFailureCapped(failure, new IllegalStateException(
                             "published external task could not be cancelled before run"));
                 }
             } catch (Throwable cleanup) {
-                failure = mergeFailure(failure, cleanup);
+                failure = FailStops.mergeFailureCapped(failure, cleanup);
             }
             if (permit.state.get() == ExternalPermit.TERMINAL) {
                 failure = closeMainSafeBodyReceipt(failure);
             }
-            if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
 
         @Override
         public void cancelQueuedBeforeStartWithFailure(Throwable primary) {
             Throwable failure = cancelBeforeStartInternal(primary);
-            if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
 
         private Throwable cancelBeforeStartInternal(Throwable primary) {
@@ -2396,16 +2396,16 @@ public final class RegionWorkerPool {
                 try {
                     cancellable.cancelQueuedBeforeStartWithFailure(primary);
                 } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
+                    failure = FailStops.mergeFailureCapped(failure, cleanup);
                 }
             }
             try {
                 if (!permit.cancelBeforeRun()) {
-                    failure = mergeFailure(failure, new IllegalStateException(
+                    failure = FailStops.mergeFailureCapped(failure, new IllegalStateException(
                             "published external task could not be cancelled before run"));
                 }
             } catch (Throwable cleanup) {
-                failure = mergeFailure(failure, cleanup);
+                failure = FailStops.mergeFailureCapped(failure, cleanup);
             }
             if (permit.state.get() == ExternalPermit.TERMINAL) {
                 failure = closeMainSafeBodyReceipt(failure);
@@ -2427,7 +2427,7 @@ public final class RegionWorkerPool {
             }
             if (fatal != null) {
                 Throwable failure = cancelBeforeStartInternal(fatal);
-                RegionWorkerPool.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         publishAndSelectFatal(failure));
                 return;
             }
@@ -2466,7 +2466,7 @@ public final class RegionWorkerPool {
                         CAUSAL_STEP.set(previous);
                     } catch (Throwable cleanup) {
                         failure = publishAndSelectFatal(
-                                mergeFailure(failure, cleanup));
+                                FailStops.mergeFailureCapped(failure, cleanup));
                     }
                     if (authorityPublished) {
                         Throwable authorityFailure = null;
@@ -2481,7 +2481,7 @@ public final class RegionWorkerPool {
                         }
                         if (authorityFailure != null) {
                             failure = publishAndSelectFatal(
-                                    mergeFailure(failure, authorityFailure));
+                                    FailStops.mergeFailureCapped(failure, authorityFailure));
                         }
                     }
                 }
@@ -2489,7 +2489,7 @@ public final class RegionWorkerPool {
                     failure = permit.finish(failure, causalExecution);
                 } catch (Throwable terminalFailure) {
                     failure = publishAndSelectFatal(
-                            mergeFailure(failure, terminalFailure));
+                            FailStops.mergeFailureCapped(failure, terminalFailure));
                 } finally {
                     // Even an invariant failure inside the permit terminal must
                     // not leave domain rebase waiting on an ownerless receipt.
@@ -2499,7 +2499,7 @@ public final class RegionWorkerPool {
                     failure = publishAndSelectFatal(failure);
                 }
             }
-            if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -2559,7 +2559,7 @@ public final class RegionWorkerPool {
             }
             if (fatal != null) {
                 Throwable failure = cancelBeforeStartInternal(fatal);
-                RegionWorkerPool.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         publishAndSelectFatal(failure));
                 return;
             }
@@ -2581,15 +2581,15 @@ public final class RegionWorkerPool {
                 state.set(TERMINAL);
             } catch (Throwable cleanup) {
                 failure = publishAndSelectFatal(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailureCapped(failure, cleanup));
             }
-            if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
 
         @Override
         public void cancelQueuedBeforeStart() {
             Throwable failure = cancelBeforeStartInternal(null);
-            if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
 
         @Override
@@ -2617,7 +2617,7 @@ public final class RegionWorkerPool {
             try {
                 cancellable.cancelQueuedBeforeStartWithFailure(primary);
             } catch (Throwable cleanup) {
-                failure = mergeFailure(failure, cleanup);
+                failure = FailStops.mergeFailureCapped(failure, cleanup);
             }
         }
         return failure;
@@ -2634,22 +2634,22 @@ public final class RegionWorkerPool {
         Throwable failure = primary;
         try {
             if (!permit.cancelBeforeRun()) {
-                failure = mergeFailure(failure, new IllegalStateException(
+                failure = FailStops.mergeFailureCapped(failure, new IllegalStateException(
                         "queued external permit was already running during fail-stop sweep"));
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         return failure;
     }
 
     Throwable mergeCancellationFailure(Throwable primary, Throwable cleanup) {
-        return mergeFailure(primary, cleanup);
+        return FailStops.mergeFailureCapped(primary, cleanup);
     }
 
     void recordCancellationFailure(Throwable cleanup) {
         synchronized (lifecycleLock) {
-            publicationFailure = mergeFailure(publicationFailure, cleanup);
+            publicationFailure = FailStops.mergeFailureCapped(publicationFailure, cleanup);
         }
     }
 
@@ -2660,25 +2660,6 @@ public final class RegionWorkerPool {
      * Group tasks manage currentRegion themselves per region segment.
      */
     private final ConcurrentLinkedQueue<Runnable> globalTasks = new ConcurrentLinkedQueue<>();
-
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (secondary == null) return primary;
-        if (primary == null) return secondary;
-        if (primary != secondary) {
-            try {
-                if (primary.getSuppressed().length < 8) primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Suppression is diagnostic. Never let an allocation failure skip a
-                // permit close, replay tail, or exact-turn fence release.
-            }
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
 
     boolean enqueueGlobal(Runnable task) {
         enterRootAdmission();
@@ -2715,7 +2696,7 @@ public final class RegionWorkerPool {
         if (failure != null) {
             if (queued != null) failure = queued.cancelPublication(failure);
             if (deferred != null) failure = deferred.cancelPublication(failure);
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return accepted;
@@ -2781,7 +2762,7 @@ public final class RegionWorkerPool {
         if (failure != null) {
             if (queued != null) failure = queued.cancelPublication(failure);
             if (deferred != null) failure = deferred.cancelPublication(failure);
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return accepted;
@@ -2822,7 +2803,7 @@ public final class RegionWorkerPool {
         if (failure != null) {
             if (queued != null) failure = queued.cancelPublication(failure);
             if (deferred != null) failure = deferred.cancelPublication(failure);
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return accepted;
@@ -2912,15 +2893,15 @@ public final class RegionWorkerPool {
             readyEntry.closeEntityReceipt();
         } catch (Throwable receiptFailure) {
             failure = publishAndSelectFatal(
-                    mergeFailure(failure, receiptFailure));
+                    FailStops.mergeFailureCapped(failure, receiptFailure));
         }
         try {
             readyEntry.closeClaimTransaction();
         } catch (Throwable transactionFailure) {
             failure = publishAndSelectFatal(
-                    mergeFailure(failure, transactionFailure));
+                    FailStops.mergeFailureCapped(failure, transactionFailure));
         }
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         return worked;
     }
 
@@ -3076,14 +3057,14 @@ public final class RegionWorkerPool {
                     r.stampRelease("stealOne");
                 } catch (Throwable cleanupFailure) {
                     failure = publishAndSelectFatal(
-                            mergeFailure(failure, cleanupFailure));
+                            FailStops.mergeFailureCapped(failure, cleanupFailure));
                 }
             }
             try {
                 r.release(Thread.currentThread());
             } catch (Throwable cleanupFailure) {
                 failure = publishAndSelectFatal(
-                        mergeFailure(failure, cleanupFailure));
+                        FailStops.mergeFailureCapped(failure, cleanupFailure));
             }
             if (stealer != null) stealer.currentRegion = null;
             if (failure == null) failure = fatalFailure;
@@ -3110,11 +3091,11 @@ public final class RegionWorkerPool {
                     });
                 } catch (Throwable completionFailure) {
                     failure = publishAndSelectFatal(
-                            mergeFailure(failure, completionFailure));
+                            FailStops.mergeFailureCapped(failure, completionFailure));
                 }
             }
         }
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         return true;
     }
 
@@ -3125,7 +3106,7 @@ public final class RegionWorkerPool {
                 MAIN_HELP_NANOS.addAndGet(elapsedNanos);
             });
         } catch (Throwable completionFailure) {
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(completionFailure));
         }
     }
@@ -3234,7 +3215,7 @@ public final class RegionWorkerPool {
         } catch (Throwable transferFailure) {
             Throwable failure = publishAndSelectFatal(transferFailure);
             failure = cancelQueuedEntry(task, failure);
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
     }
@@ -3281,7 +3262,7 @@ public final class RegionWorkerPool {
         if (failure != null) {
             if (queued != null) failure = queued.cancelPublication(failure);
             if (deferred != null) failure = deferred.cancelPublication(failure);
-            RegionWorkerPool.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishAndSelectFatal(failure));
         }
         return accepted;
@@ -3545,15 +3526,15 @@ public final class RegionWorkerPool {
             readyEntry.closeEntityReceipt();
         } catch (Throwable receiptFailure) {
             failure = publishAndSelectFatal(
-                    mergeFailure(failure, receiptFailure));
+                    FailStops.mergeFailureCapped(failure, receiptFailure));
         }
         try {
             readyEntry.closeClaimTransaction();
         } catch (Throwable transactionFailure) {
             failure = publishAndSelectFatal(
-                    mergeFailure(failure, transactionFailure));
+                    FailStops.mergeFailureCapped(failure, transactionFailure));
         }
-        if (failure != null) RegionWorkerPool.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         return worked;
     }
 
@@ -3733,14 +3714,14 @@ public final class RegionWorkerPool {
                         claimed.stampRelease("workOnce");
                     } catch (Throwable cleanupFailure) {
                         phaseFailure = publishAndSelectFatal(
-                                mergeFailure(phaseFailure, cleanupFailure));
+                                FailStops.mergeFailureCapped(phaseFailure, cleanupFailure));
                     }
                 }
                 try {
                     claimed.release(me);
                 } catch (Throwable cleanupFailure) {
                     phaseFailure = publishAndSelectFatal(
-                            mergeFailure(phaseFailure, cleanupFailure));
+                            FailStops.mergeFailureCapped(phaseFailure, cleanupFailure));
                 }
                 if (phaseFailure == null) phaseFailure = fatalFailure;
                 // A failed phase has no legal successor/re-arm/barrier
@@ -3767,13 +3748,13 @@ public final class RegionWorkerPool {
                         });
                     } catch (Throwable completionFailure) {
                         phaseFailure = publishAndSelectFatal(
-                                mergeFailure(phaseFailure, completionFailure));
+                                FailStops.mergeFailureCapped(phaseFailure, completionFailure));
                     }
                 }
                 me.currentRegion = prevPublished;
             }
             if (phaseFailure != null) {
-                RegionWorkerPool.<RuntimeException>rethrow(phaseFailure);
+                FailStops.<RuntimeException>rethrow(phaseFailure);
             }
             return true;
     }

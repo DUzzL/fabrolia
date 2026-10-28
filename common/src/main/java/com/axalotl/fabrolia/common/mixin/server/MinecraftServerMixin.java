@@ -4,6 +4,7 @@ import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.RconCommandFenceScope;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -173,7 +174,7 @@ public class MinecraftServerMixin {
             }
             if (cleanup != null) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        fabrolia$mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
         }
         if (failure == null) {
@@ -186,26 +187,8 @@ public class MinecraftServerMixin {
             }
         }
         if (failure != null) {
-            MinecraftServerMixin.<RuntimeException>fabrolia$throwUnchecked(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$throwUnchecked(Throwable thrown) throws T {
-        throw (T) thrown;
-    }
-
-    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Physical Main is already fail-stop with primary; suppression
-                // is diagnostic and must never replace the vanilla crash.
-            }
-        }
-        return primary;
     }
 
     /*
@@ -422,7 +405,7 @@ public class MinecraftServerMixin {
             else if (writeFailure != failure) failure.addSuppressed(writeFailure);
         }
         if (failure != null) {
-            MinecraftServerMixin.<RuntimeException>fabrolia$throwUnchecked(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 

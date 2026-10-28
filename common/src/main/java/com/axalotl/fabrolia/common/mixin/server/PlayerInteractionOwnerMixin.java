@@ -7,6 +7,7 @@ import com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks;
 import com.axalotl.fabrolia.common.regions.IslandRegistry;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.network.protocol.game.*;
@@ -356,7 +357,7 @@ public abstract class PlayerInteractionOwnerMixin {
             if (release) IslandCommands.mainRelease(owner);
         } catch (Throwable cleanupFailure) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
-                    fabrolia$mergeFailure(failure, cleanupFailure));
+                    FailStops.mergeFailure(failure, cleanupFailure));
         }
         if (failure != null) IslandCommands.publishAndPropagate(failure);
     }
@@ -463,22 +464,11 @@ public abstract class PlayerInteractionOwnerMixin {
                     IslandCommands.mainRelease(owner);
                 } catch (Throwable cleanupFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(
-                            fabrolia$mergeFailure(failure, cleanupFailure));
+                            FailStops.mergeFailure(failure, cleanupFailure));
                 }
             }
             if (failure != null) IslandCommands.publishAndPropagate(failure);
             if (bodyRan) return;
         }
-    }
-
-    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && cleanup != primary) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-            }
-        }
-        return primary;
     }
 }

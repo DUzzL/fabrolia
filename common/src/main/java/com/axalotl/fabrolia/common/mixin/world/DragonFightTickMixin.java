@@ -4,6 +4,7 @@ import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.IslandRegistry;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.server.level.ServerLevel;
@@ -45,7 +46,7 @@ public abstract class DragonFightTickMixin {
             IslandCommands.mainRelease(owner);
         } catch (Throwable cleanupFailure) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
-                    fabrolia$mergeFailure(failure, cleanupFailure));
+                    FailStops.mergeFailure(failure, cleanupFailure));
         }
         if (failure == null) {
             try {
@@ -68,17 +69,5 @@ public abstract class DragonFightTickMixin {
                                                 Operation<Void> original) {
         com.axalotl.fabrolia.common.regions.DragonCrystalRouting.onCrystalDestroyed(
                 this.level, crystal, () -> original.call(crystal, source));
-    }
-
-    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && cleanup != primary) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-                // Already fail-stop; suppression must not replace the fight primary.
-            }
-        }
-        return primary;
     }
 }

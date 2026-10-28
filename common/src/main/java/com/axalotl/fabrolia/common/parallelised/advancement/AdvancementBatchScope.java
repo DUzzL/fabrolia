@@ -3,6 +3,7 @@ package com.axalotl.fabrolia.common.parallelised.advancement;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
+import com.axalotl.fabrolia.common.regions.FailStops;
 
 /**
  * Exact physical-Main scope around routed advancement work. Fire-time
@@ -149,12 +150,7 @@ public final class AdvancementBatchScope {
             failure = IslandCommands.releaseAllExcept(failure);
         }
         if (failure != null) {
-            AdvancementBatchScope.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

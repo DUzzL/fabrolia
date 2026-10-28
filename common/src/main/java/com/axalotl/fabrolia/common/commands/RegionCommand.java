@@ -8,6 +8,7 @@ import com.axalotl.fabrolia.common.regions.RegionGrid;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionViz;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
@@ -1459,7 +1460,7 @@ public final class RegionCommand {
             try {
                 PlatformUtils.saveConfig();
             } catch (Throwable rollbackFailure) {
-                transitionFailure = fabrolia$mergeFailure(
+                transitionFailure = FailStops.mergeFailure(
                         transitionFailure, rollbackFailure);
             }
             com.axalotl.fabrolia.common.regions.IslandCommands
@@ -1622,7 +1623,7 @@ public final class RegionCommand {
             try {
                 PlatformUtils.saveConfig();
             } catch (Throwable cleanup) {
-                transitionFailure = fabrolia$mergeFailure(transitionFailure, cleanup);
+                transitionFailure = FailStops.mergeFailure(transitionFailure, cleanup);
             }
             com.axalotl.fabrolia.common.regions.IslandCommands
                     .publishAndPropagate(transitionFailure);
@@ -1641,18 +1642,6 @@ public final class RegionCommand {
                   + "players return to MAIN_SYNC at the next safe boundary; saved for restart",
                 true);
         return 1;
-    }
-
-    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && cleanup != primary) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-                // Mandatory cleanup diagnostics cannot replace the exact primary.
-            }
-        }
-        return primary;
     }
 
     private static int islandTop(net.minecraft.commands.CommandSourceStack src, int count,

@@ -26,7 +26,7 @@ public final class RegionMainBlockingWaitGuard {
                 "causal region participant attempted a blocking physical-Main wait: "
                         + operation + " [thread=" + current.getName() + "]");
         Throwable winner = RegionScheduler.publishFatalAndSelectWinner(violation);
-        RegionMainBlockingWaitGuard.<RuntimeException>rethrow(winner);
+        FailStops.<RuntimeException>rethrow(winner);
     }
 
     static boolean currentThreadParticipates() {
@@ -45,10 +45,5 @@ public final class RegionMainBlockingWaitGuard {
                                            boolean liveCausalStep,
                                            boolean liveIslandClaim) {
         return workerSurface || liveCausalStep || liveIslandClaim;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

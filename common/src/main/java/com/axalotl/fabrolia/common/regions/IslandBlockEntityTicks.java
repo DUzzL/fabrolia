@@ -373,7 +373,7 @@ public final class IslandBlockEntityTicks {
                         RegionScheduler.throwWorkerFailureIfAny();
                     } catch (Throwable th) {
                         Throwable winner = gate.failAndSelect(th);
-                        rethrow(winner);
+                        FailStops.rethrow(winner);
                     } finally {
                         gate.finish();
                     }
@@ -425,7 +425,7 @@ public final class IslandBlockEntityTicks {
             }
             Throwable failure = gate.failure();
             if (failure != null) {
-                rethrow(failure);
+                FailStops.rethrow(failure);
             }
             if (posless != null) {
                 tickSlice(posless, removed, ChunkTickGate.forLevel(sl));
@@ -518,11 +518,6 @@ public final class IslandBlockEntityTicks {
         BlockPos pos = t.getPos();
         if (pos == null) return; // Lithium sleeping stub — keep it, it wakes later
         if (tickable.ticks(ChunkPos.pack(pos))) RegionScheduler.runSuccessBodyIfHealthy(t::tick);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
 

@@ -331,7 +331,7 @@ public final class RegionScheduler {
         final long generation;
         synchronized (LIFECYCLE_LOCK) {
             Throwable failure = orphanFatalFailure;
-            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
             if (lifecycleState == LifecycleState.RUNNING) return;
             if (lifecycleState != LifecycleState.STOPPED) {
                 throw new IllegalStateException(
@@ -353,7 +353,7 @@ public final class RegionScheduler {
             synchronized (LIFECYCLE_LOCK) {
                 Throwable failureBeforeTransition = orphanFatalFailure;
                 if (failureBeforeTransition != null) {
-                    RegionScheduler.<RuntimeException>rethrow(failureBeforeTransition);
+                    FailStops.<RuntimeException>rethrow(failureBeforeTransition);
                 }
                 if (lifecycleState != LifecycleState.STARTING
                         || lifecycleOwner != Thread.currentThread()
@@ -469,7 +469,7 @@ public final class RegionScheduler {
             try {
                 startedPool.stop();
             } catch (Throwable cleanup) {
-                failure = mergeFailure(failure, cleanup);
+                failure = FailStops.mergeFailureCapped(failure, cleanup);
             }
         }
         if (startedPool != null && !startedPool.isTerminated()) {
@@ -478,14 +478,14 @@ public final class RegionScheduler {
                 lifecycleOwner = null;
                 LIFECYCLE_LOCK.notifyAll();
             }
-            RegionScheduler.<RuntimeException>rethrow(failure != null ? failure
+            FailStops.<RuntimeException>rethrow(failure != null ? failure
                     : new IllegalStateException("partially-started region pool stayed live"));
         }
         active = false;
         if (draft != null && draft.levels != null) {
             for (RegionizedServer rs : draft.levels.values()) {
                 try { rs.regionizer().clear(); } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
+                    failure = FailStops.mergeFailureCapped(failure, cleanup);
                 }
             }
         }
@@ -494,14 +494,14 @@ public final class RegionScheduler {
             Throwable retiredWinner = startedPool == null
                     ? null : startedPool.fatalFailureOrNull();
             if (retiredWinner != null) {
-                failure = mergeFailure(retiredWinner, failure);
+                failure = FailStops.mergeFailureCapped(retiredWinner, failure);
             }
             if (failure != null) {
                 Throwable orphan = orphanFatalFailure;
                 if (orphan == null) {
                     orphanFatalFailure = failure;
                 } else {
-                    failure = mergeFailure(orphan, failure);
+                    failure = FailStops.mergeFailureCapped(orphan, failure);
                 }
             }
             if (pool == startedPool) pool = null;
@@ -516,7 +516,7 @@ public final class RegionScheduler {
             lifecycleOwner = null;
             LIFECYCLE_LOCK.notifyAll();
         }
-        RegionScheduler.<RuntimeException>rethrow(failure);
+        FailStops.<RuntimeException>rethrow(failure);
     }
 
     public static void stop() {
@@ -558,7 +558,7 @@ public final class RegionScheduler {
                     && server == null) {
                 if (interrupted) Thread.currentThread().interrupt();
                 Throwable failure = orphanFatalFailure;
-                if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+                if (failure != null) FailStops.<RuntimeException>rethrow(failure);
                 return;
             }
             if (lifecycleState != LifecycleState.RUNNING
@@ -589,7 +589,7 @@ public final class RegionScheduler {
                 Throwable terminalFailure = orphanFatalFailure;
                 if (terminalFailure != null) {
                     failure = failure == null
-                            ? terminalFailure : mergeFailure(terminalFailure, failure);
+                            ? terminalFailure : FailStops.mergeFailureCapped(terminalFailure, failure);
                 }
                 boolean stopped = !active && pool == null && transitionPool == null
                         && server == null
@@ -600,7 +600,7 @@ public final class RegionScheduler {
             }
             if (interrupted) Thread.currentThread().interrupt();
         }
-        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Long quiescence/drain path.  Never call while holding LIFECYCLE_LOCK. */
@@ -619,10 +619,10 @@ public final class RegionScheduler {
         try {
             TemporalControl.drainPacer();
         } catch (Throwable pacerStopFailure) {
-            stopFailure = mergeFailure(stopFailure, pacerStopFailure);
+            stopFailure = FailStops.mergeFailureCapped(stopFailure, pacerStopFailure);
             if (stoppingPool != null) {
                 stoppingPool.publishFatalFailure(pacerStopFailure);
-                stopFailure = mergeFailure(
+                stopFailure = FailStops.mergeFailureCapped(
                         stoppingPool.fatalFailureOrNull(), stopFailure);
             }
             failedGeneration = true;
@@ -637,9 +637,9 @@ public final class RegionScheduler {
             try {
                 stoppingPool.beginDraining(Thread.currentThread());
             } catch (Throwable drainBoundaryFailure) {
-                stopFailure = mergeFailure(stopFailure, drainBoundaryFailure);
+                stopFailure = FailStops.mergeFailureCapped(stopFailure, drainBoundaryFailure);
                 stoppingPool.publishFatalFailure(drainBoundaryFailure);
-                stopFailure = mergeFailure(
+                stopFailure = FailStops.mergeFailureCapped(
                         stoppingPool.fatalFailureOrNull(), stopFailure);
                 failedGeneration = true;
             }
@@ -649,10 +649,10 @@ public final class RegionScheduler {
         try {
             stopLevels = new java.util.ArrayList<>(PER_LEVEL.values());
         } catch (Throwable snapshotFailure) {
-            stopFailure = mergeFailure(stopFailure, snapshotFailure);
+            stopFailure = FailStops.mergeFailureCapped(stopFailure, snapshotFailure);
             if (stoppingPool != null) {
                 stoppingPool.publishFatalFailure(snapshotFailure);
-                stopFailure = mergeFailure(stoppingPool.fatalFailureOrNull(), stopFailure);
+                stopFailure = FailStops.mergeFailureCapped(stoppingPool.fatalFailureOrNull(), stopFailure);
                 failedGeneration = true;
             }
             stopLevels = java.util.List.of();
@@ -664,7 +664,7 @@ public final class RegionScheduler {
                 stopFailure = transitionFailure;
                 if (stoppingPool != null) {
                     stoppingPool.publishFatalFailure(transitionFailure);
-                    stopFailure = mergeFailure(stoppingPool.fatalFailureOrNull(), stopFailure);
+                    stopFailure = FailStops.mergeFailureCapped(stoppingPool.fatalFailureOrNull(), stopFailure);
                     failedGeneration = true;
                 }
             }
@@ -677,7 +677,7 @@ public final class RegionScheduler {
         if (!failedGeneration) {
             for (RegionizedServer rs : stopLevels) {
                 if (stoppingPool != null && stoppingPool.hasFatalFailure()) {
-                    stopFailure = mergeFailure(
+                    stopFailure = FailStops.mergeFailureCapped(
                             stoppingPool.fatalFailureOrNull(), stopFailure);
                     failedGeneration = true;
                     break;
@@ -685,10 +685,10 @@ public final class RegionScheduler {
                 try {
                     rs.prepareForSchedulerStop();
                 } catch (Throwable collapseFailure) {
-                    stopFailure = mergeFailure(stopFailure, collapseFailure);
+                    stopFailure = FailStops.mergeFailureCapped(stopFailure, collapseFailure);
                     if (stoppingPool != null) {
                         stoppingPool.publishFatalFailure(collapseFailure);
-                        stopFailure = mergeFailure(
+                        stopFailure = FailStops.mergeFailureCapped(
                                 stoppingPool.fatalFailureOrNull(), stopFailure);
                         failedGeneration = true;
                     }
@@ -748,18 +748,18 @@ public final class RegionScheduler {
                 boolean workerFailedGeneration = stoppingPool.hasFatalFailure();
                 failedGeneration |= workerFailedGeneration;
                 stopFailure = workerFailedGeneration
-                        ? mergeFailure(workerStopFailure, stopFailure)
-                        : mergeFailure(stopFailure, workerStopFailure);
+                        ? FailStops.mergeFailureCapped(workerStopFailure, stopFailure)
+                        : FailStops.mergeFailureCapped(stopFailure, workerStopFailure);
             }
             if (!stoppingPool.isTerminated()) {
                 // Pre-quiescence failure keeps the live runtime published for diagnosis/retry.
-                rethrow(stopFailure != null ? stopFailure : new IllegalStateException(
+                FailStops.rethrow(stopFailure != null ? stopFailure : new IllegalStateException(
                         "region worker pool stop returned before quiescence"));
             }
         }
         if (stoppingPool != null && stoppingPool.hasFatalFailure()) {
             failedGeneration = true;
-            stopFailure = mergeFailure(stoppingPool.fatalFailureOrNull(), stopFailure);
+            stopFailure = FailStops.mergeFailureCapped(stoppingPool.fatalFailureOrNull(), stopFailure);
         }
 
         // Thread.join supplied the publication edge. Only now make the runtime dark and
@@ -770,7 +770,7 @@ public final class RegionScheduler {
         // and all runtime references are detached before the exact primary is rethrown.
         active = false;
         if (!MAIN_SYNC.isEmpty()) {
-            stopFailure = mergeFailure(stopFailure, new IllegalStateException(
+            stopFailure = FailStops.mergeFailureCapped(stopFailure, new IllegalStateException(
                     "MAIN_SYNC was non-empty after the worker-pool fixed point"));
         }
         MainSyncService.INSTANCE.clearAll();
@@ -779,14 +779,14 @@ public final class RegionScheduler {
             try {
                 for (Region region : rs.snapshot()) {
                     if (!region.queue().isEmpty() || !region.helpQueue.isEmpty()) {
-                        stopFailure = mergeFailure(stopFailure, new IllegalStateException(
+                        stopFailure = FailStops.mergeFailureCapped(stopFailure, new IllegalStateException(
                                 "region work survived the worker-pool fixed point: "
                                         + rs.level.dimension().identifier() + "/"
                                         + Long.toHexString(region.gridKey)));
                     }
                 }
             } catch (Throwable inspectionFailure) {
-                stopFailure = mergeFailure(stopFailure, inspectionFailure);
+                stopFailure = FailStops.mergeFailureCapped(stopFailure, inspectionFailure);
             }
         }
         for (RegionizedServer rs : stopLevels) {
@@ -794,13 +794,13 @@ public final class RegionScheduler {
                 ((com.axalotl.fabrolia.common.parallelised.utils.TickingChunksAccess)
                         rs.entityManagerHandle()).fabrolia$finishStatusTransitions(!failedGeneration);
             } catch (Throwable statusFailure) {
-                stopFailure = mergeFailure(publishFatalAndSelectWinner(statusFailure), stopFailure);
+                stopFailure = FailStops.mergeFailureCapped(publishFatalAndSelectWinner(statusFailure), stopFailure);
                 failedGeneration = true;
             }
         }
         if (!failedGeneration) {
             stopFailure = finishQuiescedRuntime(stopLevels, stopFailure);
-            if (stopFailure != null) rethrow(stopFailure);
+            if (stopFailure != null) FailStops.rethrow(stopFailure);
         }
 
         Throwable clearFailure = failedGeneration ? stopFailure : null;
@@ -808,32 +808,32 @@ public final class RegionScheduler {
             try {
                 rs.regionizer().clear();
             } catch (Throwable cleanup) {
-                clearFailure = mergeFailure(clearFailure, cleanup);
+                clearFailure = FailStops.mergeFailureCapped(clearFailure, cleanup);
             }
         }
-        if (!failedGeneration && clearFailure != null) rethrow(clearFailure);
+        if (!failedGeneration && clearFailure != null) FailStops.rethrow(clearFailure);
         try {
             PER_LEVEL.clear();
         } catch (Throwable cleanup) {
-            clearFailure = mergeFailure(clearFailure, cleanup);
+            clearFailure = FailStops.mergeFailureCapped(clearFailure, cleanup);
         }
         try {
             LOGGER.info("RegionScheduler: stopped");
         } catch (Throwable diagnosticFailure) {
-            clearFailure = mergeFailure(clearFailure, diagnosticFailure);
+            clearFailure = FailStops.mergeFailureCapped(clearFailure, diagnosticFailure);
         }
         synchronized (LIFECYCLE_LOCK) {
             Throwable retiredWinner = stoppingPool == null
                     ? null : stoppingPool.fatalFailureOrNull();
             if (retiredWinner != null) {
-                clearFailure = mergeFailure(retiredWinner, clearFailure);
+                clearFailure = FailStops.mergeFailureCapped(retiredWinner, clearFailure);
             }
             if (clearFailure != null) {
                 Throwable orphan = orphanFatalFailure;
                 if (orphan == null) {
                     orphanFatalFailure = clearFailure;
                 } else {
-                    clearFailure = mergeFailure(orphan, clearFailure);
+                    clearFailure = FailStops.mergeFailureCapped(orphan, clearFailure);
                 }
             }
             if (pool == stoppingPool) pool = null;
@@ -843,7 +843,7 @@ public final class RegionScheduler {
             mainCurrentLevel = null;
             asyncLive = false;
         }
-        if (clearFailure != null) rethrow(clearFailure);
+        if (clearFailure != null) FailStops.rethrow(clearFailure);
     }
 
     private static Throwable finishQuiescedRuntime(
@@ -851,44 +851,31 @@ public final class RegionScheduler {
         try {
             TickDomains.retainFinalClocks(levels);
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         try {
             TickDomains.collapseAllToWall(levels);
             RedstoneTorchHistory.collapseAllToWall(levels);
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         try {
             NetherPortalTransfers.flushQuiescent();
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         try {
             CrossDimArrivals.flushAll(levels);
             for (RegionizedServer rs : levels) EndArrivalSavedData.detachToFallback(rs);
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         try {
             CrossDimLinks.reset();
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailureCapped(failure, cleanup);
         }
         return failure;
-    }
-
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (primary != secondary) {
-            try {
-                if (primary.getSuppressed().length >= 8) return primary;
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Cleanup diagnostics cannot replace the exact primary failure.
-            }
-        }
-        return primary;
     }
 
     /**
@@ -1049,11 +1036,6 @@ public final class RegionScheduler {
         if (armed) drainingPool.wakeAll();
     }
 
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
     public static RegionizedServer forLevel(ServerLevel level) {
         if (!active) return null;
         RegionizedServer existing = PER_LEVEL.get(level);
@@ -1069,14 +1051,14 @@ public final class RegionScheduler {
                 Throwable failure = publishFatalAndSelectWinner(
                         new IllegalStateException(
                                 "active RegionScheduler has no pool for level creation"));
-                RegionScheduler.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
                 return null;
             }
             if (lifecycleState != LifecycleState.RUNNING || currentGrid == null) {
                 Throwable failure = current.publishAndSelectFatal(
                         new IllegalStateException(
                                 "active RegionScheduler has no running generation for level creation"));
-                RegionScheduler.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
                 return null;
             }
 
@@ -1085,7 +1067,7 @@ public final class RegionScheduler {
                 prepared = new RegionizedServer[1];
             } catch (Throwable preparationFailure) {
                 Throwable failure = current.publishAndSelectFatal(preparationFailure);
-                RegionScheduler.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
                 return null;
             }
             try {
@@ -1096,7 +1078,7 @@ public final class RegionScheduler {
                         () -> prepared[0] = new RegionizedServer(level, currentGrid));
             } catch (Throwable constructionFailure) {
                 Throwable failure = current.publishAndSelectFatal(constructionFailure);
-                RegionScheduler.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
                 return null;
             }
             RegionizedServer created = prepared[0];
@@ -1113,9 +1095,9 @@ public final class RegionScheduler {
                     PER_LEVEL.remove(level, created);
                 } catch (Throwable cleanupFailure) {
                     failure = current.publishAndSelectFatal(
-                            mergeFailure(failure, cleanupFailure));
+                            FailStops.mergeFailureCapped(failure, cleanupFailure));
                 }
-                RegionScheduler.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
                 return null;
             }
         }
@@ -1246,7 +1228,7 @@ public final class RegionScheduler {
             failureGate.throwIfFailed();
         } else {
             Throwable failure = orphanFatalFailure;
-            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
         return current != null && current.ownsPausedExactTurn(Thread.currentThread());
     }
@@ -1395,7 +1377,7 @@ public final class RegionScheduler {
             current = failureGateLocked();
             Throwable failure = orphanFatalFailure;
             if (current == null && failure != null) {
-                RegionScheduler.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
         if (current != null) {
@@ -1609,7 +1591,7 @@ public final class RegionScheduler {
                 failure = publishFatalAndSelectWinner(primary);
             }
             if (failure != null) {
-                RegionScheduler.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         publishFatalAndSelectWinner(failure));
             }
             return;
@@ -1636,7 +1618,7 @@ public final class RegionScheduler {
                 failure = publishFatalAndSelectWinner(primary);
             }
             if (failure != null) {
-                RegionScheduler.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         publishFatalAndSelectWinner(failure));
             }
             return;
@@ -1663,7 +1645,7 @@ public final class RegionScheduler {
                     failure = publishFatalAndSelectWinner(primary);
                 }
                 if (failure != null) {
-                    RegionScheduler.<RuntimeException>rethrow(
+                    FailStops.<RuntimeException>rethrow(
                             publishFatalAndSelectWinner(failure));
                 }
                 return;
@@ -1672,7 +1654,7 @@ public final class RegionScheduler {
             try {
                 release = IslandCommands.mainClaimScoped(owner);
             } catch (Throwable claimFailure) {
-                RegionScheduler.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         publishFatalAndSelectWinner(claimFailure));
                 return;
             }
@@ -1699,7 +1681,7 @@ public final class RegionScheduler {
                         IslandCommands.mainRelease(owner);
                     } catch (Throwable releaseFailure) {
                         failure = publishFatalAndSelectWinner(
-                                mergeFailure(failure, releaseFailure));
+                                FailStops.mergeFailureCapped(failure, releaseFailure));
                     }
                 }
             }
@@ -1714,7 +1696,7 @@ public final class RegionScheduler {
                 }
             }
             if (failure != null) {
-                RegionScheduler.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         publishFatalAndSelectWinner(failure));
             }
             if (bodyCompleted) return;
@@ -1772,9 +1754,9 @@ public final class RegionScheduler {
         }
         if (winner == null) winner = orphanFatalFailure;
         if (winner == null) winner = candidate;
-        if (winner != candidate) winner = mergeFailure(winner, candidate);
+        if (winner != candidate) winner = FailStops.mergeFailureCapped(winner, candidate);
         if (publicationFailure != null) {
-            winner = mergeFailure(winner, publicationFailure);
+            winner = FailStops.mergeFailureCapped(winner, publicationFailure);
         }
         return winner;
     }
@@ -1835,7 +1817,7 @@ public final class RegionScheduler {
         }
         if (deferred) return;
         if (failure != null) {
-            RegionScheduler.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishFatalAndSelectWinner(failure));
         }
     }
@@ -1857,7 +1839,7 @@ public final class RegionScheduler {
                 runSuccessBodyIfHealthy(queued.completion());
             } catch (Throwable completionFailure) {
                 failure = publishFatalAndSelectWinner(
-                        mergeFailure(failure, completionFailure));
+                        FailStops.mergeFailureCapped(failure, completionFailure));
             }
         }
         failure = queued.permit().finish(failure);
@@ -1869,9 +1851,9 @@ public final class RegionScheduler {
     private static Throwable runDeferredTails(java.util.ArrayList<MainSyncTask> tails, Throwable failure) {
         for (MainSyncTask task : tails) {
             try {
-                failure = mergeFailure(failure, finishMainSync(task, failure));
+                failure = FailStops.mergeFailureCapped(failure, finishMainSync(task, failure));
             } catch (Throwable thrown) {
-                failure = publishFatalAndSelectWinner(mergeFailure(failure, thrown));
+                failure = publishFatalAndSelectWinner(FailStops.mergeFailureCapped(failure, thrown));
             }
         }
         return failure;
@@ -2032,7 +2014,7 @@ public final class RegionScheduler {
                 } catch (Throwable thrown) {
                     // The fenced task is already out of the queue: cancel its
                     // permit here, or the fail-stop sweep never sees it.
-                    RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(
+                    FailStops.<RuntimeException>rethrow(publishFatalAndSelectWinner(
                             cancelQueuedMainSync(queued, thrown)));
                 }
                 if (blocked) {
@@ -2171,7 +2153,7 @@ public final class RegionScheduler {
             current.schedule(new TickTask(current.getTickCount(), RegionScheduler::serviceMainSyncWake));
         } catch (Throwable publicationFailure) {
             MAIN_SYNC_WAKE_POSTED.set(false);
-            RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(publicationFailure));
+            FailStops.<RuntimeException>rethrow(publishFatalAndSelectWinner(publicationFailure));
         }
     }
 
@@ -2197,7 +2179,7 @@ public final class RegionScheduler {
             drainMainSyncOutOfPhase();
         } catch (Throwable thrown) {
             // MinecraftServer.doRunTask would swallow it: fail-stop instead.
-            RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(thrown));
+            FailStops.<RuntimeException>rethrow(publishFatalAndSelectWinner(thrown));
         }
     }
 
@@ -2470,10 +2452,10 @@ public final class RegionScheduler {
                 try {
                     requests.clearAll();
                 } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
+                    failure = FailStops.mergeFailureCapped(failure, cleanup);
                 }
             }
-            RegionScheduler.<RuntimeException>rethrow(publishFatalAndSelectWinner(failure));
+            FailStops.<RuntimeException>rethrow(publishFatalAndSelectWinner(failure));
         }
 
         void flush() {
@@ -2612,7 +2594,7 @@ public final class RegionScheduler {
                         // A peer W selected during release still forbids a normal return.
                         commitSuccessIfHealthy(() -> {});
                     } catch (Throwable releaseFailure) {
-                        failure = mergeFailure(failure, releaseFailure);
+                        failure = FailStops.mergeFailureCapped(failure, releaseFailure);
                         failure = publishFatalAndSelectWinner(failure);
                     }
                 }
@@ -2623,7 +2605,7 @@ public final class RegionScheduler {
                 if (outer != null) outer.addAll(tails);
                 else failure = runDeferredTails(tails, failure);
             }
-            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
             return complete;
         }
 
@@ -2690,7 +2672,7 @@ public final class RegionScheduler {
                     try {
                         publication.cancelUnrun();
                     } catch (Throwable cleanup) {
-                        return mergeFailure(failure, cleanup);
+                        return FailStops.mergeFailureCapped(failure, cleanup);
                     }
                     return failure;
                 },
@@ -2748,7 +2730,7 @@ public final class RegionScheduler {
             try {
                 queued.cancelUnrun();
             } catch (Throwable cleanup) {
-                failure = mergeFailure(failure, cleanup);
+                failure = FailStops.mergeFailureCapped(failure, cleanup);
             }
         }
         return failure;
@@ -3017,7 +2999,7 @@ public final class RegionScheduler {
             } finally {
                 state.set(TERMINAL);
             }
-            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
 
         @Override
@@ -3042,7 +3024,7 @@ public final class RegionScheduler {
             try {
                 cancellable.cancelQueuedBeforeStartWithFailure(primary);
             } catch (Throwable cleanup) {
-                failure = mergeFailure(failure, cleanup);
+                failure = FailStops.mergeFailureCapped(failure, cleanup);
             }
         }
         return failure;
@@ -3053,7 +3035,7 @@ public final class RegionScheduler {
         try {
             runSuccessBodyIfHealthy(task);
         } catch (Throwable failure) {
-            RegionScheduler.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     cancelRejectedRoot(pool, task, failure));
         }
     }
@@ -3094,14 +3076,14 @@ public final class RegionScheduler {
                 region.finishClaimTransaction();
             } catch (Throwable cleanup) {
                 failure = publishFatalAndSelectWinner(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailureCapped(failure, cleanup));
             }
         }
         if (failure != null) {
             if (!bodyAdmissionAttempted) {
                 failure = cancelRejectedRoot(pool, task, failure);
             }
-            RegionScheduler.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishFatalAndSelectWinner(failure));
         }
     }
@@ -3110,7 +3092,7 @@ public final class RegionScheduler {
         try {
             return ownsExactExecutionTurn();
         } catch (Throwable failure) {
-            RegionScheduler.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     cancelRejectedRoot(pool, task, failure));
             return false;
         }
@@ -3129,7 +3111,7 @@ public final class RegionScheduler {
             failure = new IllegalStateException(
                     "global region task rejected by worker-pool lifecycle");
         }
-        RegionScheduler.<RuntimeException>rethrow(cancelRejectedRoot(p, task, failure));
+        FailStops.<RuntimeException>rethrow(cancelRejectedRoot(p, task, failure));
     }
 
     /** Submit a pool-level task that the barrier pump may also steal (no claim-spins). */
@@ -3142,7 +3124,7 @@ public final class RegionScheduler {
         if (p != null && p.enqueueGlobalMainSafe(task)) return;
         Throwable fatal = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
         if (fatal != null) {
-            RegionScheduler.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     cancelRejectedRoot(p, task, fatal));
         }
         MinecraftServer current = server;
@@ -3150,7 +3132,7 @@ public final class RegionScheduler {
             if (current != null && !current.isSameThread()) {
                 Throwable rejection = new IllegalStateException(
                         "main-safe task submitted off-main after scheduler termination");
-                RegionScheduler.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         cancelRejectedRoot(p, task, rejection));
             }
             runRootInlineIfHealthy(task);
@@ -3158,7 +3140,7 @@ public final class RegionScheduler {
         }
         Throwable rejection = new IllegalStateException(
                 "main-safe task rejected at worker-pool drain boundary");
-        RegionScheduler.<RuntimeException>rethrow(
+        FailStops.<RuntimeException>rethrow(
                 cancelRejectedRoot(p, task, rejection));
     }
 
@@ -3182,14 +3164,14 @@ public final class RegionScheduler {
         if (p != null && p.enqueueGlobalMainOnly(task)) return;
         Throwable fatal = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
         if (fatal != null) {
-            RegionScheduler.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     cancelRejectedRoot(p, task, fatal));
         }
         Throwable rejection = new IllegalStateException(
                 !active || p == null || p.isTerminated()
                         ? "main-only task submitted off-main after scheduler termination"
                         : "main-only task rejected at worker-pool drain boundary");
-        RegionScheduler.<RuntimeException>rethrow(
+        FailStops.<RuntimeException>rethrow(
                 cancelRejectedRoot(p, task, rejection));
     }
 
@@ -3204,7 +3186,7 @@ public final class RegionScheduler {
         Throwable fatal = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
         Throwable rejection = fatal != null ? fatal
                 : new IllegalStateException("main-only task rejected: no live worker pool");
-        RegionScheduler.<RuntimeException>rethrow(cancelRejectedRoot(p, task, rejection));
+        FailStops.<RuntimeException>rethrow(cancelRejectedRoot(p, task, rejection));
     }
 
     /** A2: submit an island tick-unit coordinator (dedicated lane — only the
@@ -3221,7 +3203,7 @@ public final class RegionScheduler {
         }
         Throwable fatal = p == null ? workerFailureOrNull() : p.fatalFailureOrNull();
         if (fatal != null) {
-            RegionScheduler.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     cancelRejectedRoot(p, task, fatal));
         }
         return false;
@@ -3261,7 +3243,7 @@ public final class RegionScheduler {
                         "current island runtime rejected a unit publication");
             }
             failure = expectedPool.publishAndSelectFatal(failure);
-            RegionScheduler.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     cancelRejectedRoot(expectedPool, task, failure));
             return false;
         }
@@ -3408,7 +3390,7 @@ public final class RegionScheduler {
     /** Surface an off-thread tick failure unchanged on the current caller. */
     public static void throwWorkerFailureIfAny() {
         Throwable failure = workerFailureOrNull();
-        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Non-throwing read used to suppress success-only tails after a peer selected W. */
@@ -3446,13 +3428,13 @@ public final class RegionScheduler {
                 return;
             }
             Throwable failure = orphanFatalFailure;
-            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
             try {
                 commit.run();
                 return;
             } catch (Throwable thrown) {
                 if (orphanFatalFailure == null) orphanFatalFailure = thrown;
-                RegionScheduler.<RuntimeException>rethrow(orphanFatalFailure);
+                FailStops.<RuntimeException>rethrow(orphanFatalFailure);
             }
         }
     }
@@ -3484,7 +3466,7 @@ public final class RegionScheduler {
                 return current;
             }
             Throwable failure = orphanFatalFailure;
-            if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
             return null;
         }
     }
@@ -3539,7 +3521,7 @@ public final class RegionScheduler {
             failure = thrown;
         }
         failure = finishNoPoolSuccessBody(failure);
-        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Allocation-free boolean form of {@link #runSuccessBodyIfHealthy(Runnable)}. */
@@ -3562,7 +3544,7 @@ public final class RegionScheduler {
             result = false;
         }
         failure = finishNoPoolSuccessBody(failure);
-        if (failure != null) RegionScheduler.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         return result;
     }
 

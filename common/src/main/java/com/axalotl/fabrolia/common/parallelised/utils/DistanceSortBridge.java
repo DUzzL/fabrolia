@@ -4,6 +4,7 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.nio.ByteBuffer;
+import com.axalotl.fabrolia.common.regions.FailStops;
 
 /**
  * Soft bridge to Rustmi's Rust distance sort (the batch-FFI form of the
@@ -46,13 +47,8 @@ public final class DistanceSortBridge {
         try {
             return (boolean) h.invokeExact(xs, ys, zs, tx, ty, tz, n, perm);
         } catch (Throwable failure) {
-            DistanceSortBridge.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
             return false;
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

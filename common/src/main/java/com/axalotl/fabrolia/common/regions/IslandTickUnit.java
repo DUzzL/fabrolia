@@ -154,7 +154,7 @@ public final class IslandTickUnit {
 
         public void throwIfFailed() {
             Throwable selected = failure;
-            if (selected != null) IslandTickUnit.<RuntimeException>rethrow(selected);
+            if (selected != null) FailStops.<RuntimeException>rethrow(selected);
             RegionScheduler.throwWorkerFailureIfAny();
         }
     }
@@ -209,16 +209,16 @@ public final class IslandTickUnit {
                 try {
                     publication.cancelBeforeStart(failure);
                 } catch (Throwable cleanupFailure) {
-                    failure = publishMergedFailure(failure, cleanupFailure);
+                    failure = FailStops.publishMergedFailure(failure, cleanupFailure);
                 }
                 if (queuedUnit instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
                     try {
                         cancellable.cancelQueuedBeforeStartWithFailure(failure);
                     } catch (Throwable cleanupFailure) {
-                        failure = publishMergedFailure(failure, cleanupFailure);
+                        failure = FailStops.publishMergedFailure(failure, cleanupFailure);
                     }
                 }
-                IslandTickUnit.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
     }
@@ -306,13 +306,13 @@ public final class IslandTickUnit {
         try {
             request.publication.cancelBeforeStart(failure);
         } catch (Throwable cleanupFailure) {
-            failure = publishMergedFailure(failure, cleanupFailure);
+            failure = FailStops.publishMergedFailure(failure, cleanupFailure);
         }
         if (request.queuedUnit instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
             try {
                 cancellable.cancelQueuedBeforeStartWithFailure(failure);
             } catch (Throwable cleanupFailure) {
-                failure = publishMergedFailure(failure, cleanupFailure);
+                failure = FailStops.publishMergedFailure(failure, cleanupFailure);
             }
         }
         // start1 may already be RUNNING when publication/start2 selects W.
@@ -326,7 +326,7 @@ public final class IslandTickUnit {
             LockSupport.parkNanos(20_000L);
         }
         if (!request.receipt.isDone()) {
-            failure = publishMergedFailure(failure, new IllegalStateException(
+            failure = FailStops.publishMergedFailure(failure, new IllegalStateException(
                     "terminal global sprint publication retained a live receipt"
                             + " for island#" + request.island.id));
             // The publication is now terminal, so this is failure notification
@@ -353,10 +353,10 @@ public final class IslandTickUnit {
                 }
             }
         } catch (Throwable cleanupFailure) {
-            failure = publishMergedFailure(failure, cleanupFailure);
+            failure = FailStops.publishMergedFailure(failure, cleanupFailure);
         }
         if (ownershipFault != 0) {
-            failure = publishMergedFailure(failure, new IllegalStateException(
+            failure = FailStops.publishMergedFailure(failure, new IllegalStateException(
                     (ownershipFault == 1
                             ? "global sprint request lost its owned fence"
                             : "global sprint cleanup refused a foreign fence owner")
@@ -375,7 +375,7 @@ public final class IslandTickUnit {
                 }
             }
         } catch (Throwable cleanupFailure) {
-            failure = publishMergedFailure(failure, cleanupFailure);
+            failure = FailStops.publishMergedFailure(failure, cleanupFailure);
         }
         return failure;
     }
@@ -398,7 +398,7 @@ public final class IslandTickUnit {
             Throwable failure = RegionScheduler.publishFatalAndSelectWinner(
                     rs, submissionFailure);
             receipt.finishAfterFailure(failure);
-            IslandTickUnit.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
         return receipt;
     }
@@ -438,7 +438,7 @@ public final class IslandTickUnit {
             Throwable failure = RegionScheduler.publishFatalAndSelectWinner(
                     rs, submissionFailure);
             receipt.finishAfterFailure(failure);
-            IslandTickUnit.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
         return receipt;
     }
@@ -521,16 +521,16 @@ public final class IslandTickUnit {
             try {
                 publication.cancelBeforeStart(failure);
             } catch (Throwable cleanupFailure) {
-                failure = publishMergedFailure(failure, cleanupFailure);
+                failure = FailStops.publishMergedFailure(failure, cleanupFailure);
             }
             if (queuedUnit instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
                 try {
                     cancellable.cancelQueuedBeforeStartWithFailure(failure);
                 } catch (Throwable cleanupFailure) {
-                    failure = publishMergedFailure(failure, cleanupFailure);
+                    failure = FailStops.publishMergedFailure(failure, cleanupFailure);
                 }
             }
-            IslandTickUnit.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -716,21 +716,21 @@ public final class IslandTickUnit {
                 try {
                     unit.cancelBeforeStart(failure);
                 } catch (Throwable cleanupFailure) {
-                    failure = publishMergedFailure(failure, cleanupFailure);
+                    failure = FailStops.publishMergedFailure(failure, cleanupFailure);
                 }
             }
             if (queuedUnit instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
                 try {
                     cancellable.cancelQueuedBeforeStartWithFailure(failure);
                 } catch (Throwable cleanupFailure) {
-                    failure = publishMergedFailure(failure, cleanupFailure);
+                    failure = FailStops.publishMergedFailure(failure, cleanupFailure);
                 }
             }
             if (paced != null) {
                 try {
                     failure = paced.cancel(failure);
                 } catch (Throwable cleanupFailure) {
-                    failure = publishMergedFailure(failure, cleanupFailure);
+                    failure = FailStops.publishMergedFailure(failure, cleanupFailure);
                 }
             }
             return failure;
@@ -780,7 +780,7 @@ public final class IslandTickUnit {
                 try {
                     publication.cancelBeforeStart(failure);
                 } catch (Throwable cleanupFailure) {
-                    failure = publishMergedFailure(failure, cleanupFailure);
+                    failure = FailStops.publishMergedFailure(failure, cleanupFailure);
                 }
             } else {
                 synchronized (island.unitAdmissionLock) {
@@ -791,10 +791,10 @@ public final class IslandTickUnit {
                 try {
                     cancellable.cancelQueuedBeforeStartWithFailure(failure);
                 } catch (Throwable cleanupFailure) {
-                    failure = publishMergedFailure(failure, cleanupFailure);
+                    failure = FailStops.publishMergedFailure(failure, cleanupFailure);
                 }
             }
-            IslandTickUnit.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
             return PreparedSuccessor.NONE;
         }
     }
@@ -1257,17 +1257,17 @@ public final class IslandTickUnit {
                             me.currentRegion = prevR;
                             hr.release(Thread.currentThread());
                         } catch (Throwable cleanupFailure) {
-                            haloFailure = publishMergedFailure(haloFailure, cleanupFailure);
+                            haloFailure = FailStops.publishMergedFailure(haloFailure, cleanupFailure);
                         }
                         try {
                             // This halo belt has no later ready/barrier receipt;
                             // release is its complete claim-transaction tail.
                             hr.finishClaimTransaction();
                         } catch (Throwable cleanupFailure) {
-                            haloFailure = publishMergedFailure(haloFailure, cleanupFailure);
+                            haloFailure = FailStops.publishMergedFailure(haloFailure, cleanupFailure);
                         }
                         if (haloFailure != null) {
-                            IslandTickUnit.<RuntimeException>rethrow(haloFailure);
+                            FailStops.<RuntimeException>rethrow(haloFailure);
                         }
                     }
                     // Island-internal cross-region replay: single-threaded,
@@ -1341,7 +1341,7 @@ public final class IslandTickUnit {
                         throw new IllegalStateException("debug: injected unit-tail failure");
                     }
                 } catch (Throwable tailFailure) {
-                    unitFailure = publishMergedFailure(unitFailure, tailFailure);
+                    unitFailure = FailStops.publishMergedFailure(unitFailure, tailFailure);
                 }
 
                 try {
@@ -1350,7 +1350,7 @@ public final class IslandTickUnit {
                     island.domain.handlingTickPhase = false;
                     IslandBlockEvents.endUnitCapture(rs.level);
                 } catch (Throwable cleanupFailure) {
-                    unitFailure = publishMergedFailure(unitFailure, cleanupFailure);
+                    unitFailure = FailStops.publishMergedFailure(unitFailure, cleanupFailure);
                 }
 
                 if (unitFailure == null) {
@@ -1422,7 +1422,7 @@ public final class IslandTickUnit {
                             });
                         }
                     } catch (Throwable completionFailure) {
-                        unitFailure = publishMergedFailure(unitFailure, completionFailure);
+                        unitFailure = FailStops.publishMergedFailure(unitFailure, completionFailure);
                         if (preparedSuccessor != null) {
                             unitFailure = preparedSuccessor.cancel(unitFailure);
                         }
@@ -1436,11 +1436,11 @@ public final class IslandTickUnit {
                     try {
                         island.domain.unitGameTime = island.logicalTick;
                     } catch (Throwable cleanupFailure) {
-                        unitFailure = publishMergedFailure(unitFailure, cleanupFailure);
+                        unitFailure = FailStops.publishMergedFailure(unitFailure, cleanupFailure);
                     }
                 }
             }
-            if (unitFailure != null) IslandTickUnit.<RuntimeException>rethrow(unitFailure);
+            if (unitFailure != null) FailStops.<RuntimeException>rethrow(unitFailure);
         } catch (Throwable thrown) {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         } finally {
@@ -1451,12 +1451,12 @@ public final class IslandTickUnit {
                 try {
                     island.clearClaim();
                 } catch (Throwable releaseFailure) {
-                    failure = publishMergedFailure(failure, releaseFailure);
+                    failure = FailStops.publishMergedFailure(failure, releaseFailure);
                 }
                 try {
                     island.unitClaim.set(false);
                 } catch (Throwable releaseFailure) {
-                    failure = publishMergedFailure(failure, releaseFailure);
+                    failure = FailStops.publishMergedFailure(failure, releaseFailure);
                 }
                 claimAcquired = false;
                 // A pending MAIN_SYNC service request stopped this island at
@@ -1466,7 +1466,7 @@ public final class IslandTickUnit {
                     try {
                         RegionScheduler.requestMainSyncService();
                     } catch (Throwable wakeFailure) {
-                        failure = publishMergedFailure(failure, wakeFailure);
+                        failure = FailStops.publishMergedFailure(failure, wakeFailure);
                     }
                 }
             }
@@ -1497,7 +1497,7 @@ public final class IslandTickUnit {
                 // no callback or successor body is invoked here.
                 failure = RegionScheduler.publishFatalAndSelectWinner(failure);
                 receipt.finishAfterFailure(failure);
-                IslandTickUnit.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
     }
@@ -1507,7 +1507,7 @@ public final class IslandTickUnit {
             future.join();
         } catch (CompletionException wrapped) {
             Throwable original = wrapped.getCause();
-            IslandTickUnit.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     original == null ? wrapped : original);
         }
     }
@@ -1689,29 +1689,6 @@ public final class IslandTickUnit {
         return false;
     }
 
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // The unit/server is already failing with primary. Suppression
-                // is diagnostic only and may allocate under low memory.
-            }
-        }
-        return primary;
-    }
-
-    private static Throwable publishMergedFailure(Throwable primary, Throwable secondary) {
-        return RegionScheduler.publishFatalAndSelectWinner(
-                mergeFailure(primary, secondary));
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
     /** Flood-safe field evidence for the load-dependent admission race. */
     private static void reportStaleFollower(IslandRegistry.PIsland island, long submittedAtL) {
         long total = STALE_FOLLOWERS.incrementAndGet();
@@ -1845,7 +1822,7 @@ public final class IslandTickUnit {
         } catch (Throwable completionFailure) {
             Throwable failure = RegionScheduler.publishFatalAndSelectWinner(completionFailure);
             if (successor != null) failure = successor.cancel(failure);
-            IslandTickUnit.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 

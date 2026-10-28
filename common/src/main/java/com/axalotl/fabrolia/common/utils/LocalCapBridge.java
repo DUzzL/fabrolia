@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import net.minecraft.server.level.ServerLevel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.axalotl.fabrolia.common.regions.FailStops;
 
 /**
  * Pluggable provider for the LOCAL per-player mob cap ({@code LocalMobCapCalculator} —
@@ -164,7 +165,7 @@ public final class LocalCapBridge {
                 try {
                     freeIfQuiescent();
                 } catch (Throwable cleanup) {
-                    if (primary == null) Arena.<RuntimeException>rethrow(cleanup);
+                    if (primary == null) FailStops.<RuntimeException>rethrow(cleanup);
                     if (cleanup != primary) {
                         try {
                             primary.addSuppressed(cleanup);
@@ -174,11 +175,6 @@ public final class LocalCapBridge {
                     }
                 }
             }
-        }
-
-        @SuppressWarnings("unchecked")
-        private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-            throw (T) failure;
         }
 
         @Override public long handle() { return handle; }

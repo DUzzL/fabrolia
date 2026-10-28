@@ -88,13 +88,8 @@ public final class GlobalBlockUpdateDrain {
                     else failure.addSuppressed(cleanup);
                 }
             }
-            if (failure != null) GlobalBlockUpdateDrain.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
     private record LevelLane(RegionizedServer runtime, Consumer<ChunkHolder> publisher)

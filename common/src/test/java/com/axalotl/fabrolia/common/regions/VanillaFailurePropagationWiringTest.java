@@ -41,7 +41,7 @@ final class VanillaFailurePropagationWiringTest {
         int levelCommit = levelSave.indexOf(
                 "RegionScheduler.commitSuccessIfHealthy(() -> {})", levelRelease);
         int levelRethrow = levelSave.indexOf(
-                "fabrolia$throwPlayerTickFailure(", levelCommit);
+                "FailStops.<RuntimeException>rethrow(", levelCommit);
         int levelReselect = levelSave.indexOf(
                 "RegionScheduler.publishFatalAndSelectWinner(failure)", levelRethrow);
 
@@ -94,7 +94,7 @@ final class VanillaFailurePropagationWiringTest {
                 "failure = rsq.releaseAllIslands(failure)", chunkWinner);
         int chunkCommit = chunkSave.indexOf(
                 "RegionScheduler.commitSuccessIfHealthy(() -> {})", chunkRelease);
-        int chunkRethrow = chunkSave.indexOf("fabrolia$rethrow(", chunkCommit);
+        int chunkRethrow = chunkSave.indexOf("FailStops.<RuntimeException>rethrow(", chunkCommit);
         int chunkReselect = chunkSave.indexOf(
                 "RegionScheduler.publishFatalAndSelectWinner(failure)", chunkRethrow);
 
@@ -137,8 +137,8 @@ final class VanillaFailurePropagationWiringTest {
         String vanish = source("common/mixin/advancement/SimpleCriterionTriggerMixin.java");
         assertTrue(vanish.contains("catch (ClassNotFoundException absent)"),
                 "an actually absent optional mod may select the vanilla path");
-        assertTrue(vanish.contains("fabrolia$rethrow(linkageFailure)"));
-        assertTrue(vanish.contains("fabrolia$rethrow(failure)"));
+        assertTrue(vanish.contains("FailStops.<RuntimeException>rethrow(linkageFailure)"));
+        assertTrue(vanish.contains("FailStops.<RuntimeException>rethrow(failure)"));
         assertFalse(vanish.contains("catch (Throwable ignored)"),
                 "an entered Vanish decision must not be converted into an advancement award");
 
@@ -183,11 +183,11 @@ final class VanillaFailurePropagationWiringTest {
         assertFalse(chunkMap.contains("skipThrowLoadEntity"));
         assertFalse(chunkMap.contains("pauseInIde"),
                 "Fabrolia must not cancel vanilla's duplicate tracked-entity failure");
-        assertTrue(chunkMap.contains("fabrolia$mergeSaveFailure(failure, cleanup)"));
+        assertTrue(chunkMap.contains("FailStops.mergeFailure(failure, cleanup)"));
         assertTrue(chunkMap.contains(".publishAndPropagate(failure)"));
 
         String entities = source("common/mixin/server/EntitySectionSaveMixin.java");
-        assertTrue(count(entities, "fabrolia$mergeFailure(failure, cleanup)") == 2);
+        assertTrue(count(entities, "FailStops.mergeFailure(failure, cleanup)") == 2);
         assertTrue(entities.contains("IslandCommands.publishAndPropagate(failure)"));
 
         String playerList = source("common/mixin/server/PlayerListMixin.java");
@@ -203,7 +203,8 @@ final class VanillaFailurePropagationWiringTest {
         int primaryCatch = processor.indexOf("catch (Throwable primary)", regionStop);
         int flatStop = processor.indexOf("stop();", primaryCatch);
         int cleanupCatch = processor.indexOf("catch (Throwable cleanup)", flatStop);
-        int exactRethrow = processor.indexOf("fabrolia$throwUnchecked(failure)", cleanupCatch);
+        int exactRethrow = processor.indexOf("FailStops.<RuntimeException>rethrow(failure)",
+                cleanupCatch);
 
         assertTrue(boundary >= 0 && regionStop > boundary && primaryCatch > regionStop
                         && flatStop > primaryCatch && cleanupCatch > flatStop
@@ -239,7 +240,7 @@ final class VanillaFailurePropagationWiringTest {
     private static void assertClaimedGlobalTickPostReleaseCommit(
             String relative, String method, String label) throws Exception {
         String mixin = source(relative);
-        String body = methodSlice(mixin, method, "private static Throwable");
+        String body = methodSlice(mixin, method, "\n    }\n");
         int claim = body.indexOf("IslandCommands.mainClaim(owner)");
         int admission = body.indexOf(
                 "RegionScheduler.runSuccessBodyIfHealthy(", claim);

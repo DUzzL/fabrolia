@@ -140,7 +140,8 @@ final class RegionMainBlockingWaitGuardWiringTest {
         int publish = callIndex(fail, SCHEDULER,
                 "publishFatalAndSelectWinner",
                 "(Ljava/lang/Throwable;)Ljava/lang/Throwable;");
-        int rethrow = callIndex(fail, GUARD, "rethrow",
+        int rethrow = callIndex(fail,
+                "com/axalotl/fabrolia/common/regions/FailStops", "rethrow",
                 "(Ljava/lang/Throwable;)V");
         assertTrue(active >= 0 && classify > active && publish > classify
                         && rethrow > publish);

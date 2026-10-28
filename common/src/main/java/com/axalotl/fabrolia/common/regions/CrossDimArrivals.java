@@ -164,7 +164,7 @@ public final class CrossDimArrivals {
                 try {
                     receipt.cancel();
                 } catch (Throwable cleanup) {
-                    failure = selectFailure(mergeFailure(failure, cleanup));
+                    failure = selectFailure(FailStops.mergeFailure(failure, cleanup));
                 }
             }
             return failure;
@@ -433,7 +433,7 @@ public final class CrossDimArrivals {
             Throwable failure = selectFailure(thrown);
             if (prepared != null) failure = prepared.cancel(failure);
             failure = nether.cancel(failure);
-            CrossDimArrivals.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
             return PreparedSeal.EMPTY;
         }
     }
@@ -457,7 +457,7 @@ public final class CrossDimArrivals {
             failure = selectFailure(thrown);
         }
         failure = prepared.cancel(failure);
-        CrossDimArrivals.<RuntimeException>rethrow(selectFailure(failure));
+        FailStops.<RuntimeException>rethrow(selectFailure(failure));
     }
 
     private record RouteTarget(IslandRegistry.PIsland owner, ArrayList<StagedOp> ops) {}
@@ -480,9 +480,9 @@ public final class CrossDimArrivals {
             try {
                 receipt.cancel();
             } catch (Throwable cleanup) {
-                winner = selectFailure(mergeFailure(winner, cleanup));
+                winner = selectFailure(FailStops.mergeFailure(winner, cleanup));
             }
-            CrossDimArrivals.<RuntimeException>rethrow(winner);
+            FailStops.<RuntimeException>rethrow(winner);
             return PreparedSeal.EMPTY;
         }
     }
@@ -917,33 +917,16 @@ public final class CrossDimArrivals {
             try {
                 PUBLISHING.set(prevPublishing);
             } catch (Throwable cleanup) {
-                failure = selectFailure(mergeFailure(failure, cleanup));
+                failure = selectFailure(FailStops.mergeFailure(failure, cleanup));
             }
         }
-        if (failure != null) CrossDimArrivals.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     private static Throwable selectFailure(Throwable candidate) {
         return RegionScheduler.isActive()
                 ? RegionScheduler.publishFatalAndSelectWinner(candidate)
                 : candidate;
-    }
-
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Diagnostic suppression cannot replace the first failure.
-            }
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
 

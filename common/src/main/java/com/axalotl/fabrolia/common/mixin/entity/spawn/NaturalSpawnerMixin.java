@@ -5,6 +5,7 @@ import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.parallelised.utils.ParallelSpawnHelper;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
@@ -117,7 +118,7 @@ public abstract class NaturalSpawnerMixin {
             ((FabroliaSpawnStateView) state).fabrolia$releaseLocalPack(category, chunk.getPos().pack(), token);
         } catch (Throwable cleanup) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
-                    fabrolia$mergeFailure(failure, cleanup));
+                    FailStops.mergeFailure(failure, cleanup));
         }
         if (failure == null) {
             try {
@@ -129,25 +130,8 @@ public abstract class NaturalSpawnerMixin {
             }
         }
         if (failure != null) {
-            NaturalSpawnerMixin.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
-    }
-
-    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && cleanup != primary) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable suppressionFailure) {
-                // Suppression metadata cannot replace the exact pack failure.
-            }
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
     // Deliberately NO getMobForSpawn cap bail and NO spawnForChunk state binding.

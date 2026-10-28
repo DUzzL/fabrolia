@@ -12,6 +12,7 @@ import com.axalotl.fabrolia.common.regions.TrackedEntityPassAccess;
 import com.axalotl.fabrolia.common.regions.TrackerIndexChanges;
 import com.axalotl.fabrolia.common.regions.TrackingViewerPass;
 import com.axalotl.fabrolia.common.regions.VmpTrackingFanoutGate;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.ishland.vmp.common.maps.AreaMap;
 import com.ishland.vmp.common.playerwatching.NearbyEntityTracking;
 import com.ishland.vmp.mixins.access.IThreadedAnvilChunkStorage;
@@ -431,7 +432,7 @@ public abstract class NearbyEntityTrackingMixin
             fabrolia$VMP_PREV_Y.setDouble(player, Double.NaN);
             fabrolia$VMP_PREV_Z.setDouble(player, Double.NaN);
         } catch (IllegalAccessException failure) {
-            NearbyEntityTrackingMixin.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -919,14 +920,8 @@ public abstract class NearbyEntityTrackingMixin
 
         Throwable failure = gate.failureOrNull();
         if (failure != null) {
-            NearbyEntityTrackingMixin.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
-    }
-
-    @Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
     @Unique
@@ -988,7 +983,7 @@ public abstract class NearbyEntityTrackingMixin
                 this.gate.completeTerminal(this.done);
             }
             if (failure != null) {
-                NearbyEntityTrackingMixin.<RuntimeException>fabrolia$rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 

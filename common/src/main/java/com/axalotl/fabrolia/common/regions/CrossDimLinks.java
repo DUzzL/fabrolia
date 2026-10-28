@@ -593,7 +593,7 @@ public final class CrossDimLinks {
                         RegionScheduler.commitSuccessIfHealthy(
                                 () -> anchorsDeferred++);
                     } catch (Throwable peerFailure) {
-                        CrossDimLinks.<RuntimeException>rethrow(
+                        FailStops.<RuntimeException>rethrow(
                                 RegionScheduler.publishFatalAndSelectWinner(peerFailure));
                     }
                     return false;
@@ -644,7 +644,7 @@ public final class CrossDimLinks {
         } catch (Throwable thrown) {
             Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
             releaseAnchorClaims(claimed, failure);
-            CrossDimLinks.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
         releaseAnchorClaims(claimed, null);
         try {
@@ -652,7 +652,7 @@ public final class CrossDimLinks {
             // window opened by that cleanup before reporting normal success.
             RegionScheduler.commitSuccessIfHealthy(() -> {});
         } catch (Throwable peerFailure) {
-            CrossDimLinks.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(peerFailure));
         }
         return true;
@@ -670,14 +670,14 @@ public final class CrossDimLinks {
                 member = claimed.remove(r);
             } catch (Throwable cleanup) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
                 continue;
             }
             try {
                 member.clearClaim();
             } catch (Throwable cleanup) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
             try {
                 // Exact permit release is independent: a ledger-cleanup
@@ -685,10 +685,10 @@ public final class CrossDimLinks {
                 member.unitClaim.set(false);
             } catch (Throwable cleanup) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
         }
-        if (failure != null) CrossDimLinks.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     // ---- helpers -----------------------------------------------------------
@@ -723,23 +723,6 @@ public final class CrossDimLinks {
             }
         }
         return best;
-    }
-
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Suppression is diagnostic only; W remains authoritative.
-            }
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
     private static void refill(LongOpenHashSet dst, LongOpenHashSet src) {

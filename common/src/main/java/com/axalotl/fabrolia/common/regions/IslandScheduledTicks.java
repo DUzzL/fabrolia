@@ -1158,7 +1158,7 @@ public final class IslandScheduledTicks {
                 // this exact structural lock is still held, then propagate W.
                 Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
                 failure = reindexPreparedLaneAfterFailure(lane, failure);
-                IslandScheduledTicks.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
                 return null;
             }
         }
@@ -1191,7 +1191,7 @@ public final class IslandScheduledTicks {
                 else nextTick.put(prepared.chunkPos, head.triggerTick());
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         return failure;
     }
@@ -1374,11 +1374,6 @@ public final class IslandScheduledTicks {
                 + " trigger=" + h.triggerTick() + " sub=" + h.subTickOrder();
     }
 
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
     /** Vanilla collect (collectTicks) + run + cleanup over slice-local state,
      * scoped to {@code dueChunks}. Eligibility is prepared read-only, then its
      * exact container/head identity is committed before the vanilla drain. */
@@ -1480,7 +1475,7 @@ public final class IslandScheduledTicks {
             Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
             failure = reindexOrdinaryPreparedAfterFailure(
                     access, prepared, failure);
-            IslandScheduledTicks.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
             return;
         }
         }
@@ -1511,7 +1506,7 @@ public final class IslandScheduledTicks {
                 else nextTick.put(candidate.chunkPos, head.triggerTick());
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         return failure;
     }
@@ -1635,10 +1630,10 @@ public final class IslandScheduledTicks {
                 try {
                     retireSlice(execution);
                 } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
+                    failure = FailStops.mergeFailure(failure, cleanup);
                 }
             }
-            IslandScheduledTicks.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
             return execution;
         } finally {
             read.unlock();
@@ -1689,7 +1684,7 @@ public final class IslandScheduledTicks {
                 retireSlice(execution);
             } catch (Throwable cleanup) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
         } finally {
             read.unlock();
@@ -1767,7 +1762,7 @@ public final class IslandScheduledTicks {
                 long chunkKey = ChunkPos.pack(tick.pos());
                 Object raw = access.fabrolia$allContainers().get(chunkKey);
                 if (!(raw instanceof LevelChunkTicks<?>)) {
-                    failure = mergeFailure(failure, new IllegalStateException(
+                    failure = FailStops.mergeFailure(failure, new IllegalStateException(
                             "scheduled-tick failure cleanup lost container "
                                     + ChunkPos.getX(chunkKey) + ","
                                     + ChunkPos.getZ(chunkKey)));
@@ -1794,7 +1789,7 @@ public final class IslandScheduledTicks {
                 else nextTick.put(chunkKey, head.triggerTick());
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         return failure;
     }
@@ -1826,25 +1821,13 @@ public final class IslandScheduledTicks {
                 }
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         return failure;
     }
 
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Suppression metadata cannot replace the authoritative failure.
-            }
-        }
-        return primary;
-    }
-
     private static void rethrowIfPresent(Throwable failure) {
-        if (failure != null) IslandScheduledTicks.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Island of a chunk via the LIVE region map; freshly-populated (post-rebuild)

@@ -261,11 +261,11 @@ public final class ColorGate {
                     r.releaseDoneSeal();
                 } catch (Throwable releaseFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(
-                            mergeFailure(failure, releaseFailure));
+                            FailStops.mergeFailureCapped(failure, releaseFailure));
                 }
             }
         }
-        if (failure != null) ColorGate.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         return published;
     }
 
@@ -367,24 +367,5 @@ public final class ColorGate {
                 }
             }
         }
-    }
-
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                if (primary.getSuppressed().length < 8) {
-                    primary.addSuppressed(secondary);
-                }
-            } catch (Throwable ignored) {
-                // Diagnostic suppression must never replace the selected W.
-            }
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

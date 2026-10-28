@@ -6,6 +6,7 @@ import com.axalotl.fabrolia.common.regions.IslandUnitAdmission;
 import com.axalotl.fabrolia.common.regions.NetherPortalPlayerAccess;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.world.level.entity.PersistentEntitySectionManager;
@@ -97,13 +98,13 @@ public abstract class EntitySectionSaveMixin {
                 owner.clearClaim();
             } catch (Throwable cleanup) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        fabrolia$mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
             try {
                 owner.unitClaim.set(false);
             } catch (Throwable cleanup) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        fabrolia$mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
             if (failure == null) {
                 try {
@@ -140,19 +141,5 @@ public abstract class EntitySectionSaveMixin {
             IslandCommands.publishAndPropagate(failure);
             return false; // unreachable: publishAndPropagate always exact-rethrows
         }
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    private static Throwable fabrolia$mergeFailure(
-            Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Claim cleanup diagnostics cannot replace the save primary.
-            }
-        }
-        return primary;
     }
 }

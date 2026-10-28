@@ -302,17 +302,12 @@ public final class ConsoleCommandFenceScope {
             }
         }
         if (failure != null) {
-            ConsoleCommandFenceScope.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
     private static IllegalStateException invariant(String message) {
         return new StacklessInvariantFailure(message);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
     private static final class Frame {

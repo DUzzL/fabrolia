@@ -2,6 +2,7 @@ package com.axalotl.fabrolia.common.mixin.commands;
 
 import com.axalotl.fabrolia.common.regions.FunctionAnalyzer;
 import com.axalotl.fabrolia.common.regions.FunctionLibraryAnalysisAccess;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -102,8 +103,7 @@ public abstract class ServerFunctionLibraryMixin
             FunctionAnalyzer.analyzeInto(stage, id, function, lines);
         } catch (Throwable failure) {
             FunctionAnalyzer.recordFailure(stage, failure);
-            return ServerFunctionLibraryMixin
-                    .<CommandFunction<T>, RuntimeException>fabrolia$rethrow(failure);
+            return FailStops.<CommandFunction<T>, RuntimeException>rethrowValue(failure);
         }
         return function;
     }
@@ -111,11 +111,5 @@ public abstract class ServerFunctionLibraryMixin
     @Override
     public FunctionAnalyzer.Prepared fabrolia$preparedFunctionAnalysis() {
         return fabrolia$preparedFunctionAnalysis;
-    }
-
-    @SuppressWarnings("unchecked")
-    @Unique
-    private static <T, X extends Throwable> T fabrolia$rethrow(Throwable failure) throws X {
-        throw (X) failure;
     }
 }

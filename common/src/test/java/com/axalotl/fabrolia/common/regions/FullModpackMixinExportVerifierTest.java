@@ -652,8 +652,8 @@ class FullModpackMixinExportVerifierTest {
                 functions.name, "fabrolia$inTickTag", "Z", markerSet);
         int cleanupCommit = callIndex(handler, REGION_SCHEDULER,
                 "commitSuccessIfHealthy", "(Ljava/lang/Runnable;)V");
-        int exactRethrow = callIndexByName(handler, functions.name,
-                "fabrolia$rethrow");
+        int exactRethrow = callIndexByName(handler,
+                "com/axalotl/fabrolia/common/regions/FailStops", "rethrow");
         assertEquals(1, callCount(handler, REGION_SCHEDULER,
                 "commitSuccessIfHealthy", "(Ljava/lang/Runnable;)V"));
         assertTrue(markerReset >= 0 && cleanupCommit > markerReset
@@ -4448,11 +4448,11 @@ class FullModpackMixinExportVerifierTest {
         int scopeFinish = callIndexByName(playerLease,
                 PLAYER_LIFECYCLE_SCOPE, "finish");
         int cleanupMerge = callIndexByName(playerLease,
-                SERVER_PLAYER, "fabrolia$mergePlayerTickFailure");
+                "com/axalotl/fabrolia/common/regions/FailStops", "mergeFailureCapped");
         int cleanupWinner = callIndexByName(playerLease,
                 REGION_SCHEDULER, "publishFatalAndSelectWinner");
         int cleanupMerges = callCountByName(playerLease,
-                SERVER_PLAYER, "fabrolia$mergePlayerTickFailure");
+                "com/axalotl/fabrolia/common/regions/FailStops", "mergeFailureCapped");
         int winnerSelections = callCountByName(playerLease,
                 REGION_SCHEDULER, "publishFatalAndSelectWinner");
         assertEquals(1, callCountByName(playerLease,

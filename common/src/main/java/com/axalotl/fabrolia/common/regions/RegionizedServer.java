@@ -257,7 +257,7 @@ public final class RegionizedServer {
                 });
             }
         } catch (Throwable completionFailure) {
-            RegionizedServer.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(completionFailure));
         }
     }
@@ -285,7 +285,7 @@ public final class RegionizedServer {
             } catch (java.io.IOException | SecurityException markerFailure) {
                 // This callback is part of the admitted level-tick HEAD. It may
                 // not swallow a failure and continue into vanilla simulation.
-                RegionizedServer.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         RegionScheduler.publishFatalAndSelectWinner(markerFailure));
             }
         }
@@ -967,7 +967,7 @@ public final class RegionizedServer {
             // This outer envelope also covers diagnostics after a successful
             // acquisition, so no exceptional return can retain the claim list.
             failure = releaseAllIslands(failure);
-            RegionizedServer.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
         }
         return took;
@@ -1036,7 +1036,7 @@ public final class RegionizedServer {
                             intentIslands = null;
                             retryFailure = releaseAllIslands(retryFailure);
                             if (retryFailure != null) {
-                                RegionizedServer.<RuntimeException>rethrow(
+                                FailStops.<RuntimeException>rethrow(
                                         RegionScheduler.publishFatalAndSelectWinner(
                                                 retryFailure));
                             }
@@ -1059,7 +1059,7 @@ public final class RegionizedServer {
                         clearAllIslandClaimIntents(intentIslands, null);
                 intentIslands = null;
                 if (intentCleanupFailure != null) {
-                    RegionizedServer.<RuntimeException>rethrow(
+                    FailStops.<RuntimeException>rethrow(
                             RegionScheduler.publishFatalAndSelectWinner(
                                     intentCleanupFailure));
                 }
@@ -1078,7 +1078,7 @@ public final class RegionizedServer {
                 failure = releaseIslandClaim(current, failure);
             }
             failure = releaseAllIslands(failure);
-            RegionizedServer.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
         }
         if (localAllClaimsReceipt != null) {
@@ -1090,7 +1090,7 @@ public final class RegionizedServer {
             publishLocalAllClaimsOwnership(receipt);
         } catch (Throwable publicationFailure) {
             localAllClaimsReceipt = null;
-            RegionizedServer.<RuntimeException>rethrow(publicationFailure);
+            FailStops.<RuntimeException>rethrow(publicationFailure);
         }
         return true;
     }
@@ -1117,7 +1117,7 @@ public final class RegionizedServer {
         } catch (Throwable primary) {
             Throwable failure = RegionScheduler.publishFatalAndSelectWinner(primary);
             failure = clearAllIslandClaimIntents(snapshot, failure);
-            RegionizedServer.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
             throw new AssertionError("unreachable");
         }
@@ -1145,7 +1145,7 @@ public final class RegionizedServer {
     public void releaseAllIslands() {
         Throwable failure = releaseAllIslands(null);
         if (failure != null) {
-            RegionizedServer.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
         }
     }
@@ -1206,7 +1206,7 @@ public final class RegionizedServer {
     private static Throwable publishCleanupFailure(Throwable primary,
                                                    Throwable cleanup) {
         return RegionScheduler.publishFatalAndSelectWinner(
-                mergeFailure(primary, cleanup));
+                FailStops.mergeFailureCapped(primary, cleanup));
     }
 
     /**
@@ -1702,7 +1702,7 @@ public final class RegionizedServer {
             }
         }
         if (failure != null) {
-            RegionizedServer.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
         }
     }
@@ -1978,7 +1978,7 @@ public final class RegionizedServer {
         topologyDomainFailure = finishDomainRebaseBatch(
                 topologyRebaseBatch, topologyDomainFailure);
         if (topologyDomainFailure != null) {
-            RegionizedServer.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(
                             topologyDomainFailure));
         }
@@ -2188,7 +2188,7 @@ public final class RegionizedServer {
         }
         failure = finishDomainRebaseBatch(one, failure);
         if (failure != null) {
-            RegionizedServer.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
         }
     }
@@ -2231,7 +2231,7 @@ public final class RegionizedServer {
             Throwable failure = cleanupFailedDomainRebaseCut(
                     r, RegionScheduler.publishFatalAndSelectWinner(
                             publicationFailure));
-            RegionizedServer.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
         }
         // Domain identity is immutable while the cut is owned; this early read
@@ -2311,19 +2311,19 @@ public final class RegionizedServer {
                             r.stampRelease("migrate-cut");
                         } catch (Throwable cleanupFailure) {
                             failure = RegionScheduler.publishFatalAndSelectWinner(
-                                    mergeFailure(failure, cleanupFailure));
+                                    FailStops.mergeFailureCapped(failure, cleanupFailure));
                         }
                     }
                     try {
                         r.release(Thread.currentThread());
                     } catch (Throwable cleanupFailure) {
                         failure = RegionScheduler.publishFatalAndSelectWinner(
-                                mergeFailure(failure, cleanupFailure));
+                                FailStops.mergeFailureCapped(failure, cleanupFailure));
                     }
                 }
             }
             if (failure != null) {
-                RegionizedServer.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
 
             synchronized (r.admissionLock) {
@@ -2346,20 +2346,20 @@ public final class RegionizedServer {
                             sealHeld = false;
                         } catch (Throwable releaseFailure) {
                             failure = RegionScheduler.publishFatalAndSelectWinner(
-                                    mergeFailure(failure, releaseFailure));
+                                    FailStops.mergeFailureCapped(failure, releaseFailure));
                         }
                     }
                 }
             }
             if (failure != null) {
-                RegionizedServer.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
             return;
         } catch (Throwable primary) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
-                    mergeFailure(failure, primary));
+                    FailStops.mergeFailureCapped(failure, primary));
         }
-        RegionizedServer.<RuntimeException>rethrow(
+        FailStops.<RuntimeException>rethrow(
                 RegionScheduler.publishFatalAndSelectWinner(failure));
     }
 
@@ -2397,13 +2397,13 @@ public final class RegionizedServer {
                     r.flushDomainRebaseDeferredAdmissions();
                 } catch (Throwable cleanupFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(
-                            mergeFailure(failure, cleanupFailure));
+                            FailStops.mergeFailureCapped(failure, cleanupFailure));
                 }
                 try {
                     r.reopenClaimTransactionsAfterDomainRebase();
                 } catch (Throwable cleanupFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(
-                            mergeFailure(failure, cleanupFailure));
+                            FailStops.mergeFailureCapped(failure, cleanupFailure));
                 }
             }
         }
@@ -2424,7 +2424,7 @@ public final class RegionizedServer {
                     r.reopenClaimTransactionsAfterDomainRebase();
                 } catch (Throwable cleanupFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(
-                            mergeFailure(failure, cleanupFailure));
+                            FailStops.mergeFailureCapped(failure, cleanupFailure));
                 }
             }
         }
@@ -2439,7 +2439,7 @@ public final class RegionizedServer {
                     });
                 } catch (Throwable publicationFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(
-                            mergeFailure(failure, publicationFailure));
+                            FailStops.mergeFailureCapped(failure, publicationFailure));
                     break;
                 }
             }
@@ -2529,10 +2529,10 @@ public final class RegionizedServer {
                 r.releaseDomainRebaseSeal();
             } catch (Throwable releaseFailure) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        mergeFailure(failure, releaseFailure));
+                        FailStops.mergeFailureCapped(failure, releaseFailure));
             }
         }
-        if (failure != null) RegionizedServer.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     private long evictedTotal;
@@ -2825,13 +2825,13 @@ public final class RegionizedServer {
                     } else if (runtime.globalSprintAdmissionFenceOwner != null
                             || runtime.globalSprintAdmissionFenced) {
                         failure = RegionScheduler.publishFatalAndSelectWinner(
-                                mergeFailure(failure, new IllegalStateException(
+                                FailStops.mergeFailureCapped(failure, new IllegalStateException(
                                         "global sprint failure cleanup refused a foreign runtime fence for "
                                                 + runtime.level.dimension().identifier())));
                     }
                 } catch (Throwable cleanupFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(
-                            mergeFailure(failure, cleanupFailure));
+                            FailStops.mergeFailureCapped(failure, cleanupFailure));
                 }
             }
             installed = 0;
@@ -2987,7 +2987,7 @@ public final class RegionizedServer {
                 Throwable routedReleaseFailure = releaseAllIslands(null);
                 quiesced = false;
                 if (routedReleaseFailure != null) {
-                    RegionizedServer.<RuntimeException>rethrow(routedReleaseFailure);
+                    FailStops.<RuntimeException>rethrow(routedReleaseFailure);
                 }
                 IslandCommands.drainRoutedBatch();
                 quiesced = quiesceAllIslands();
@@ -3007,7 +3007,7 @@ public final class RegionizedServer {
             Throwable releaseFailure = releaseAllIslands(null);
             quiesced = false;
             if (releaseFailure != null) {
-                RegionizedServer.<RuntimeException>rethrow(releaseFailure);
+                FailStops.<RuntimeException>rethrow(releaseFailure);
             }
 
             for (IslandTickUnit.GlobalSprintRequest request : frameRequests) {
@@ -3039,7 +3039,7 @@ public final class RegionizedServer {
                 Throwable routedReleaseFailure = releaseAllIslands(null);
                 quiesced = false;
                 if (routedReleaseFailure != null) {
-                    RegionizedServer.<RuntimeException>rethrow(routedReleaseFailure);
+                    FailStops.<RuntimeException>rethrow(routedReleaseFailure);
                 }
                 IslandCommands.drainRoutedBatch();
                 quiesced = quiesceAllIslands();
@@ -3057,7 +3057,7 @@ public final class RegionizedServer {
             Throwable terminalReleaseFailure = releaseAllIslands(null);
             quiesced = false;
             if (terminalReleaseFailure != null) {
-                RegionizedServer.<RuntimeException>rethrow(terminalReleaseFailure);
+                FailStops.<RuntimeException>rethrow(terminalReleaseFailure);
             }
             GlobalSprintRuntimeFence completedRuntimeFence =
                     frameRuntimeFence.get();
@@ -3096,7 +3096,7 @@ public final class RegionizedServer {
                 failure = ownedRuntimeFence.clearAfterFailure(failure);
             }
         }
-        RegionizedServer.<RuntimeException>rethrow(
+        FailStops.<RuntimeException>rethrow(
                 RegionScheduler.publishFatalAndSelectWinner(failure));
     }
 
@@ -3128,7 +3128,7 @@ public final class RegionizedServer {
                 if (held) failure = runtime.releaseAllIslands(failure);
             }
             if (failure != null) {
-                RegionizedServer.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         RegionScheduler.publishFatalAndSelectWinner(failure));
             }
         }
@@ -3308,7 +3308,7 @@ public final class RegionizedServer {
                                 } catch (Throwable cleanupFailure) {
                                     arrivalFailure = RegionScheduler
                                             .publishFatalAndSelectWinner(
-                                                    mergeFailure(arrivalFailure,
+                                                    FailStops.mergeFailureCapped(arrivalFailure,
                                                             cleanupFailure));
                                 }
                                 try {
@@ -3316,12 +3316,12 @@ public final class RegionizedServer {
                                 } catch (Throwable cleanupFailure) {
                                     arrivalFailure = RegionScheduler
                                             .publishFatalAndSelectWinner(
-                                                    mergeFailure(arrivalFailure,
+                                                    FailStops.mergeFailureCapped(arrivalFailure,
                                                             cleanupFailure));
                                 }
                             }
                             if (arrivalFailure != null) {
-                                RegionizedServer.<RuntimeException>rethrow(arrivalFailure);
+                                FailStops.<RuntimeException>rethrow(arrivalFailure);
                             }
                         }
                         return;
@@ -3513,7 +3513,7 @@ public final class RegionizedServer {
                 publication.cancel();
             } catch (Throwable cleanupFailure) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        mergeFailure(failure, cleanupFailure));
+                        FailStops.mergeFailureCapped(failure, cleanupFailure));
             }
             if (roots != null) {
                 for (int i = 0, n = roots.size(); i < n; i++) {
@@ -3523,7 +3523,7 @@ public final class RegionizedServer {
                             cancellable.cancelQueuedBeforeStartWithFailure(failure);
                         } catch (Throwable cleanupFailure) {
                             failure = RegionScheduler.publishFatalAndSelectWinner(
-                                    mergeFailure(failure, cleanupFailure));
+                                    FailStops.mergeFailureCapped(failure, cleanupFailure));
                         }
                     }
                 }
@@ -3533,10 +3533,10 @@ public final class RegionizedServer {
                     eventBarrier.completeExceptionally(failure);
                 } catch (Throwable cleanupFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(
-                            mergeFailure(failure, cleanupFailure));
+                            FailStops.mergeFailureCapped(failure, cleanupFailure));
                 }
             }
-            RegionizedServer.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
             return result;
         }
     }
@@ -3769,14 +3769,14 @@ public final class RegionizedServer {
                             r.stampRelease("group");
                         } catch (Throwable cleanupFailure) {
                             regionFailure = RegionScheduler.publishFatalAndSelectWinner(
-                                    mergeFailure(regionFailure, cleanupFailure));
+                                    FailStops.mergeFailureCapped(regionFailure, cleanupFailure));
                         }
                     }
                     try {
                         r.release(me);
                     } catch (Throwable cleanupFailure) {
                         regionFailure = RegionScheduler.publishFatalAndSelectWinner(
-                                mergeFailure(regionFailure, cleanupFailure));
+                                FailStops.mergeFailureCapped(regionFailure, cleanupFailure));
                     } finally {
                         me.currentRegion = null; // unpublish AFTER release attempt
                     }
@@ -3795,7 +3795,7 @@ public final class RegionizedServer {
                             });
                         } catch (Throwable completionFailure) {
                             regionFailure = RegionScheduler.publishFatalAndSelectWinner(
-                                    mergeFailure(regionFailure, completionFailure));
+                                    FailStops.mergeFailureCapped(regionFailure, completionFailure));
                         }
                     }
                     try {
@@ -3805,11 +3805,11 @@ public final class RegionizedServer {
                         r.finishClaimTransaction();
                     } catch (Throwable cleanupFailure) {
                         regionFailure = RegionScheduler.publishFatalAndSelectWinner(
-                                mergeFailure(regionFailure, cleanupFailure));
+                                FailStops.mergeFailureCapped(regionFailure, cleanupFailure));
                     }
                 }
                 if (regionFailure != null) {
-                    RegionizedServer.<RuntimeException>rethrow(regionFailure);
+                    FailStops.<RuntimeException>rethrow(regionFailure);
                 }
             }
         } catch (Throwable t) {
@@ -3901,29 +3901,10 @@ public final class RegionizedServer {
         try {
             future.completeExceptionally(primary);
         } catch (Throwable notificationFailure) {
-            failure = mergeFailure(failure, notificationFailure);
+            failure = FailStops.mergeFailureCapped(failure, notificationFailure);
         } finally {
-            RegionizedServer.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
-    }
-
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                if (primary.getSuppressed().length >= 8) return primary;
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Suppression is diagnostics only; physical Main must receive
-                // the exact first vanilla-phase failure under allocation stress.
-            }
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
     /**
@@ -4005,26 +3986,26 @@ public final class RegionizedServer {
                         try {
                             phase.region.stampRelease("island-entities");
                         } catch (Throwable cleanup) {
-                            failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
+                            failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailureCapped(failure, cleanup));
                         }
                     }
                     try {
                         phase.region.release(worker);
                     } catch (Throwable cleanup) {
-                        failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
+                        failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailureCapped(failure, cleanup));
                     }
                     try {
                         phase.region.finishClaimTransaction();
                     } catch (Throwable cleanup) {
-                        failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, cleanup));
+                        failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailureCapped(failure, cleanup));
                     }
                 }
                 worker.currentRegion = null;
             }
         } catch (Throwable thrown) {
-            failure = RegionScheduler.publishFatalAndSelectWinner(mergeFailure(failure, thrown));
+            failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailureCapped(failure, thrown));
         }
-        if (failure != null) RegionizedServer.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         RegionScheduler.throwWorkerFailureIfAny();
     }
 
@@ -4104,7 +4085,7 @@ public final class RegionizedServer {
                     () -> region.stagedPhaseNanos = phaseNanos);
         } catch (Throwable thrown) {
             Throwable failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
-            RegionizedServer.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 

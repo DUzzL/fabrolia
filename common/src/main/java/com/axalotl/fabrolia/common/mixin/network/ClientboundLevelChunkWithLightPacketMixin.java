@@ -7,6 +7,7 @@ import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
 import com.axalotl.fabrolia.common.utils.FabroliaPalettedContainerLock;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData;
@@ -110,7 +111,7 @@ public abstract class ClientboundLevelChunkWithLightPacketMixin {
             try {
                 fabrolia$readUnlockSections(sections, locked);
             } catch (Throwable cleanupFailure) {
-                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+                failure = FailStops.publishMergedFailure(failure, cleanupFailure);
             }
         } catch (OwnerBusyException refusal) {
             // A bounded pool refusal owns no claim and is the documented
@@ -120,24 +121,24 @@ public abstract class ClientboundLevelChunkWithLightPacketMixin {
             }
             failure = RegionScheduler.publishFatalAndSelectWinner(refusal);
         } catch (Throwable setupFailure) {
-            failure = fabrolia$publishMergedFailure(failure, setupFailure);
+            failure = FailStops.publishMergedFailure(failure, setupFailure);
         }
         if (mainClaimed) {
             try {
                 IslandCommands.mainRelease(owner);
             } catch (Throwable cleanupFailure) {
-                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+                failure = FailStops.publishMergedFailure(failure, cleanupFailure);
             }
         } else if (poolClaimed) {
             try {
                 owner.clearClaim();
             } catch (Throwable cleanupFailure) {
-                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+                failure = FailStops.publishMergedFailure(failure, cleanupFailure);
             }
             try {
                 owner.unitClaim.set(false);
             } catch (Throwable cleanupFailure) {
-                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+                failure = FailStops.publishMergedFailure(failure, cleanupFailure);
             }
         }
         if (failure == null) {
@@ -150,7 +151,7 @@ public abstract class ClientboundLevelChunkWithLightPacketMixin {
             }
         }
         if (failure != null) {
-            ClientboundLevelChunkWithLightPacketMixin.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
         return result[0];
     }
@@ -168,9 +169,9 @@ public abstract class ClientboundLevelChunkWithLightPacketMixin {
             try {
                 fabrolia$readUnlockSections(sections, locked);
             } catch (Throwable cleanupFailure) {
-                t = fabrolia$publishMergedFailure(t, cleanupFailure);
+                t = FailStops.publishMergedFailure(t, cleanupFailure);
             }
-            ClientboundLevelChunkWithLightPacketMixin.<RuntimeException>fabrolia$rethrow(t);
+            FailStops.<RuntimeException>rethrow(t);
             return locked;
         }
     }
@@ -183,37 +184,11 @@ public abstract class ClientboundLevelChunkWithLightPacketMixin {
                 ((FabroliaPalettedContainerLock) (Object) sections[i].getStates())
                         .fabrolia$readUnlock();
             } catch (Throwable cleanupFailure) {
-                failure = fabrolia$publishMergedFailure(failure, cleanupFailure);
+                failure = FailStops.publishMergedFailure(failure, cleanupFailure);
             }
         }
         if (failure != null) {
-            ClientboundLevelChunkWithLightPacketMixin.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
-    }
-
-    @Unique
-    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && cleanup != primary) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-                // Cleanup diagnostics cannot replace the packet-construction primary.
-            }
-        }
-        return primary;
-    }
-
-    @Unique
-    private static Throwable fabrolia$publishMergedFailure(
-            Throwable primary, Throwable cleanup) {
-        return RegionScheduler.publishFatalAndSelectWinner(
-                fabrolia$mergeFailure(primary, cleanup));
-    }
-
-    @Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

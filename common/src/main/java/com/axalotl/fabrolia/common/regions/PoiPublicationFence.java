@@ -40,7 +40,7 @@ public final class PoiPublicationFence {
             // An executor may publish and then throw, or execute inline and
             // throw from that body. Only an unentered receipt can be cancelled.
             publication.cancelBeforeStart();
-            PoiPublicationFence.<RuntimeException>rethrow(winner);
+            FailStops.<RuntimeException>rethrow(winner);
         }
     }
 
@@ -66,7 +66,7 @@ public final class PoiPublicationFence {
 
     private void throwIfFailed() {
         Throwable thrown = failure.get();
-        if (thrown != null) PoiPublicationFence.<RuntimeException>rethrow(thrown);
+        if (thrown != null) FailStops.<RuntimeException>rethrow(thrown);
     }
 
     private final class Publication implements Runnable {
@@ -87,7 +87,7 @@ public final class PoiPublicationFence {
                 throwIfFailed();
                 body.run();
             } catch (Throwable thrown) {
-                PoiPublicationFence.<RuntimeException>rethrow(fail(thrown));
+                FailStops.<RuntimeException>rethrow(fail(thrown));
             } finally {
                 // Failure is selected before a reader can observe readiness.
                 state.set(TERMINAL);
@@ -98,10 +98,5 @@ public final class PoiPublicationFence {
         private void cancelBeforeStart() {
             if (state.compareAndSet(QUEUED, TERMINAL)) pending.decrementAndGet();
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <E extends Throwable> void rethrow(Throwable failure) throws E {
-        throw (E) failure;
     }
 }

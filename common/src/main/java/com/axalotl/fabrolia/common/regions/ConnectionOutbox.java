@@ -207,7 +207,7 @@ public final class ConnectionOutbox {
         void close() {
             open = false;
             Throwable failure = publishHeld();
-            if (failure != null) ConnectionOutbox.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
 
         /** Step failed: still publish what it held (already-sent packets), after {@code primary}. */
@@ -248,10 +248,5 @@ public final class ConnectionOutbox {
             token = new Object();
             return failure;
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

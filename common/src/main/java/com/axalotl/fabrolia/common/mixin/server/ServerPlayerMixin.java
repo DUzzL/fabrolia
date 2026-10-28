@@ -1,6 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
 import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementCacheContext;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.mojang.authlib.GameProfile;
@@ -532,31 +533,7 @@ public abstract class ServerPlayerMixin extends Player implements
             failure = com.axalotl.fabrolia.common.regions.RegionScheduler
                     .publishFatalAndSelectWinner(bodyFailure);
         }
-        if (failure != null) ServerPlayerMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    private static Throwable fabrolia$mergePlayerTickFailure(Throwable primary,
-                                                              Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (primary != cleanup) {
-            try {
-                if (primary.getSuppressed().length < 8) {
-                    primary.addSuppressed(cleanup);
-                }
-            } catch (Throwable ignored) {
-                // Suppression is diagnostic only. The exact body Throwable
-                // remains authoritative even when diagnostic allocation fails.
-            }
-        }
-        return primary;
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$throwPlayerTickFailure(
-            Throwable failure) throws T {
-        throw (T) failure;
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     @WrapMethod(method = "startRiding(Lnet/minecraft/world/entity/Entity;ZZ)Z")
@@ -604,7 +581,7 @@ public abstract class ServerPlayerMixin extends Player implements
             try {
                 failure = scope.finish(primary);
             } catch (Throwable cleanup) {
-                Throwable candidate = fabrolia$mergePlayerTickFailure(primary, cleanup);
+                Throwable candidate = FailStops.mergeFailureCapped(primary, cleanup);
                 failure = com.axalotl.fabrolia.common.regions.RegionScheduler
                         .publishFatalAndSelectWinner(candidate);
             }
@@ -619,7 +596,7 @@ public abstract class ServerPlayerMixin extends Player implements
             }
         }
         if (failure != null) {
-            ServerPlayerMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
         return (T) result[0];
     }
@@ -657,13 +634,13 @@ public abstract class ServerPlayerMixin extends Player implements
                 try {
                     com.axalotl.fabrolia.common.parallelised.utils.PlayerDimensionTransition.exit(self);
                 } catch (Throwable cleanup) {
-                    Throwable candidate = fabrolia$mergePlayerTickFailure(failure, cleanup);
+                    Throwable candidate = FailStops.mergeFailureCapped(failure, cleanup);
                     failure = com.axalotl.fabrolia.common.regions.RegionScheduler
                             .publishFatalAndSelectWinner(candidate);
                 }
             }
             if (failure != null) {
-                ServerPlayerMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
             return result;
         });

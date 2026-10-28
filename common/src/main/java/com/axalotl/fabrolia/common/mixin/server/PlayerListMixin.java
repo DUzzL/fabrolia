@@ -3,6 +3,7 @@ package com.axalotl.fabrolia.common.mixin.server;
 import com.axalotl.fabrolia.common.regions.IslandRegistry;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -70,7 +71,7 @@ public abstract class PlayerListMixin {
         try {
             failure = scope.finish(failure);
         } catch (Throwable cleanup) {
-            failure = fabrolia$publishMergedFailure(failure, cleanup);
+            failure = FailStops.publishMergedFailure(failure, cleanup);
         }
         if (failure == null) {
             try {
@@ -262,14 +263,14 @@ public abstract class PlayerListMixin {
                     FabroliaRemovalContext.CURRENT.set(previousRemoval);
                 }
             } catch (Throwable cleanup) {
-                lifecycleFailure = fabrolia$publishMergedFailure(lifecycleFailure, cleanup);
+                lifecycleFailure = FailStops.publishMergedFailure(lifecycleFailure, cleanup);
             }
         }
         if (activePublished) {
             try {
                 fabrolia$activeRemovals.remove(player);
             } catch (Throwable cleanup) {
-                lifecycleFailure = fabrolia$publishMergedFailure(lifecycleFailure, cleanup);
+                lifecycleFailure = FailStops.publishMergedFailure(lifecycleFailure, cleanup);
             }
         }
         if (removalBegan) {
@@ -283,7 +284,7 @@ public abstract class PlayerListMixin {
                     access.fabrolia$finishPlayerListRemoval(false);
                 }
             } catch (Throwable cleanup) {
-                lifecycleFailure = fabrolia$publishMergedFailure(lifecycleFailure, cleanup);
+                lifecycleFailure = FailStops.publishMergedFailure(lifecycleFailure, cleanup);
             }
         }
         if (tookFence) {
@@ -293,7 +294,7 @@ public abstract class PlayerListMixin {
         try {
             lifecycleFailure = lifecycle.finish(lifecycleFailure);
         } catch (Throwable cleanup) {
-            lifecycleFailure = fabrolia$publishMergedFailure(lifecycleFailure, cleanup);
+            lifecycleFailure = FailStops.publishMergedFailure(lifecycleFailure, cleanup);
         }
         if (lifecycleFailure == null) {
             try {
@@ -424,7 +425,7 @@ public abstract class PlayerListMixin {
             // withdrawal arrives published).
             failure = group.close(failure);
             if (failure != null) {
-                PlayerListMixin.<RuntimeException>fabrolia$throwUnchecked(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         });
     }
@@ -454,12 +455,6 @@ public abstract class PlayerListMixin {
             batch.close();
         }
         batch.awaitDurable();
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$throwUnchecked(Throwable thrown) throws T {
-        throw (T) thrown;
     }
 
     @org.spongepowered.asm.mixin.Unique
@@ -498,7 +493,7 @@ public abstract class PlayerListMixin {
                         try {
                             com.axalotl.fabrolia.common.regions.IslandCommands.mainRelease(owner);
                         } catch (Throwable cleanup) {
-                            failure = fabrolia$publishMergedFailure(failure, cleanup);
+                            failure = FailStops.publishMergedFailure(failure, cleanup);
                         }
                     }
                     if (failure == null) {
@@ -545,7 +540,7 @@ public abstract class PlayerListMixin {
                     com.axalotl.fabrolia.common.parallelised.utils.PearlLogoutSaveCapture
                             .finish(frame, succeeded);
         } catch (Throwable cleanup) {
-            failure = fabrolia$publishMergedFailure(failure, cleanup);
+            failure = FailStops.publishMergedFailure(failure, cleanup);
         }
         if (failure == null && succeeded) {
             try {
@@ -561,26 +556,5 @@ public abstract class PlayerListMixin {
             com.axalotl.fabrolia.common.regions.IslandCommands
                     .publishAndPropagate(failure);
         }
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    private static Throwable fabrolia$publishMergedFailure(
-            Throwable primary, Throwable secondary) {
-        return RegionScheduler.publishFatalAndSelectWinner(
-                fabrolia$mergeFailure(primary, secondary));
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    private static Throwable fabrolia$mergeFailure(
-            Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Cleanup diagnostics cannot replace the exact body primary.
-            }
-        }
-        return primary;
     }
 }

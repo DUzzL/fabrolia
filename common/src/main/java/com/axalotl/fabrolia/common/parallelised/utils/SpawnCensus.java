@@ -2,6 +2,7 @@ package com.axalotl.fabrolia.common.parallelised.utils;
 
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.axalotl.fabrolia.api.fastutil.Long2IntConcurrentHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -596,7 +597,7 @@ public final class SpawnCensus {
         }
         Throwable failure = gate.failureOrNull();
         if (failure != null) {
-            fabrolia$rethrow(failure);
+            FailStops.rethrow(failure);
         }
     }
 
@@ -652,11 +653,6 @@ public final class SpawnCensus {
         return merged[0];
     }
 
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
     private static final class CensusRangeTask extends RecursiveAction {
         private static final int QUEUED = 0;
         private static final int RUNNING = 1;
@@ -709,7 +705,7 @@ public final class SpawnCensus {
                 }
             }
             if (failure != null) {
-                fabrolia$rethrow(failure);
+                FailStops.rethrow(failure);
             }
         }
 

@@ -191,8 +191,7 @@ final class ChunkMainSuccessorFailStopTest {
                 "runSuccessBodyIfHealthy");
         int terminal = callIndex(wrapper, ServerChunkCacheMixin.class,
                 "fabrolia$completeChunkRequestFailure");
-        int rethrow = callIndex(wrapper, ServerChunkCacheMixin.class,
-                "fabrolia$rethrow");
+        int rethrow = callIndex(wrapper, FailStops.class, "rethrow");
         assertTrue(admission >= 0 && terminal > admission && rethrow > terminal,
                 "refusal/body failure must select W and terminalize the receipt before escape");
         assertEquals(1, callCount(wrapper, RegionScheduler.class,

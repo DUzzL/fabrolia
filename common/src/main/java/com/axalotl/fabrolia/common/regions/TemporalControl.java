@@ -436,7 +436,7 @@ public final class TemporalControl {
                 Throwable failure = RegionScheduler.publishFatalAndSelectWinner(rs,
                         publicationFailure);
                 entry.cancelPublication();
-                TemporalControl.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
                 return PreparedArm.NONE;
             }
         }
@@ -456,7 +456,7 @@ public final class TemporalControl {
                 Throwable failure = RegionScheduler.publishFatalAndSelectWinner(
                         rs, armFailure);
                 if (prepared != null) failure = prepared.cancel(failure);
-                TemporalControl.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 
@@ -600,7 +600,7 @@ public final class TemporalControl {
                         } catch (Throwable startFailure) {
                             if (thread == t) thread = null;
                             notifyAll();
-                            TemporalControl.<RuntimeException>rethrow(startFailure);
+                            FailStops.<RuntimeException>rethrow(startFailure);
                         }
                     }
                     return true;
@@ -629,12 +629,12 @@ public final class TemporalControl {
                 try {
                     owner.interrupt();
                 } catch (Throwable interruptFailure) {
-                    failure = mergeFailure(failure, interruptFailure);
+                    failure = FailStops.mergeFailure(failure, interruptFailure);
                 }
             }
             boolean interrupted = false;
             if (owner == Thread.currentThread()) {
-                failure = mergeFailure(failure, new IllegalStateException(
+                failure = FailStops.mergeFailure(failure, new IllegalStateException(
                         "rate pacer cannot join itself during normal shutdown"));
             } else if (owner != null) {
                 while (owner.isAlive()) {
@@ -645,7 +645,7 @@ public final class TemporalControl {
                         // waiting for the exact daemon and restore Main's flag.
                         interrupted = true;
                     } catch (Throwable waitFailure) {
-                        failure = mergeFailure(failure, waitFailure);
+                        failure = FailStops.mergeFailure(failure, waitFailure);
                         java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
                     }
                 }
@@ -659,10 +659,10 @@ public final class TemporalControl {
                     notifyAll();
                 }
             } catch (Throwable cleanupFailure) {
-                failure = mergeFailure(failure, cleanupFailure);
+                failure = FailStops.mergeFailure(failure, cleanupFailure);
             }
             if (interrupted) Thread.currentThread().interrupt();
-            if (failure != null) TemporalControl.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
 
         synchronized Thread ownerThreadForTest() {
@@ -758,7 +758,7 @@ public final class TemporalControl {
                         cancelAll();
                     } catch (Throwable cleanupFailure) {
                         failure = RegionScheduler.publishFatalAndSelectWinner(
-                                mergeFailure(failure, cleanupFailure));
+                                FailStops.mergeFailure(failure, cleanupFailure));
                     }
                 }
                 try {
@@ -770,10 +770,10 @@ public final class TemporalControl {
                     }
                 } catch (Throwable cleanupFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(
-                            mergeFailure(failure, cleanupFailure));
+                            FailStops.mergeFailure(failure, cleanupFailure));
                 }
             }
-            if (failure != null) TemporalControl.<RuntimeException>rethrow(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         }
 
         /** Park until the head is due (capped). A wake signalled since the last
@@ -801,7 +801,7 @@ public final class TemporalControl {
                 entry.state.finish(entry.ticket.id);
             } catch (Throwable cleanupFailure) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(entry.rs,
-                        mergeFailure(failure, cleanupFailure));
+                        FailStops.mergeFailure(failure, cleanupFailure));
             }
             return failure;
         }
@@ -882,11 +882,11 @@ public final class TemporalControl {
                         e.state.finish(e.ticket.id);
                     } catch (Throwable cleanup) {
                         primary = RegionScheduler.publishFatalAndSelectWinner(e.rs,
-                                mergeFailure(primary, cleanup));
+                                FailStops.mergeFailure(primary, cleanup));
                     }
                     if (RegionScheduler.ownsRuntimeGeneration(e.rs)) {
                         stopPacerAfterFatal(e.rs, primary);
-                        TemporalControl.<RuntimeException>rethrow(primary);
+                        FailStops.<RuntimeException>rethrow(primary);
                     } else {
                         cancel(e.island);
                     }
@@ -934,7 +934,7 @@ public final class TemporalControl {
                     if (retry != null) primary = retry.cancel(primary);
                     if (RegionScheduler.ownsRuntimeGeneration(e.rs)) {
                         stopPacerAfterFatal(e.rs, primary);
-                        TemporalControl.<RuntimeException>rethrow(primary);
+                        FailStops.<RuntimeException>rethrow(primary);
                     } else {
                         cancel(e.island);
                     }
@@ -949,7 +949,7 @@ public final class TemporalControl {
                 cancelAll();
             } catch (Throwable cleanupFailure) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(expected,
-                        mergeFailure(failure, cleanupFailure));
+                        FailStops.mergeFailure(failure, cleanupFailure));
             }
             Thread owner = thread;
             if (owner != null) {
@@ -957,7 +957,7 @@ public final class TemporalControl {
                     owner.interrupt();
                 } catch (Throwable cleanupFailure) {
                     RegionScheduler.publishFatalAndSelectWinner(expected,
-                            mergeFailure(failure, cleanupFailure));
+                            FailStops.mergeFailure(failure, cleanupFailure));
                 }
             }
         }
@@ -982,7 +982,7 @@ public final class TemporalControl {
                 Throwable primary = RegionScheduler.publishFatalAndSelectWinner(
                         e.rs, completionFailure);
                 if (retry != null) primary = retry.cancel(primary);
-                TemporalControl.<RuntimeException>rethrow(primary);
+                FailStops.<RuntimeException>rethrow(primary);
                 return null;
             }
         }
@@ -1030,7 +1030,7 @@ public final class TemporalControl {
                 Throwable failure = RegionScheduler.publishFatalAndSelectWinner(rs, armFailure);
                 failure = prepared != null ? prepared.cancel(failure) : failure;
                 if (prepared == null) entry.cancelPublication();
-                TemporalControl.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 
@@ -1405,22 +1405,5 @@ public final class TemporalControl {
             }
         }
         return false;
-    }
-
-    private static Throwable mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && cleanup != primary) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-                // Cleanup diagnostics cannot replace the exact pacing failure.
-            }
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

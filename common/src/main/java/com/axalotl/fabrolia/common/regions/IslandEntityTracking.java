@@ -265,10 +265,10 @@ public final class IslandEntityTracking {
                 try {
                     waiting.cancel();
                 } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
+                    failure = FailStops.mergeFailure(failure, cleanup);
                 }
             }
-            IslandEntityTracking.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
             return true;
         }
     }
@@ -322,9 +322,9 @@ public final class IslandEntityTracking {
                 try {
                     cancel();
                 } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
+                    failure = FailStops.mergeFailure(failure, cleanup);
                 }
-                IslandEntityTracking.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 
@@ -408,9 +408,9 @@ public final class IslandEntityTracking {
             BULK_PAIRING_COMMIT.remove();
         } catch (Throwable cleanup) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
-                    mergeFailure(failure, cleanup));
+                    FailStops.mergeFailure(failure, cleanup));
         }
-        if (failure != null) IslandEntityTracking.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Stages the exact transformed removePlayer for the same owner protocol. */
@@ -546,9 +546,9 @@ public final class IslandEntityTracking {
             PAIRING_COMMIT.set(null);
         } catch (Throwable cleanup) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
-                    mergeFailure(failure, cleanup));
+                    FailStops.mergeFailure(failure, cleanup));
         }
-        if (failure != null) IslandEntityTracking.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Pure-vanilla first pairing does not call ServerEntity.sendChanges. */
@@ -638,7 +638,7 @@ public final class IslandEntityTracking {
                 if (existing != null && existing != tracker) {
                     IllegalStateException failure = new IllegalStateException(
                             "player self-tracker generation replaced before retirement");
-                    IslandEntityTracking.<RuntimeException>rethrow(
+                    FailStops.<RuntimeException>rethrow(
                             RegionScheduler.publishFatalAndSelectWinner(failure));
                 }
             }
@@ -705,7 +705,7 @@ public final class IslandEntityTracking {
                 || island == null || island.retired || !exactOwner) {
             IllegalStateException failure = new IllegalStateException(
                     "A5 owner admission has no exact live self tracker");
-            IslandEntityTracking.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
             return;
         }
@@ -720,7 +720,7 @@ public final class IslandEntityTracking {
                 && !retiredGenerationHandoff) {
             IllegalStateException failure = new IllegalStateException(
                     "A5 owner admission conflicts with its self tracker generation");
-            IslandEntityTracking.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
             return;
         }
@@ -729,7 +729,7 @@ public final class IslandEntityTracking {
         } else if (!exactBinding) {
             IllegalStateException failure = new IllegalStateException(
                     "A5 reused owner has no exact self tracker binding");
-            IslandEntityTracking.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
             return;
         }
@@ -738,7 +738,7 @@ public final class IslandEntityTracking {
                 || !island.pendingEntityUpdates.contains(tracker)) {
             IllegalStateException failure = new IllegalStateException(
                     "A5 owner admission could not publish its self tracker cadence");
-            IslandEntityTracking.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
             return;
         }
@@ -1058,7 +1058,7 @@ public final class IslandEntityTracking {
                             || pending.state.trackingPublication.cadenceOwner() != island
                             || tracker.fabrolia$islandTrackingOwner() != island
                             || !island.pendingEntityUpdates.contains(tracker)) {
-                        IslandEntityTracking.<RuntimeException>rethrow(
+                        FailStops.<RuntimeException>rethrow(
                                 RegionScheduler.publishFatalAndSelectWinner(new IllegalStateException(
                                         "real-player late publication lost its admitted cadence")));
                     }
@@ -1456,9 +1456,9 @@ public final class IslandEntityTracking {
             POST_PHYSICS_CROSSING_PUBLISHING.set(null);
         } catch (Throwable cleanup) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
-                    mergeFailure(failure, cleanup));
+                    FailStops.mergeFailure(failure, cleanup));
         }
-        if (failure != null) IslandEntityTracking.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         return published;
     }
 
@@ -1484,9 +1484,9 @@ public final class IslandEntityTracking {
             PUBLISHING.set(null);
         } catch (Throwable cleanup) {
             failure = RegionScheduler.publishFatalAndSelectWinner(
-                    mergeFailure(failure, cleanup));
+                    FailStops.mergeFailure(failure, cleanup));
         }
-        if (failure != null) IslandEntityTracking.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         return published;
     }
 
@@ -1842,10 +1842,10 @@ public final class IslandEntityTracking {
                         tokenReleased = true;
                     }
                 } catch (Throwable cleanupFailure) {
-                    primary = mergeFailure(primary, cleanupFailure);
+                    primary = FailStops.mergeFailure(primary, cleanupFailure);
                 }
             }
-            IslandEntityTracking.<RuntimeException>rethrow(primary);
+            FailStops.<RuntimeException>rethrow(primary);
         }
     }
 
@@ -1928,9 +1928,9 @@ public final class IslandEntityTracking {
                 try {
                     cancel();
                 } catch (Throwable cleanup) {
-                    failure = mergeFailure(failure, cleanup);
+                    failure = FailStops.mergeFailure(failure, cleanup);
                 }
-                IslandEntityTracking.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 
@@ -1985,12 +1985,12 @@ public final class IslandEntityTracking {
                         failure = RegionScheduler.publishFatalAndSelectWinner(
                                 cleanupFailure);
                     } else {
-                        failure = mergeFailure(failure, cleanupFailure);
+                        failure = FailStops.mergeFailure(failure, cleanupFailure);
                     }
                 }
             }
             if (failure != null) {
-                IslandEntityTracking.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 
@@ -2070,24 +2070,6 @@ public final class IslandEntityTracking {
         }
     }
 
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // The server is already failing with primary.  Suppression is
-                // diagnostic only and may itself allocate under low memory.
-            }
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
     /**
      * Transfers a queued Main obligation to the exact, already attached A5 island
      * tail. Normally the A5 session owner and tracker owner are identical. A
@@ -2133,7 +2115,7 @@ public final class IslandEntityTracking {
                 }
                 return state.trackingPublication.publicationCadence(cadence, cadence != null && !cadence.retired, cadence != null && cadence.pendingEntityUpdates.contains(tracker), transition == null ? null : transition.cadences) != null;
             } catch (Throwable failure) {
-                IslandEntityTracking.<RuntimeException>rethrow(
+                FailStops.<RuntimeException>rethrow(
                         RegionScheduler.publishFatalAndSelectWinner(failure));
                 return false;
             }
@@ -2167,7 +2149,7 @@ public final class IslandEntityTracking {
                         if (!currentLivePlayerTrackerLocked(tracker, player)
                                 || prior == null || state.trackingPublication.cadenceOwner() != prior
                                 || !prior.pendingEntityUpdates.contains(tracker)) {
-                            IslandEntityTracking.<RuntimeException>rethrow(
+                            FailStops.<RuntimeException>rethrow(
                                     RegionScheduler.publishFatalAndSelectWinner(new IllegalStateException(
                                             "self-tracker carry lost its authorized cadence")));
                         }
@@ -2199,7 +2181,7 @@ public final class IslandEntityTracking {
                 island.pendingEntityUpdates.add(tracker);
             }
         } catch (Throwable failure) {
-            IslandEntityTracking.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
         }
     }

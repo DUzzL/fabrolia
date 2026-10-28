@@ -302,6 +302,7 @@ All are in `C/regions/RegionScheduler.java`; the pool-side twins are in `RegionW
 | `throwWorkerFailureIfAny()` | At poll points (Main task poll, connection tick, pump loops) to surface a worker failure unchanged. Not an admission gate: check-then-run is not atomic (`CommandEntityCatchEdgeWiringTest`). |
 
 Canonical shape: `try { runSuccessBodyIfHealthy(body) } catch (t) { w = publishFatalAndSelectWinner(t); cleanup; commitSuccessIfHealthy(() -> {}); throw w; }`. Examples: `MinecraftServerMixin.fabrolia$regionalPlayerServerPhase`, `RegionizedServer.rebuildIslandsIfDirty`.
+Cleanup failures are attached to the selected primary with `FailStops.mergeFailure` (or `mergeFailureCapped` in loops), and the winner is rethrown unchanged with `FailStops.rethrow`; do not add private copies of these helpers.
 
 ### Thread checks
 - Physical Main: `RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)`. `PacketProcessor.isSameThread()` is also true during A5 packet replay (`PacketProcessorPlayerTickMixin`).
@@ -344,12 +345,13 @@ Canonical shape: `try { runSuccessBodyIfHealthy(body) } catch (t) { w = publishF
 
 ## 10. `C/regions/` package index (grouped by topic)
 
-All 159 files are listed here, grouped by topic. Each name is `C/regions/<Name>.java`.
+All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.java`.
 
 - **Scheduler core:**
   - Scheduling and workers: `RegionScheduler`, `RegionWorkerPool`, `RegionWorkerThread`, `RegionizedServer`, `RegionizedTaskQueue`, `RegionTaskFanIn`, `RegionTickHooks`, `RegionTickingAccess`
   - Regions and grid: `Region`, `RegionState`, `RegionGrid`, `RegionKeyed`, `ChunkRegionKeyed`, `ThreadedRegionizer`, `ColorGate`, `EpochDomain`, `LevelAccess`
   - Guards and locks: `CrossRegionGuard`, `RegionAccessDetector`, `DetectorEpochHolder`, `FabroliaLocks`, `OwnerBusyException`, `RegionMainBlockingWaitGuard`
+  - Fail-stop helpers: `FailStops` (shared failure merge and exact rethrow)
 - **Islands, time, metrics:**
   - Islands and clocks: `IslandRegistry`, `IslandTickUnit`, `IslandUnitAdmission`, `IslandClock`, `RawGameTime`, `TemporalControl`
   - Views: `CompletedSimulationView`, `CompletedChunkLevels`

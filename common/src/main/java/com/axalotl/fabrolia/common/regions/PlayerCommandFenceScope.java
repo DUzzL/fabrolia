@@ -197,13 +197,8 @@ public final class PlayerCommandFenceScope {
             failure.addSuppressed(cleanup);
         }
         if (failure != null) {
-            PlayerCommandFenceScope.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
     private static final class Frame {

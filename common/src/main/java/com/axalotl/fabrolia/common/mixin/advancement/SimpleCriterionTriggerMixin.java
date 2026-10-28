@@ -1,6 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.advancement;
 
 import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.advancements.triggers.CriterionTrigger;
@@ -88,7 +89,7 @@ public abstract class SimpleCriterionTriggerMixin {
                 // Vanish's own trigger mixin is cancelled when this bridge is selected.
                 // An installed-but-incompatible API therefore has no semantics-preserving
                 // fallback: fail class initialisation with the exact linkage Throwable.
-                SimpleCriterionTriggerMixin.<RuntimeException>fabrolia$rethrow(linkageFailure);
+                FailStops.<RuntimeException>rethrow(linkageFailure);
             }
         }
         fabrolia$VANISH_IS_VANISHED = isVan;
@@ -113,18 +114,12 @@ public abstract class SimpleCriterionTriggerMixin {
             } catch (Throwable failure) {
                 // MethodHandle invocation requires a checked Throwable boundary.  It is
                 // propagation-only: never turn a failed Vanish decision into an award.
-                SimpleCriterionTriggerMixin.<RuntimeException>fabrolia$rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 
         @SuppressWarnings({"unchecked", "rawtypes"})
         CriterionTrigger<?> selfTrigger = (CriterionTrigger) (Object) this;
         AdvancementBuffer.trigger(player, predicate, selfTrigger);
-    }
-
-    @Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

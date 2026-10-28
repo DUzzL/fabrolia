@@ -192,7 +192,7 @@ public final class FunctionAnalyzer {
         Objects.requireNonNull(functions, "functions");
         Throwable failure = stage.firstFailure.get();
         if (failure != null) {
-            return FunctionAnalyzer.<Prepared, RuntimeException>rethrow(failure);
+            return FailStops.<Prepared, RuntimeException>rethrowValue(failure);
         }
 
         HashMap<Identifier, ActiveEntry> sealed = new HashMap<>(functions.size());
@@ -520,10 +520,5 @@ public final class FunctionAnalyzer {
         } catch (NumberFormatException expected) {
             return 65;
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T, X extends Throwable> T rethrow(Throwable failure) throws X {
-        throw (X) failure;
     }
 }

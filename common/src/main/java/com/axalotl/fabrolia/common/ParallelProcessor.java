@@ -37,6 +37,7 @@ import static com.axalotl.fabrolia.common.utils.TickStats.*;
 import com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBuffer;
 import com.axalotl.fabrolia.common.regions.RegionViz;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
+import com.axalotl.fabrolia.common.regions.FailStops;
 
 public final class ParallelProcessor {
 
@@ -201,7 +202,7 @@ public final class ParallelProcessor {
         try {
             LOGGER.error("Uncaught exception in thread {}", thread.getName(), thrown);
         } catch (Throwable diagnosticFailure) {
-            fabrolia$mergeFailure(winner, diagnosticFailure);
+            FailStops.mergeFailure(winner, diagnosticFailure);
         }
     }
 
@@ -455,7 +456,7 @@ public final class ParallelProcessor {
             future.join();
         } catch (CompletionException wrapped) {
             Throwable original = wrapped.getCause();
-            ParallelProcessor.<RuntimeException>fabrolia$throwUnchecked(
+            FailStops.<RuntimeException>rethrow(
                     original == null ? wrapped : original);
         }
     }
@@ -750,7 +751,7 @@ public final class ParallelProcessor {
             try {
                 IN_ENTITY_TICK.set(prevInTick);
             } catch (Throwable cleanup) {
-                failure = fabrolia$publishMergedFailure(failure, cleanup);
+                failure = FailStops.publishMergedFailure(failure, cleanup);
             }
             if (failure == null) {
                 try {
@@ -768,7 +769,7 @@ public final class ParallelProcessor {
                         NetherPortalTransfers.completeTickLocalDeparture(entity);
                     }
                 } catch (Throwable cleanup) {
-                    failure = fabrolia$publishMergedFailure(failure, cleanup);
+                    failure = FailStops.publishMergedFailure(failure, cleanup);
                 }
             }
             if (!prevInTick) {
@@ -776,12 +777,12 @@ public final class ParallelProcessor {
                     try {
                         NetherPortalTransfers.abortTickLocalTransfers();
                     } catch (Throwable cleanup) {
-                        failure = fabrolia$publishMergedFailure(failure, cleanup);
+                        failure = FailStops.publishMergedFailure(failure, cleanup);
                     }
                 }
             }
         }
-        if (failure != null) ParallelProcessor.<RuntimeException>fabrolia$throwUnchecked(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Shared empty success cut for the per-entity tick when no metrics are recorded. */
@@ -812,30 +813,6 @@ public final class ParallelProcessor {
         });
     }
 
-    /** Publish the first failure immediately; later cleanup is suppressed context only. */
-    private static Throwable fabrolia$publishMergedFailure(Throwable primary,
-                                                            Throwable secondary) {
-        return RegionScheduler.publishFatalAndSelectWinner(
-                fabrolia$mergeFailure(primary, secondary));
-    }
-
-    private static Throwable fabrolia$mergeFailure(Throwable primary, Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (cleanup != null && primary != cleanup) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-                // Cleanup diagnostics cannot replace the exact vanilla primary.
-            }
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$throwUnchecked(Throwable thrown) throws T {
-        throw (T) thrown;
-    }
-
     /**
      * Loader lifecycle boundary.  Both runtimes own accepted vanilla work, so a
      * failure while stopping the region runtime may not skip the flat/player
@@ -855,15 +832,15 @@ public final class ParallelProcessor {
         try {
             RegionScheduler.stop();
         } catch (Throwable primary) {
-            failure = fabrolia$mergeFailure(failure, primary);
+            failure = FailStops.mergeFailure(failure, primary);
         }
         try {
             stop();
         } catch (Throwable cleanup) {
-            failure = fabrolia$mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         if (failure != null) {
-            ParallelProcessor.<RuntimeException>fabrolia$throwUnchecked(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -879,7 +856,7 @@ public final class ParallelProcessor {
                 stoppingExecutor.shutdown();
                 shutdownStarted = true;
             } catch (Throwable cleanup) {
-                failure = fabrolia$mergeFailure(failure, cleanup);
+                failure = FailStops.mergeFailure(failure, cleanup);
             }
             boolean interrupted = Thread.interrupted();
             long nextDiagnostic = System.nanoTime() + 15_000_000_000L;
@@ -889,7 +866,7 @@ public final class ParallelProcessor {
                         stoppingExecutor.awaitTermination(1L, TimeUnit.SECONDS);
                     } catch (InterruptedException cleanup) {
                         interrupted = true;
-                        failure = fabrolia$mergeFailure(failure, cleanup);
+                        failure = FailStops.mergeFailure(failure, cleanup);
                     }
                     long now = System.nanoTime();
                     if (!stoppingExecutor.isTerminated() && now >= nextDiagnostic) {
@@ -899,7 +876,7 @@ public final class ParallelProcessor {
                     }
                 }
             } else {
-                failure = fabrolia$mergeFailure(failure, new IllegalStateException(
+                failure = FailStops.mergeFailure(failure, new IllegalStateException(
                         "Fabrolia pool rejected shutdown and still accepts work"));
             }
             if (interrupted) Thread.currentThread().interrupt();
@@ -915,34 +892,34 @@ public final class ParallelProcessor {
                 AdvancementBuffer.drainShutdownPassIfPending();
                 AdvancementBuffer.verifyEmptyAfterShutdown();
             } catch (Throwable cleanup) {
-                failure = fabrolia$mergeFailure(failure, cleanup);
+                failure = FailStops.mergeFailure(failure, cleanup);
             }
         }
         if (failure != null && (stoppingExecutor == null || stoppingExecutor.isTerminated())) {
             try {
                 failure = NetherPortalTransfers.cancelFailedGeneration(failure);
             } catch (Throwable cleanup) {
-                failure = fabrolia$mergeFailure(failure, cleanup);
+                failure = FailStops.mergeFailure(failure, cleanup);
             }
         }
 
         try {
             FabroliaConfig.clearCaches();
         } catch (Throwable cleanup) {
-            failure = fabrolia$mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         try {
             NetherPortalTransfers.shutdown();
         } catch (Throwable cleanup) {
-            failure = fabrolia$mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         try {
             resetEntityTickStats();
         } catch (Throwable cleanup) {
-            failure = fabrolia$mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         if (failure != null) {
-            ParallelProcessor.<RuntimeException>fabrolia$throwUnchecked(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 }

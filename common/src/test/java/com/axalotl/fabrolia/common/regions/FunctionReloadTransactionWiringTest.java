@@ -18,7 +18,7 @@ final class FunctionReloadTransactionWiringTest {
         int analyze = mixin.indexOf("FunctionAnalyzer.analyzeInto(", original);
         int caught = mixin.indexOf("catch (Throwable failure)", analyze);
         int record = mixin.indexOf("FunctionAnalyzer.recordFailure(stage, failure)", caught);
-        int rethrow = mixin.indexOf("fabrolia$rethrow(failure)", record);
+        int rethrow = mixin.indexOf("FailStops.<CommandFunction<T>, RuntimeException>rethrowValue(failure)", record);
         assertTrue(original >= 0 && analyze > original && caught > analyze
                         && record > caught && rethrow > record,
                 "fromLines must return once before staging; analyzer failure is recorded "

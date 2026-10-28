@@ -435,10 +435,10 @@ public final class IslandCommands {
                         "command waiter lost its exact global-fence park acknowledgement");
             }
         } catch (Throwable cleanup) {
-            failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+            failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
         }
         if (failure != null) {
-            IslandCommands.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
         return true;
     }
@@ -458,7 +458,7 @@ public final class IslandCommands {
         RegionScheduler.throwWorkerFailureIfAny();
         Throwable bodyFailure = invocation.failure;
         if (bodyFailure != null) {
-            IslandCommands.<RuntimeException>rethrow(bodyFailure);
+            FailStops.<RuntimeException>rethrow(bodyFailure);
         }
         if (!result.isDone()) {
             RegionScheduler.throwWorkerFailureIfAny();
@@ -569,7 +569,7 @@ public final class IslandCommands {
         boolean joinExact() {
             int observed = terminal.get();
             if (observed == FAILED) {
-                IslandCommands.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
             if (observed != SUCCEEDED) {
                 throw new IllegalStateException("routed result observed before terminal");
@@ -627,7 +627,7 @@ public final class IslandCommands {
                                 + queued.inv.id + " state=" + queued.inv.state);
             }
         } catch (Throwable cleanup) {
-            failure = mergeFailure(failure, cleanup);
+            failure = FailStops.mergeFailure(failure, cleanup);
         }
         return failAcceptedRouted(queued, failure);
     }
@@ -752,11 +752,11 @@ public final class IslandCommands {
                         releaseAllExcept();
                     } catch (Throwable cleanupFailure) {
                         fencedFailure = publishFatalPreserving(
-                                mergeFailure(fencedFailure, cleanupFailure));
+                                FailStops.mergeFailure(fencedFailure, cleanupFailure));
                     }
                 }
                 if (fencedFailure != null) {
-                    IslandCommands.<RuntimeException>rethrow(fencedFailure);
+                    FailStops.<RuntimeException>rethrow(fencedFailure);
                 }
             }
         } catch (Throwable failure) {
@@ -810,7 +810,7 @@ public final class IslandCommands {
         if (batchFailure != null) {
             batchFailure = publishFatalPreserving(batchFailure);
             RegionScheduler.throwWorkerFailureIfAny();
-            IslandCommands.<RuntimeException>rethrow(batchFailure);
+            FailStops.<RuntimeException>rethrow(batchFailure);
         }
     }
 
@@ -828,7 +828,7 @@ public final class IslandCommands {
             Throwable failure = publishFatalPreserving(t);
             rc.inv.failure = failure;
             RegionScheduler.throwWorkerFailureIfAny();
-            IslandCommands.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -839,7 +839,7 @@ public final class IslandCommands {
             try {
                 cancellable.cancelQueuedBeforeStartWithFailure(failure);
             } catch (Throwable cleanup) {
-                failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+                failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
             }
         }
         try {
@@ -852,7 +852,7 @@ public final class IslandCommands {
             }
         } catch (Throwable notificationFailure) {
             failure = publishFatalPreserving(
-                    mergeFailure(failure, notificationFailure));
+                    FailStops.mergeFailure(failure, notificationFailure));
         }
         return failure;
     }
@@ -1170,7 +1170,7 @@ public final class IslandCommands {
         } catch (Throwable t) {
             Throwable failure = publishFatalPreserving(t);
             failure = releaseMainClaim(owner, failure);
-            IslandCommands.<RuntimeException>rethrow(
+            FailStops.<RuntimeException>rethrow(
                     publishFatalPreserving(failure));
         }
     }
@@ -1203,7 +1203,7 @@ public final class IslandCommands {
         } catch (Throwable thrown) {
             Throwable failure = publishFatalPreserving(thrown);
             failure = releaseMainClaim(owner, failure);
-            IslandCommands.<RuntimeException>rethrow(publishFatalPreserving(failure));
+            FailStops.<RuntimeException>rethrow(publishFatalPreserving(failure));
         }
         return true;
     }
@@ -1217,7 +1217,7 @@ public final class IslandCommands {
     public static void mainRelease(IslandRegistry.PIsland owner) {
         Throwable failure = releaseMainClaim(owner, null);
         if (failure != null) {
-            IslandCommands.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -1341,7 +1341,7 @@ public final class IslandCommands {
                             }
                             if (deadline != Long.MAX_VALUE && System.nanoTime() > deadline) {
                                 Throwable cleanup = releaseGlobalFenceFrame(frame, null);
-                                if (cleanup != null) IslandCommands.<RuntimeException>rethrow(cleanup);
+                                if (cleanup != null) FailStops.<RuntimeException>rethrow(cleanup);
                                 RegionScheduler.commitSuccessIfHealthy(() -> {});
                                 return false;
                             }
@@ -1361,14 +1361,14 @@ public final class IslandCommands {
                             try {
                                 island.clearClaim();
                             } catch (Throwable cleanup) {
-                                failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+                                failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
                             }
                             try {
                                 island.unitClaim.set(false);
                             } catch (Throwable cleanup) {
-                                failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+                                failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
                             }
-                            IslandCommands.<RuntimeException>rethrow(failure);
+                            FailStops.<RuntimeException>rethrow(failure);
                         }
                     }
                 }
@@ -1385,10 +1385,10 @@ public final class IslandCommands {
             try {
                 RegionScheduler.publishFatalFailure(failure);
             } catch (Throwable publicationFailure) {
-                failure = mergeFailure(failure, publicationFailure);
+                failure = FailStops.mergeFailure(failure, publicationFailure);
             }
             RegionScheduler.throwWorkerFailureIfAny();
-            IslandCommands.<RuntimeException>rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
             return false;
         }
     }
@@ -1466,18 +1466,6 @@ public final class IslandCommands {
         }
     }
 
-    private static Throwable mergeFailure(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Already fail-stop; diagnostic suppression cannot replace primary.
-            }
-        }
-        return primary;
-    }
-
     /** Publish immediately so no waiter can run a successor before Main sees
      * the first failure. Publication cleanup may be suppressed, never replace
      * the primary which made this generation divergent. */
@@ -1491,17 +1479,17 @@ public final class IslandCommands {
         try {
             MAIN_HELD.remove(owner);
         } catch (Throwable cleanup) {
-            failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+            failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
         }
         try {
             owner.clearClaim();
         } catch (Throwable cleanup) {
-            failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+            failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
         }
         try {
             owner.unitClaim.set(false);
         } catch (Throwable cleanup) {
-            failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+            failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
         }
         if (failure == null) {
             // A pacer attempt refused on this held claim fires at release, not
@@ -1515,11 +1503,6 @@ public final class IslandCommands {
         return failure;
     }
 
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
     /** Exhaustively release one exact frame.  Skip-claim authority is revoked
      * before the first physical claim; acquisition intent remains until every
      * claim is free, preventing a new autonomous successor in the release gap. */
@@ -1530,7 +1513,7 @@ public final class IslandCommands {
                 : primary;
         if (frame == null) return failure;
         if (frame.owner != Thread.currentThread()) {
-            return publishFatalPreserving(mergeFailure(failure,
+            return publishFatalPreserving(FailStops.mergeFailure(failure,
                     new IllegalStateException(
                             "global fence cleanup entered on a non-owner thread")));
         }
@@ -1546,7 +1529,7 @@ public final class IslandCommands {
                     && frame.ownedLevels.isEmpty()) {
                 return failure;
             }
-            return publishFatalPreserving(mergeFailure(failure,
+            return publishFatalPreserving(FailStops.mergeFailure(failure,
                     new IllegalStateException(
                             "global fence cleanup lost its active frame identity")));
         }
@@ -1560,20 +1543,20 @@ public final class IslandCommands {
                 runtime = frame.ownedLevels.get(i);
             } catch (Throwable cleanup) {
                 failure = publishFatalPreserving(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
                 continue;
             }
             try {
                 runtime.clearGlobalAllClaimsOwnership(frame);
             } catch (Throwable cleanup) {
                 failure = publishFatalPreserving(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
         }
         try {
             frame.ownedLevels.clear();
         } catch (Throwable cleanup) {
-            failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+            failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
         }
 
         int claimCount = frame.claims.size();
@@ -1583,26 +1566,26 @@ public final class IslandCommands {
                 island = frame.claims.get(i);
             } catch (Throwable cleanup) {
                 failure = publishFatalPreserving(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
                 continue;
             }
             try {
                 island.clearClaim();
             } catch (Throwable cleanup) {
                 failure = publishFatalPreserving(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
             try {
                 island.unitClaim.set(false);
             } catch (Throwable cleanup) {
                 failure = publishFatalPreserving(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
         }
         try {
             frame.claims.clear();
         } catch (Throwable cleanup) {
-            failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+            failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
         }
 
         int intentCount = frame.intentLevels.size();
@@ -1612,26 +1595,26 @@ public final class IslandCommands {
                 runtime = frame.intentLevels.get(i);
             } catch (Throwable cleanup) {
                 failure = publishFatalPreserving(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
                 continue;
             }
             try {
                 runtime.clearGlobalFenceIntent(frame);
             } catch (Throwable cleanup) {
                 failure = publishFatalPreserving(
-                        mergeFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
         }
         try {
             frame.intentLevels.clear();
         } catch (Throwable cleanup) {
-            failure = publishFatalPreserving(mergeFailure(failure, cleanup));
+            failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
         }
 
         if (ACTIVE_FENCE == frame) {
             ACTIVE_FENCE = null;
         } else {
-            failure = publishFatalPreserving(mergeFailure(failure,
+            failure = publishFatalPreserving(FailStops.mergeFailure(failure,
                     new IllegalStateException(
                             "global fence cleanup encountered a replaced active frame")));
         }
@@ -1651,7 +1634,7 @@ public final class IslandCommands {
 
     public static void releaseAllExcept() {
         Throwable failure = releaseAllExcept(null);
-        if (failure != null) IslandCommands.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /** Publish the exact primary to the generation gate and rethrow first-wins. */
@@ -1659,7 +1642,7 @@ public final class IslandCommands {
         if (primary == null) throw new NullPointerException("primary");
         Throwable failure = publishFatalPreserving(primary);
         RegionScheduler.throwWorkerFailureIfAny();
-        IslandCommands.<RuntimeException>rethrow(failure);
+        FailStops.<RuntimeException>rethrow(failure);
     }
 
     /**

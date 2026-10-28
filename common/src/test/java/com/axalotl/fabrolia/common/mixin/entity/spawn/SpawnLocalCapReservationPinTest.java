@@ -135,7 +135,7 @@ class SpawnLocalCapReservationPinTest {
                 "the pack-end release must stay wired — leaked reservations ratchet the counts up "
                         + "and strangle later approvals");
         int releaseMethod = src.indexOf("private static void fabrolia$releasePackAfterSpawn");
-        int releaseEnd = src.indexOf("private static Throwable fabrolia$mergeFailure", releaseMethod);
+        int releaseEnd = src.indexOf("\n    }\n", releaseMethod);
         String releaseBody = src.substring(releaseMethod, releaseEnd);
         int noToken = releaseBody.indexOf("if (token == 0)");
         int noTokenAdmission = releaseBody.indexOf(
@@ -150,10 +150,10 @@ class SpawnLocalCapReservationPinTest {
                 "failure = RegionScheduler.publishFatalAndSelectWinner(thrown)", bodyCatch);
         int release = releaseBody.indexOf("fabrolia$releaseLocalPack", selectWinner);
         int cleanupCatch = releaseBody.indexOf("catch (Throwable cleanup)", release);
-        int merge = releaseBody.indexOf("fabrolia$mergeFailure(failure, cleanup)", cleanupCatch);
+        int merge = releaseBody.indexOf("FailStops.mergeFailure(failure, cleanup)", cleanupCatch);
         int terminal = releaseBody.indexOf(
                 "RegionScheduler.commitSuccessIfHealthy(() -> {})", merge);
-        int rethrow = releaseBody.indexOf("fabrolia$rethrow(failure)", terminal);
+        int rethrow = releaseBody.indexOf("FailStops.<RuntimeException>rethrow(failure)", terminal);
         assertTrue(releaseMethod >= 0 && releaseEnd > releaseMethod
                         && noToken >= 0 && noTokenAdmission > noToken
                         && tokenClear > noTokenAdmission && packAdmission > tokenClear

@@ -2,6 +2,7 @@ package com.axalotl.fabrolia.common.mixin.world;
 
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionizedServer;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.server.level.ServerLevel;
@@ -46,15 +47,10 @@ public abstract class SleepWakeMixin {
                 }
             }
             if (failure != null) {
-                SleepWakeMixin.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         } else {
             RegionScheduler.runSuccessBodyIfHealthy(original::call);
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

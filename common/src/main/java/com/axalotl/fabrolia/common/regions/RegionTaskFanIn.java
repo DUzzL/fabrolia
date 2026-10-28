@@ -145,7 +145,7 @@ public final class RegionTaskFanIn {
         synchronized (this) {
             failure = firstFailure;
         }
-        if (failure != null) RegionTaskFanIn.<RuntimeException>rethrow(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     private synchronized boolean hasFailure() {
@@ -194,11 +194,6 @@ public final class RegionTaskFanIn {
                 // Diagnostics must never replace the exact primary failure or open the fan-in.
             }
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
     public final class RegisteredTask implements Runnable, CancellableQueueEntry {

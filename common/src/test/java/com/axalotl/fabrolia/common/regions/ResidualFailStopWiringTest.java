@@ -118,7 +118,7 @@ final class ResidualFailStopWiringTest {
         int passengerWinner = passenger.indexOf(
                 "failure = RegionScheduler.publishFatalAndSelectWinner(thrown)", passengerCatch);
         int guardRelease = passenger.indexOf("guard.fabrolia$endTick()", passengerWinner);
-        int exactRethrow = passenger.indexOf("fabrolia$throwPlayerTickFailure(failure)", guardRelease);
+        int exactRethrow = passenger.indexOf("FailStops.<RuntimeException>rethrow(failure)", guardRelease);
         assertTrue(passengerBody >= 0 && passengerCatch > passengerBody
                         && passengerWinner > passengerCatch && guardRelease > passengerWinner
                         && exactRethrow > guardRelease,
@@ -136,11 +136,11 @@ final class ResidualFailStopWiringTest {
         int teleportWinner = teleport.indexOf(".publishFatalAndSelectWinner(thrown)", teleportCatch);
         int markerRelease = teleport.indexOf("PlayerDimensionTransition.exit(self)", teleportWinner);
         int cleanupMerge = teleport.indexOf(
-                "fabrolia$mergePlayerTickFailure(failure, cleanup)", markerRelease);
+                "FailStops.mergeFailureCapped(failure, cleanup)", markerRelease);
         int cleanupWinner = teleport.indexOf(
                 ".publishFatalAndSelectWinner(candidate)", cleanupMerge);
         int teleportRethrow = teleport.indexOf(
-                "fabrolia$throwPlayerTickFailure(failure)", cleanupWinner);
+                "FailStops.<RuntimeException>rethrow(failure)", cleanupWinner);
         int successReturn = teleport.indexOf("return result", teleportRethrow);
         assertTrue(teleportBody >= 0 && teleportCatch > teleportBody
                         && teleportWinner > teleportCatch && markerRelease > teleportWinner
@@ -152,18 +152,14 @@ final class ResidualFailStopWiringTest {
 
     @Test
     void passengerAndPlayerCleanupMergeRetainExactPrimaryIdentity() throws Exception {
-        net.minecraft.SharedConstants.tryDetectVersion();
-        net.minecraft.server.Bootstrap.bootStrap();
-        for (String owner : java.util.List.of(
-                "com.axalotl.fabrolia.common.mixin.world.ServerLevelMixin",
-                "com.axalotl.fabrolia.common.mixin.server.ServerPlayerMixin")) {
+        // ServerLevelMixin merges passenger cleanup uncapped, ServerPlayerMixin
+        // merges transition cleanup capped; both must keep the exact primary.
+        for (String owner : java.util.List.of("mergeFailure", "mergeFailureCapped")) {
             Throwable primary = new IllegalStateException(owner + "-primary");
             Throwable cleanup = new IllegalArgumentException(owner + "-cleanup");
-            Class<?> type = Class.forName(owner);
-            java.lang.reflect.Method merge = type.getDeclaredMethod(
-                    "fabrolia$mergePlayerTickFailure", Throwable.class, Throwable.class);
-            merge.setAccessible(true);
-            Throwable merged = (Throwable) merge.invoke(null, primary, cleanup);
+            Throwable merged = owner.equals("mergeFailure")
+                    ? FailStops.mergeFailure(primary, cleanup)
+                    : FailStops.mergeFailureCapped(primary, cleanup);
             assertSame(primary, merged,
                     "cleanup must never replace the exact body Throwable for " + owner);
             assertTrue(java.util.Arrays.asList(primary.getSuppressed()).contains(cleanup),
@@ -200,7 +196,7 @@ final class ResidualFailStopWiringTest {
                 "private CompletableFuture<Void> fabrolia$groupAndSubmit");
         assertTrue(serverCore.contains("InvocationTargetException targetFailure")
                         && serverCore.contains("targetFailure.getCause()")
-                        && serverCore.contains("fabrolia$rethrow("),
+                        && serverCore.contains("FailStops.<RuntimeException>rethrow("),
                 "an entered ServerCore config getter must propagate its exact target failure");
         assertFalse(serverCore.contains("catch (Throwable"),
                 "optional ServerCore resolution must not swallow VM errors");
@@ -291,7 +287,7 @@ final class ResidualFailStopWiringTest {
         assertFalse(lithiumPoi.contains("fabrolia$retryColumnAfterUnload"));
 
         String sort = source("common/parallelised/utils/DistanceSortBridge.java");
-        String invocation = section(sort, "public static boolean sort", "@SuppressWarnings");
+        String invocation = section(sort, "public static boolean sort", "\n    }\n");
         assertTrue(invocation.contains("rethrow(failure)"));
         assertFalse(invocation.contains("catch (Throwable t) {\n            return false;"),
                 "a native sort failure after entry may not fall back over partial output");
@@ -335,8 +331,8 @@ final class ResidualFailStopWiringTest {
                 "private static int fabrolia$readLockSections");
         assertTrue(body.contains(
                             "failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure)")
-                        && body.contains("fabrolia$publishMergedFailure(failure, cleanupFailure)")
-                        && body.contains("fabrolia$rethrow(failure)")
+                        && body.contains("FailStops.publishMergedFailure(failure, cleanupFailure)")
+                        && body.contains("FailStops.<RuntimeException>rethrow(failure)")
                         && body.contains("RegionScheduler.runSuccessBodyIfHealthy(")
                         && body.contains("RegionScheduler.commitSuccessIfHealthy("),
                 "packet construction must preserve its exact primary across every release");
@@ -362,8 +358,8 @@ final class ResidualFailStopWiringTest {
         String acquire = section(packet, "private static int fabrolia$readLockSections",
                 "private static void fabrolia$readUnlockSections");
         assertTrue(acquire.contains("RegionScheduler.publishFatalAndSelectWinner(t)")
-                        && acquire.contains("fabrolia$publishMergedFailure(t, cleanupFailure)")
-                        && acquire.contains("fabrolia$rethrow(t)"),
+                        && acquire.contains("FailStops.publishMergedFailure(t, cleanupFailure)")
+                        && acquire.contains("FailStops.<RuntimeException>rethrow(t)"),
                 "partial section-lock cleanup must preserve the acquisition primary");
 
         String delivery = source("common/regions/ChunkDelivery.java");
@@ -479,8 +475,7 @@ final class ResidualFailStopWiringTest {
     void failedEntityUnloadPassDoesNotPublishRetrySuccessors() throws Exception {
         String unload = source(
                 "common/mixin/server/PersistentEntityUnloadRetryMixin.java");
-        String process = section(unload, "fabrolia$restoreFailedUnloadRequests",
-                "private static Throwable fabrolia$mergeFailure");
+        String process = section(unload, "fabrolia$restoreFailedUnloadRequests", "\n    }\n");
         int nestedBody = process.indexOf("original.call();");
         int originalAdmission = process.indexOf(
                 "runSuccessBodyIfHealthy(original::call)", nestedBody);
@@ -491,7 +486,7 @@ final class ResidualFailStopWiringTest {
         int bodyCatch = process.indexOf("catch (Throwable bodyFailure)", restore);
         int cleanup = process.indexOf("fabrolia$insideProcessUnloads.remove()", bodyCatch);
         int terminal = process.indexOf("commitSuccessIfHealthy(() -> {})", cleanup);
-        int exact = process.indexOf("fabrolia$rethrow(failure)", terminal);
+        int exact = process.indexOf("FailStops.<RuntimeException>rethrow(failure)", terminal);
         assertTrue(nestedBody >= 0 && originalAdmission > nestedBody
                         && retryAdmission > originalAdmission && restore > retryAdmission
                         && retryBody > retryAdmission && bodyCatch > retryBody

@@ -9,6 +9,7 @@ import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
 import com.axalotl.fabrolia.common.regions.RegionTaskFanIn;
 import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.mojang.brigadier.ParseResults;
@@ -265,16 +266,10 @@ public abstract class CommandsMixin {
             }
             Throwable failure = terminal.join();
             if (submissionFailure != null) failure = submissionFailure;
-            if (failure != null) CommandsMixin.<RuntimeException>fabrolia$throwForeignFailure(failure);
+            if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
         }
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$throwForeignFailure(Throwable failure) throws T {
-        throw (T) failure;
     }
 
 }

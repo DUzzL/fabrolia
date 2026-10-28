@@ -19,6 +19,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.concurrent.atomic.AtomicLong;
 import com.axalotl.fabrolia.common.regions.RegionKeyed;
+import com.axalotl.fabrolia.common.regions.FailStops;
 
 @Mixin(Entity.class)
 public abstract class EntityMixin implements ParallelProcessor.TickGuard, RegionKeyed,
@@ -270,7 +271,7 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
             // generation winner so this wrapper never re-prefers a later one.
             failure = RegionScheduler.publishFatalAndSelectWinner(failure);
         }
-        if (failure != null) EntityMixin.<RuntimeException>fabrolia$throwLifecycleFailure(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
         return (T) result[0];
     }
 
@@ -312,13 +313,6 @@ public abstract class EntityMixin implements ParallelProcessor.TickGuard, Region
         if (primary == null) return cleanup;
         if (cleanup != null && cleanup != primary) primary.addSuppressed(cleanup);
         return primary;
-    }
-
-    @Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$throwLifecycleFailure(
-            Throwable failure) throws T {
-        throw (T) failure;
     }
 
     @Unique

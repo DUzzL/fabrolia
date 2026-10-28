@@ -85,7 +85,7 @@ public interface FabroliaFullChunkPublisher {
                 }
             }
             if (failure != null) {
-                PublicationReceipt.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
             if (inlineAttempt) runPublished(body);
         }
@@ -114,7 +114,7 @@ public interface FabroliaFullChunkPublisher {
                 }
             }
             if (failure != null) {
-                PublicationReceipt.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
             try {
                 RegionScheduler.runSuccessBodyIfHealthy(body);
@@ -125,13 +125,8 @@ public interface FabroliaFullChunkPublisher {
                 state = TERMINAL;
             }
             if (failure != null) {
-                PublicationReceipt.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
-        }
-
-        @SuppressWarnings("unchecked")
-        private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-            throw (T) failure;
         }
     }
 }

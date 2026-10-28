@@ -126,11 +126,11 @@ final class AsyncIslandPlayerLifecycle {
                 IslandCommands.releaseAllExcept();
             } catch (Throwable cleanup) {
                 failure = AsyncIslandPlayerTicks.publishFatalFailure(
-                        merge(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
         }
         failure = finishMarkedBodies(bodyTokens, markedBodyCount, failure);
-        rethrow(failure);
+        FailStops.rethrow(failure);
         return Scope.NOOP;
     }
 
@@ -236,7 +236,7 @@ final class AsyncIslandPlayerLifecycle {
         Throwable finish(Throwable primary) {
             if (this == NOOP) return primary;
             if (closed) {
-                Throwable repeated = merge(primary, new IllegalStateException(
+                Throwable repeated = FailStops.mergeFailure(primary, new IllegalStateException(
                         "A5 player lifecycle scope closed twice"));
                 return AsyncIslandPlayerTicks.publishFatalFailure(repeated);
             }
@@ -252,7 +252,7 @@ final class AsyncIslandPlayerLifecycle {
                     IslandCommands.releaseAllExcept();
                 } catch (Throwable cleanup) {
                     failure = AsyncIslandPlayerTicks.publishFatalFailure(
-                            merge(failure, cleanup));
+                            FailStops.mergeFailure(failure, cleanup));
                 }
             }
             // Retire only after the original body and any global fence release.
@@ -280,7 +280,7 @@ final class AsyncIslandPlayerLifecycle {
                 }
             } catch (Throwable cleanup) {
                 failure = AsyncIslandPlayerTicks.publishFatalFailure(
-                        merge(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
         }
         try {
@@ -291,22 +291,7 @@ final class AsyncIslandPlayerLifecycle {
                     : AsyncIslandPlayerTicks.publishFatalFailure(failure);
         } catch (Throwable cleanup) {
             return AsyncIslandPlayerTicks.publishFatalFailure(
-                    merge(failure, cleanup));
+                    FailStops.mergeFailure(failure, cleanup));
         }
-    }
-
-    private static Throwable merge(Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {}
-        }
-        return primary;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

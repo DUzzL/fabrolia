@@ -12,13 +12,13 @@ public final class VmpTrackingFanoutGate {
 
         Throwable observed = this.failureOrNull();
         if (observed != null) {
-            rethrow(observed);
+            FailStops.rethrow(observed);
         }
 
         try {
             RegionScheduler.runSuccessBodyIfHealthy(body);
         } catch (Throwable fatal) {
-            rethrow(this.publishFailure(fatal));
+            FailStops.rethrow(this.publishFailure(fatal));
         }
     }
 
@@ -67,10 +67,5 @@ public final class VmpTrackingFanoutGate {
         } catch (Throwable ignored) {
             // Suppression is diagnostic only; the primary stays the failure.
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

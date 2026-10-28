@@ -32,6 +32,7 @@ import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.server.level.ServerPlayer;
+import com.axalotl.fabrolia.common.regions.FailStops;
 
 @Mixin(value = ChunkMap.class, priority = 1500)
 public abstract class ChunkMapMixin extends SimpleRegionStorage implements ChunkHolder.PlayerProvider,
@@ -121,14 +122,14 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
         } catch (Throwable cleanup) {
             failure = com.axalotl.fabrolia.common.regions.RegionScheduler
                     .publishFatalAndSelectWinner(
-                            fabrolia$mergeSaveFailure(failure, cleanup));
+                            FailStops.mergeFailure(failure, cleanup));
         }
         try {
             owner.unitClaim.set(false);
         } catch (Throwable cleanup) {
             failure = com.axalotl.fabrolia.common.regions.RegionScheduler
                     .publishFatalAndSelectWinner(
-                            fabrolia$mergeSaveFailure(failure, cleanup));
+                            FailStops.mergeFailure(failure, cleanup));
         }
         if (failure == null) {
             try {
@@ -225,7 +226,7 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
             Throwable winner = com.axalotl.fabrolia.common.regions.RegionScheduler
                     .publishFatalAndSelectWinner(thrown);
             task.failBeforeDispatch(winner);
-            FabroliaOwnerSafeUnloadTask.<RuntimeException>rethrow(winner);
+            FailStops.<RuntimeException>rethrow(winner);
             return CompletableFuture.failedFuture(winner);
         }
     }
@@ -383,7 +384,7 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
                         com.axalotl.fabrolia.common.regions.RegionScheduler
                                 .publishFatalAndSelectWinner(thrown);
                 completion.completeExceptionally(winner);
-                FabroliaOwnerSafeUnloadTask.<RuntimeException>rethrow(winner);
+                FailStops.<RuntimeException>rethrow(winner);
             }
         }
 
@@ -411,12 +412,12 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
                     } catch (Throwable cleanupFailure) {
                         failure = com.axalotl.fabrolia.common.regions.RegionScheduler
                                 .publishFatalAndSelectWinner(
-                                        mergeFailure(failure, cleanupFailure));
+                                        FailStops.mergeFailure(failure, cleanupFailure));
                     }
                 }
             }
             if (failure != null) {
-                FabroliaOwnerSafeUnloadTask.<RuntimeException>rethrow(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 
@@ -428,25 +429,6 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
                             "chunk unload continuation completed more than once");
                 }
             });
-        }
-
-        private static Throwable mergeFailure(
-                Throwable primary, Throwable cleanup) {
-            if (primary == null) return cleanup;
-            if (cleanup != null && cleanup != primary) {
-                try {
-                    primary.addSuppressed(cleanup);
-                } catch (Throwable ignored) {
-                    // Mandatory claim cleanup cannot replace the body primary.
-                }
-            }
-            return primary;
-        }
-
-        @SuppressWarnings("unchecked")
-        private static <T extends Throwable> void rethrow(Throwable failure)
-                throws T {
-            throw (T) failure;
         }
     }
 
@@ -788,19 +770,5 @@ public abstract class ChunkMapMixin extends SimpleRegionStorage implements Chunk
                 return next;
             }
         };
-    }
-
-    @Unique
-    private static Throwable fabrolia$mergeSaveFailure(
-            Throwable primary, Throwable secondary) {
-        if (primary == null) return secondary;
-        if (secondary != null && secondary != primary) {
-            try {
-                primary.addSuppressed(secondary);
-            } catch (Throwable ignored) {
-                // Claim cleanup diagnostics cannot replace the save primary.
-            }
-        }
-        return primary;
     }
 }

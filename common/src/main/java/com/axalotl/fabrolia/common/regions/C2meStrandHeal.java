@@ -130,12 +130,7 @@ public final class C2meStrandHeal {
     }
 
     private static void publishFatalAndRethrow(Throwable failure) {
-        C2meStrandHeal.<RuntimeException>rethrow(
+        FailStops.<RuntimeException>rethrow(
                 RegionScheduler.publishFatalAndSelectWinner(failure));
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

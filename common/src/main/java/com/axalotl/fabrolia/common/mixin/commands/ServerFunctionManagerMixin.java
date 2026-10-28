@@ -9,6 +9,7 @@ import com.axalotl.fabrolia.common.regions.IslandFunctionHead;
 import com.axalotl.fabrolia.common.regions.IslandFunctionScope;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.commands.CommandSourceStack;
@@ -205,7 +206,7 @@ public abstract class ServerFunctionManagerMixin {
             }
         }
         if (failure != null) {
-            ServerFunctionManagerMixin.<RuntimeException>fabrolia$rethrow(failure);
+            FailStops.<RuntimeException>rethrow(failure);
         }
     }
 
@@ -380,12 +381,6 @@ public abstract class ServerFunctionManagerMixin {
         } else {
             IslandCommands.releaseAllExceptAndPropagate(failure);
         }
-    }
-
-    @org.spongepowered.asm.mixin.Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 
 }

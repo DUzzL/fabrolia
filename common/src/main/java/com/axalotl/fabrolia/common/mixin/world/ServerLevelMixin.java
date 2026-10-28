@@ -60,6 +60,7 @@ import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.world.TickRateManager;
 import com.axalotl.fabrolia.common.utils.SpawnFutureTaker;
 import com.axalotl.fabrolia.common.regions.FabroliaLocks;
+import com.axalotl.fabrolia.common.regions.FailStops;
 
 @SuppressWarnings("all")
 @Mixin(value = ServerLevel.class, priority = 1500)
@@ -197,31 +198,10 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 guard.fabrolia$endTick();
             } catch (Throwable cleanup) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
-                        fabrolia$mergePlayerTickFailure(failure, cleanup));
+                        FailStops.mergeFailure(failure, cleanup));
             }
         }
-        if (failure != null) ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
-    }
-
-    @Unique
-    private static Throwable fabrolia$mergePlayerTickFailure(Throwable primary,
-                                                              Throwable cleanup) {
-        if (primary == null) return cleanup;
-        if (primary != cleanup) {
-            try {
-                primary.addSuppressed(cleanup);
-            } catch (Throwable ignored) {
-                // Cleanup diagnostics cannot replace the exact tick failure.
-            }
-        }
-        return primary;
-    }
-
-    @Unique
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void fabrolia$throwPlayerTickFailure(
-            Throwable failure) throws T {
-        throw (T) failure;
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     @Unique
@@ -349,11 +329,11 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     @Unique
     private static void fabrolia$throwFlatFailure(FabroliaFlatFailureGate failure) {
         Throwable thrown = failure.failureOrNull();
-        if (thrown != null) ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(thrown);
+        if (thrown != null) FailStops.<RuntimeException>rethrow(thrown);
         try {
             RegionScheduler.throwWorkerFailureIfAny();
         } catch (Throwable globalWinner) {
-            ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure.publish(globalWinner));
+            FailStops.<RuntimeException>rethrow(failure.publish(globalWinner));
         }
     }
 
@@ -385,11 +365,11 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             try {
                 guard.fabrolia$endTick();
             } catch (Throwable cleanup) {
-                Throwable candidate = fabrolia$mergePlayerTickFailure(failure, cleanup);
+                Throwable candidate = FailStops.mergeFailure(failure, cleanup);
                 failure = RegionScheduler.publishFatalAndSelectWinner(candidate);
             }
         }
-        if (failure != null) ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     /**
@@ -647,7 +627,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
             }
         }
-        if (failure != null) ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
 
@@ -1044,7 +1024,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             }
         }
         if (failure != null) {
-            ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(
+            FailStops.<RuntimeException>rethrow(
                     RegionScheduler.publishFatalAndSelectWinner(failure));
         }
     }
@@ -1172,7 +1152,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                     navigationState.fabrolia$endNavigationBatch();
                 } catch (Throwable cleanupFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(
-                            fabrolia$mergePlayerTickFailure(failure, cleanupFailure));
+                            FailStops.mergeFailure(failure, cleanupFailure));
                 }
             }
 
@@ -1187,7 +1167,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 }
             }
             if (failure != null) {
-                ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
     }
@@ -1211,13 +1191,13 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 RegionScheduler.runSuccessBodyIfHealthy(() -> {
                     synchronized (this) {
                         if (failure != null) {
-                            ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+                            FailStops.<RuntimeException>rethrow(failure);
                         }
                     }
                     body.run();
                 });
             } catch (Throwable thrown) {
-                ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(publish(thrown));
+                FailStops.<RuntimeException>rethrow(publish(thrown));
             }
         }
 
@@ -1302,7 +1282,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             if (remaining < 0) {
                 Throwable duplicate = gate.publish(
                         new IllegalStateException("flat entity fan-out obligation completed more than once"));
-                ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(duplicate);
+                FailStops.<RuntimeException>rethrow(duplicate);
             }
             if (remaining == 0) {
                 Throwable terminalFailure = gate.failureOrNull();
@@ -1349,7 +1329,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 if (state.get() != CANCELLED) {
                     Throwable duplicate = gate.publish(
                             new IllegalStateException("flat entity fan-out task executed more than once"));
-                    ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(duplicate);
+                    FailStops.<RuntimeException>rethrow(duplicate);
                 }
                 return;
             }
@@ -1363,7 +1343,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 owner.finishTask();
             }
             if (failure != null) {
-                ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
+                FailStops.<RuntimeException>rethrow(failure);
             }
         }
 
