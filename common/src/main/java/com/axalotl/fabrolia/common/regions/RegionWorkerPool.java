@@ -117,17 +117,12 @@ public final class RegionWorkerPool {
      */
     void publishFatalFailure(Throwable failure) {
         if (failure == null) throw new NullPointerException("failure");
-        boolean selectedHere = false;
         synchronized (lifecycleLock) {
-            if (fatalFailure == null) {
-                fatalFailure = failure;
-                selectedHere = true;
-            }
+            if (fatalFailure == null) fatalFailure = failure;
             accepting = false;
             signalLifecycleWaiters();
         }
         for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
-        if (selectedHere) FailStopCrashReports.winnerSelected(failure);
     }
 
     /** Select this pool generation's exact W without consulting stale orphan/test state. */
@@ -178,7 +173,6 @@ public final class RegionWorkerPool {
         }
         if (selectedHere) {
             for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
-            FailStopCrashReports.winnerSelected(failure);
         }
         FailStops.<RuntimeException>rethrow(failure);
     }
@@ -792,7 +786,6 @@ public final class RegionWorkerPool {
         }
         if (selectedHere) {
             for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
-            FailStopCrashReports.winnerSelected(failure);
         }
         return failure;
     }
@@ -932,7 +925,6 @@ public final class RegionWorkerPool {
         }
         if (selectedHere) {
             for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
-            FailStopCrashReports.winnerSelected(fatalFailure);
         }
         if (failure != null) {
             if (permit != null) {
@@ -1900,7 +1892,6 @@ public final class RegionWorkerPool {
         }
         if (selectedHere) {
             for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
-            FailStopCrashReports.winnerSelected(fatalFailure);
         }
         if (failure != null) {
             if (permit != null) {
@@ -2266,7 +2257,6 @@ public final class RegionWorkerPool {
             }
             if (selectedHere) {
                 for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
-                FailStopCrashReports.winnerSelected(fatalFailure);
             }
             return result;
         }

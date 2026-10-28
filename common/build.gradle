@@ -39,8 +39,6 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
-    // Fixture servers would otherwise collect fail-stop crash reports under common/.
-    systemProperty 'fabrolia.failStopCrashReports', 'false'
     // DocumentationReferencesTest reads these; rerun when they change.
     inputs.files(rootProject.file('docs/CODEMAP.md'), rootProject.file('AGENTS.md'))
             .withPathSensitivity(PathSensitivity.RELATIVE)
