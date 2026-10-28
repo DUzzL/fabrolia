@@ -40,8 +40,7 @@ public abstract class ServuxStructureWatchMainRouteMixin {
     private void fabrolia$routeStructureWatchToMain(ServerPlayer player, LevelChunk chunk,
                                                     Operation<Void> original) {
         if (!RegionScheduler.isActive()
-                || RegionalPlayerEntityTicksV2.isPhysicalServerThread(player.level().getServer())
-                || RegionalPlayerEntityTicksV2.inExactPlayerActor()) {
+                || RegionalPlayerEntityTicksV2.isPhysicalServerThread(player.level().getServer())) {
             original.call(player, chunk);
             return;
         }

@@ -94,7 +94,7 @@ class C2meServerLevelActorThreadWiringTest {
     }
 
     @Test
-    void replacementReproducesPhysicalBranchAndAddsOnlyAuthenticatedActor() throws Exception {
+    void replacementReproducesThePhysicalBranch() throws Exception {
         ClassNode accessor = readClass(FabroliaC2meLevelThreadAccessor.class);
         assertMixinTarget(accessor, "Lnet/minecraft/world/level/Level;");
         MethodNode physicalThread = method(accessor,
@@ -123,7 +123,7 @@ class C2meServerLevelActorThreadWiringTest {
         assertEquals(1, callCount(handler, internal(FabroliaC2meLevelThreadAccessor.class),
                 "fabrolia$getPhysicalLevelThread", THREAD_DESC));
         assertEquals(1, callCount(handler, "java/lang/Thread", "currentThread", THREAD_DESC));
-        assertEquals(1, callCount(handler, internal(RegionalPlayerEntityTicksV2.class),
+        assertEquals(0, callCount(handler, internal(RegionalPlayerEntityTicksV2.class),
                 "inExactPlayerActor", "()Z"));
         assertEquals(1, callCount(handler,
                 "com/llamalad7/mixinextras/injector/wrapoperation/Operation",
@@ -132,13 +132,11 @@ class C2meServerLevelActorThreadWiringTest {
         int physical = callIndex(handler, internal(FabroliaC2meLevelThreadAccessor.class),
                 "fabrolia$getPhysicalLevelThread", THREAD_DESC);
         int current = callIndex(handler, "java/lang/Thread", "currentThread", THREAD_DESC);
-        int actor = callIndex(handler, internal(RegionalPlayerEntityTicksV2.class),
-                "inExactPlayerActor", "()Z");
         int original = callIndex(handler,
                 "com/llamalad7/mixinextras/injector/wrapoperation/Operation",
                 "call", "([Ljava/lang/Object;)Ljava/lang/Object;");
-        assertTrue(physical >= 0 && current > physical && actor > current && original > actor,
-                "physical comparison and authenticated actor gate must precede the original call");
+        assertTrue(physical >= 0 && current > physical && original > current,
+                "the physical comparison must precede the original call");
         assertEquals(0, c2meTypeReferenceCount(accessor) + c2meTypeReferenceCount(replacement),
                 "the replacement must not link against C2ME implementation/accessor types");
     }

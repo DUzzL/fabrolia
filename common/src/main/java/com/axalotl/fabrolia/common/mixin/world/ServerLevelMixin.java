@@ -186,39 +186,18 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private void fabrolia$guardTickNonPassenger(Entity entity, Operation<Void> original) {
         ParallelProcessor.TickGuard guard = (ParallelProcessor.TickGuard) entity;
         if (guard.fabrolia$tickLease().isArrivalPending()) return;
-        boolean inheritedReservation = com.axalotl.fabrolia.common.regions
-                .RegionalPlayerEntityTicksV2.ownsReservedEntityTick(entity);
-        boolean acquired = false;
-        if (!inheritedReservation && !guard.fabrolia$tryBeginTick()) {
-            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                    .failIfClaimedTickGuardContention(entity, "tickNonPassenger");
-            return;
-        }
-        if (!inheritedReservation) acquired = true;
+        if (!guard.fabrolia$tryBeginTick()) return;
         Throwable failure = null;
         try {
-            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                    .rejectReservedExternalEntityConsumer(entity);
-            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                    .markVanillaEntityConsumerEntered(entity);
             original.call(entity);
         } catch (Throwable thrown) {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         } finally {
             try {
-                com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                        .finishPlayerEntityBody(entity);
+                guard.fabrolia$endTick();
             } catch (Throwable cleanup) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(
                         fabrolia$mergePlayerTickFailure(failure, cleanup));
-            }
-            if (acquired) {
-                try {
-                    guard.fabrolia$endTick();
-                } catch (Throwable cleanup) {
-                    failure = RegionScheduler.publishFatalAndSelectWinner(
-                            fabrolia$mergePlayerTickFailure(failure, cleanup));
-                }
             }
         }
         if (failure != null) ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
@@ -393,40 +372,21 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         // vehicle's own tick after the root visit chose this lane) ticks on Main.
         if (RegionScheduler.deferForeignPlayerPassenger(vehicle, entity)) return;
         ParallelProcessor.TickGuard guard = (ParallelProcessor.TickGuard) entity;
-        boolean inheritedReservation = com.axalotl.fabrolia.common.regions
-                .RegionalPlayerEntityTicksV2.ownsReservedEntityTick(entity);
-        boolean acquired = false;
-        if (!inheritedReservation && !guard.fabrolia$tryBeginTick()) {
-            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                    .failIfClaimedTickGuardContention(entity, "tickPassenger");
-            return;
-        }
-        if (!inheritedReservation) acquired = true;
+        if (!guard.fabrolia$tryBeginTick()) return;
         Throwable failure = null;
         try {
-            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                    .rejectReservedExternalEntityConsumer(entity);
             original.call(vehicle, entity);
         } catch (Throwable thrown) {
-            // Close the generation before either ownership witness becomes
-            // visible again. An outer entity/tick boundary is too late: both
-            // cleanup calls below release admission for another consumer.
+            // Close the generation before the ownership witness becomes visible
+            // again. An outer entity/tick boundary is too late: the cleanup call
+            // below releases admission for another consumer.
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         } finally {
             try {
-                com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                        .finishPlayerEntityBody(entity);
+                guard.fabrolia$endTick();
             } catch (Throwable cleanup) {
                 Throwable candidate = fabrolia$mergePlayerTickFailure(failure, cleanup);
                 failure = RegionScheduler.publishFatalAndSelectWinner(candidate);
-            }
-            if (acquired) {
-                try {
-                    guard.fabrolia$endTick();
-                } catch (Throwable cleanup) {
-                    Throwable candidate = fabrolia$mergePlayerTickFailure(failure, cleanup);
-                    failure = RegionScheduler.publishFatalAndSelectWinner(candidate);
-                }
             }
         }
         if (failure != null) ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(failure);
@@ -444,8 +404,6 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                     target = "Lnet/minecraft/world/entity/Entity;commonTick()V"),
             require = 1)
     private void fabrolia$stampPassengerBody(Entity entity, Operation<Void> original) {
-        com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .markPlayerEntityBodyPhase(entity);
         // The passenger's real tick: re-open its per-tick function pass here,
         // after vanilla's removed/vehicle/tick-list gates.
         com.axalotl.fabrolia.common.regions.IslandFunctionHead.entityTicked(
@@ -454,9 +412,9 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     }
 
     /**
-     * Exact vanilla ordinal seam. Every lambda gate, checkDespawn call, profiler
-     * section and vehicle decision has already run on physical main. Only the one
-     * guardEntityTick invocation for an eligible standalone real player migrates.
+     * Exact vanilla ordinal seam of the canonical EntityTickList pass. Every lambda
+     * gate, checkDespawn call, profiler section and vehicle decision has already run
+     * on physical main.
      */
     @WrapOperation(
             method = "lambda$tick$0(Lnet/minecraft/world/TickRateManager;"
@@ -472,15 +430,8 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     private void fabrolia$exactOrdinalPlayerBody(
             ServerLevel level, Consumer<Entity> ticker, Entity entity,
             Operation<Void> original) {
-        if (com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .executeExactOrdinal(level, entity,
-                        () -> original.call(level, ticker, entity))) {
-            return;
-        }
-        // An ineligible/non-player entity still executes the exact vanilla
-        // guard body at this canonical ordinal.  The exact actor owns the
-        // paused pool here, so a fresh body permit is legal and prevents a
-        // peer W from being followed by this fallback mutation.
+        // A fresh body permit prevents a peer W from being followed by this
+        // vanilla guard body at its canonical ordinal.
         RegionScheduler.runSuccessBodyIfHealthy(
                 () -> original.call(level, ticker, entity));
     }
@@ -674,31 +625,23 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 () -> original.call(instance, subscribers));
     }
 
-    /** Retain the worker exclusion fence through vanilla's block-entity tail. */
+    /** Whole-level W-vs-entry cut around vanilla's ServerLevel.tick. */
     @WrapMethod(method = "tick(Ljava/util/function/BooleanSupplier;)V")
     private void fabrolia$exactPlayerLevelTurn(java.util.function.BooleanSupplier hasTimeLeft,
                                                Operation<Void> original) {
         Throwable failure = null;
         try {
             // Logical entry is selected under the global W lock, but no external
-            // permit survives this cut: beginExactLevelIteration later waits for
-            // externalObligations == 0 and must never wait on its own level body.
+            // permit survives this cut: the level body later requests pool fixed
+            // points and must never wait on its own level body.
             RegionScheduler.commitSuccessIfHealthy(() -> {});
             original.call(hasTimeLeft);
         } catch (Throwable thrown) {
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         }
-        try {
-            failure = com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                    .finishLevelTurn((ServerLevel) (Object) this, failure);
-        } catch (Throwable cleanup) {
-            failure = RegionScheduler.publishFatalAndSelectWinner(
-                    fabrolia$mergePlayerTickFailure(failure, cleanup));
-        }
         if (failure == null) {
             try {
-                // finishLevelTurn may release the exact-level pause. Refuse a
-                // normal return if peer W won during that mandatory cleanup.
+                // Refuse a normal return if peer W won during the level body.
                 RegionScheduler.commitSuccessIfHealthy(() -> {});
             } catch (Throwable peerFailure) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
@@ -736,8 +679,6 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             // race them inside player-area chunks) and before entity dispatch (ColorGate
             // submit-before-dispatch invariant, per-region FIFO preserved).
             var rsLease = RegionScheduler.forLevel(self);
-            boolean exactPlayerOrder = com.axalotl.fabrolia.common.regions
-                    .RegionalPlayerEntityTicksV2.exactOrdinalActive(rsLease);
             if (rsLease != null) {
                 com.axalotl.fabrolia.common.regions.CrossDimArrivals.rearmPendingLeases(rsLease);
             }
@@ -762,69 +703,14 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                 }
             }
             ParallelProcessor.pumpUntilDone(regionAll);
-            // Ordinary region producers are now quiescent. Drain the established
-            // main-owned entity lane before acquiring the exact-turn pool fence.
-            // In async mode islands chain ahead of Main and keep publishing:
-            // Main services the islands that are idle now and leaves the rest
-            // queued for its next barrier pump instead of parking behind a
-            // unit that ends anyway; the exact-turn pool fence needs the
-            // complete lane.
-            if (exactPlayerOrder) RegionScheduler.drainMainSyncTicks();
-            else RegionScheduler.drainReadyMainSyncTicks();
-            if (!exactPlayerOrder) {
-                // Older accepted Main bodies have settled before this finite
-                // Vanilla snapshot; island coordinators consume their own cuts.
-                rsLease.tickGlobalEntitiesInVanillaOrder(consumer);
-            }
-            if (exactPlayerOrder) {
-                Throwable exactFailure = null;
-                boolean opened = false;
-                try {
-                    com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                            .beginExactLevelIteration(rsLease);
-                    opened = true;
-                    // Invoke the actual transformed call operation and its actual
-                    // synthetic vanilla Consumer. Gates/profiler/vehicle handling and
-                    // EntityTickList ordinal therefore remain canonical on main. The
-                    // exact pause is already held before this permit is acquired, and
-                    // the permit terminates before endExactLevelIteration/release.
-                    RegionScheduler.runSuccessBodyIfHealthy(
-                            () -> originalEntityList.call(entityTickList, consumer));
-                } catch (Throwable failure) {
-                    // The transformed EntityTickList body may already have changed
-                    // vanilla/Fabric state.  Its exact W must become generation-fatal
-                    // before the exact-level ThreadLocal/fence cleanup is observable.
-                    exactFailure = RegionScheduler.publishFatalAndSelectWinner(failure);
-                } finally {
-                    if (opened) {
-                        try {
-                            com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                                    .endExactLevelIteration(rsLease);
-                        } catch (Throwable cleanup) {
-                            exactFailure = RegionScheduler.publishFatalAndSelectWinner(
-                                    fabrolia$mergePlayerTickFailure(exactFailure, cleanup));
-                        }
-                    }
-                }
-                if (exactFailure == null) {
-                    try {
-                        // ThreadLocal teardown is outside the entity-list permit.
-                        // Do not publish finishLevel or any following stage after
-                        // a peer W which won during that mandatory cleanup.
-                        RegionScheduler.commitSuccessIfHealthy(() -> {});
-                    } catch (Throwable peerFailure) {
-                        exactFailure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
-                    }
-                }
-                if (exactFailure != null) {
-                    ServerLevelMixin.<RuntimeException>fabrolia$throwPlayerTickFailure(exactFailure);
-                }
-            }
-            // Every exact actor consumer (or pre-entry main fallback) has completed
-            // synchronously at its canonical list ordinal before this seal.
-            RegionScheduler.runSuccessBodyIfHealthy(() ->
-                    com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                            .finishLevel(rsLease));
+            // Ordinary region producers are now quiescent. In async mode islands
+            // chain ahead of Main and keep publishing: Main services the islands
+            // that are idle now and leaves the rest queued for its next barrier
+            // pump instead of parking behind a unit that ends anyway.
+            RegionScheduler.drainReadyMainSyncTicks();
+            // Older accepted Main bodies have settled before this finite
+            // Vanilla snapshot; island coordinators consume their own cuts.
+            rsLease.tickGlobalEntitiesInVanillaOrder(consumer);
             // Cross-region effects the workers deferred (writes / neighbour updates that
             // left their claimed region) — in sync mode every region is quiescent
             // here, so the replay on main completes boundary-crossing redstone within
@@ -856,12 +742,8 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             // served at the next safe point (post-tick boundary, level head).
             // Only overdue tracker publications may wait, bounded by the island's
             // running unit; the rest waits for the next pump.
-            if (exactPlayerOrder) {
-                RegionScheduler.drainMainSyncTicks();
-            } else {
-                RegionScheduler.drainOverdueMainSyncTicks();
-                RegionScheduler.drainOverdueMainTracking();
-            }
+            RegionScheduler.drainOverdueMainSyncTicks();
+            RegionScheduler.drainOverdueMainTracking();
             RegionScheduler.runSuccessBodyIfHealthy(
                     () -> ParallelProcessor.onEntityTickBatchEnd(batchStart));
             return;

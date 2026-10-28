@@ -34,8 +34,6 @@ public final class RaidOwnership {
 
     public static boolean canCreate(ServerPlayer player, BlockPos position) {
         ServerLevel level = player.level();
-        if (RegionalPlayerEntityTicksV2.inExactPlayerActor()
-                && RegionScheduler.ownsCurrentContext(level, position)) return true;
         RegionizedServer rs = RegionScheduler.forLevel(level);
         if (rs == null || !rs.asyncActive) return false;
         if (rs.currentThreadHoldsAllClaims()) return true;

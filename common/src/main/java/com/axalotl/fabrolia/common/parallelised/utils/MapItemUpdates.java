@@ -125,11 +125,9 @@ public final class MapItemUpdates {
 
     private static boolean requiresMain(ServerLevel level, Entity entity) {
         // Vanilla's direct update only samples chunks for Player. Nonplayers
-        // have no inventory map mutation either. The synchronous exact actor
-        // already owns the logical server turn with physical Main parked.
+        // have no inventory map mutation either.
         if (!(entity instanceof Player)
-                || RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())
-                || RegionalPlayerEntityTicksV2.inExactPlayerActor()) return false;
+                || RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())) return false;
         if (!(entity instanceof ServerPlayer player)
                 || !AsyncIslandPlayerTicks.supportsIslandPlayerType(player)) {
             throw new IllegalStateException("map update entered on an unauthenticated player worker");

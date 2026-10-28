@@ -60,7 +60,7 @@ public final class RegionWorkerPool {
     private volatile Throwable fatalFailure;
     private Thread stoppingOwner;
     /**
-     * Exact player mode temporarily transfers the server turn to one serial actor.
+     * An exact turn temporarily gives physical Main exclusive use of the server turn.
      * New work may still be published while the turn is held, but no worker may
      * start another step until the physical server thread releases this fence.
      */
@@ -175,29 +175,6 @@ public final class RegionWorkerPool {
             for (Thread worker : workers) if (worker != null) LockSupport.unpark(worker);
         }
         RegionWorkerPool.<RuntimeException>rethrow(failure);
-    }
-
-    /**
-     * Linearize entry of the one serial player actor against this generation's
-     * fatal slot while physical Main retains the exact-turn fence.  This is not
-     * an external obligation: the owner is synchronously parked on the actor's
-     * receipt and cannot resume the pool before that receipt becomes terminal.
-     */
-    void commitPausedExactActorEntryIfHealthy(Thread physicalOwner, Thread actor) {
-        if (physicalOwner == null) throw new NullPointerException("physicalOwner");
-        if (actor == null) throw new NullPointerException("actor");
-        commitSuccessIfHealthy(() -> {
-            if (!running || !accepting || stopping || terminated
-                    || !exactTurnPaused || exactTurnRequested || exactReplayClosing
-                    || exactTurnOwner != physicalOwner
-                    || actor == physicalOwner
-                    || Thread.currentThread() != actor
-                    || !RegionalPlayerEntityTicksV2.exactActorHandoffMatches(
-                            physicalOwner, actor)) {
-                throw new IllegalStateException(
-                        "exact player actor lost its paused physical-owner handoff");
-            }
-        });
     }
 
     /**
@@ -450,9 +427,9 @@ public final class RegionWorkerPool {
     }
 
     /**
-     * Linearizable worker-exclusion fence used by the exact EntityTickList pass.
+     * Linearizable worker-exclusion fence for an exact physical-Main turn.
      * There is no timeout: returning while an old step is live would let it overlap
-     * the logical-server actor.  The progress callback may service only causal
+     * the exclusive Main work.  The progress callback may service only causal
      * chunk-main work and Main-run transport queues ({@link PassiveConnectionLoops});
      * it runs outside {@link #lifecycleLock}.
      */

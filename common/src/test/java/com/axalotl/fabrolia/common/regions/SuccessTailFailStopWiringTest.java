@@ -23,39 +23,6 @@ class SuccessTailFailStopWiringTest {
     }
 
     @Test
-    void regionalPlayerClaimUsesFixedReceiptBeforeTerminalRetirementAndNotification()
-            throws Exception {
-        String all = source("RegionalPlayerEntityTicksV2.java");
-        String completion = section(all,
-                "private static Throwable completeAndRetire(",
-                "public static void finishLevel(");
-
-        int offer = completion.indexOf("context.batch.offerCompletion(context.claim)");
-        int cut = completion.indexOf("RegionScheduler.commitSuccessIfHealthy");
-        int accept = completion.indexOf("acceptedReceipt::acceptSuccess", cut);
-        int consume = completion.indexOf(
-                "context.batch.consumeAcceptedCompletionAndRetire(acceptedReceipt)", accept);
-        int poison = completion.indexOf(
-                "context.batch.poisonCompletionAndRetire(receipt, result)", consume);
-        int signal = completion.indexOf("context.batch.signalCompletion(receipt)", poison);
-
-        assertTrue(offer >= 0 && cut > offer && accept > cut && consume > accept
-                        && poison > consume && signal > poison,
-                "the cut may only accept a fixed receipt; ledger consume, W poison, retirement, "
-                        + "and waiter notification must remain outside it");
-        assertFalse(completion.substring(cut, consume).contains("retireCandidate"));
-        assertFalse(completion.substring(cut, consume).contains("ledger.complete"));
-
-        String globalFail = section(all, "Throwable fail(Throwable thrown)",
-                "synchronized Throwable firstFailure()");
-        assertTrue(globalFail.indexOf("publishFatalAndSelectWinner(thrown)")
-                        < globalFail.indexOf("recordFailureLocked(winner)"),
-                "the exact scheduler W must win before local ledger publication");
-    }
-
-
-
-    @Test
     void fanInPublishesNormalTerminalOnlyInsideTheHealthyCut() throws Exception {
         String all = source("RegionTaskFanIn.java");
         String run = section(all, "public final class RegisteredTask",

@@ -310,8 +310,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         // one-shot stack below names the illegal caller in production logs.
         if (!FabroliaConfig.disabled && FabroliaConfig.enableRegionThreading
                 && RegionScheduler.isActive()
-                && !com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .inExactPlayerActor()
                 && Thread.currentThread() != this.mainThread) {
             if (!FABROLIA$OFF_MAIN_DISTANCE_LOGGED.getAndSet(true)) {
                 LOGGER.error("[ticket-safety] runDistanceManagerUpdates attempted OFF-MAIN on {} — refused. "
@@ -810,9 +808,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         // Owner-local datapack function bodies touch only their partition's
         // chunks (plan-proven; fail-stop on a miss instead of a race).
         com.axalotl.fabrolia.common.regions.IslandFunctionScope.checkChunk(this.level, x, z);
-        if (Thread.currentThread() == this.mainThread
-                || com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .inExactPlayerActor()) return;
+        if (Thread.currentThread() == this.mainThread) return;
 
         long pos = ChunkPos.pack(x, z);
         ChunkHolder holder = this.getVisibleChunkIfPresent(pos);
@@ -1100,9 +1096,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
 
     @Inject(method = "getChunkNow", at = @At("HEAD"), cancellable = true)
     private void fabrolia$getChunkNow(int x, int z, CallbackInfoReturnable<LevelChunk> cir) {
-        if (Thread.currentThread() == this.mainThread
-                || com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .inExactPlayerActor()) return;
+        if (Thread.currentThread() == this.mainThread) return;
 
         ChunkHolder holder = this.getVisibleChunkIfPresent(ChunkPos.pack(x, z));
         if (holder == null) {
@@ -1123,47 +1117,6 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
         }
 
         cir.setReturnValue(null);
-    }
-
-    /**
-     * Vanilla getChunk/getChunkNow use a direct physical-thread comparison before
-     * entering their main-only branch. During an exclusive actor turn that actor is
-     * the logical main, so substitute the captured physical-main reference only for
-     * those two exact comparisons; no field is mutated and other threads are unchanged.
-     */
-    @ModifyExpressionValue(
-            method = "getChunk(IILnet/minecraft/world/level/chunk/status/ChunkStatus;Z)"
-                    + "Lnet/minecraft/world/level/chunk/ChunkAccess;",
-            at = @At(value = "INVOKE", target = "Ljava/lang/Thread;currentThread()Ljava/lang/Thread;",
-                    ordinal = 0),
-            require = 1,
-            allow = 1)
-    private Thread fabrolia$logicalPlayerActorGetChunkThread(Thread original) {
-        return com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .inExactPlayerActor() ? this.mainThread : original;
-    }
-
-    @ModifyExpressionValue(
-            method = "getChunkFuture(IILnet/minecraft/world/level/chunk/status/ChunkStatus;Z)"
-                    + "Ljava/util/concurrent/CompletableFuture;",
-            at = @At(value = "INVOKE", target = "Ljava/lang/Thread;currentThread()Ljava/lang/Thread;",
-                    ordinal = 0),
-            require = 1,
-            allow = 1)
-    private Thread fabrolia$logicalPlayerActorGetChunkFutureThread(Thread original) {
-        return com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .inExactPlayerActor() ? this.mainThread : original;
-    }
-
-    @ModifyExpressionValue(
-            method = "getChunkNow(II)Lnet/minecraft/world/level/chunk/LevelChunk;",
-            at = @At(value = "INVOKE", target = "Ljava/lang/Thread;currentThread()Ljava/lang/Thread;",
-                    ordinal = 0),
-            require = 1,
-            allow = 1)
-    private Thread fabrolia$logicalPlayerActorGetChunkNowThread(Thread original) {
-        return com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                .inExactPlayerActor() ? this.mainThread : original;
     }
 
     @Unique

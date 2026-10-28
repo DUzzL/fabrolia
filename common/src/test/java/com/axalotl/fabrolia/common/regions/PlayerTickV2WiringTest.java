@@ -7,10 +7,7 @@ import com.axalotl.fabrolia.common.mixin.commands.ServerFunctionManagerMixin;
 import com.axalotl.fabrolia.common.mixin.network.PacketProcessorPlayerTickMixin;
 import com.axalotl.fabrolia.common.mixin.network.ServerCommonPacketListenerPlayerTickFlushMixin;
 import com.axalotl.fabrolia.common.mixin.server.MinecraftServerMixin;
-import com.axalotl.fabrolia.common.mixin.server.ServerChunkCacheMainThreadExecutorMixin;
-import com.axalotl.fabrolia.common.mixin.server.ServerPlayerGameModeAccessor;
 import com.axalotl.fabrolia.common.mixin.server.ServerPlayerMixin;
-import com.axalotl.fabrolia.common.mixin.utils.ProfilerAccessor;
 import com.axalotl.fabrolia.common.mixin.world.ServerLevelMixin;
 import net.minecraft.network.PacketProcessor;
 import net.minecraft.server.MinecraftServer;
@@ -52,26 +49,6 @@ class PlayerTickV2WiringTest {
     private enum FsitPoseFixture { STANDING, SITTING }
 
     @Test
-    void leaseWaitProgressAdmitsEachChunkCallbackAtomically() throws Exception {
-        ClassNode coordinator = readClass(RegionalPlayerEntityTicksV2.class);
-        int connectionAdmissions = coordinator.methods.stream()
-                .filter(method -> method.name.startsWith("lambda$beforeConnections$"))
-                .mapToInt(method -> callCount(method, internal(RegionScheduler.class),
-                        "callSuccessBooleanIfHealthy"))
-                .sum();
-        int levelAdmissions = coordinator.methods.stream()
-                .filter(method -> method.name.startsWith("lambda$finishLevel$"))
-                .mapToInt(method -> callCount(method, internal(RegionScheduler.class),
-                        "callSuccessBooleanIfHealthy"))
-                .sum();
-
-        assertEquals(1, connectionAdmissions,
-                "connection-barrier progress must atomically admit its one callback");
-        assertEquals(1, levelAdmissions,
-                "level-barrier progress must atomically admit its one callback");
-    }
-
-    @Test
     void exactlyOneMutableGateAndNoV1ConfigGateExists() {
         List<String> mutableBooleans = new ArrayList<>();
         for (var field : RegionalPlayerEntityTicksV2.class.getDeclaredFields()) {
@@ -105,42 +82,6 @@ class PlayerTickV2WiringTest {
     }
 
     @Test
-    void liveAsyncEnableWaitsForTheOpenExactPlayerWallPhase() throws Exception {
-        var currentField = RegionalPlayerEntityTicksV2.class.getDeclaredField("CURRENT");
-        var disabledField =
-                RegionalPlayerEntityTicksV2.class.getDeclaredField("DISABLED_PHASE");
-        currentField.setAccessible(true);
-        disabledField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        AtomicReference<Object> current = (AtomicReference<Object>) currentField.get(null);
-        Object disabled = disabledField.get(null);
-
-        Class<?> phaseType = Class.forName(
-                RegionalPlayerEntityTicksV2.class.getName() + "$GlobalPhase");
-        var constructor = phaseType.getDeclaredConstructor(
-                long.class, boolean.class, MinecraftServer.class);
-        constructor.setAccessible(true);
-        Object exactPhase = constructor.newInstance(1L, true, null);
-
-        assertTrue(current.compareAndSet(null, exactPhase));
-        try {
-            assertFalse(RegionalPlayerEntityTicksV2
-                            .asyncActivationAllowedAtLevelHead(),
-                    "an online-player exact phase must retain the whole wall tick");
-            assertTrue(current.compareAndSet(exactPhase, disabled));
-            assertTrue(RegionalPlayerEntityTicksV2
-                            .asyncActivationAllowedAtLevelHead(),
-                    "a disabled exact phase permits autonomous island activation");
-            assertTrue(current.compareAndSet(disabled, null));
-            assertTrue(RegionalPlayerEntityTicksV2
-                            .asyncActivationAllowedAtLevelHead(),
-                    "outside a wall phase there is no competing player owner");
-        } finally {
-            current.set(null);
-        }
-    }
-
-    @Test
     void exceptionalFailureMergePreservesPrimaryWhenLaterCleanupIsClean() throws Exception {
         var merge = RegionalPlayerEntityTicksV2.class.getDeclaredMethod(
                 "mergeFailure", Throwable.class, Throwable.class);
@@ -154,25 +95,12 @@ class PlayerTickV2WiringTest {
     @Test
     void v2CallsGuardedEntityConsumerAndNeverDoTickOrPacketHandlers() throws Exception {
         ClassNode coordinator = readClass(RegionalPlayerEntityTicksV2.class);
-        assertTrue(calls(coordinator, internal(PlayerTickActor.class),
-                "executeExactAndAwait"));
         assertFalse(calls(coordinator, internal(ParallelProcessor.class), "tickEntityVanillaGuarded"),
                 "the removed post-fan-in player lane must not remain callable");
         assertFalse(calls(coordinator, "net/minecraft/server/level/ServerPlayer", "tick"));
         assertFalse(calls(coordinator, "net/minecraft/server/level/ServerPlayer", "doTick"));
         assertFalse(anyOwnerContains(coordinator, "PacketUtils"));
         assertFalse(anyMethodNameStarts(coordinator, "handle"));
-        assertTrue(calls(coordinator, internal(PlayerTickKnownModEnvelope.class), "idle"),
-                "known Carpet/FSit active state must fail closed to the main path");
-
-        MethodNode beginServerTick = method(coordinator, "beginServerTick",
-                "(Lnet/minecraft/server/MinecraftServer;)V");
-        int actorFatal = callIndex(beginServerTick, internal(PlayerTickActor.class),
-                "terminalFailure");
-        int publishPhase = callIndex(beginServerTick,
-                "java/util/concurrent/atomic/AtomicReference", "compareAndSet");
-        assertTrue(actorFatal >= 0 && publishPhase > actorFatal,
-                "an actor failure must reach physical Main before a successor phase opens");
 
         for (ClassNode removedLaneOwner : List.of(coordinator,
                 readClass(RegionWorkerPool.class), readClass(RegionizedServer.class))) {
@@ -215,38 +143,6 @@ class PlayerTickV2WiringTest {
         assertEquals(1, callCount(online, coordinatorOwner, "onlinePlayerRefusal"),
                 "the diagnostic loop must explain each online player's local refusal");
 
-        MethodNode diagnostic = method(coordinator, "onlinePlayerRefusal",
-                "(Lnet/minecraft/server/MinecraftServer;"
-                        + "Lnet/minecraft/server/level/ServerPlayer;)Ljava/lang/String;");
-        assertEquals(1, callCount(diagnostic, envelopeOwner, "refusalReason"),
-                "the status path must obtain a concrete Carpet/FSit refusal reason");
-        assertEquals(0, callCount(diagnostic, envelopeOwner, "idle"),
-                "the diagnostic must not discard the known-mod refusal reason");
-        assertEquals(1, fieldAccessCount(diagnostic, Opcodes.GETFIELD,
-                        "net/minecraft/server/level/ServerPlayer", "portalProcess"),
-                "diagnostics must distinguish worker-safe Nether charge from inline portals");
-        assertEquals(1, typeInstructionCount(diagnostic, Opcodes.INSTANCEOF,
-                        "net/minecraft/world/level/block/NetherPortalBlock"),
-                "non-Nether portal transitions must remain Main-owned");
-
-        MethodNode hotPath = method(coordinator, "playerEnvelope",
-                "(Lcom/axalotl/fabrolia/common/regions/RegionalPlayerEntityTicksV2$LevelBatch;"
-                        + "Lnet/minecraft/server/level/ServerPlayer;)Z");
-        assertEquals(1, callCount(hotPath, envelopeOwner, "idle"),
-                "the per-tick path must retain the allocation-free boolean probe");
-        assertEquals(0, callCount(hotPath, envelopeOwner, "refusalReason"),
-                "status diagnostics must not leak into the per-tick hot path");
-        assertEquals(1, fieldAccessCount(hotPath, Opcodes.GETFIELD,
-                        "net/minecraft/server/level/ServerPlayer", "portalProcess"),
-                "the hot envelope must classify, not blanket-reject, a live portal charge");
-        assertEquals(1, typeInstructionCount(hotPath, Opcodes.INSTANCEOF,
-                        "net/minecraft/world/level/block/NetherPortalBlock"),
-                "only Nether portal charge may advance inside the player actor");
-        assertEquals(1, callCount(hotPath,
-                        "com/axalotl/fabrolia/common/ParallelProcessor$TickGuard",
-                        "fabrolia$isPortalPending"),
-                "only the queued transfer, not portal charge, freezes player simulation");
-
         ClassNode envelope = readClass(PlayerTickKnownModEnvelope.class);
         MethodNode refusal = method(envelope, "refusalReason",
                 "(Lnet/minecraft/server/level/ServerPlayer;)Ljava/lang/String;");
@@ -276,257 +172,8 @@ class PlayerTickV2WiringTest {
 
 
     @Test
-    void exactActorAndQueueOnlyEpochAreWiredAtTheCanonicalOrdinal() throws Exception {
+    void failureMergeAndQueueOnlyEpochAreWired() throws Exception {
         ClassNode coordinator = readClass(RegionalPlayerEntityTicksV2.class);
-        MethodNode execute = method(coordinator, "executeExactOrdinal",
-                "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/entity/Entity;"
-                        + "Ljava/lang/Runnable;)Z");
-        List<Integer> executeFatalChecks = callIndices(execute,
-                coordinator.name + "$LevelBatch", "throwIfFailed");
-        int fatalBeforeOrdinal = executeFatalChecks.getFirst();
-        int entityClassGate = callIndex(execute, "java/lang/Object", "getClass");
-        int reserve = callIndexByName(execute, "reserveCandidate");
-        int start = callIndex(execute, internal(PlayerTickPhase.class), "startWorker");
-        int actor = callIndex(execute, internal(PlayerTickActor.class),
-                "executeExactAndAwait");
-        assertTrue(fatalBeforeOrdinal >= 0 && entityClassGate > fatalBeforeOrdinal
-                        && reserve > entityClassGate && start > reserve && actor > start,
-                "a published failure must stop even a non-player ordinal before class/body "
-                        + "dispatch; healthy claims admit before actor publication");
-        assertEquals(1, callCount(execute, internal(PlayerTickActor.class),
-                "executeExactAndAwait"));
-        assertEquals(2, executeFatalChecks.size(),
-                "physical main must rethrow a phase failure both before ordinal dispatch "
-                        + "and immediately after the accepted actor obligation returns");
-        assertTrue(executeFatalChecks.getLast() > actor,
-                "an actor-side failure may not remain ledgered while physical main "
-                        + "returns to the vanilla entity loop");
-        int enteredBeforeFallback = callIndex(execute, internal(PlayerTickPhase.class),
-                "vanillaConsumerEntered");
-        int mainFallbackIndex = callIndex(execute, internal(RegionalPlayerEntityTicksV2.class),
-                "runExactMainFallback");
-        assertTrue(enteredBeforeFallback > actor && mainFallbackIndex > enteredBeforeFallback,
-                "an actor rejection after vanilla body entry must never retry on main");
-
-        String tickContext = coordinator.name + "$TickContext";
-        List<Integer> contextAllocations = callIndices(execute, tickContext, "<init>");
-        int profilerCapture = callIndex(execute,
-                "net/minecraft/util/profiling/Profiler", "get");
-        assertEquals(2, contextAllocations.size(),
-                "worker and already-allocated physical-main fallback contexts are both required");
-        assertTrue(contextAllocations.stream().allMatch(index -> index > reserve && index < profilerCapture)
-                        && profilerCapture < start && actor > start,
-                "both TickContexts and Profiler.get must finish before RUNNING publication");
-        List<TryCatchBlockNode> allocationCatches = execute.tryCatchBlocks.stream()
-                .filter(block -> "java/lang/Throwable".equals(block.type)
-                        && contextAllocations.stream().allMatch(index -> covers(execute, block, index))
-                        && covers(execute, block, profilerCapture)
-                        && !covers(execute, block, start))
-                .toList();
-        assertEquals(1, allocationCatches.size(),
-                "every pre-RUNNING allocation must share one reservation-cancelling failure region");
-        int allocationHandler = instructionIndex(execute, allocationCatches.getFirst().handler);
-        int allocationFail = callIndexAfter(execute, coordinator.name + "$LevelBatch",
-                "failBeforeBody", allocationHandler);
-        int allocationCancel = callIndexAfter(execute, coordinator.name + "$LevelBatch",
-                "cancelReservation", allocationFail);
-        assertTrue(allocationFail > allocationHandler && allocationCancel > allocationFail
-                        && allocationCancel < start,
-                "allocation failure must terminalize and release RESERVED before startWorker");
-
-        MethodNode actorTurn = method(coordinator, "runExactActorTurn",
-                "(Lcom/axalotl/fabrolia/common/regions/RegionalPlayerEntityTicksV2$TickContext;"
-                        + "Ljava/lang/Runnable;"
-                        + "Lnet/minecraft/util/profiling/ProfilerFiller;)V");
-        int publishOwner = callIndex(actorTurn,
-                "java/util/concurrent/atomic/AtomicReference", "compareAndSet");
-        int actorBeginLeases = callIndex(actorTurn, tickContext, "beginLeases");
-        int actorInstallContext = callIndex(actorTurn,
-                internal(RegionalPlayerEntityTicksV2.class), "installContext");
-        int profilerAccessor = callIndex(actorTurn, internal(ProfilerAccessor.class),
-                "fabrolia$activeProfiler");
-        int profilerInstall = callIndex(actorTurn, "java/lang/ThreadLocal", "set");
-        List<Integer> actorFatalChecks = callIndices(actorTurn,
-                coordinator.name + "$LevelBatch", "throwIfFailed");
-        int actorFatalCheck = actorFatalChecks.getFirst();
-        int body = callIndex(actorTurn, internal(RegionScheduler.class),
-                "runPausedExactActorBodyIfHealthy");
-        List<Integer> actorFinishes = callIndices(actorTurn,
-                internal(RegionalPlayerEntityTicksV2.class), "finishContext");
-        int actorPublishFailure = callIndexAfter(actorTurn,
-                coordinator.name + "$GlobalPhase", "fail", body);
-        int actorFailureFinish = callIndexAfter(actorTurn,
-                internal(RegionalPlayerEntityTicksV2.class), "finishContext",
-                actorPublishFailure);
-        List<Integer> profilerRemoves = callIndices(actorTurn,
-                "java/lang/ThreadLocal", "remove");
-        List<Integer> ownerTransitions = callIndices(actorTurn,
-                "java/util/concurrent/atomic/AtomicReference", "compareAndSet");
-        List<Integer> terminals = callIndices(actorTurn,
-                internal(RegionalPlayerEntityTicksV2.class), "completeAndRetire");
-        assertTrue(publishOwner >= 0 && actorBeginLeases > publishOwner
-                        && actorInstallContext > actorBeginLeases
-                        && profilerAccessor > actorInstallContext
-                        && profilerInstall > profilerAccessor
-                        && actorFatalCheck > profilerInstall && body > actorFatalCheck,
-                "the actor must bind its claim, publish context/profiler state, and recheck "
-                        + "the fatal slot immediately before the body");
-        assertEquals(0, callCount(actorTurn, "java/lang/Runnable", "run"),
-                "the actor consumer must not bypass its paused-owner atomic cut");
-        assertEquals(2, actorFatalChecks.size(),
-                "the actor must recheck the fatal slot after its one accepted body");
-        assertTrue(actorFatalChecks.getLast() > body,
-                "a failure published during the actor body must become that ordinal's failure");
-        assertTrue(actorPublishFailure > body
-                        && actorFailureFinish > actorPublishFailure,
-                "an exact actor Throwable must win the global slot before release cleanup");
-        assertEquals(3, terminals.size(),
-                "normal, caught-body-failure, and catch-all exits each need terminal cleanup");
-        assertEquals(terminals.size(), actorFinishes.size(),
-                "every actor terminal copy must finish its context");
-        assertEquals(terminals.size(), profilerRemoves.size(),
-                "every actor terminal copy must clear an installed profiler");
-        assertEquals(terminals.size() + 1, ownerTransitions.size(),
-                "each terminal copy must clear logical ownership in addition to initial publication");
-        for (int i = 0; i < terminals.size(); i++) {
-            int finish = actorFinishes.get(i);
-            int profilerRemove = profilerRemoves.get(i);
-            int ownerClear = ownerTransitions.get(i + 1);
-            int terminal = terminals.get(i);
-            assertTrue(finish > body && profilerRemove > finish
-                            && ownerClear > profilerRemove && terminal > ownerClear,
-                    "actor exit " + i
-                            + " must finish context, clear profiler/logical owner, then terminalize");
-        }
-
-        MethodNode mainFallback = method(coordinator, "runExactMainFallback",
-                "(Lcom/axalotl/fabrolia/common/regions/RegionalPlayerEntityTicksV2$TickContext;"
-                        + "Ljava/lang/Runnable;)V");
-        List<Integer> mainFinishes = callIndices(mainFallback,
-                internal(RegionalPlayerEntityTicksV2.class), "finishContext");
-        List<Integer> mainTerminals = callIndices(mainFallback,
-                internal(RegionalPlayerEntityTicksV2.class), "completeAndRetire");
-        int mainBeginLeases = callIndex(mainFallback, tickContext, "beginLeases");
-        int mainInstallContext = callIndex(mainFallback,
-                internal(RegionalPlayerEntityTicksV2.class), "installContext");
-        List<Integer> mainFatalChecks = callIndices(mainFallback,
-                coordinator.name + "$LevelBatch", "throwIfFailed");
-        int mainFatalCheck = mainFatalChecks.getFirst();
-        int mainBody = callIndex(mainFallback, internal(RegionScheduler.class),
-                "runSuccessBodyIfHealthy");
-        int mainPublishFailure = callIndexAfter(mainFallback,
-                coordinator.name + "$GlobalPhase", "fail", mainBody);
-        int mainFailureFinish = callIndexAfter(mainFallback,
-                internal(RegionalPlayerEntityTicksV2.class), "finishContext",
-                mainPublishFailure);
-        assertTrue(mainBeginLeases >= 0 && mainInstallContext > mainBeginLeases
-                        && mainFatalCheck > mainInstallContext && mainBody > mainFatalCheck,
-                "physical fallback must bind RUNNING and recheck fatal state before body");
-        assertEquals(0, callCount(mainFallback, "java/lang/Runnable", "run"),
-                "physical Main fallback must not use a check-then-raw-body entry");
-        assertEquals(2, mainFatalChecks.size(),
-                "physical fallback must recheck the fatal slot after its one accepted body");
-        assertTrue(mainFatalChecks.getLast() > mainBody,
-                "a failure published during fallback may not be hidden by normal return");
-        assertTrue(mainPublishFailure > mainBody
-                        && mainFailureFinish > mainPublishFailure,
-                "a fallback Throwable must win the global slot before release cleanup");
-        assertEquals(3, mainFinishes.size(),
-                "main fallback needs normal, caught-body-failure, and catch-all cleanup copies");
-        assertEquals(mainFinishes.size(), mainTerminals.size());
-        for (int i = 0; i < mainTerminals.size(); i++) {
-            assertTrue(mainFinishes.get(i) < mainTerminals.get(i),
-                    "main fallback exit " + i + " may not terminalize before context cleanup");
-        }
-
-        MethodNode finishContext = method(coordinator, "finishContext",
-                "(Lcom/axalotl/fabrolia/common/regions/RegionalPlayerEntityTicksV2$TickContext;"
-                        + "ZLjava/lang/Throwable;)Ljava/lang/Throwable;");
-        int installedFinish = callIndex(finishContext,
-                internal(RegionalPlayerEntityTicksV2.class), "finishAndClearContext");
-        int uninstalledFinish = callIndex(finishContext, tickContext, "finish");
-        assertTrue(coveredTogether(finishContext, "java/lang/Throwable",
-                        installedFinish, uninstalledFinish),
-                "installed and pre-install context cleanup failures must both be merged");
-
-        MethodNode completeAndRetire = method(coordinator, "completeAndRetire",
-                "(Lcom/axalotl/fabrolia/common/regions/RegionalPlayerEntityTicksV2$TickContext;"
-                        + "Ljava/lang/Throwable;)Ljava/lang/Throwable;");
-        int offer = callIndexByName(completeAndRetire, "offerCompletion");
-        int cut = callIndex(completeAndRetire,
-                internal(RegionScheduler.class), "commitSuccessIfHealthy");
-        int consume = callIndexByName(completeAndRetire,
-                "consumeAcceptedCompletionAndRetire");
-        int poison = callIndexByName(completeAndRetire,
-                "poisonCompletionAndRetire");
-        int signal = callIndexByName(completeAndRetire, "signalCompletion");
-        assertTrue(offer >= 0 && cut > offer && consume > cut
-                        && poison > consume && signal > poison,
-                "receipt offer must precede the fixed healthy cut; terminal consume/retirement/"
-                        + "waiter notification must all happen after that cut");
-        assertTrue(coversAny(completeAndRetire, consume, "java/lang/Throwable")
-                        && coversAny(completeAndRetire, poison, "java/lang/Throwable")
-                        && coversAny(completeAndRetire, signal, "java/lang/Throwable"),
-                "terminal consume, retirement, and notification failures must all select W");
-        assertEquals(0, callCount(completeAndRetire,
-                        internal(PlayerTickPhase.class), "complete"),
-                "the normal V2 terminal may not notify from inside the scheduler cut");
-
-        Class<?> completionReceiptType = Class.forName(
-                PlayerTickPhase.class.getName() + "$CompletionReceipt");
-        ClassNode completionReceipt = readClass(completionReceiptType);
-        FieldNode receiptState = completionReceipt.fields.stream()
-                .filter(field -> field.name.equals("successReceipt") && field.desc.equals("I"))
-                .findFirst().orElseThrow();
-        assertTrue((receiptState.access & Opcodes.ACC_VOLATILE) != 0,
-                "the lifecycle cut receipt must publish by one volatile fixed write");
-        MethodNode acceptSuccess = method(completionReceipt, "acceptSuccess", "()V");
-        assertEquals(1, fieldAccessCount(acceptSuccess, Opcodes.PUTFIELD,
-                completionReceipt.name, "successReceipt"));
-        assertEquals(0, methodCallCount(acceptSuccess),
-                "receipt acceptance may not call validation, monitors, or callbacks");
-        assertEquals(0, opcodeCount(acceptSuccess, Opcodes.MONITORENTER));
-
-        Class<?> levelBatchType = Class.forName(
-                RegionalPlayerEntityTicksV2.class.getName() + "$LevelBatch");
-        ClassNode levelBatch = readClass(levelBatchType);
-        String receiptDescriptor = "L" + internal(completionReceiptType) + ";";
-        MethodNode consumeReceipt = method(levelBatch, "consumeAcceptedCompletionAndRetire",
-                "(" + receiptDescriptor + ")Ljava/lang/Throwable;");
-        MethodNode poisonReceipt = method(levelBatch, "poisonCompletionAndRetire",
-                "(" + receiptDescriptor + "Ljava/lang/Throwable;)Ljava/lang/Throwable;");
-        assertTrue((consumeReceipt.access & Opcodes.ACC_SYNCHRONIZED) != 0
-                        && (poisonReceipt.access & Opcodes.ACC_SYNCHRONIZED) != 0,
-                "completion consumption must establish LevelBatch -> ledger lock order");
-        assertTrue(calls(consumeReceipt, internal(PlayerTickPhase.class),
-                        "consumeAcceptedCompletion")
-                        && calls(poisonReceipt, internal(PlayerTickPhase.class),
-                        "poisonCompletion"));
-        int consumeLedger = callIndex(consumeReceipt, internal(PlayerTickPhase.class),
-                "consumeAcceptedCompletion");
-        int consumeRetire = callIndexByName(consumeReceipt, "retireCandidate");
-        int poisonLedger = callIndex(poisonReceipt, internal(PlayerTickPhase.class),
-                "poisonCompletion");
-        int poisonRetire = callIndexByName(poisonReceipt, "retireCandidate");
-        assertTrue(consumeLedger >= 0 && consumeRetire > consumeLedger
-                        && poisonLedger >= 0 && poisonRetire > poisonLedger,
-                "each success/failure terminal must consume ledger then retire while "
-                        + "LevelBatch remains the outer monitor");
-        MethodNode signalReceipt = method(levelBatch, "signalCompletion",
-                "(" + receiptDescriptor + ")V");
-        assertEquals(0, signalReceipt.access & Opcodes.ACC_SYNCHRONIZED,
-                "waiter notification must not reacquire LevelBatch after ledger consumption");
-        assertTrue(calls(signalReceipt, internal(PlayerTickPhase.class), "signalCompletion"));
-
-        MethodNode finishLevel = method(coordinator, "finishLevel",
-                "(Lcom/axalotl/fabrolia/common/regions/RegionizedServer;)V");
-        int barrier = callIndex(finishLevel, internal(PlayerTickPhase.class), "sealAndAwait");
-        int globalWinner = callIndexAfter(finishLevel,
-                levelBatch.name, "firstFailure", barrier);
-        int verify = callIndex(finishLevel, internal(PlayerTickPhase.class), "verifyTerminal");
-        assertTrue(barrier >= 0 && globalWinner > barrier && verify > globalWinner,
-                "the level waiter must observe global W before any successor verification");
-
         MethodNode mergeFailure = method(coordinator, "mergeFailure",
                 "(Ljava/lang/Throwable;Ljava/lang/Throwable;)Ljava/lang/Throwable;");
         int readSuppressed = callIndex(mergeFailure, "java/lang/Throwable", "getSuppressed");
@@ -536,46 +183,6 @@ class PlayerTickV2WiringTest {
                         readSuppressed, addSuppressed),
                 "diagnostic suppression must never abort later actor cleanup");
 
-        MethodNode finishAndClear = method(coordinator, "finishAndClearContext",
-                "(Lcom/axalotl/fabrolia/common/regions/RegionalPlayerEntityTicksV2$TickContext;"
-                        + "Ljava/lang/Throwable;)Ljava/lang/Throwable;");
-        int contextFinish = callIndex(finishAndClear, tickContext, "finish");
-        int installedContext = callIndex(finishAndClear, "java/lang/ThreadLocal", "get");
-        int mergeMismatch = callIndex(finishAndClear,
-                internal(RegionalPlayerEntityTicksV2.class), "mergeFailure");
-        int recordMismatch = callIndexAfter(finishAndClear,
-                coordinator.name + "$LevelBatch", "fail", mergeMismatch);
-        JumpInsnNode ownContextBranch = firstJumpBetween(finishAndClear, Opcodes.IF_ACMPEQ,
-                installedContext, mergeMismatch);
-        int mismatchReturn = opcodeIndexAfter(finishAndClear, Opcodes.ARETURN, recordMismatch);
-        assertNotNull(ownContextBranch,
-                "identity match must branch around the sticky foreign-context failure path");
-        int ownContextTarget = instructionIndex(finishAndClear, ownContextBranch.label);
-        // The own context is cleared with set(null): TICK_CONTEXT is read on every
-        // entity tick, and a removed entry would be re-created by that read.
-        int removeOwn = callIndexAfter(finishAndClear, "java/lang/ThreadLocal", "set",
-                ownContextTarget - 1);
-        assertTrue(contextFinish >= 0 && installedContext > contextFinish
-                        && mergeMismatch > installedContext && recordMismatch > mergeMismatch
-                        && mismatchReturn > recordMismatch && ownContextTarget > mismatchReturn
-                        && removeOwn >= ownContextTarget,
-                "foreign replacement must merge diagnostics, select W, and return W without "
-                        + "clobbering it; own context removes");
-        assertEquals(1, callCount(finishAndClear, "java/lang/ThreadLocal", "set"));
-        assertEquals(0, callCount(finishAndClear, "java/lang/ThreadLocal", "remove"));
-
-        MethodNode retireCandidate = method(readClass(levelBatchType), "retireCandidate",
-                "(Lcom/axalotl/fabrolia/common/regions/PlayerTickPhase$Claim;)V");
-        int liveReservation = callIndex(retireCandidate, internal(EntityTickLease.class),
-                "isReservedBy");
-        int firstTombstoneRemove = callIndex(retireCandidate,
-                "java/util/IdentityHashMap", "remove");
-        assertTrue(liveReservation >= 0 && firstTombstoneRemove > liveReservation,
-                "candidate/tree identity may retire only after its exact lease is no longer live");
-        assertTrue(calls(method(coordinator, "finishPlayerEntityBody",
-                        "(Lnet/minecraft/world/entity/Entity;)V"),
-                "java/lang/ThreadLocal", "set"),
-                "the direct-consumer scope must close instead of stamping the whole wall phase");
 
         ClassNode regionizer = readClass(RegionizedServer.class);
         FieldNode queueOnlyEpoch = regionizer.fields.stream()
@@ -792,74 +399,22 @@ class PlayerTickV2WiringTest {
 
 
     @Test
-    void logicalActorPublicationAloneNeverAuthorizesExactExecution() throws Exception {
+    void onlyThePoolFenceAuthorizesExactExecution() throws Exception {
         ClassNode scheduler = readClass(RegionScheduler.class);
         MethodNode ownsExact = method(scheduler, "ownsExactExecutionTurn", "()Z");
-        assertTrue(calls(ownsExact, internal(RegionalPlayerEntityTicksV2.class),
-                "inExactPlayerActor"), "the authenticated actor remains a legal second executor");
         assertTrue(calls(ownsExact, internal(RegionWorkerPool.class),
                 "ownsPausedExactTurn"), "physical main authority must come from the pool fence");
-
+        assertFalse(calls(ownsExact, internal(RegionalPlayerEntityTicksV2.class),
+                "inExactPlayerActor"), "the removed exact player actor must not return");
         ClassNode coordinator = readClass(RegionalPlayerEntityTicksV2.class);
-        MethodNode actorCheck = method(coordinator, "inExactPlayerActor", "()Z");
-        int turnRead = callIndex(actorCheck,
-                "java/util/concurrent/atomic/AtomicReference", "get");
-        int actorIdentity = callIndex(actorCheck, "java/lang/Thread", "currentThread");
-        int poolFence = callIndex(actorCheck, internal(RegionScheduler.class),
-                "isExactPlayerTurnPausedBy");
-        assertTrue(turnRead >= 0 && actorIdentity > turnRead && poolFence > actorIdentity,
-                "actor identity must also validate its captured physical-main pool pause");
-        MethodNode logicalServer = method(coordinator, "logicalServerThread",
-                "(Lnet/minecraft/server/MinecraftServer;)Ljava/lang/Thread;");
-        assertTrue(callIndex(logicalServer, internal(RegionScheduler.class),
-                "isExactPlayerTurnPausedBy") >= 0,
-                "logical server ownership must expire with the captured pool pause");
-
-        var poolField = RegionScheduler.class.getDeclaredField("pool");
-        var logicalTurnField = RegionalPlayerEntityTicksV2.class
-                .getDeclaredField("LOGICAL_TURN");
-        poolField.setAccessible(true);
-        logicalTurnField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        AtomicReference<Object> logicalTurn =
-                (AtomicReference<Object>) logicalTurnField.get(null);
-        Object previousPool = poolField.get(null);
-        Object previousTurn = logicalTurn.get();
-
-        Class<?> logicalTurnType = Class.forName(
-                RegionalPlayerEntityTicksV2.class.getName() + "$LogicalTurn");
-        var constructor = logicalTurnType.getDeclaredConstructors()[0];
-        constructor.setAccessible(true);
-        Class<?>[] parameterTypes = constructor.getParameterTypes();
-        Object[] arguments = new Object[parameterTypes.length];
-        for (int i = 0; i < parameterTypes.length; i++) {
-            Class<?> parameter = parameterTypes[i];
-            if (parameter == Thread.class) arguments[i] = Thread.currentThread();
-            else if (parameter == long.class) arguments[i] = 1L;
-            else if (parameter == int.class) arguments[i] = 0;
-            else if (parameter == boolean.class) arguments[i] = false;
-            else arguments[i] = null;
-        }
-        Object staleLogicalTurn = constructor.newInstance(arguments);
-
-        var ownsExactExecutionTurn = RegionScheduler.class
-                .getDeclaredMethod("ownsExactExecutionTurn");
-        ownsExactExecutionTurn.setAccessible(true);
-        try {
-            poolField.set(null, null);
-            logicalTurn.set(staleLogicalTurn);
-            assertFalse(RegionalPlayerEntityTicksV2.inExactPlayerActor(),
-                    "a logical actor stamp must not survive without its pool fence");
-            assertEquals(Boolean.FALSE, ownsExactExecutionTurn.invoke(null),
-                    "a logical-turn stamp without its captured live pool pause is stale/unauthorized");
-        } finally {
-            logicalTurn.set(previousTurn);
-            poolField.set(null, previousPool);
-        }
+        assertFalse(coordinator.methods.stream().anyMatch(method ->
+                        method.name.equals("inExactPlayerActor")
+                                || method.name.equals("logicalServerThread")),
+                "no logical server-thread identity besides physical Main may exist");
     }
 
     @Test
-    void contextualFlushMixinAndEligibilityAccessorArePackaged() throws Exception {
+    void packetThreadAndFlushMixinsArePackagedWithoutActorHooks() throws Exception {
         ClassNode packetProcessorMixin = readClass(PacketProcessorPlayerTickMixin.class);
         assertMixinTarget(packetProcessorMixin, "Lnet/minecraft/network/PacketProcessor;");
         MethodNode packetThread = method(packetProcessorMixin,
@@ -870,49 +425,21 @@ class PlayerTickV2WiringTest {
         assertMethodValue(packetModify, "isSameThread()Z");
         assertEquals(1, annotationValue(packetModify, "require"));
         assertAtValue(packetModify, "RETURN");
-        assertTrue(calls(packetThread, internal(RegionalPlayerEntityTicksV2.class),
+        assertFalse(calls(packetThread, internal(RegionalPlayerEntityTicksV2.class),
                 "inExactPlayerActor"));
+        assertTrue(calls(packetThread, internal(AsyncIslandPlayerTicks.class),
+                "inPacketReplay"), "A5 packet replay remains inline on its island owner");
         MethodNode vanillaPacketThread = method(readClass(PacketProcessor.class),
                 "isSameThread", "()Z");
         assertEquals(1, opcodeCount(vanillaPacketThread, Opcodes.IRETURN),
                 "exact 26.2 PacketProcessor.isSameThread must keep one RETURN target");
 
         ClassNode flush = readClass(ServerCommonPacketListenerPlayerTickFlushMixin.class);
-        assertTrue(calls(flush, internal(RegionalPlayerEntityTicksV2.class), "inWorkerPlayerTick"));
         assertFalse(calls(flush, internal(AsyncIslandPlayerTicks.class), "inOwnerTurn"),
                 "autonomous A5 sends must retain vanilla off-main flush=true");
-        assertFalse(calls(flush,
-                "com/llamalad7/mixinextras/injector/wrapoperation/Operation", "call"));
-        assertFalse(hasOpcode(flush, Opcodes.ANEWARRAY),
-                "disabled packet send path must not allocate WrapOperation varargs");
-        MethodNode flushHandler = method(flush, "fabrolia$preserveSuspendedFlush", "(Z)Z");
-        AnnotationNode modify = annotation(flushHandler,
-                "Lcom/llamalad7/mixinextras/injector/ModifyExpressionValue;");
-        assertNotNull(modify);
-        assertMethodValue(modify,
-                "send(Lnet/minecraft/network/protocol/Packet;Lio/netty/channel/ChannelFutureListener;)V");
-        assertEquals(1, annotationValue(modify, "require"));
-        assertAt(modify, "INVOKE", "Lnet/minecraft/server/MinecraftServer;isSameThread()Z");
-        assertNotNull(readClass(ServerPlayerGameModeAccessor.class));
-
-        ClassNode profilerAccessor = readClass(ProfilerAccessor.class);
-        assertMixinTarget(profilerAccessor, "Lnet/minecraft/util/profiling/Profiler;");
-        MethodNode activeProfiler = method(profilerAccessor, "fabrolia$activeProfiler",
-                "()Ljava/lang/ThreadLocal;");
-        AnnotationNode accessor = annotation(activeProfiler,
-                "Lorg/spongepowered/asm/mixin/gen/Accessor;");
-        assertNotNull(accessor);
-        assertEquals("ACTIVE", annotationValue(accessor, "value"));
-        assertTrue((activeProfiler.access & Opcodes.ACC_STATIC) != 0);
-        FieldNode vanillaActive = readClass(net.minecraft.util.profiling.Profiler.class).fields
-                .stream().filter(field -> field.name.equals("ACTIVE")
-                        && field.desc.equals("Ljava/lang/ThreadLocal;"))
-                .findFirst().orElseThrow();
-        assertTrue((vanillaActive.access & Opcodes.ACC_PRIVATE) != 0);
-        assertTrue((vanillaActive.access & Opcodes.ACC_STATIC) != 0);
-        assertTrue((vanillaActive.access & Opcodes.ACC_FINAL) != 0);
-        assertEquals("Ljava/lang/ThreadLocal<Lnet/minecraft/util/profiling/ProfilerFiller;>;",
-                vanillaActive.signature);
+        assertFalse(flush.methods.stream().anyMatch(method ->
+                        method.name.equals("fabrolia$preserveSuspendedFlush")),
+                "send keeps vanilla's flush decision; the actor-only override is gone");
 
         MethodNode send = method(readClass(ServerCommonPacketListenerImpl.class), "send",
                 "(Lnet/minecraft/network/protocol/Packet;Lio/netty/channel/ChannelFutureListener;)V");
@@ -924,9 +451,9 @@ class PlayerTickV2WiringTest {
             String json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             assertTrue(json.contains("network.PacketProcessorPlayerTickMixin"));
             assertTrue(json.contains("network.ServerCommonPacketListenerPlayerTickFlushMixin"));
-            assertTrue(json.contains("server.ServerChunkCacheMainThreadExecutorMixin"));
-            assertTrue(json.contains("server.ServerPlayerGameModeAccessor"));
-            assertTrue(json.contains("utils.ProfilerAccessor"));
+            assertFalse(json.contains("server.ServerChunkCacheMainThreadExecutorMixin"));
+            assertFalse(json.contains("server.ServerPlayerGameModeAccessor"));
+            assertFalse(json.contains("utils.ProfilerAccessor"));
             assertFalse(json.contains("ServerGamePacketRoutingMixin"));
             assertFalse(json.contains("PacketUtilsWorkerMixin"));
         }

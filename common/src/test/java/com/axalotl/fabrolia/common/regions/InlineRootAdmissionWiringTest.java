@@ -28,26 +28,22 @@ class InlineRootAdmissionWiringTest {
 
 
     @Test
-    void authenticatedActorRoutesBothGenericGateShapesThroughPausedCut()
+    void genericGateShapesTakeTheCausalFastPathBeforePoolAdmission()
             throws Exception {
         ClassNode scheduler = readClass(SCHEDULER);
         MethodNode voidGate = method(scheduler, "runSuccessBodyIfHealthy",
                 "(Ljava/lang/Runnable;)V");
-        assertTrue(calls(voidGate, PLAYER_TICKS,
-                "exactActorPhysicalOwnerOrNull") >= 1);
-        assertEquals(1, calls(voidGate, SCHEDULER,
-                "runPausedExactActorBodyIfHealthy"));
-        assertCallBefore(voidGate, PLAYER_TICKS, "exactActorPhysicalOwnerOrNull",
-                WORKER_POOL, "currentThreadCausalOwnerOrNull");
+        assertEquals(0, calls(voidGate, PLAYER_TICKS, "exactActorPhysicalOwnerOrNull"),
+                "the removed exact player actor must not return to the body gate");
+        assertCallBefore(voidGate, WORKER_POOL, "currentThreadCausalOwnerOrNull",
+                SCHEDULER, "beginSuccessBodyIfHealthy");
 
         MethodNode booleanGate = method(scheduler, "callSuccessBooleanIfHealthy",
                 "(Ljava/util/function/BooleanSupplier;)Z");
-        assertTrue(calls(booleanGate, PLAYER_TICKS,
-                "exactActorPhysicalOwnerOrNull") >= 1);
-        assertEquals(1, calls(booleanGate, SCHEDULER,
-                "callPausedExactActorBooleanIfHealthy"));
-        assertCallBefore(booleanGate, PLAYER_TICKS, "exactActorPhysicalOwnerOrNull",
-                WORKER_POOL, "currentThreadCausalOwnerOrNull");
+        assertEquals(0, calls(booleanGate, PLAYER_TICKS, "exactActorPhysicalOwnerOrNull"),
+                "the removed exact player actor must not return to the body gate");
+        assertCallBefore(booleanGate, WORKER_POOL, "currentThreadCausalOwnerOrNull",
+                SCHEDULER, "beginSuccessBodyIfHealthy");
 
         MethodNode commitGate = method(scheduler, "commitSuccessIfHealthy",
                 "(Ljava/lang/Runnable;)V");
@@ -93,7 +89,7 @@ class InlineRootAdmissionWiringTest {
         assertTrue(first >= 0, method.name + " lost " + firstName);
         assertTrue(second >= 0, method.name + " lost " + secondName);
         assertTrue(first < second,
-                method.name + " must retain exact-actor priority over causal fast-path");
+                method.name + " must keep its call order");
     }
 
     private static int callIndex(MethodNode method, String owner, String name) {

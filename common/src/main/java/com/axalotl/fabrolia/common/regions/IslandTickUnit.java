@@ -498,7 +498,7 @@ public final class IslandTickUnit {
         try {
             queuedUnit = RegionScheduler.cancellableRoot(publication, publication::cancelBeforeStart);
             if (RegionScheduler.ownsExactExecutionTurn()) {
-                // The exact actor is already the causal owner; accept before
+                // The exact-turn owner is already the causal owner; accept before
                 // running inline so an OFFERING waiter can never self-deadlock.
                 publication.accept();
                 RegionScheduler.runSuccessBodyIfHealthy(queuedUnit);

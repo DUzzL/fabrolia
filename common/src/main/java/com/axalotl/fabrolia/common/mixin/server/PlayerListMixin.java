@@ -197,23 +197,6 @@ public abstract class PlayerListMixin {
     private void fabrolia$onePlayerRemoval(
             ServerPlayer player, Operation<Void> original) {
         if (!this.server.isSameThread()) {
-            if (com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                    .inWorkerPlayerTick()) {
-                // Do not turn a lifecycle mutation reached from the experimental body
-                // into a later main task after the worker claim has disappeared. The
-                // shared lease normally throws here because the exact Claim owns it;
-                // retain an explicit fail-stop if that invariant is ever weakened.
-                var rejected = com.axalotl.fabrolia.common.regions
-                        .RegionalPlayerEntityTicksV2.beginLifecycleMutation(
-                                com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
-                                        .LifecycleMutationKind.HARD_EXIT,
-                                player);
-                Throwable failure = rejected.finish(new IllegalStateException(
-                        "PlayerList.remove reached from a regional player tick"));
-                com.axalotl.fabrolia.common.regions.IslandCommands
-                        .publishAndPropagate(failure);
-                return;
-            }
             // PlayerList.remove is a Main-only exact lifecycle body. Returning
             // now and replaying it from a later TickTask would acknowledge the
             // current caller before save/UWP teardown happened.

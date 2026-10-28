@@ -18,8 +18,8 @@ import java.util.function.BooleanSupplier;
  * are rejected loudly.
  *
  * <p>{@link #quiescentContext}: the current thread runs with no concurrently
- * ticking island — physical Main holding the global fence, physical Main with no
- * live island, or the exact V2 player actor. Everything advancement-related runs
+ * ticking island — physical Main holding the global fence, or physical Main with
+ * no live island. Everything advancement-related runs
  * there exactly as vanilla, including reward functions and announcements.
  */
 public final class AdvancementOwnership {
@@ -31,10 +31,6 @@ public final class AdvancementOwnership {
     }
 
     public static boolean quiescentContext() {
-        if (RegionalPlayerEntityTicksV2.inExactPlayerActor()
-                || RegionalPlayerEntityTicksV2.inWorkerPlayerTick()) {
-            return true;
-        }
         if (!onPhysicalMain()) return false;
         return !IslandCommands.requiresMainFence() || IslandCommands.fenceWindowHeld();
     }

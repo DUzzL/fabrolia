@@ -45,10 +45,9 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
         // C2ME 0.4.2-alpha.0.41: this class contains no state and exactly one
         // injection handler.  Its @WrapOperation makes ServerLevel#getNextEntityId
         // call hasEntityWithId only when IWorld#getThread equals currentThread.
-        // The exact-player actor is a synchronously authenticated logical owner,
-        // so the unmodified C2ME predicate gives it a false negative.  Cancel the
-        // one-method provider and replace its complete semantics in the paired
-        // Fabrolia wrapper; do not broaden this to the package or module.
+        // Cancel the one-method provider; the paired Fabrolia wrapper
+        // (FabroliaC2meServerLevelActorThreadMixin) reproduces its complete
+        // semantics. Do not broaden this to the package or module.
         if (mixinClassName.equals(
                 "com.ishland.c2me.fixes.worldgen.threading_issues.mixin.threading.MixinServerWorld")) {
             return true;
@@ -155,11 +154,9 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumBrainMemoryCounterMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumBrainMemoryBumpMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumClassGroupFilterableListMixin") ||
-                // Exact-player actor compatibility: one hook wraps a method
-                // Lithium merges onto Level; the other targets Lithium's own
-                // ChunkStatusTracker class. Neither may load without Lithium.
+                // A5 owner-turn compatibility: wraps a method Lithium merges
+                // onto Level, so it may not load without Lithium.
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumLevelActorThreadMixin") ||
-                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumChunkStatusTrackerActorThreadMixin") ||
                 // Task #38: these three target Lithium-merged methods / a
                 // Lithium anonymous class, so without Lithium they must not
                 // load — and WITH Lithium they must fail LOUDLY if a target
@@ -179,28 +176,14 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.lithium.FabroliaLithiumPoiTakeAtMixin")) {
             return !LITHIUM;
         }
-        // C2ME 0.4.2-alpha.0.88 (mc26.3) ships mid-tick chunk tasks disabled
-        // (generalOptimizations.midTickChunkTasksInterval defaults to -1). Its
-        // scheduling MixinPlugin then skips every mid_tick_chunk_tasks mixin, so
-        // the merged MinecraftServer#executeTasksMidTick this hook targets does
-        // not exist. Mirror that exact gate; when C2ME does merge the method the
-        // hook keeps its require = 1 and fails loudly on a rotted target.
-        if (mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meMidTickActorThreadMixin")) {
-            return !C2ME || !c2meMidTickChunkTasksEnabled();
-        }
         if (mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.TheChunkSystemMixin") ||
                 // Task #38 (review D3): wraps the C2ME-merged c2me$unloadPoi.
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.PoiUnloadGuardMixin") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2mePoiResidencyMixin") ||
-                // Exact-player actor compatibility. The accessor/wrapper form a
-                // pair and must both disappear when C2ME is not present.
+                // Replacement of C2ME's entity-id thread check. The accessor/wrapper
+                // form a pair and must both disappear when C2ME is not present.
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meLevelThreadAccessor") ||
                 mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meServerLevelActorThreadMixin") ||
-                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meChunkShortcutActorThreadMixin") ||
-                // C2ME 0.88's runAllUpdates consolidation thread check.
-                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meConsolidateActorThreadMixin") ||
-                // Targets two handlers from C2ME's general async-save catcher.
-                mixinClassName.endsWith("com.axalotl.fabrolia.common.mixin.c2me.FabroliaC2meSaveActorThreadMixin") ||
                 // Worker FULL-chunk cache: the lookup, its C2ME-shortcut
                 // capture and the two holder-transition brackets it is exact
                 // against form one unit and must all disappear without C2ME.
@@ -221,29 +204,5 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
             return !VMP;
         }
         return mixinClassName.endsWith("com.cupboard.mixin.ServerAddEntityMixin");
-    }
-
-    /** C2ME's own opts.scheduling MixinPlugin condition for mid_tick_chunk_tasks:
-     *  ModuleMixinPlugin's module {@code enabled} flag, then
-     *  {@code Config.midTickChunkTasksInterval > 0}. */
-    private static boolean c2meMidTickChunkTasksEnabled() {
-        ClassLoader loader = MixinCanceller.class.getClassLoader();
-        Class<?> module;
-        Class<?> config;
-        try {
-            module = Class.forName("com.ishland.c2me.opts.scheduling.ModuleEntryPoint", true, loader);
-            config = Class.forName("com.ishland.c2me.opts.scheduling.common.Config", true, loader);
-        } catch (ClassNotFoundException absent) {
-            return false;   // no scheduling module: no mid-tick mixins either
-        }
-        try {
-            java.lang.reflect.Field enabled = module.getDeclaredField("enabled");
-            enabled.setAccessible(true);
-            return (Boolean) enabled.get(null)
-                    && config.getField("midTickChunkTasksInterval").getLong(null) > 0L;
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalStateException(
-                    "C2ME scheduling module lost its mid-tick plugin inputs", e);
-        }
     }
 }

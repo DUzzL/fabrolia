@@ -37,8 +37,7 @@ import java.util.concurrent.atomic.LongAdder;
 /**
  * A5: player simulation owned by an autonomous async island.
  *
- * <p>This is deliberately separate from {@link RegionalPlayerEntityTicksV2}'s serial
- * exact-ordinal actor. Unsupported owed L bodies rendezvous with Main before entry,
+ * <p>{@link RegionalPlayerEntityTicksV2} holds the runtime gate. Unsupported owed L bodies rendezvous with Main before entry,
  * retaining their source unit and exact permit. A supported player's turn is one owner transaction:
  *
  * <ol>
@@ -2269,24 +2268,13 @@ public final class AsyncIslandPlayerTicks {
      * Replaces {@link MinecraftServer#executeBlocking(Runnable)} only when a
      * disconnect originates inside an authenticated player venue.  Waiting for Main
      * while an A5 worker holds {@code island.unitClaim} forms a direct cycle with a
-     * concurrent topology/save fence; the exact actor has the analogous Main-await
-     * cycle.  Publication remains Main-owned, but the producer never joins it.
+     * concurrent topology/save fence.  Publication remains Main-owned, but the producer never joins it.
      */
     public static boolean deferBlockingDisconnect(
             ServerGamePacketListenerImpl listener, MinecraftServer server,
             Runnable disconnect) {
         Objects.requireNonNull(disconnect, "disconnect");
         if (server == null) return false;
-        if (RegionalPlayerEntityTicksV2.inExactPlayerActor()) {
-            try {
-                server.schedule(new TickTask(server.getTickCount(),
-                        () -> runFailStopMainTask(disconnect)));
-            } catch (Throwable publicationFailure) {
-                throwUnchecked(publishFatalFailure(publicationFailure));
-            }
-            return true;
-        }
-
         TurnContext context = TURN.get();
         if (context == null || listener == null || context.player.connection != listener
                 || context.owner.listenerIdentity() != listener

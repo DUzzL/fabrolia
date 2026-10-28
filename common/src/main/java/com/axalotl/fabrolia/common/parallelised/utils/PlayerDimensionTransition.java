@@ -80,8 +80,7 @@ public final class PlayerDimensionTransition {
      * the owning island's block-entity phase can publish the same Main marker.
      */
     public static boolean deferEndCredits(ServerPlayer player, Runnable credits) {
-        if (RegionalPlayerEntityTicksV2.isPhysicalServerThread(player.level().getServer())
-                || RegionalPlayerEntityTicksV2.inExactPlayerActor()) {
+        if (RegionalPlayerEntityTicksV2.isPhysicalServerThread(player.level().getServer())) {
             return false;
         }
         var owner = AsyncIslandPacketContinuations.capture(player.connection);

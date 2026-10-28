@@ -38,7 +38,6 @@ class LithiumLevelActorThreadWiringTest {
 
     private static final int DEFAULT_MIXIN_PRIORITY = 1000;
     private static final int FABROLIA_MERGED_METHOD_HOOK_PRIORITY = 2000;
-    private static final int FABROLIA_CALLER_HOOK_PRIORITY = 900;
     private static final String RETRIEVAL_CLASS =
             "net/caffeinemc/mods/lithium/mixin/util/block_entity_retrieval/LevelMixin.class";
     private static final String ACCESSOR_CLASS =
@@ -127,7 +126,7 @@ class LithiumLevelActorThreadWiringTest {
     }
 
     @Test
-    void fabroliaHooksPinThreeRealCallSitesAndNeverTargetTheGeneratedAccessor() throws Exception {
+    void fabroliaHookPinsTheRealCallSiteAndNeverTargetsTheGeneratedAccessor() throws Exception {
         ClassNode levelHook = readClass(FabroliaLithiumLevelActorThreadMixin.class);
         AnnotationNode mixin = annotation(levelHook, "Lorg/spongepowered/asm/mixin/Mixin;");
         assertNotNull(mixin);
@@ -154,44 +153,25 @@ class LithiumLevelActorThreadWiringTest {
                 "lithium$getLoadedExistingBlockEntity" + RETRIEVAL_DESC,
                 "INVOKE", "Ljava/lang/Thread;currentThread()Ljava/lang/Thread;");
         assertEquals(0, annotationValue(atAnnotation(expressionHook), "ordinal"));
-        int blockEntityActor = callIndex(blockEntityThread,
-                internal(RegionalPlayerEntityTicksV2.class), "inExactPlayerActor", "()Z");
         int autonomousOwner = callIndex(blockEntityThread,
                 internal(AsyncIslandPlayerTicks.class), "inOwnerTurn", "()Z");
         int physicalThread = fieldIndex(blockEntityThread, Opcodes.GETFIELD,
                 internal(FabroliaLithiumLevelActorThreadMixin.class), "thread");
-        assertEquals(1, callCount(blockEntityThread,
+        assertEquals(0, callCount(blockEntityThread,
                 internal(RegionalPlayerEntityTicksV2.class), "inExactPlayerActor", "()Z"));
         assertEquals(1, callCount(blockEntityThread,
                 internal(AsyncIslandPlayerTicks.class), "inOwnerTurn", "()Z"));
-        assertTrue(blockEntityActor >= 0 && autonomousOwner > blockEntityActor
-                        && physicalThread > autonomousOwner,
-                "exact v2 OR autonomous A5 ownership must substitute Level.thread for "
+        assertTrue(autonomousOwner >= 0 && physicalThread > autonomousOwner,
+                "autonomous A5 ownership must substitute Level.thread for "
                         + "Lithium's loaded-block-entity cache path");
 
         assertEquals(0, levelHook.methods.stream().filter(method -> annotation(method,
                         "Lcom/llamalad7/mixinextras/injector/ModifyReturnValue;") != null).count(),
                 "Accessor bodies are generated after injector prepare and must never be targets");
-
-        ClassNode trackerHook = readClass(
-                FabroliaLithiumChunkStatusTrackerActorThreadMixin.class);
-        AnnotationNode trackerMixin = annotation(trackerHook,
-                "Lorg/spongepowered/asm/mixin/Mixin;");
-        assertNotNull(trackerMixin);
-        assertEquals(List.of(CHUNK_STATUS_TRACKER_TARGET),
-                annotationValue(trackerMixin, "targets"));
-        assertEquals(FABROLIA_CALLER_HOOK_PRIORITY,
-                annotationValue(trackerMixin, "priority"));
-        assertEquals(Boolean.FALSE, annotationValue(trackerMixin, "remap"));
-
-        assertChunkStatusHandler(trackerHook, "fabrolia$logicalAccessibleThread",
-                "onChunkAccessible" + ACCESSIBLE_DESC);
-        assertChunkStatusHandler(trackerHook, "fabrolia$logicalInaccessibleThread",
-                "onChunkInaccessible" + INACCESSIBLE_DESC);
     }
 
     @Test
-    void lithiumHooksAreRegisteredAndCancelledExactlyWhenLithiumIsAbsent() throws Exception {
+    void lithiumHookIsRegisteredAndCancelledExactlyWhenLithiumIsAbsent() throws Exception {
         String levelShortName = "lithium.FabroliaLithiumLevelActorThreadMixin";
         String trackerShortName =
                 "lithium.FabroliaLithiumChunkStatusTrackerActorThreadMixin";
@@ -200,22 +180,19 @@ class LithiumLevelActorThreadWiringTest {
             assertNotNull(in);
             String config = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             assertEquals(1, occurrences(config, "\"" + levelShortName + "\""));
-            assertEquals(1, occurrences(config, "\"" + trackerShortName + "\""));
+            assertEquals(0, occurrences(config, "\"" + trackerShortName + "\""),
+                    "the exact-actor chunk-status hook was removed with the actor");
         }
 
         String levelHook = "com.axalotl.fabrolia.common.mixin." + levelShortName;
-        String trackerHook = "com.axalotl.fabrolia.common.mixin." + trackerShortName;
         List<String> levelTarget = List.of("net.minecraft.world.level.Level");
-        List<String> trackerTarget = List.of(CHUNK_STATUS_TRACKER_TARGET);
         MixinCanceller withoutLithium = new MixinCanceller();
         assertTrue(withoutLithium.shouldCancel(levelTarget, levelHook));
-        assertTrue(withoutLithium.shouldCancel(trackerTarget, trackerHook));
 
         MixinCanceller withLithium = new MixinCanceller();
         assertFalse(withLithium.shouldCancel(levelTarget,
                 "net.caffeinemc.mods.lithium.mixin.util.accessors.LevelAccessor"));
         assertFalse(withLithium.shouldCancel(levelTarget, levelHook));
-        assertFalse(withLithium.shouldCancel(trackerTarget, trackerHook));
     }
 
     private static void assertLithiumLevelSeams(byte[] retrievalBytes,
@@ -272,26 +249,6 @@ class LithiumLevelActorThreadWiringTest {
         int accept = opcodeIndexAfter(method, Opcodes.IF_ACMPEQ, currentThread);
         assertTrue(levelThread >= 0 && currentThread > levelThread && accept > currentThread,
                 method.name + " must stay LevelAccessor.getThread() == Thread.currentThread()");
-    }
-
-    private static void assertChunkStatusHandler(ClassNode hook, String handlerName,
-                                                  String targetMethod) {
-        MethodNode handler = method(hook, handlerName,
-                "(Ljava/lang/Thread;)Ljava/lang/Thread;");
-        assertTrue((handler.access & Opcodes.ACC_STATIC) != 0);
-        AnnotationNode expressionHook = annotation(handler,
-                "Lcom/llamalad7/mixinextras/injector/ModifyExpressionValue;");
-        assertInjector(expressionHook, targetMethod, "INVOKE",
-                "L" + LEVEL_THREAD_ACCESSOR + ";getThread" + LEVEL_THREAD_ACCESSOR_DESC);
-        int actor = callIndex(handler, internal(RegionalPlayerEntityTicksV2.class),
-                "inExactPlayerActor", "()Z");
-        int logicalThread = callIndex(handler, "java/lang/Thread", "currentThread",
-                LEVEL_THREAD_ACCESSOR_DESC);
-        assertEquals(0, callCount(handler, internal(AsyncIslandPlayerTicks.class),
-                "inOwnerTurn", "()Z"),
-                "Lithium chunk-status callbacks remain physical-Main/v2-only");
-        assertTrue(actor >= 0 && logicalThread > actor,
-                "disabled/non-actor paths must return Lithium's original thread value");
     }
 
     private static void assertLithiumConfig(JarFile jar) throws Exception {
