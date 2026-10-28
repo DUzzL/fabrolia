@@ -20,6 +20,8 @@ public final class AdvancementDiag {
         HEAD_ROUTED,
         /** Tick-head window: the {@code #minecraft:tick} functions asked for a shared fence. */
         HEAD_TICK_FUNCTIONS,
+        /** Tick-head window: a partitioned {@code #tick} root's Main remainder needed the fence. */
+        HEAD_FUNCTION_REMAINDER,
         /** Level entity-batch end (never acquires; only borrows). */
         BATCH_END,
         /** Before {@code PlayerList.remove} saves a disconnecting player. */

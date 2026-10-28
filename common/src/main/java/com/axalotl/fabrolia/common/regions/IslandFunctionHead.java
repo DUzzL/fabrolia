@@ -121,10 +121,35 @@ public final class IslandFunctionHead {
         ARMED = new Armed(plan, List.copyOf(roots), loops);
     }
 
-    /** Start of the server TimerQueue tick. */
-    public static void beginTimerTick() {
+    /** Main-confined: inside the server TimerQueue tick. */
+    private static boolean timerTickOpen;
+    /** Main-confined: a remainder pass of this timer tick took the fence and keeps it. */
+    private static boolean timerStickyFence;
+
+    /**
+     * Start of the server TimerQueue tick.
+     *
+     * @return whether this call opened the sticky-fence scope (false when nested
+     *         in an open one); only the opener calls {@link #closeTimerTickFence}
+     */
+    public static boolean beginTimerTick() {
         FIRED.clear();
         firedPlan = null;
+        if (timerTickOpen) return false;
+        timerTickOpen = true;
+        return true;
+    }
+
+    /**
+     * Whether this timer tick took a sticky remainder fence; clears the marker
+     * and the open scope. The caller then owns exactly one
+     * {@link IslandCommands#releaseAllExcept} for a {@code true} result.
+     */
+    public static boolean closeTimerTickFence() {
+        boolean held = timerStickyFence;
+        timerStickyFence = false;
+        timerTickOpen = false;
+        return held;
     }
 
     /** End of the server TimerQueue tick: exactly the loops that fired are armed. */
@@ -372,6 +397,35 @@ public final class IslandFunctionHead {
                 && partition.hasAsyncLevelMember(pass);
         if (!fence) {
             runMainPassMembers(roots, pass, server);
+            return;
+        }
+        if (com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBatchScope.active()) {
+            // Tick-head window (#tick tag): one sticky fence for every remainder
+            // pass of the tag instead of one quiesce per root; the window's end
+            // releases it. Root order and bodies are unchanged.
+            com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBatchScope
+                    .ensureFunctionRemainderFence();
+            RegionScheduler.commitSuccessIfHealthy(FunctionFenceDiag.MAIN_REMAINDER_FENCES::increment);
+            RegionScheduler.runSuccessBodyIfHealthy(() -> runMainPassMembers(roots, pass, server));
+            return;
+        }
+        if (timerTickOpen) {
+            // Server TimerQueue tick: the first remainder pass that needs the
+            // fence keeps it until the end of this queue tick, so further loops
+            // and callbacks of the same tick run inline under it.
+            if (!IslandCommands.quiesceAllExcept(null)) {
+                if (IslandCommands.requiresMainFence() && !IslandCommands.fenceWindowHeld()) {
+                    IslandCommands.publishAndPropagate(new IllegalStateException(
+                            "could not fence the Main function remainder pass"));
+                    return;
+                }
+                runMainPassMembers(roots, pass, server);
+                return;
+            }
+            // Armed before the body: the timer tick's end owns the release.
+            timerStickyFence = true;
+            RegionScheduler.commitSuccessIfHealthy(FunctionFenceDiag.MAIN_REMAINDER_FENCES::increment);
+            RegionScheduler.runSuccessBodyIfHealthy(() -> runMainPassMembers(roots, pass, server));
             return;
         }
         if (!IslandCommands.quiesceAllExcept(null)) {

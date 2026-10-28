@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.commands;
 
+import com.axalotl.fabrolia.common.regions.FailStops;
 import com.axalotl.fabrolia.common.regions.FunctionFenceDiag;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.regions.IslandFunctionHead;
@@ -36,9 +37,12 @@ import java.util.Queue;
  * <p>A due callback of a partitioned 1t self-rearming loop never executes the
  * function here: {@link IslandFunctionHead#dispatchLoopCallback} re-arms it
  * through its exact vanilla {@code schedule} line, arms it for the island
- * heads and runs Main's remainder partition — no fence. Such callbacks do not
- * count towards the shared fence. Island function bodies never touch the
- * queue (guarded).
+ * heads and runs Main's remainder partition. Such callbacks do not count
+ * towards the shared fence. A remainder that needs the fence (a member in an
+ * async level) takes it once and keeps it until the end of this queue tick, so
+ * later loops and callbacks of the tick run inline under it instead of each
+ * quiescing every island again. Island function bodies never touch the queue
+ * (guarded).
  */
 @Mixin(TimerQueue.class)
 public abstract class TimerQueueMixin<T> {
@@ -52,12 +56,25 @@ public abstract class TimerQueueMixin<T> {
             original.call(context, currentTick);
             return;
         }
-        IslandFunctionHead.beginTimerTick();
+        boolean opened = IslandFunctionHead.beginTimerTick();
+        Throwable failure = null;
         try {
             fabrolia$tickServerQueue(server, context, currentTick, original);
-        } finally {
-            IslandFunctionHead.endTimerTick(server);
+        } catch (Throwable thrown) {
+            failure = thrown;
         }
+        try {
+            IslandFunctionHead.endTimerTick(server);
+        } catch (Throwable cleanup) {
+            failure = FailStops.mergeFailure(failure, cleanup);
+        }
+        if (opened && IslandFunctionHead.closeTimerTickFence()) {
+            // A remainder pass kept the fence for the rest of this queue tick:
+            // release it once, behind the exact primary.
+            IslandCommands.releaseAllExceptAndPropagate(
+                    failure == null ? null : RegionScheduler.publishFatalAndSelectWinner(failure));
+        }
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
     }
 
     @org.spongepowered.asm.mixin.Unique

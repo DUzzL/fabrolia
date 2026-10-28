@@ -94,6 +94,14 @@ public final class AdvancementBatchScope {
         }
     }
 
+    /** A partitioned function root's Main remainder inside this batch (the
+     *  tick-head window around the {@code #minecraft:tick} tag) takes the same
+     *  sticky fence, so every later remainder pass of the tag runs inline under
+     *  it; {@link #end} releases. */
+    public static void ensureFunctionRemainderFence() {
+        ensureEvaluationFence(AdvancementDiag.Site.HEAD_FUNCTION_REMAINDER);
+    }
+
     /** Entered immediately before one serial award/direct replay. */
     static void enterRewardBody() {
         if (owner != Thread.currentThread()) {
