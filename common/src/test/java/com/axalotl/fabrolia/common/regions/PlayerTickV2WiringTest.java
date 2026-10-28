@@ -144,11 +144,12 @@ class PlayerTickV2WiringTest {
                 "the diagnostic loop must explain each online player's local refusal");
 
         ClassNode envelope = readClass(PlayerTickKnownModEnvelope.class);
-        MethodNode refusal = method(envelope, "refusalReason",
-                "(Lnet/minecraft/server/level/ServerPlayer;)Ljava/lang/String;");
-        assertEquals(2, callCount(refusal,
+        MethodNode admission = method(envelope, "idleForAsync",
+                "(Lnet/minecraft/server/level/ServerPlayer;L"
+                        + internal(IslandPlayerTurnSession.PlayerKind.class) + ";)Z");
+        assertEquals(2, callCount(admission,
                         internal(PlayerTickKnownModEnvelope.class) + "$Probe", "idle"),
-                "diagnostics must preserve both fail-closed Carpet and FSit probes");
+                "A5 admission must preserve both fail-closed Carpet and FSit probes");
         assertTrue(calls(envelope, internal(PlayerTickKnownModPoseState.class), "idle"),
                 "the FSit reflection probe must use the tested fresh-player pose predicate");
     }

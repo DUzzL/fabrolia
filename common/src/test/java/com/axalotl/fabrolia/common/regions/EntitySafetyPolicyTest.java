@@ -88,18 +88,6 @@ class EntitySafetyPolicyTest {
                 passengers(middle);
                 assertFalse(ParallelProcessor.requiresMainThread(root));
             }
-            TestEntity forced = fixture.entity(TestEntity.class, EntityTypes.PIG);
-            passengers(middle, forced);
-            assertFalse(ParallelProcessor.requiresMainThread(root));
-            @SuppressWarnings("unchecked")
-            Set<UUID> forcedMain = (Set<UUID>) field(ParallelProcessor.class, "BLACKLISTED_ENTITIES").get(null);
-            ParallelProcessor.forceMainThread(forced);
-            try {
-                assertTrue(ParallelProcessor.requiresMainThread(root));
-            } finally {
-                forcedMain.remove(forced.getUUID());
-            }
-            assertFalse(ParallelProcessor.requiresMainThread(root));
         }
     }
 

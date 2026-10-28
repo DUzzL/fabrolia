@@ -95,7 +95,7 @@ public final class PlayerTurnOwnership {
         return switch (phase) {
             case ISLAND_READY, EARLY_RESERVED, EARLY_RUNNING, EARLY_DONE, LATE_RUNNING,
                     TRANSFERRING -> true;
-            case MAIN, MAIN_FALLBACK_RESERVED, MAIN_FALLBACK_RUNNING, MAIN_HANDOFF,
+            case MAIN, MAIN_FALLBACK_RESERVED, MAIN_HANDOFF,
                     MAIN_DRAINING, DISCONNECTED -> false;
         };
     }

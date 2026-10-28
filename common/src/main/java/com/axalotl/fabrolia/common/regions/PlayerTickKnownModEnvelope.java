@@ -27,20 +27,9 @@ final class PlayerTickKnownModEnvelope {
     private static final Probe CARPET = carpetProbe();
     private static final Probe FSIT = fsitProbe();
 
-    static boolean idle(ServerPlayer player) {
-        return CARPET.idle(player) && FSIT.idle(player);
-    }
-
     static boolean idleForAsync(ServerPlayer player, IslandPlayerTurnSession.PlayerKind kind) {
         return FSIT.idle(player)
                 && (kind == IslandPlayerTurnSession.PlayerKind.CARPET || CARPET.idle(player));
-    }
-
-    /** Main-thread, status-command diagnostic; never used on the per-tick hot path. */
-    static String refusalReason(ServerPlayer player) {
-        if (!CARPET.idle(player)) return "Carpet action-pack state is active or incompatible";
-        if (!FSIT.idle(player)) return "FSit state is active or incompatible";
-        return null;
     }
 
     private static Probe carpetProbe() {

@@ -1082,12 +1082,9 @@ class IslandEntityTrackingWiringTest {
         int attachedOwner = callIndexAfter(persistentMain, A5,
                 "hasAttachedOwner", "(Lnet/minecraft/server/level/ServerPlayer;)Z",
                 attachedSupported);
-        int forcedPlayer = callIndexAfter(persistentMain,
-                "com/axalotl/fabrolia/common/ParallelProcessor", "isForcedMainThread",
-                "(Lnet/minecraft/world/entity/Entity;)Z", attachedOwner);
         int supportedPlayer = callIndexAfter(persistentMain, A5,
                 "supportsIslandPlayerType", "(Lnet/minecraft/server/level/ServerPlayer;)Z",
-                forcedPlayer);
+                attachedOwner);
         int playerRuntime = callIndexAfter(persistentMain, TRACKING, "runtime",
                 "(Lnet/minecraft/world/entity/Entity;)L" + REGIONIZED_SERVER + ";",
                 supportedPlayer);
@@ -1101,11 +1098,11 @@ class IslandEntityTrackingWiringTest {
                 playerOwner);
         assertTrue(removedPlayer >= 0 && disconnectedPlayer > removedPlayer
                         && attachedSupported > disconnectedPlayer
-                        && attachedOwner > attachedSupported && forcedPlayer > attachedOwner
-                        && supportedPlayer > forcedPlayer && playerRuntime > supportedPlayer
+                        && attachedOwner > attachedSupported && supportedPlayer > attachedOwner
+                        && playerRuntime > supportedPlayer
                         && playerOwner > playerRuntime && deferSupported > playerOwner,
                 "removed/disconnected players stop; an attached supported A5 owner is never "
-                        + "reclassified Main by a spatial crossing, while forced/unsupported or "
+                        + "reclassified Main by a spatial crossing, while unsupported or "
                         + "durably non-deferred players retain the hard-Main path");
         assertEquals(2, callCount(persistentMain, A5, "supportsIslandPlayerType"));
         assertEquals(1, callCount(persistentMain,

@@ -1604,10 +1604,7 @@ public final class IslandEntityTracking {
             if (player.isRemoved() || player.hasDisconnected()) return false;
             if (AsyncIslandPlayerTicks.supportsIslandPlayerType(player)
                     && AsyncIslandPlayerTicks.hasAttachedOwner(player)) return false;
-            if (ParallelProcessor.isForcedMainThread(entity)
-                    || !AsyncIslandPlayerTicks.supportsIslandPlayerType(player)) {
-                return true;
-            }
+            if (!AsyncIslandPlayerTicks.supportsIslandPlayerType(player)) return true;
             RegionizedServer runtime = runtime(entity);
             IslandRegistry.PIsland owner = currentOwner(runtime, entity);
             return runtime != null && runtime.asyncActive

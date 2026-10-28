@@ -378,23 +378,19 @@ final class IslandPlayerTurnSessionTest {
 
         IslandPlayerTurnSession.EarlyPermit<String> island =
                 session.tryReserveEarly(owner, 1L).orElseThrow();
-        IslandPlayerTurnSession.MainFallback<String> main =
+        IslandPlayerTurnSession.MainFallback<String> unentered =
                 session.tryMoveToMainFallback(island).orElseThrow();
         assertFalse(session.enterIslandBody(island));
-        assertTrue(session.takeMainHeadPackets(main).isEmpty());
-        assertTrue(session.enterMainFallbackBody(main));
-        assertEquals(List.of("packet"), session.takeMainHeadPackets(main).orElseThrow()
-                .stream().map(IslandPlayerTurnSession.PacketEnvelope::packet).toList());
-        assertTrue(session.completeMainFallback(main));
-        assertTrue(session.tryReserveEarly(owner, 1L).isEmpty());
-
-        IslandPlayerTurnSession.EarlyPermit<String> retryable =
-                session.tryReserveEarly(owner, 2L).orElseThrow();
-        IslandPlayerTurnSession.MainFallback<String> unentered =
-                session.tryMoveToMainFallback(retryable).orElseThrow();
+        assertTrue(session.takeIslandHeadPackets(island).isEmpty(),
+                "a Main fallback claim closes the island packet prefix");
         assertTrue(session.cancelMainFallbackBeforeBody(unentered));
-        assertTrue(session.tryReserveEarly(owner, 2L).isPresent(),
-                "an unentered claim did not consume the token");
+        assertFalse(session.cancelMainFallbackBeforeBody(unentered));
+        IslandPlayerTurnSession.EarlyPermit<String> retry =
+                session.tryReserveEarly(owner, 1L).orElseThrow(
+                        () -> new AssertionError("an unentered claim did not consume the token"));
+        assertEquals(List.of("packet"), session.takeIslandHeadPackets(retry).orElseThrow()
+                .stream().map(IslandPlayerTurnSession.PacketEnvelope::packet).toList(),
+                "cancelling the fallback leaves the FIFO prefix for the retry");
     }
 
     @Test
@@ -539,7 +535,7 @@ final class IslandPlayerTurnSessionTest {
     }
 
     @Test
-    void disconnectNeverCancelsAnEnteredIslandOrMainFallbackBody() {
+    void disconnectNeverCancelsAnEnteredIslandBody() {
         IslandPlayerTurnSession<String> islandSession = new IslandPlayerTurnSession<>();
         IslandPlayerTurnSession.OwnerStamp islandOwner = realOwner(1L);
         assertTrue(islandSession.attach(islandOwner));
@@ -554,18 +550,6 @@ final class IslandPlayerTurnSessionTest {
         assertTrue(islandSession.beginRealLate(island));
         assertTrue(islandSession.disconnect(islandOwner).isEmpty());
         assertTrue(islandSession.completeRealLate(island));
-
-        IslandPlayerTurnSession<String> mainSession = new IslandPlayerTurnSession<>();
-        IslandPlayerTurnSession.OwnerStamp mainOwner = realOwner(2L);
-        assertTrue(mainSession.attach(mainOwner));
-        IslandPlayerTurnSession.EarlyPermit<String> reserved =
-                mainSession.tryReserveEarly(mainOwner, 1L).orElseThrow();
-        IslandPlayerTurnSession.MainFallback<String> main =
-                mainSession.tryMoveToMainFallback(reserved).orElseThrow();
-        assertTrue(mainSession.enterMainFallbackBody(main));
-        assertTrue(mainSession.disconnect(mainOwner).isEmpty(),
-                "an entered Main fallback body is not silently consumed by disconnect");
-        assertTrue(mainSession.completeMainFallback(main));
     }
 
     @Test

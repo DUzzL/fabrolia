@@ -23,11 +23,8 @@ import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinWorkerThread;
@@ -97,7 +94,6 @@ public final class ParallelProcessor {
 
     public static final MobCategory[] CATEGORIES = MobCategory.values();
 
-    private static final Set<UUID> BLACKLISTED_ENTITIES = ConcurrentHashMap.newKeySet();
     private static final Class<?>[] BLOCKED_BASE_CLASSES = {
             AbstractBoat.class,
             FallingBlockEntity.class,
@@ -370,7 +366,7 @@ public final class ParallelProcessor {
                     // iteration. Stop before polling any Main/region/chunk successor.
                     RegionScheduler.throwWorkerFailureIfAny();
                     // Region mode: tick entities the region tasks routed to main (modded
-                    // API-contract, UUID blacklist) WHILE the regions run — same overlap
+                    // API-contract) WHILE the regions run — same overlap
                     // the old syncDeferred loop had, just demand-driven. No-op (one CLQ
                     // poll) when the queue is empty or regions are off.
                     boolean drained = RegionScheduler.drainReadyMainSyncTicks();
@@ -468,8 +464,8 @@ public final class ParallelProcessor {
      * Region-mode gate: which entities still MUST tick on the server thread even though
      * their region task reached them. This includes the complete root/passenger tree
      * whenever it can invoke a ServerPlayer tick, the API contract (modded entities
-     * without {@code @FabroliaCompatible} may assume main-thread ticks), and the manual
-     * UUID blacklist.
+     * without {@code @FabroliaCompatible} may assume main-thread ticks), and the
+     * main-owned Wither/Dragon types.
      * The class blacklist / vanilla-namespace synchronizedEntities entries are deliberately
      * NOT honored here: that machinery exists to SERIALIZE classes that race on the shared
      * pool, and a region task is already serial for its area — the protection is structural
@@ -485,9 +481,9 @@ public final class ParallelProcessor {
         // the frame's own tick touches only its attachment block, and the shared
         // map data a framed map updates is guarded per map (MapItemSavedDataMixin).
         // One walk of the root/passenger tree decides the OR of every predicate
-        // (main-owned tracking type, forced UUID, ServerPlayer tick, unsupported
+        // (main-owned tracking type, ServerPlayer tick, unsupported
         // API contract) over every node; all of them are side-effect free.
-        return requiresMainThreadTree(entity, !BLACKLISTED_ENTITIES.isEmpty());
+        return requiresMainThreadTree(entity);
     }
 
     /**
@@ -654,7 +650,6 @@ public final class ParallelProcessor {
     public static boolean shouldTickSynchronously(Entity entity) {
         if (isShuttingDown || FabroliaConfig.disabled) return true;
         if (containsMainOwnedTrackingEntity(entity)) return true;
-        if (containsForcedMainEntity(entity)) return true;
 
         // The rejected player-tick experiment was removed after the exact-26.2 audit. Include
         // root vehicles because vanilla recursively invokes passenger ticks there.
@@ -678,13 +673,12 @@ public final class ParallelProcessor {
         return false;
     }
 
-    private static boolean requiresMainThreadTree(Entity entity, boolean anyForced) {
+    private static boolean requiresMainThreadTree(Entity entity) {
         if (entity instanceof WitherBoss || entity instanceof EnderDragon
                 || entity instanceof ServerPlayer
-                || anyForced && BLACKLISTED_ENTITIES.contains(entity.getUUID())
                 || (immutableTypeFlags(entity) & SYNC_API_UNSUPPORTED) != 0) return true;
         for (Entity passenger : entity.getPassengers()) {
-            if (requiresMainThreadTree(passenger, anyForced)) return true;
+            if (requiresMainThreadTree(passenger)) return true;
         }
         return false;
     }
@@ -696,26 +690,6 @@ public final class ParallelProcessor {
             if (containsMainOwnedTrackingEntity(passenger)) return true;
         }
         return false;
-    }
-
-    private static boolean containsForcedMainEntity(Entity entity) {
-        if (!BLACKLISTED_ENTITIES.isEmpty()
-                && BLACKLISTED_ENTITIES.contains(entity.getUUID())) return true;
-        for (Entity passenger : entity.getPassengers()) {
-            if (containsForcedMainEntity(passenger)) return true;
-        }
-        return false;
-    }
-
-    /** Permanent safety fallback for a live entity whose island publication failed. */
-    public static void forceMainThread(Entity entity) {
-        if (entity != null) BLACKLISTED_ENTITIES.add(entity.getUUID());
-    }
-
-    /** Exact direct-entity predicate used by the A5 player admission gate. */
-    public static boolean isForcedMainThread(Entity entity) {
-        return entity != null && !BLACKLISTED_ENTITIES.isEmpty()
-                && BLACKLISTED_ENTITIES.contains(entity.getUUID());
     }
 
     /** True on the current thread only while inside a REAL entity tick — lets the
@@ -954,11 +928,6 @@ public final class ParallelProcessor {
 
         try {
             FabroliaConfig.clearCaches();
-        } catch (Throwable cleanup) {
-            failure = fabrolia$mergeFailure(failure, cleanup);
-        }
-        try {
-            BLACKLISTED_ENTITIES.clear();
         } catch (Throwable cleanup) {
             failure = fabrolia$mergeFailure(failure, cleanup);
         }

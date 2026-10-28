@@ -44,7 +44,6 @@ public final class IslandPlayerTurnSession<P> {
         EARLY_DONE,
         LATE_RUNNING,
         MAIN_FALLBACK_RESERVED,
-        MAIN_FALLBACK_RUNNING,
         MAIN_HANDOFF,
         MAIN_DRAINING,
         TRANSFERRING,
@@ -196,7 +195,6 @@ public final class IslandPlayerTurnSession<P> {
     public static final class MainFallback<P> {
         private final IslandPlayerTurnSession<P> session;
         private final EarlyPermit<P> islandPermit;
-        private final AtomicBoolean packetsTaken = new AtomicBoolean();
 
         private MainFallback(IslandPlayerTurnSession<P> session,
                              EarlyPermit<P> islandPermit) {
@@ -327,7 +325,6 @@ public final class IslandPlayerTurnSession<P> {
 
         private static long activeToken(Object claim) {
             if (claim instanceof EarlyPermit<?> permit) return permit.turnToken;
-            if (claim instanceof MainFallback<?> fallback) return fallback.turnToken();
             throw new IllegalStateException("terminal frame without a turn claim");
         }
     }
@@ -433,13 +430,6 @@ public final class IslandPlayerTurnSession<P> {
             }
             return accepted;
         }
-    }
-
-    public boolean enterMainFallbackBody(MainFallback<P> fallback) {
-        Frame<P> observed = frame.get();
-        return isClaim(observed, Phase.MAIN_FALLBACK_RESERVED, fallback)
-                && frame.compareAndSet(observed,
-                observed.move(Phase.MAIN_FALLBACK_RUNNING, fallback));
     }
 
     /** Cancel an unentered main claim; the token remains eligible for a later retry. */
@@ -548,19 +538,6 @@ public final class IslandPlayerTurnSession<P> {
         }
     }
 
-    /** Take the same reserved FIFO prefix once, after the main body has entered. */
-    public Optional<List<PacketEnvelope<P>>> takeMainHeadPackets(MainFallback<P> fallback) {
-        if (!belongsHere(fallback)) return Optional.empty();
-        synchronized (packetLock) {
-            Frame<P> observed = frame.get();
-            if (!isClaim(observed, Phase.MAIN_FALLBACK_RUNNING, fallback)
-                    || !fallback.packetsTaken.compareAndSet(false, true)) {
-                return Optional.empty();
-            }
-            return Optional.of(drainThrough(fallback.packetCutoff()));
-        }
-    }
-
     public boolean completeRealEarly(EarlyPermit<P> permit) {
         if (!belongsHere(permit) || permit.owner.kind != PlayerKind.REAL) return false;
         synchronized (packetLock) {
@@ -604,15 +581,6 @@ public final class IslandPlayerTurnSession<P> {
         synchronized (packetLock) {
             Frame<P> observed = frame.get();
             return isClaim(observed, Phase.EARLY_RUNNING, permit)
-                    && frame.compareAndSet(observed, observed.terminal());
-        }
-    }
-
-    public boolean completeMainFallback(MainFallback<P> fallback) {
-        if (!belongsHere(fallback)) return false;
-        synchronized (packetLock) {
-            Frame<P> observed = frame.get();
-            return isClaim(observed, Phase.MAIN_FALLBACK_RUNNING, fallback)
                     && frame.compareAndSet(observed, observed.terminal());
         }
     }
@@ -902,7 +870,6 @@ public final class IslandPlayerTurnSession<P> {
                 || phase == Phase.EARLY_DONE
                 || phase == Phase.LATE_RUNNING
                 || phase == Phase.MAIN_FALLBACK_RESERVED
-                || phase == Phase.MAIN_FALLBACK_RUNNING
                 || phase == Phase.MAIN_HANDOFF;
     }
 

@@ -3104,8 +3104,7 @@ public final class AsyncIslandPlayerTicks {
         // second worker to enter the same player body.
         if (view.phase() == IslandPlayerTurnSession.Phase.EARLY_RESERVED
                 || view.phase() == IslandPlayerTurnSession.Phase.EARLY_RUNNING
-                || view.phase() == IslandPlayerTurnSession.Phase.LATE_RUNNING
-                || view.phase() == IslandPlayerTurnSession.Phase.MAIN_FALLBACK_RUNNING) {
+                || view.phase() == IslandPlayerTurnSession.Phase.LATE_RUNNING) {
             return false;
         }
         ServerLevel level = player.level();
@@ -3941,7 +3940,6 @@ public final class AsyncIslandPlayerTicks {
                                     IslandPlayerTurnSession.PlayerKind kind) {
         PortalProcessor portalProcess = player.portalProcess;
         if (player.level() != level || player.isRemoved() || player.isChangingDimension()
-                || ParallelProcessor.isForcedMainThread(player)
                 || player.getVehicle() != null || !player.getPassengers().isEmpty()
                 || player.getCamera() != player
                 || (portalProcess != null
@@ -6185,8 +6183,7 @@ public final class AsyncIslandPlayerTicks {
             IslandPlayerTurnSession.Phase phase) {
         return phase == IslandPlayerTurnSession.Phase.EARLY_RUNNING
                 || phase == IslandPlayerTurnSession.Phase.EARLY_DONE
-                || phase == IslandPlayerTurnSession.Phase.LATE_RUNNING
-                || phase == IslandPlayerTurnSession.Phase.MAIN_FALLBACK_RUNNING;
+                || phase == IslandPlayerTurnSession.Phase.LATE_RUNNING;
     }
 
     private static void clearTrackingPublicationBindingLocked(PlayerState state) {
