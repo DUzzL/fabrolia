@@ -205,6 +205,15 @@ try:
     for b in bots.values():
         check('player %s still connected' % b.name, not b.error, b.error)
     cmd(srv, 'save-all flush')
+    # Main wait ledger: RCON commands (the save above among them) run under the command fence,
+    # so the fence section has that caller.
+    out = cmd(srv, 'fabrolia regions debug fallbacks')
+    report['fallbacks'] = out
+    plain = re.sub(r'§.', '', out)
+    check('fallbacks report lists the Main wait sections',
+          all(s in plain for s in ('quiesceAllExcept', 'mainClaim', 'waitForRemaining')), plain[:500])
+    check('fallbacks report names the command fence caller', 'fabrolia$fenceMainCommands' in plain,
+          plain[:1500])
     for b in bots.values():
         b.close()
     time.sleep(2)

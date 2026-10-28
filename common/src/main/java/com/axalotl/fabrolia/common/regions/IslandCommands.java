@@ -883,6 +883,10 @@ public final class IslandCommands {
                 new java.util.ArrayList<>();
         final java.util.ArrayList<RegionizedServer> ownedLevels =
                 new java.util.ArrayList<>();
+        /** Wait ledger: frame creation, the HELD edge and the caller key recorded there. */
+        final long createdNanos = System.nanoTime();
+        long heldNanos;
+        String ledgerCaller;
 
         GlobalFenceFrame(Thread owner, IslandRegistry.PIsland except) {
             this.owner = owner;
@@ -1154,7 +1158,11 @@ public final class IslandCommands {
             }
         } finally {
             owner.withdrawClaimInterest();
-            if (contended) MAIN_CLAIM_WAIT_NANOS.add(System.nanoTime() - waitStart);
+            if (contended) {
+                long waited = System.nanoTime() - waitStart;
+                MAIN_CLAIM_WAIT_NANOS.add(waited);
+                MainFallbackStats.CLAIM_WAITS.record(waited);
+            }
         }
         // ACQUIRED. Publication must be leak-proof: every caller arms its
         // release try/finally only AFTER this method returns, so any throw
@@ -1343,6 +1351,9 @@ public final class IslandCommands {
                                 Throwable cleanup = releaseGlobalFenceFrame(frame, null);
                                 if (cleanup != null) FailStops.<RuntimeException>rethrow(cleanup);
                                 RegionScheduler.commitSuccessIfHealthy(() -> {});
+                                MainFallbackStats.FENCE_WAITS.record(
+                                        MainFallbackStats.currentCallerKey() + MainFallbackStats.BUDGET_EXPIRED,
+                                        System.nanoTime() - frame.createdNanos);
                                 return false;
                             }
                             drainMainChunkServices();
@@ -1378,6 +1389,9 @@ public final class IslandCommands {
             GlobalFenceFrame acquiredFrame = frame;
             RegionScheduler.commitSuccessIfHealthy(
                     () -> acquiredFrame.phase = GlobalFencePhase.HELD);
+            acquiredFrame.heldNanos = System.nanoTime();
+            acquiredFrame.ledgerCaller = MainFallbackStats.FENCE_WAITS.record(
+                    acquiredFrame.heldNanos - acquiredFrame.createdNanos);
             return true;
         } catch (Throwable primary) {
             Throwable failure = frame == null
@@ -1534,7 +1548,16 @@ public final class IslandCommands {
                             "global fence cleanup lost its active frame identity")));
         }
 
+        boolean wasHeld = frame.phase == GlobalFencePhase.HELD;
         frame.phase = GlobalFencePhase.RELEASING;
+        if (wasHeld && frame.ledgerCaller != null) {
+            try {
+                MainFallbackStats.FENCE_WAITS.recordHold(
+                        frame.ledgerCaller, System.nanoTime() - frame.heldNanos);
+            } catch (Throwable cleanup) {
+                failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
+            }
+        }
 
         int ownedCount = frame.ownedLevels.size();
         for (int i = 0; i < ownedCount; i++) {

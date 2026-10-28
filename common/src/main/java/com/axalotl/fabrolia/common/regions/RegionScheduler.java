@@ -2515,6 +2515,7 @@ public final class RegionScheduler {
         private void waitForRemaining(boolean heal) {
             java.util.Set<IslandRegistry.PIsland> announced =
                     java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            long waited = 0L;
             try {
                 for (IslandRegistry.PIsland owner : buckets.keySet()) {
                     owner.announceClaimInterest();
@@ -2535,6 +2536,7 @@ public final class RegionScheduler {
                         // Waiting ends here for this island.
                         long now = System.nanoTime();
                         IslandCommands.MAIN_CLAIM_WAIT_NANOS.add(now - waitedSince);
+                        waited += now - waitedSince;
                         waitedSince = now;
                         if (announced.remove(owner)) owner.withdrawClaimInterest();
                         runBucket(owner, entry.getValue(), inherited, false);
@@ -2580,6 +2582,7 @@ public final class RegionScheduler {
             } finally {
                 // Islands never claimed (abort) withdraw their waiter here.
                 for (IslandRegistry.PIsland owner : announced) owner.withdrawClaimInterest();
+                MainFallbackStats.BUCKET_WAITS.record(waited);
             }
         }
 

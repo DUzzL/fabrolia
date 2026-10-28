@@ -25,6 +25,7 @@ import net.minecraft.server.level.ServerPlayer;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
@@ -1099,15 +1100,50 @@ public final class RegionCommand {
 
     private static final int FALLBACK_TOP = 10;
 
-    /** {@code regions debug fallbacks}: A5 Main handoffs, Main fallbacks and fences by cause. */
+    /** {@code regions debug fallbacks}: A5 Main handoffs, Main fallbacks, fences and Main waits by cause. */
     private static MutableComponent fallbackReport() {
         InfoText out = InfoText.titled("Main fallbacks by cause");
         fallbackSection(out, "Island-to-Main handoffs", MainFallbackStats.HANDOFFS);
         fallbackSection(out, "Main entity-tick fallbacks", MainFallbackStats.FALLBACKS);
         fallbackSection(out, "All-island fences", MainFallbackStats.FENCES);
-        out.note("Counted since start or the last reset; top " + FALLBACK_TOP + " per section.");
+        waitSection(out, "Main wait: all-island fences (quiesceAllExcept)",
+                MainFallbackStats.FENCE_WAITS, true);
+        waitSection(out, "Main wait: contended island claims (mainClaim)",
+                MainFallbackStats.CLAIM_WAITS, false);
+        waitSection(out, "Main wait: blocking island-bucket drains (waitForRemaining)",
+                MainFallbackStats.BUCKET_WAITS, false);
+        out.note("Wait = time Main spent blocked in the call, including the services it ran"
+                + " while spinning; a fence's hold = time it kept every island stopped."
+                + " Sections can nest: do not add them up.");
+        out.note("Not covered: pool pause (pauseExactTurnAndAwait), per-level quiesceAllIslands,"
+                + " domain-rebase and sprint claim waits.");
+        out.note("Counted over the last " + String.format(Locale.ROOT, "%.0f",
+                MainFallbackStats.windowNanos() / 1e9) + " s (since start or the last reset);"
+                + " top " + FALLBACK_TOP + " per section.");
         out.more("/fabrolia regions debug fallbacks reset");
         return out.build();
+    }
+
+    private static void waitSection(InfoText out, String name, MainFallbackStats.WaitLedger ledger,
+                                    boolean hold) {
+        String totals = InfoText.count(ledger.events()) + ", wait " + ms(ledger.waitNanos())
+                + (hold ? ", hold " + ms(ledger.holdNanos()) : "");
+        out.section(name + " (" + totals + ")");
+        List<MainFallbackStats.WaitEntry> top = ledger.top(FALLBACK_TOP);
+        if (top.isEmpty()) {
+            out.note("none");
+            return;
+        }
+        for (MainFallbackStats.WaitEntry e : top) {
+            out.line(InfoText.text(e.caller(), ChatFormatting.GRAY));
+            out.detail(InfoText.text(InfoText.count(e.events()) + "x, wait " + ms(e.waitNanos())
+                    + " (avg " + ms(e.waitNanos() / e.events()) + ", max " + ms(e.maxWaitNanos()) + ")"
+                    + (hold ? ", hold " + ms(e.holdNanos()) : ""), ChatFormatting.WHITE));
+        }
+    }
+
+    private static String ms(long nanos) {
+        return String.format(Locale.ROOT, "%.1f ms", nanos / 1e6);
     }
 
     private static void fallbackSection(InfoText out, String name,
