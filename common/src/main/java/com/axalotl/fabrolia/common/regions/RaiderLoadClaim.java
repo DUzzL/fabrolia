@@ -25,7 +25,11 @@ public final class RaiderLoadClaim {
         Raid raid = level.getRaids().get(raidId.getAsInt());
         IslandRegistry.PIsland owner = raid == null ? null
                 : rs.islandOwnerOfChunk(ChunkPos.pack(raid.getCenter()));
-        if (owner == null || IslandCommands.mainHolds(owner)) {
+        // mainFenceOwns: a load pumped from a still-ACQUIRING global fence
+        // (fenceWindowHeld is false then) finds the island already claimed by
+        // this thread; claiming again would wait on itself until the watchdog.
+        if (owner == null || IslandCommands.mainHolds(owner)
+                || IslandCommands.mainFenceOwns(owner)) {
             load.run();
             return;
         }

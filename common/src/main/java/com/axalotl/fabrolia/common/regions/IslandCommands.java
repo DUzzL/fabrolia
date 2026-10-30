@@ -1109,9 +1109,11 @@ public final class IslandCommands {
      *  any new off-main entry is a bug and trips the belt log. */
     public static void mainClaim(IslandRegistry.PIsland owner) {
         offMainBelt("mainClaim");
-        if (mainHolds(owner)) {
+        if (mainHolds(owner) || mainFenceOwns(owner)) {
             // The claim is not reentrant: this CAS can never succeed, so the
             // spin below would park Main until the watchdog kills the server.
+            // Callers reachable from a fence acquisition pump must inherit via
+            // mainFenceOwns instead (2026-10-30 RaiderLoadClaim wedge).
             throw new IllegalStateException("mainClaim re-entered island#" + owner.id
                     + "/gen" + owner.gen + " already held by Main: " + claimForensics(owner));
         }
@@ -1223,6 +1225,25 @@ public final class IslandCommands {
                 && MAIN_HELD.contains(owner);
     }
 
+    /**
+     * This thread's own global fence frame has already claimed {@code owner},
+     * in ANY phase before release. {@link #fenceWindowHeld} is false while the
+     * frame is still ACQUIRING, and {@link #mainHolds} never sees fence claims
+     * (they are in the frame ledger, not {@code MAIN_HELD}); but a callback
+     * pumped from the acquisition spin ({@code drainMainChunkServices}) reaches
+     * claimed islands, which are already quiescent for it. A second
+     * {@link #mainClaim} there waits forever for a flag this thread set.
+     * Exact-thread: the frame lists are confined to their owner.
+     */
+    public static boolean mainFenceOwns(IslandRegistry.PIsland owner) {
+        GlobalFenceFrame frame = ACTIVE_FENCE;
+        return owner != null && frame != null
+                && frame.owner == Thread.currentThread()
+                && frame.phase != GlobalFencePhase.RELEASING
+                && owner.claimHolder == Thread.currentThread()
+                && frame.claims.contains(owner);
+    }
+
     public static void mainRelease(IslandRegistry.PIsland owner) {
         Throwable failure = releaseMainClaim(owner, null);
         if (failure != null) {
@@ -1235,7 +1256,7 @@ public final class IslandCommands {
      *  save hooks — the state is already quiescent for us). @return true iff
      *  THIS call took the claim and the caller must {@link #mainRelease}. */
     public static boolean mainClaimScoped(IslandRegistry.PIsland owner) {
-        if (mainHolds(owner)) {
+        if (mainHolds(owner) || mainFenceOwns(owner)) {
             return false;
         }
         mainClaim(owner);
