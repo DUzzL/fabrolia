@@ -96,17 +96,28 @@ public final class VibrationDomains {
             // async islands off (or scheduler down): one clock — vanilla stamp.
             return IslandClock.wallTime(level);
         }
-        long chunkKey = ChunkPos.pack(
-                net.minecraft.util.Mth.floor(listenerPos.x) >> 4,
-                net.minecraft.util.Mth.floor(listenerPos.z) >> 4);
-        Region region = rs.regionizer().peekByGridKey(rs.regionizer().grid.keyFor(chunkKey));
-        EpochDomain d = region != null ? region.domain : null;
-        IslandRegistry.PIsland owner = d != null ? d.owner : null;
-        if (owner == null || owner.retired) {
+        EpochDomain d = islandDomainAt(rs, listenerPos);
+        if (d == null) {
             // global lane / main-owned / mid-rebuild: those venues' getGameTime
             // is the wall counter.
             return IslandClock.wallTime(level);
         }
-        return domainNow(owner.logicalTick, d.unitGameTime);
+        return domainNow(d.owner.logicalTick, d.unitGameTime);
+    }
+
+    /**
+     * The island timeline that owns {@code pos} right now, or null when that
+     * position is clocked by the wall counter (global lane, main-owned,
+     * mid-rebuild). A non-null result has a live (non-retired) owner at the
+     * time of the read. Safe from any thread: volatile reads only.
+     */
+    static EpochDomain islandDomainAt(RegionizedServer rs, Vec3 pos) {
+        long chunkKey = ChunkPos.pack(
+                net.minecraft.util.Mth.floor(pos.x) >> 4,
+                net.minecraft.util.Mth.floor(pos.z) >> 4);
+        Region region = rs.regionizer().peekByGridKey(rs.regionizer().grid.keyFor(chunkKey));
+        EpochDomain d = region != null ? region.domain : null;
+        IslandRegistry.PIsland owner = d != null ? d.owner : null;
+        return owner == null || owner.retired ? null : d;
     }
 }

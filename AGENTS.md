@@ -356,7 +356,7 @@ All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   - Islands and clocks: `IslandRegistry`, `IslandTickUnit`, `IslandUnitAdmission`, `IslandClock`, `RawGameTime`, `TemporalControl`
   - Views: `CompletedSimulationView`, `CompletedChunkLevels`
   - Metrics and logging: `IslandMetrics`, `TpsHud`, `TpsWindow`, `CarpetTpsLines`, `FlightRecorder`, `MainFallbackStats`, `ThrottledLog`
-- **Entities:** `EntityTickLease`, `EntityBarrierWatchdog`, `EntityResidencyAccess`, `AcceptedTickAccess`, `NavRecompute`, `VibrationDomains`, `RedstoneTorchHistory`
+- **Entities:** `EntityTickLease`, `EntityBarrierWatchdog`, `EntityResidencyAccess`, `AcceptedTickAccess`, `NavRecompute`, `VibrationDomains`, `WardenWarningClock`, `RedstoneTorchHistory`
 - **Tracking:** `IslandEntityTracking`, `IslandTrackedEntityAccess`, `IslandPendingPairing`, `TrackedEntityPassAccess`, `TrackingViewerPass`, `TrackerIndexChanges`, `TrackerTopologySnapshot`, `TrackingPublicationBinding`, `TrackingTopologyAdmissionGate`, `RegionTickingTrackerBind`, `VmpTrackerIndexApply`, `VmpTrackingFanoutGate`
 - **Players:**
   - Player ticks and ownership: `AsyncIslandPlayerTicks`, `AsyncIslandPlayerAccess`, `AsyncIslandPlayerLifecycle`, `IslandPlayerTurnSession`, `PlayerTurnOwnership`, `RegionalPlayerEntityTicksV2`, `PlayerTickPhaseStamp`, `PlayerTickKnownModEnvelope`
@@ -444,6 +444,12 @@ All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
 - Maps in item frames read the inventory and equipment of players ticking on another
   island: a documented residual risk (a stale or torn item read); restricting it would
   lose vanilla map updates.
+- A sculk shrieker warns the owner of a projectile that reached it wherever that player
+  ticks (warden switches rely on it), so it writes the `WardenSpawnTracker` of a player on
+  another island. Each tracker operation is atomic under the tracker's monitor, and the
+  warning cooldown is measured in the clock of the shrieker that armed it
+  (`WardenWarningClock`); routing the write to the player's owner would delay the answer the
+  shrieker needs in its tick.
 - `TransportItemsBetweenContainersMixin` keys its busy-container map by `BlockPos`
   without the dimension, so copper golems in two dimensions can see each other's
   container as busy (rare; vanilla has no such map).

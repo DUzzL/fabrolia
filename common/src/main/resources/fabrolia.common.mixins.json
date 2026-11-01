@@ -114,6 +114,7 @@
     "entity.spawn.NaturalSpawnerMixin",
     "entity.spawn.PotentialCalculatorMixin",
     "entity.spawn.SpawnStateMixin",
+    "entity.WardenSpawnTrackerMixin",
     "lithium.FabroliaLithiumBrainMemoryBumpMixin",
     "lithium.FabroliaLithiumBrainMemoryCounterMixin",
     "lithium.FabroliaLithiumClassGroupFilterableListMixin",
