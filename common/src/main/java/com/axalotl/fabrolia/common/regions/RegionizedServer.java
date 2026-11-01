@@ -2336,6 +2336,7 @@ public final class RegionizedServer {
                 boolean sealHeld = true;
                 try {
                     rebaseScheduledTickClocksUnderSeal(r, d);
+                    TimerClocks.rebaseRegion(r, d);
                     RedstoneTorchHistory.rebaseAndCommit(r, d);
                 } catch (Throwable commitFailure) {
                     failure = RegionScheduler.publishFatalAndSelectWinner(commitFailure);

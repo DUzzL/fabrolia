@@ -42,7 +42,6 @@ public final class NetherPortalTransfers {
     private static final ConcurrentHashMap<UUID, Transfer> SOURCES = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<ServerLevel, Source> FLAT_DOMAINS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<EpochDomain, Source> DOMAINS = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<UUID, ActiveChunk> ACTIVE_CHUNKS = new ConcurrentHashMap<>();
     private static final ThreadLocal<IdentityHashMap<Entity, Transfer>> DEPARTURES =
             ThreadLocal.withInitial(IdentityHashMap::new);
     private static final ThreadLocal<Scope> ACTIVE = new ThreadLocal<>();
@@ -1303,7 +1302,6 @@ public final class NetherPortalTransfers {
                 transfer.cancel(null);
             }
         }
-        ACTIVE_CHUNKS.entrySet().removeIf(entry -> entry.getValue().level == level);
         synchronized (PRELUDES) {
             DOMAINS.entrySet().removeIf(entry -> {
                 if (entry.getValue().level != level) return false;
@@ -1334,7 +1332,6 @@ public final class NetherPortalTransfers {
         FLAT_DOMAINS.clear();
         PRELUDES.clear();
         NetherPortalPreparation.resetAfterShutdown();
-        ACTIVE_CHUNKS.clear();
         server = null;
     }
 
@@ -1355,18 +1352,6 @@ public final class NetherPortalTransfers {
     public static void forEachPendingSourceChunk(ServerLevel level, LongConsumer sink) {
         for (Transfer transfer : Set.copyOf(SOURCES.values())) if (transfer.sourceLevel == level) {
             for (long chunk : transfer.sourceChunks) sink.accept(chunk);
-        }
-    }
-    private record ActiveChunk(ServerLevel level, long chunkKey, long atNanos) {}
-    public static void notePortalActive(Entity entity, ServerLevel level) {
-        ACTIVE_CHUNKS.put(entity.getUUID(), new ActiveChunk(level, entity.chunkPosition().pack(), System.nanoTime()));
-    }
-    public static void forEachPortalActiveChunk(ServerLevel level, LongConsumer sink) {
-        long now = System.nanoTime();
-        for (var entry : ACTIVE_CHUNKS.entrySet()) {
-            ActiveChunk chunk = entry.getValue();
-            if (now - chunk.atNanos > 3_000_000_000L) ACTIVE_CHUNKS.remove(entry.getKey(), chunk);
-            else if (chunk.level == level && !SOURCES.containsKey(entry.getKey())) sink.accept(chunk.chunkKey);
         }
     }
 }

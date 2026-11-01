@@ -356,7 +356,7 @@ All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   - Islands and clocks: `IslandRegistry`, `IslandTickUnit`, `IslandUnitAdmission`, `IslandClock`, `RawGameTime`, `TemporalControl`
   - Views: `CompletedSimulationView`, `CompletedChunkLevels`
   - Metrics and logging: `IslandMetrics`, `TpsHud`, `TpsWindow`, `CarpetTpsLines`, `FlightRecorder`, `MainFallbackStats`, `ThrottledLog`
-- **Entities:** `EntityTickLease`, `EntityBarrierWatchdog`, `EntityResidencyAccess`, `AcceptedTickAccess`, `NavRecompute`, `VibrationDomains`, `WardenWarningClock`, `RedstoneTorchHistory`
+- **Entities:** `EntityTickLease`, `EntityBarrierWatchdog`, `EntityResidencyAccess`, `AcceptedTickAccess`, `NavRecompute`, `VibrationDomains`, `WardenWarningClock`, `TimerClocks`, `RedstoneTorchHistory`
 - **Tracking:** `IslandEntityTracking`, `IslandTrackedEntityAccess`, `IslandPendingPairing`, `TrackedEntityPassAccess`, `TrackingViewerPass`, `TrackerIndexChanges`, `TrackerTopologySnapshot`, `TrackingPublicationBinding`, `TrackingTopologyAdmissionGate`, `RegionTickingTrackerBind`, `VmpTrackerIndexApply`, `VmpTrackingFanoutGate`
 - **Players:**
   - Player ticks and ownership: `AsyncIslandPlayerTicks`, `AsyncIslandPlayerAccess`, `AsyncIslandPlayerLifecycle`, `IslandPlayerTurnSession`, `PlayerTurnOwnership`, `RegionalPlayerEntityTicksV2`, `PlayerTickPhaseStamp`, `PlayerTickKnownModEnvelope`
@@ -450,6 +450,17 @@ All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   warning cooldown is measured in the clock of the shrieker that armed it
   (`WardenWarningClock`); routing the write to the player's owner would delay the answer the
   shrieker needs in its tick.
+- Absolute timers in entities and block entities (trial spawner, neutral-mob anger, villager
+  sleep/work/restock/gossip, brain behaviour ends and schedule check, camel pose, copper golem
+  weathering, armor stand double hit, bell)
+  are kept in the clock of their basis (`TimerClocks`): saves write them in W, loads read W,
+  a region domain change moves them with its scheduled ticks, and an entity tick moves them
+  to the clock the thread reads. Throttles out of reach (AcquirePoi, SetClosestHomeAsWalkTarget,
+  the raider banner cache) heal future residue instead. A retired island in a basis reads as its
+  final L plus the wall time since it retired. Chunk tickets of an island that is behind count
+  down once per island tick (`TicketStorageMixin`); only an island that has not advanced for
+  6000 wall ticks falls back to wall cadence. There is no extra lease for portal-active
+  entities, so a portal loader keeps its area exactly as long as vanilla.
 - `TransportItemsBetweenContainersMixin` keys its busy-container map by `BlockPos`
   without the dimension, so copper golems in two dimensions can see each other's
   container as busy (rare; vanilla has no such map).

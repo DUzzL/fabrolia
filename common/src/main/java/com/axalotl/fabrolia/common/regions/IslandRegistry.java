@@ -82,6 +82,10 @@ public final class IslandRegistry {
          *  main's sort, so the comparator saw a key move mid-sort. */
         public long driveSortCost;
         public final long bornGameTime;
+        /** Raw game time when the island retired (0 while live): a timer basis
+         *  that names a retired island reads its final L plus the wall time
+         *  since ({@link TimerClocks}). */
+        public volatile long retiredWallTime;
 
         // ---- A2 real scheduler state (consumed by IslandTickUnit) ----
         /** This island's scheduling timeline — its epoch advances once per tick
@@ -452,12 +456,14 @@ public final class IslandRegistry {
         /** Real missed-deadline count once async is live (diagnostics). */
         public volatile long missedDeadlines;
         /** Ticket-purge progress memo (main-only; TicketStorageMixin): the
-         *  island's L at the last purge pass + whether it advanced — expiry
-         *  decrements only on island-tick progress, so timeouts count the
-         *  SAME clock the renewing machine runs on. */
+         *  island's L at the last purge pass and the island ticks since then —
+         *  expiry decrements once per island tick, so timeouts count the SAME
+         *  clock the renewing machine runs on. */
         public long purgeSeenL;
         public long purgeSeenWall;
-        public boolean purgeAdvanced = true;
+        public long purgeSteps = 1L;
+        /** Wall time of the last purge pass that saw this island advance. */
+        public long purgeLastAdvanceWall;
         /**
          * This island's last published global-cap census ({@link SpawnCapLanes}
          * slot layout). Written once per unit by the island's own chunk pass,
@@ -825,6 +831,7 @@ public final class IslandRegistry {
                 logEvent(gameTime, "RETIRE", e.getLongKey(), new long[0],
                         e.getValue().cells.size(), "no populated cells left");
                 synchronized (e.getValue().pendingIslandTasks) {
+                    e.getValue().retiredWallTime = gameTime;
                     e.getValue().retired = true;
                 }
                 it.remove();

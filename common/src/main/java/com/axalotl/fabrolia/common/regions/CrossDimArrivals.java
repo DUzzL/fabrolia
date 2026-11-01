@@ -42,12 +42,10 @@ public final class CrossDimArrivals {
     private static final Logger LOGGER = LoggerFactory.getLogger("Fabrolia-XDim");
 
     /** Synthetic lease strength by purpose. Destination publication keeps
-     * vanilla's radius-3 PORTAL semantics. A live portal-active entity needs
-     * only its own chunk entity-ticking (radius 2); a frozen source handoff
-     * needs loading only (radius 1). The narrower source radii must never
-     * propagate ENTITY_TICKING into neighbouring stasis machinery. */
+     * vanilla's radius-3 PORTAL semantics; a frozen source handoff needs
+     * loading only (radius 1), which must never propagate ENTITY_TICKING into
+     * neighbouring stasis machinery. */
     static final int DESTINATION_LEASE_RADIUS = 3;
-    static final int PORTAL_ACTIVE_LEASE_RADIUS = 2;
     static final int PENDING_SOURCE_LEASE_RADIUS = 1;
 
     /** One staged destination-side operation, in vanilla execution order.
@@ -1039,18 +1037,11 @@ public final class CrossDimArrivals {
                             fabrolia$rearmLease(armedRadius, rs.level, key,
                                     PENDING_SOURCE_LEASE_RADIUS));
                 }));
-        // (c) The chunk of every genuinely live PORTAL-ACTIVE entity. PTM
-        //     excludes departed and portal-pending source identities: (b)
-        //     already holds those frozen transactions. A live loader must keep
-        //     ticking itself, but no vanilla invariant requires synthetic
-        //     ENTITY_TICKING propagation into neighbouring chunks. Radius 2
-        //     makes the exact entity chunk level 31 and its neighbours level 32.
-        RegionScheduler.runSuccessBodyIfHealthy(() ->
-                com.axalotl.fabrolia.common.regions.NetherPortalTransfers.forEachPortalActiveChunk(rs.level, key -> {
-                    RegionScheduler.runSuccessBodyIfHealthy(() ->
-                            fabrolia$rearmLease(armedRadius, rs.level, key,
-                                    PORTAL_ACTIVE_LEASE_RADIUS));
-                }));
+        // No lease for portal-active entities (removed 2026-11-01): it held the
+        // chunk of every entity in a portal or on portal cooldown on WALL cadence
+        // plus 3 s, so a stopped portal loader kept its area ticking that much
+        // longer than vanilla's single arrival ticket. A starved island no longer
+        // needs it: TicketStorageMixin counts the arrival ticket in island ticks.
     }
 
     private static void fabrolia$rearmLease(

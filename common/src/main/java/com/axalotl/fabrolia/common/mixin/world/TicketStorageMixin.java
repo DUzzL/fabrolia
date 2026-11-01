@@ -25,12 +25,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * stall is inherently safe in vanilla and here — no ticks, no decrements.)
  *
  * <p>Repair: while a chunk's owner island is BEHIND the wall clock, its
- * tickets do not decrement — timeout and renewal then count the same clock
- * (island ticks), the exact rule every other relative mechanic follows under
- * the L-clock model. A healthy island with a genuinely dead loader expires
- * normally (L keeps pace, decrements run). Leak bound: an island more than
- * {@link #STALL_GRACE_CAP_TICKS} behind is not a lag spike — decrements
- * resume so a permanently wedged island cannot pin tickets forever.
+ * tickets decrement once per island tick — timeout and renewal then count the
+ * same clock, the exact rule every other relative mechanic follows under the
+ * L-clock model. A healthy island with a genuinely dead loader expires on
+ * time (L keeps pace). Leak bound: an island that has not advanced for
+ * {@link #STALL_GRACE_CAP_TICKS} wall ticks is wedged, not lagging —
+ * decrements resume so it cannot pin tickets forever. (Until 2026-11-01 the
+ * bound was the island's total lag, which every long-lived island exceeds:
+ * its tickets then expired on wall cadence again.)
  *
  * <p>Also feeds the pearl-ticket EXPIRY trace (2026-08-18): this inject sees
  * every ticket vanilla is about to decrement, with its chunk pos — the one
@@ -171,22 +173,35 @@ public abstract class TicketStorageMixin {
                 break;
             }
             long wall = com.axalotl.fabrolia.common.regions.IslandClock.wallTime(la.fabrolia$level());
-            long behind = wall - owner.logicalTick;
-            if (behind <= 0 || behind >= STALL_GRACE_CAP_TICKS) {
-                break; // caught up (vanilla expiry) / wedged beyond the leak bound
-            }
-            // Expiry counts ISLAND ticks, not wall ticks: decrement only on
-            // passes where the owner's L advanced since the last purge. A stall
-            // (L frozen) freezes expiry exactly as long as it freezes renewal; a
-            // deliberately RATED island expires proportionally slower — matching
-            // its renewal cadence — instead of freezing forever (v1 froze any
-            // behind island, which leaked tickets on permanently-rated islands).
+            // Island ticks since the previous purge pass, memoized once per wall
+            // tick and kept current on every pass (also while caught up), so a
+            // later behind pass never counts a stale baseline.
             if (owner.purgeSeenWall != wall) {
-                owner.purgeAdvanced = owner.logicalTick != owner.purgeSeenL;
-                owner.purgeSeenL = owner.logicalTick;
+                long l = owner.logicalTick;
+                owner.purgeSteps = com.axalotl.fabrolia.common.utils.IslandTicketSteps.steps(
+                        owner.purgeSeenWall, owner.purgeSeenL, wall, l);
+                if (owner.purgeSteps > 0L) owner.purgeLastAdvanceWall = wall;
+                owner.purgeSeenL = l;
                 owner.purgeSeenWall = wall;
             }
-            suppress = !owner.purgeAdvanced;
+            long behind = wall - owner.logicalTick;
+            if (behind <= 0 || wall - owner.purgeLastAdvanceWall >= STALL_GRACE_CAP_TICKS) {
+                break; // caught up (vanilla expiry) / wedged beyond the leak bound
+            }
+            // Expiry counts ISLAND ticks, not wall ticks: one decrement per island
+            // tick since the last purge. A stall (L frozen) freezes expiry exactly
+            // as long as it freezes renewal; a deliberately RATED island expires
+            // proportionally slower, matching its renewal cadence. Islands and
+            // Main are not in phase, so one pass can see 0 island ticks and the
+            // next 2: counting only "advanced or not" lost the second tick and
+            // kept a stopped chunk loader's area ticking up to twice as long
+            // (warden switch run, 2026-11-01: 6-11 s longer than vanilla).
+            if (owner.purgeSteps == 0L) {
+                suppress = true;
+            } else if (owner.purgeSteps > 1L && ticket.getType().hasTimeout()) {
+                TicketAccessor acc = (TicketAccessor) (Object) ticket;
+                acc.fabrolia$setTicksLeft(Math.max(0L, acc.fabrolia$getTicksLeft() - (owner.purgeSteps - 1L)));
+            }
         } while (false);
         if (suppress) {
             cir.setReturnValue(false);

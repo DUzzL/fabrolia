@@ -33,9 +33,6 @@ public abstract class EntityHandlePortalMixin {
     public abstract void setPortalCooldown();
 
     @Shadow
-    public abstract boolean isOnPortalCooldown();
-
-    @Shadow
     public abstract Level level();
 
     @WrapMethod(method = "handlePortal")
@@ -46,17 +43,6 @@ public abstract class EntityHandlePortalMixin {
         this.processPortalCooldown();
 
         Entity self = (Entity) (Object) this;
-
-        // task #26 async-island portal-loader fix: record this entity's chunk as
-        // PORTAL-ACTIVE whenever it is inside a portal OR still on cooldown from a
-        // recent crossing, so the main-thread lease re-arm can hold the chunk
-        // loaded on WALL cadence — decoupling the loader's chunk lifetime from its
-        // (possibly scheduling-starved) island's tick rate. Runs BEFORE the
-        // process==null early-out so on-cooldown-but-not-in-portal carts (mid
-        // rail, between crossings) are covered too.
-        if (this.portalProcess != null || this.isOnPortalCooldown()) {
-            NetherPortalTransfers.notePortalActive(self, serverLevel);
-        }
 
         PortalProcessor process = this.portalProcess;
         if (process == null) return;

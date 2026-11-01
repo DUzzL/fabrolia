@@ -30,16 +30,11 @@ class WorldTailFailStopWiringTest {
         // initializes the complete bootstrap registry, unavailable in unit tests.
         int fullLevel = 33;
         int destination = fullLevel - CrossDimArrivals.DESTINATION_LEASE_RADIUS;
-        int activeEntity = fullLevel - CrossDimArrivals.PORTAL_ACTIVE_LEASE_RADIUS;
         int pendingSource = fullLevel - CrossDimArrivals.PENDING_SOURCE_LEASE_RADIUS;
 
         assertTrue(destination <= 31);
         assertTrue(destination + 1 <= 31,
                 "vanilla-equivalent destination tickets retain their radius-3 footprint");
-        assertTrue(activeEntity <= 31,
-                "the exact live portal-loader chunk must keep ticking its entity");
-        assertFalse(activeEntity + 1 <= 31,
-                "a synthetic loader lease must not entity-tick adjacent stasis machinery");
         assertTrue(pendingSource <= 32);
         assertFalse(pendingSource <= 31,
                 "a frozen pending source owes loading, never entity simulation");
