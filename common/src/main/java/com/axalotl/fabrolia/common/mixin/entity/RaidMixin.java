@@ -54,6 +54,13 @@ public class RaidMixin {
         }
     }
 
+    @WrapMethod(method = "getLeader")
+    private Raider fabrolia$getLeader(int wave, Operation<Raider> original) {
+        synchronized (this) {
+            return original.call(wave);
+        }
+    }
+
     @WrapMethod(method = "setLeader")
     private void fabrolia$setLeader(int wave, Raider raider, Operation<Void> original) {
         synchronized (this) {
