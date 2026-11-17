@@ -6,6 +6,10 @@ import net.minecraft.world.entity.raid.Raid;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.gamerules.GameRules;
 
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+
 /**
  * Island-owned raid ticking — unit-driven (2026-08-13 stacked-raid-farm
  * cadence fix, second iteration).
@@ -69,7 +73,7 @@ public final class RaidIslandDispatch {
     }
 
     /** One fence for every unowned raid of this level tick, in map order. */
-    public static void tickOnMainFenced(ServerLevel level, java.util.List<Raid> raids) {
+    public static void tickOnMainFenced(ServerLevel level, Set<Raid> raids) {
         RaidOwnership.runMainFenced(() -> {
             var iterator = ((RaidRegistryAccess) level.getRaids()).fabrolia$raidIterator();
             while (iterator.hasNext()) {
@@ -106,7 +110,7 @@ public final class RaidIslandDispatch {
 
     /** Rebuild fence held: move subscriptions without adding an extra raid tick. */
     static void reassignAfterTopology(RegionizedServer runtime,
-                                      java.util.List<IslandRegistry.PIsland> oldOwners) {
+                                      List<IslandRegistry.PIsland> oldOwners) {
         java.util.HashSet<Raid> raids = null;
         for (IslandRegistry.PIsland owner : oldOwners) {
             if (owner.assignedRaids.isEmpty()) continue;
@@ -175,7 +179,7 @@ public final class RaidIslandDispatch {
 
     private static void serviceOneRaidEntered(
             RegionizedServer rs, IslandRegistry.PIsland island,
-            ServerLevel level, Raid raid, java.util.Iterator<Raid> iterator) {
+            ServerLevel level, Raid raid, Iterator<Raid> iterator) {
         RaidOwnerAccess.View view = ((RaidOwnerAccess) raid).fabrolia$raidView();
         IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(ChunkPos.pack(view.center()));
         boolean registered = true;

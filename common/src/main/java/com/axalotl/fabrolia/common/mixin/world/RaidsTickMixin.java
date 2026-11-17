@@ -13,7 +13,9 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 
-import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 
 /** Main enumerates published registrations; stop/removal and tick share the regional raid slot. */
 @Mixin(Raids.class)
@@ -21,13 +23,13 @@ public abstract class RaidsTickMixin {
     @Shadow @Final private Int2ObjectMap<Raid> raidMap;
     @Shadow private int tick;
 
-    /** Main-confined scratch list of the raids Main ticks this level tick. */
-    @Unique private final ArrayList<Raid> fabrolia$mainTicks = new ArrayList<>();
+    /** Main-confined scratch set of the raids Main ticks this level tick. */
+    @Unique private final Set<Raid> fabrolia$mainTicks = Collections.newSetFromMap(new IdentityHashMap<>());
 
     @WrapMethod(method = "tick")
     private void fabrolia$dispatchRaidLifecycle(ServerLevel level, Operation<Void> original) {
         tick++;
-        ArrayList<Raid> mainTicks = fabrolia$mainTicks;
+        Set<Raid> mainTicks = fabrolia$mainTicks;
         try {
             for (Raid raid : raidMap.values()) {
                 RegionScheduler.runSuccessBodyIfHealthy(() -> {
