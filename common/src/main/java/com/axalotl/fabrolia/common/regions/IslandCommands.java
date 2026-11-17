@@ -373,7 +373,9 @@ public final class IslandCommands {
                 // successor is a separate success stage: a peer W selected after
                 // ROUTED.add must cancel the queued receipt, not enqueue new work.
                 RegionScheduler.runSuccessBodyIfHealthy(
-                        () -> sv.execute(IslandCommands::drainRoutedBatch));
+                        () -> sv.schedule(new net.minecraft.server.TickTask(sv.getTickCount(), () -> {
+                            if (!fut.isDone()) drainRoutedBatch();
+                        })));
             }
         });
         RegionScheduler.commitSuccessIfHealthy(ROUTED_GLOBAL::increment);
