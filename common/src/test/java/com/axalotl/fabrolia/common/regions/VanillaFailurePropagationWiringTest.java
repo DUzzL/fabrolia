@@ -122,9 +122,11 @@ final class VanillaFailurePropagationWiringTest {
 
     @Test
     void ownerClaimedGlobalTicksCommitTheirReturnAfterClaimRelease() throws Exception {
-        assertClaimedGlobalTickPostReleaseCommit(
-                "common/mixin/world/RaidTickMixin.java",
-                "private void fabrolia$ownerSafeRaidTick(", "raid");
+        String raid = source("common/mixin/world/RaidTickMixin.java");
+        assertTrue(raid.contains("RaidOwnership.runFenced(level, \"raid tick\""));
+        String fence = source("common/regions/RaidOwnership.java");
+        assertTrue(fence.contains("IslandCommands.releaseAllExceptAndPropagate(failure)"));
+        assertTrue(fence.contains("RegionScheduler.commitSuccessIfHealthy(() -> {})"));
         assertClaimedGlobalTickPostReleaseCommit(
                 "common/mixin/world/DragonFightTickMixin.java",
                 "private void fabrolia$ownerSafeFightTick(", "dragon-fight");

@@ -1,24 +1,19 @@
 package com.axalotl.fabrolia.common.mixin.world;
 
-import com.axalotl.fabrolia.common.regions.IslandCommands;
-import com.axalotl.fabrolia.common.regions.IslandRegistry;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
-import com.axalotl.fabrolia.common.regions.RegionizedServer;
 import com.axalotl.fabrolia.common.regions.RaidOwnerAccess;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
-import com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2;
-import com.axalotl.fabrolia.common.regions.FailStops;
-import net.minecraft.advancements.triggers.CriteriaTriggers;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.stats.Stats;
-import net.minecraft.util.Mth;
-import net.minecraft.world.effect.MobEffectInstance;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.raid.Raid;
-import net.minecraft.world.level.ChunkPos;
+import com.axalotl.fabrolia.common.regions.RaidOwnership;
+import net.minecraft.world.entity.raid.Raider;
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
+
+import java.util.Map;
+import java.util.Set;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -35,10 +30,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(Raid.class)
 public abstract class RaidTickMixin implements RaidOwnerAccess {
 
-    @Shadow private int raidOmenLevel;
-    @Shadow public abstract boolean isStarted();
-    @Shadow public abstract int getMaxRaidOmenLevel();
-    @Shadow public abstract boolean hasFirstWaveSpawned();
+    @Shadow private long ticksActive;
+    @Shadow private int postRaidTicks;
+    @Shadow @Final private Map<Integer, Set<Raider>> groupRaiderMap;
     @Unique private volatile RaidOwnerAccess.View fabrolia$view;
     @Unique private volatile Thread fabrolia$tickThread;
 
@@ -76,25 +70,6 @@ public abstract class RaidTickMixin implements RaidOwnerAccess {
         if (fabrolia$tickThread == null) fabrolia$publishView();
     }
 
-    @Override
-    public boolean fabrolia$absorbOmenIfEligible(ServerPlayer player, MobEffectInstance effect) {
-        if (effect == null) return false;
-        boolean award;
-        // Same-island entity phases exclude the coordinator raid tick, but two
-        // player regions may extend this raid together. Only scalar metadata is
-        // serialized; advancement/stat callbacks never run under this monitor.
-        synchronized (this) {
-            if (isStarted() && raidOmenLevel >= getMaxRaidOmenLevel()) return false;
-            raidOmenLevel = Mth.clamp(raidOmenLevel + effect.getAmplifier() + 1, 0, getMaxRaidOmenLevel());
-            award = !hasFirstWaveSpawned();
-        }
-        if (award && player != null) {
-            player.awardStat(Stats.RAID_TRIGGER);
-            CriteriaTriggers.RAID_OMEN.trigger(player);
-        }
-        return true;
-    }
-
     @WrapMethod(method = "getRaidOmenLevel")
     private int fabrolia$readOmenLevel(Operation<Integer> original) {
         synchronized (this) {
@@ -122,53 +97,33 @@ public abstract class RaidTickMixin implements RaidOwnerAccess {
 
     @WrapMethod(method = "tick")
     private void fabrolia$ownerSafeRaidTick(ServerLevel level, Operation<Void> original) {
-        RegionizedServer rs = RegionScheduler.forLevel(level);
-        // One read of the published center: the ownership check, the refusal
-        // message and the Main claim all describe the same position.
         var center = fabrolia$view.center();
-        boolean coordinator = Thread.currentThread() instanceof RegionWorkerThread worker
-                && worker.currentRegion == null;
-        if (coordinator && RegionScheduler.ownsCurrentContext(level, center)) {
+        if (Thread.currentThread() instanceof RegionWorkerThread worker && worker.currentRegion == null
+                && RegionScheduler.ownsCurrentContext(level, center) && !fabrolia$needsOtherOwners(level)) {
             RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$tickAndPublish(level, original));
-            return;
+        } else {
+            RaidOwnership.runFenced(level, "raid tick", () -> fabrolia$tickAndPublish(level, original));
         }
-        if (rs == null || !rs.asyncActive || rs.currentThreadHoldsAllClaims()) {
-            RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$tickAndPublish(level, original));
-            return;
-        }
-        if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())) {
-            throw new IllegalStateException("raid tick requires its quiescent island coordinator ("
-                    + RegionScheduler.describeContext(level, center) + ")");
-        }
-        IslandRegistry.PIsland owner = rs.islandOwnerOfChunk(ChunkPos.pack(center));
-        if (owner == null) {
-            RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$tickAndPublish(level, original));
-            return;
-        }
-        IslandCommands.mainClaim(owner);
-        Throwable failure = null;
-        try {
-            RegionScheduler.runSuccessBodyIfHealthy(() -> fabrolia$tickAndPublish(level, original));
-        } catch (Throwable bodyFailure) {
-            failure = RegionScheduler.publishFatalAndSelectWinner(bodyFailure);
-        }
-        try {
-            IslandCommands.mainRelease(owner);
-        } catch (Throwable cleanupFailure) {
-            failure = RegionScheduler.publishFatalAndSelectWinner(
-                    FailStops.mergeFailure(failure, cleanupFailure));
-        }
-        if (failure == null) {
-            try {
-                // Claim release is mandatory cleanup, not a success edge.
-                // Linearize the normal return against a peer generation W.
-                RegionScheduler.commitSuccessIfHealthy(() -> {});
-            } catch (Throwable peerFailure) {
-                failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
+    }
+
+    @Unique
+    private boolean fabrolia$needsOtherOwners(ServerLevel level) {
+        Raid raid = (Raid) (Object) this;
+        if (raid.isOver() || raid.isStopped()) return false;
+        // Victory iterates hero UUIDs, including living entities anywhere in the level.
+        if (postRaidTicks >= 40) return level.hasChunkAt(fabrolia$view.center());
+        if ((ticksActive + 1) % 20 != 0) return false;
+        // updateRaiders reads the live entities and can clear their raid membership.
+        // Owned members cannot move while their coordinator holds this unit.
+        synchronized (this) {
+            for (var wave : groupRaiderMap.values()) {
+                for (Raider raider : wave) {
+                    if (raider.level() != level || !RegionScheduler.ownsCurrentContext(level, raider.blockPosition())) {
+                        return true;
+                    }
+                }
             }
         }
-        if (failure != null) {
-            IslandCommands.publishAndPropagate(failure);
-        }
+        return false;
     }
 }

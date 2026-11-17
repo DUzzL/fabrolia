@@ -1,6 +1,8 @@
 package com.axalotl.fabrolia.common.mixin.entity;
 
 import com.axalotl.fabrolia.common.utils.EffectMap;
+import com.axalotl.fabrolia.common.regions.RaidOwnership;
+import net.minecraft.server.level.ServerPlayer;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.core.Holder;
@@ -92,6 +94,16 @@ public abstract class LivingEntityMixin extends Entity {
 
     @WrapMethod(method = "tickEffects")
     private void tickStatusEffects(Operation<Void> original) {
+        // Acquire both player and village authority before an effect callback owns the map mutex.
+        if ((Object) this instanceof ServerPlayer player && RaidOwnership.expiresThisTurn(player)) {
+            RaidOwnership.runFenced(player.level(), "raid omen effect tick", () -> fabrolia$tickEffectsLocked(original));
+        } else {
+            fabrolia$tickEffectsLocked(original);
+        }
+    }
+
+    @Unique
+    private void fabrolia$tickEffectsLocked(Operation<Void> original) {
         synchronized (this.fabrolia$lock) {
             original.call();
         }

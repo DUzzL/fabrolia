@@ -111,8 +111,8 @@ class RaidOwnershipTest {
 
         void onForeignThread() throws Exception {
             FutureTask<Void> task = new FutureTask<>(() -> {
-                assertFalse(RaidOwnership.canCreate(player, CENTER));
-                assertFalse(RaidOwnership.ownsRaid(level, CENTER));
+                assertThrows(IllegalStateException.class, () -> RaidOwnership.runFenced(level, "foreign raid",
+                        () -> fail("foreign caller entered the raid")));
                 return null;
             });
             Thread foreign = new Thread(task, "raid-foreign-thread-regression");

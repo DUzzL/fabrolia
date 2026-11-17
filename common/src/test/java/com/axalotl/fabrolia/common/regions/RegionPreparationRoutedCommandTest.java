@@ -478,11 +478,6 @@ class RegionPreparationRoutedCommandTest {
         @Override
         public boolean isStopped() { return view.stopped(); }
 
-        @Override
-        public boolean fabrolia$absorbOmenIfEligible(net.minecraft.server.level.ServerPlayer player,
-                                                    net.minecraft.world.effect.MobEffectInstance effect) {
-            throw new UnsupportedOperationException("omen mutation is outside this scheduling fixture");
-        }
 
         @Override
         public void tick(ServerLevel level) {

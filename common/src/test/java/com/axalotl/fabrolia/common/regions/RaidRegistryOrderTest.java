@@ -72,8 +72,5 @@ class RaidRegistryOrderTest {
             return new View(getCenter(), isActive(), isStopped());
         }
 
-        @Override public boolean fabrolia$absorbOmenIfEligible(ServerPlayer player, MobEffectInstance effect) {
-            throw new UnsupportedOperationException("lookup fixture");
-        }
     }
 }
