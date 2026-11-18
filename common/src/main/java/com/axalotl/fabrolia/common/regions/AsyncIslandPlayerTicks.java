@@ -5139,6 +5139,12 @@ public final class AsyncIslandPlayerTicks {
             throw new IllegalStateException("A5 causal ingress decision without state lock");
         }
         if (state.causalRoutedCutoff == 0L) return false;
+        if (noRoutedOrSoleRoutedAtTailLocked(state)) {
+            InboundPacket sole = state.routedIngressCount == 1 ? state.mainIngress.peekLast() : null;
+            if (sole != null && sole.routedSequence() <= state.causalRoutedCutoff) return true;
+            state.causalRoutedCutoff = 0L;
+            return false;
+        }
         for (InboundPacket candidate : state.mainIngress) {
             if (state.netherReservation != null
                     && candidate == state.netherReservation.marker) return false;
@@ -5149,6 +5155,23 @@ public final class AsyncIslandPlayerTicks {
         }
         state.causalRoutedCutoff = 0L;
         return false;
+    }
+
+    /**
+     * The causal-cutoff scans look for the first routed mutation in FIFO order. Two
+     * common shapes need no walk over the ordinary packets in front of it: no routed
+     * entry is left, or the only one is the newest envelope (a packet handler's own
+     * continuation, appended behind everything its client had already sent). A
+     * client that queued 60 000 book edits made every one of them walk the whole
+     * queue: 3.5 s of Main for 360 kB (2026-11-18). With a Nether reservation
+     * marker in the queue the scans keep their marker rule.
+     */
+    private static boolean noRoutedOrSoleRoutedAtTailLocked(PlayerState state) {
+        if (state.netherReservation != null) return false;
+        if (state.routedIngressCount == 0) return true;
+        if (state.routedIngressCount != 1) return false;
+        InboundPacket last = state.mainIngress.peekLast();
+        return last != null && last.isRoutedMutation();
     }
 
     /** Caller holds state and the session has already published quiescent MAIN. */
@@ -5572,6 +5595,11 @@ public final class AsyncIslandPlayerTicks {
             throw new IllegalStateException("A5 Main ingress peek without state lock");
         }
         if (state.causalRoutedCutoff != 0L) {
+            if (noRoutedOrSoleRoutedAtTailLocked(state)) {
+                InboundPacket sole = state.routedIngressCount == 1 ? state.mainIngress.peekLast() : null;
+                if (sole != null && sole.routedSequence() <= state.causalRoutedCutoff) return sole;
+                return state.mainIngress.peekFirst();
+            }
             for (InboundPacket candidate : state.mainIngress) {
                 if (state.netherReservation != null
                         && candidate == state.netherReservation.marker) break;
@@ -5595,16 +5623,25 @@ public final class AsyncIslandPlayerTicks {
             throw new IllegalStateException("A5 Main ingress poll without state lock");
         }
         if (state.causalRoutedCutoff != 0L) {
-            var iterator = state.mainIngress.iterator();
-            while (iterator.hasNext()) {
-                InboundPacket candidate = iterator.next();
-                if (state.netherReservation != null
-                        && candidate == state.netherReservation.marker) break;
-                if (candidate.isRoutedMutation()
-                        && candidate.routedSequence() <= state.causalRoutedCutoff) {
-                    iterator.remove();
-                    accountRoutedRemovalLocked(state, candidate);
-                    return candidate;
+            if (noRoutedOrSoleRoutedAtTailLocked(state)) {
+                InboundPacket sole = state.routedIngressCount == 1 ? state.mainIngress.peekLast() : null;
+                if (sole != null && sole.routedSequence() <= state.causalRoutedCutoff) {
+                    state.mainIngress.pollLast();
+                    accountRoutedRemovalLocked(state, sole);
+                    return sole;
+                }
+            } else {
+                var iterator = state.mainIngress.iterator();
+                while (iterator.hasNext()) {
+                    InboundPacket candidate = iterator.next();
+                    if (state.netherReservation != null
+                            && candidate == state.netherReservation.marker) break;
+                    if (candidate.isRoutedMutation()
+                            && candidate.routedSequence() <= state.causalRoutedCutoff) {
+                        iterator.remove();
+                        accountRoutedRemovalLocked(state, candidate);
+                        return candidate;
+                    }
                 }
             }
             state.causalRoutedCutoff = 0L;
