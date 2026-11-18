@@ -24,7 +24,9 @@ public abstract class TrialSpawnerBlockEntityTimerClockMixin {
             original.call(output);
             return;
         }
-        spawner.fabrolia$shiftTimers(d, false);
+        // Negative on an island ahead of W; the forward half clamps
+        // (TimerClocks.toWallForSave), the restore does not.
+        spawner.fabrolia$shiftTimers(d, true);
         try {
             original.call(output);
         } finally {

@@ -61,6 +61,98 @@ final class TimerClocksTest {
         assertEquals(1170L, cooldown.stamp - reborn.logicalTick, "30 ticks passed while unloaded, as in vanilla");
     }
 
+    /** One save of {@code t} as the save wrappers do it: shift into W with the
+     *  clamp, write, shift back; returns the written value. */
+    private static long save(OneTimer t, long wall) {
+        long d = TimerClocks.toWallForSave(t.basis, wall);
+        if (d == 0L) return t.stamp;
+        t.fabrolia$shiftTimers(d, true);
+        long written = t.stamp;
+        t.fabrolia$shiftTimers(-d, false);
+        return written;
+    }
+
+    @Test
+    void anAheadIslandSavesInWallTimeAndReloadsExactly() {
+        // K1 (night campaign B2): W stopped (empty-server pause, Main stall) while
+        // the forceloaded island kept ticking, so L = W + 400. A 1600-tick anger
+        // stamped on the island was written in L (save shift clamped to >= 0),
+        // loaded as W and moved +400 again: it ended 400 ticks late.
+        IslandRegistry.PIsland ahead = island(1, 10_400L);
+        long wall = 10_000L;
+        assertEquals(-400L, TimerClocks.toWallForSave(ahead, wall));
+        OneTimer anger = new OneTimer(ahead, 10_400L + 1600L, 0L);
+        long written = save(anger, wall);
+        assertEquals(wall + 1600L, written, "written in W: remaining 1600 as in vanilla");
+        assertEquals(12_000L, anger.stamp, "the live entity keeps its island-clock stamp");
+        // Unload and load again 30 ticks later into the same island.
+        OneTimer loaded = new OneTimer(null, written, 0L);
+        ahead.logicalTick = 10_430L;
+        TimerClocks.moveTo(loaded, ahead, wall + 30L);
+        assertEquals(1570L, loaded.stamp - ahead.logicalTick);
+        // Or into a new island born at W.
+        OneTimer reborn = new OneTimer(null, written, 0L);
+        IslandRegistry.PIsland fresh = island(2, wall + 30L);
+        TimerClocks.moveTo(reborn, fresh, wall + 30L);
+        assertEquals(1570L, reborn.stamp - fresh.logicalTick);
+    }
+
+    @Test
+    void repeatedDataMergesOnAnAheadIslandDoNotAccumulate() {
+        // K1: every /data merge (read = save, write = load, then the next island
+        // tick moves the timers back to L) added the gap again (trial spawner
+        // cooldown 2790-2801 instead of 1600 after three merges).
+        IslandRegistry.PIsland ahead = island(1, 50_400L);
+        long wall = 50_000L;
+        OneTimer cooldown = new OneTimer(ahead, 50_400L + 1600L, 0L);
+        for (int merge = 0; merge < 3; merge++) {
+            long written = save(cooldown, wall);
+            cooldown.stamp = written;      // load (TAIL): values are W
+            cooldown.basis = null;
+            TimerClocks.moveTo(cooldown, ahead, wall); // next island tick
+            assertEquals(1600L, cooldown.stamp - ahead.logicalTick, "merge " + merge);
+        }
+    }
+
+    @Test
+    void aBehindIslandStillSavesInWallTime() {
+        IslandRegistry.PIsland behind = island(1, 9_790L);
+        long wall = 10_000L;
+        assertEquals(210L, TimerClocks.toWallForSave(behind, wall));
+        OneTimer restock = new OneTimer(behind, 9_700L, 0L);
+        assertEquals(9_910L, save(restock, wall), "90 ticks ago in W");
+        assertEquals(9_700L, restock.stamp);
+        assertEquals(0L, TimerClocks.toWallForSave(null, wall), "a W basis needs no shift");
+    }
+
+    @Test
+    void anAheadSaveNeverWritesASentinel() {
+        // A timer whose W equivalent is at or below its sentinel (stamped on an
+        // island more than its own value ahead of W) is written just above the
+        // sentinel: still due, never "unset" (0), "no anger" (-1) or a copper
+        // golem's -1 (unset) / -2 (waxed). Named deviation: the live value comes
+        // back as floor + 1 - d, still in the past.
+        IslandRegistry.PIsland ahead = island(1, 6_000L);
+        long wall = 1_000L;
+        for (long v : new long[] {4_999L, 4_998L, 4_000L, 300L}) {
+            OneTimer weathering = new OneTimer(ahead, v, 0L);
+            assertEquals(1L, save(weathering, wall));
+            assertEquals(5_001L, weathering.stamp);
+            assertTrue(weathering.stamp <= ahead.logicalTick, "stays due");
+            assertEquals(1L, TimerClocks.shift(v, -5_000L, 0L, true));
+        }
+        // Sentinels themselves never move.
+        for (long sentinel : new long[] {0L, -1L, -2L}) {
+            OneTimer unset = new OneTimer(ahead, sentinel, 0L);
+            assertEquals(sentinel, save(unset, wall));
+            assertEquals(sentinel, unset.stamp);
+        }
+        // Timers whose W value is above the sentinel round-trip exactly.
+        OneTimer live = new OneTimer(ahead, 5_001L, 0L);
+        assertEquals(1L, save(live, wall));
+        assertEquals(5_001L, live.stamp);
+    }
+
     @Test
     void sameClockIsANoOp() {
         IslandRegistry.PIsland p = island(1, 500L);

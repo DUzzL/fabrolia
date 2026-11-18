@@ -177,15 +177,28 @@ public final class TimerClocks {
     }
 
     /**
-     * Ticks a save adds to express {@code s}'s timers in W. Never negative: a
-     * mid-unit island reads one tick ahead of W at most, and a negative save
-     * shift could land a timer on its sentinel and break the exact restore.
+     * Ticks a save adds to express {@code s}'s timers in W: negative when the
+     * basis is ahead of W. Islands are paced by real time, not by W, so an
+     * island runs ahead whenever W stops or slows while it keeps ticking (a Main
+     * stall, the empty-server pause, an island sprint or a rate above 20); a load
+     * reads the written values as W, so a save must write W in both directions.
+     * Callers shift forward by {@code d} with {@code clamp} (a timer whose W
+     * value would fall on or below its sentinel is written just above it, still
+     * expired, never as "unset", "no anger" or "waxed") and back by {@code -d}
+     * without it. Exact for every timer whose W value is above its sentinel.
+     * Deviation (release notes): a timer stamped on an island ahead of W at an
+     * island time whose W equivalent is at or below its sentinel (possible only
+     * while W itself is smaller than the gap) is written as {@code floor + 1}
+     * and the live value comes back as {@code floor + 1 - d}: still expired, it
+     * only reads as more recent than it was.
      */
     public static long toWallForSave(Stamped s, ServerLevel level) {
-        IslandRegistry.PIsland basis = s.fabrolia$timerBasis();
-        if (basis == null) return 0L;
-        long wall = IslandClock.wallTime(level);
-        return Math.max(0L, wall - now(basis, wall));
+        return toWallForSave(s.fabrolia$timerBasis(), IslandClock.wallTime(level));
+    }
+
+    /** {@link #toWallForSave(Stamped, ServerLevel)} for a basis and the raw wall counter. */
+    static long toWallForSave(IslandRegistry.PIsland basis, long wall) {
+        return basis == null ? 0L : wall - now(basis, wall);
     }
 
     // ------------------------------------------------------------ rules

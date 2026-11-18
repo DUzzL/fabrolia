@@ -57,7 +57,9 @@ public abstract class EntityTimerClockMixin implements TimerClocks.Stamped {
     }
 
     /** Write the timers in W, then restore them: the owner (or a claim holder)
-     *  saves, so the island never sees the shifted values. */
+     *  saves, so the island never sees the shifted values. The shift is negative
+     *  on an island ahead of W; the forward half clamps so that no timer is
+     *  written as its sentinel ({@link TimerClocks#toWallForSave}). */
     @WrapMethod(method = "saveWithoutId")
     private void fabrolia$saveTimersInWall(ValueOutput output, Operation<Void> original) {
         Entity self = (Entity) (Object) this;
@@ -67,7 +69,7 @@ public abstract class EntityTimerClockMixin implements TimerClocks.Stamped {
             original.call(output);
             return;
         }
-        TimerClocks.shiftEntity(self, d, false);
+        TimerClocks.shiftEntity(self, d, true);
         try {
             original.call(output);
         } finally {
