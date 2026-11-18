@@ -16,7 +16,8 @@ import org.spongepowered.asm.mixin.Mixin;
 public abstract class ServerPlayerMixin extends Player implements
         com.axalotl.fabrolia.common.parallelised.utils.PearlOwnerSessionAccess,
         com.axalotl.fabrolia.common.regions.PlayerTickPhaseStamp,
-        com.axalotl.fabrolia.common.regions.AsyncIslandPlayerAccess {
+        com.axalotl.fabrolia.common.regions.AsyncIslandPlayerAccess,
+        com.axalotl.fabrolia.common.regions.PlayerRemoteState.Access {
     public ServerPlayerMixin(Level level, GameProfile gameProfile) {
         super(level, gameProfile);
     }
@@ -64,6 +65,57 @@ public abstract class ServerPlayerMixin extends Player implements
     @Override
     public void fabrolia$bumpPlayerLifecycleEpoch() {
         fabrolia$playerLifecycleEpoch++;
+    }
+
+    /**
+     * Where the open menu was last known valid (PlayerRemoteState). Written by the
+     * player's owner; volatile because island admission reads it before the turn.
+     */
+    @org.spongepowered.asm.mixin.Unique
+    private volatile com.axalotl.fabrolia.common.regions.PlayerRemoteState.MenuAnchor
+            fabrolia$menuAnchor;
+
+    @Override
+    public com.axalotl.fabrolia.common.regions.PlayerRemoteState.MenuAnchor
+    fabrolia$menuAnchor() {
+        return fabrolia$menuAnchor;
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private void fabrolia$recordMenuAnchor(
+            net.minecraft.world.inventory.AbstractContainerMenu menu) {
+        long chunk = this.chunkPosition().pack();
+        var current = fabrolia$menuAnchor;
+        if (current == null || current.menu() != menu || current.chunk() != chunk) {
+            fabrolia$menuAnchor =
+                    new com.axalotl.fabrolia.common.regions.PlayerRemoteState.MenuAnchor(menu, chunk);
+        }
+    }
+
+    /** openMenu, openHorseInventory and openNautilusInventory all initialise the new
+     *  menu here, while the player stands within reach of its block or entity. */
+    @org.spongepowered.asm.mixin.injection.Inject(
+            method = "initMenu(Lnet/minecraft/world/inventory/AbstractContainerMenu;)V",
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"))
+    private void fabrolia$anchorOpenedMenu(
+            net.minecraft.world.inventory.AbstractContainerMenu menu,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        fabrolia$recordMenuAnchor(menu);
+    }
+
+    /** A passing stillValid (ServerPlayer.tick and doTick) re-anchors the menu at the
+     *  position it was validated from; vanilla menus check their range there. */
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+            method = {"tick()V", "doTick()V"},
+            at = @org.spongepowered.asm.mixin.injection.At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/inventory/AbstractContainerMenu;"
+                            + "stillValid(Lnet/minecraft/world/entity/player/Player;)Z"))
+    private boolean fabrolia$anchorValidatedMenu(
+            net.minecraft.world.inventory.AbstractContainerMenu menu, Player player,
+            Operation<Boolean> original) {
+        boolean valid = original.call(menu, player);
+        if (valid && menu != this.inventoryMenu) fabrolia$recordMenuAnchor(menu);
+        return valid;
     }
 
     @WrapMethod(method = "setCamera(Lnet/minecraft/world/entity/Entity;)V")

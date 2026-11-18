@@ -553,6 +553,9 @@ final class AsyncIslandPlayerLifecycleWiringTest {
             island.domain.entityDispatchCutEpoch = island.domain.dispatchedEpoch = 8L;
             player = (TestPlayer) unsafe().allocateInstance(TestPlayer.class);
             player.localLevel = level;
+            // Vanilla's constructor invariant: Main player bodies walk the ride tree
+            // (PlayerRemoteState.treeReachesOutsideIsland).
+            set(Entity.class, player, "passengers", com.google.common.collect.ImmutableList.of());
             player.state = new AsyncIslandPlayerTicks.PlayerState();
             TestListener listener = (TestListener) unsafe().allocateInstance(TestListener.class);
             listener.state = player.state;

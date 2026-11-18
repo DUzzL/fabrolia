@@ -119,7 +119,7 @@ public abstract class PlayerInteractionOwnerMixin {
 
     @WrapMethod(method = "handleContainerClick")
     private void fabrolia$ownContainerClick(ServerboundContainerClickPacket packet, Operation<Void> original) {
-        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withMenuOwner, () -> original.call(packet));
     }
 
     // ------------------------------------------------------------------
@@ -199,34 +199,34 @@ public abstract class PlayerInteractionOwnerMixin {
      *  (a hopper pushing into the open chest, the villager restocking). */
     @WrapMethod(method = "handleContainerButtonClick")
     private void fabrolia$ownButtonClick(net.minecraft.network.protocol.game.ServerboundContainerButtonClickPacket packet, Operation<Void> original) {
-        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withMenuOwner, () -> original.call(packet));
     }
 
     @WrapMethod(method = "handleSelectTrade")
     private void fabrolia$ownSelectTrade(net.minecraft.network.protocol.game.ServerboundSelectTradePacket packet, Operation<Void> original) {
-        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withMenuOwner, () -> original.call(packet));
     }
 
     @WrapMethod(method = "handlePlaceRecipe")
     private void fabrolia$ownPlaceRecipe(net.minecraft.network.protocol.game.ServerboundPlaceRecipePacket packet, Operation<Void> original) {
-        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withMenuOwner, () -> original.call(packet));
     }
 
     @WrapMethod(method = "handleRenameItem")
     private void fabrolia$ownRenameItem(net.minecraft.network.protocol.game.ServerboundRenameItemPacket packet, Operation<Void> original) {
-        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withMenuOwner, () -> original.call(packet));
     }
 
     /** Writes BeaconBlockEntity effects. */
     @WrapMethod(method = "handleSetBeaconPacket")
     private void fabrolia$ownSetBeacon(net.minecraft.network.protocol.game.ServerboundSetBeaconPacket packet, Operation<Void> original) {
-        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withMenuOwner, () -> original.call(packet));
     }
 
     /** Menu close can drop the carried stack into the island world. */
     @WrapMethod(method = "handleContainerClose")
     private void fabrolia$ownContainerClose(net.minecraft.network.protocol.game.ServerboundContainerClosePacket packet, Operation<Void> original) {
-        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withPlayerOwner, () -> original.call(packet));
+        AsyncIslandPlayerTicks.runVanillaPacketBody(this::withMenuOwner, () -> original.call(packet));
     }
 
     /** The sign write runs in a DEFERRED main task (after async chat
@@ -268,6 +268,29 @@ public abstract class PlayerInteractionOwnerMixin {
         AsyncIslandPlayerTicks.runFencedMainMutation(
                 "fishing-rod retrieve", retrieve);
         return true;
+    }
+
+    /**
+     * Menu packets act on the open menu's container (block entity, block or
+     * entity). A same-level teleport can leave that menu in another island until
+     * the player's next tick closes it; vanilla still runs these packets against
+     * it (stillValid read, close writes). Then only the global fence owns both
+     * islands ({@link com.axalotl.fabrolia.common.regions.PlayerRemoteState}).
+     * Island admission refuses such a player, so an island replay never sees it.
+     */
+    private void withMenuOwner(Runnable body) {
+        if (!fabrolia$rawEntry()
+                && com.axalotl.fabrolia.common.regions.PlayerRemoteState
+                .reachesOutsideOwnIsland(this.player)) {
+            if (AsyncIslandPlayerTicks.inPacketReplay(this.player)) {
+                throw AsyncIslandPlayerTicks.packetInteractionFailure(
+                        "A5 menu packet reached another island inside an island packet body");
+            }
+            AsyncIslandPlayerTicks.runFencedMainMutation(
+                    com.axalotl.fabrolia.common.regions.PlayerRemoteState.FENCE_OPERATION, body);
+            return;
+        }
+        withPlayerOwner(body);
     }
 
     private void withPlayerOwner(Runnable body) {

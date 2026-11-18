@@ -2096,7 +2096,8 @@ public final class AsyncIslandPlayerTicks {
             ServerPlayer player = listener.player;
             long lifecycle = player instanceof PlayerTickPhaseStamp stamp
                     ? stamp.fabrolia$playerLifecycleEpoch() : 0L;
-            RegionScheduler.runWithMainEntityClaim(player, () -> {
+            // doTick closes a menu left in another island: PlayerRemoteState.
+            RegionScheduler.runPlayerTickWithMainClaim(player, () -> {
                 if (!cancelDirectMainListenerTick(
                         lease.state, listener, player, lifecycle)) body.run();
             }, () -> cancelDirectMainListenerTick(lease.state, listener, player, lifecycle));
@@ -2269,7 +2270,7 @@ public final class AsyncIslandPlayerTicks {
         }
         // Respawn retains the listener but replaces its player. Claim the current
         // receiver, never the predecessor sampled when this L was enqueued.
-        lease.execute(() -> RegionScheduler.runWithMainEntityClaim(player, () -> {
+        lease.execute(() -> RegionScheduler.runPlayerTickWithMainClaim(player, () -> {
             synchronized (state) {
                 // Main claim waits may pump a routed disconnect. The queue clear
                 // cannot cancel this already-polled, still-unentered L itself.
@@ -2282,7 +2283,7 @@ public final class AsyncIslandPlayerTicks {
                 }
             }
             body.run();
-        }));
+        }, null));
     }
 
     /**
@@ -3996,6 +3997,7 @@ public final class AsyncIslandPlayerTicks {
         if (player instanceof ParallelProcessor.TickGuard guard && guard.fabrolia$isPortalPending()) {
             return "portal pending";
         }
+        if (PlayerRemoteState.reachesOutsideOwnIsland(player)) return "state in another island";
         if (kind != IslandPlayerTurnSession.PlayerKind.CARPET
                 && (!player.connection.hasClientLoaded() || player.hasDisconnected())) {
             return "client not loaded";
@@ -4037,6 +4039,10 @@ public final class AsyncIslandPlayerTicks {
         if (player instanceof ParallelProcessor.TickGuard guard && guard.fabrolia$isPortalPending()) {
             return false;
         }
+        // An open menu or a block break that still points into another island
+        // (left behind by a same-level teleport) is resolved by this player's next
+        // tick and menu packets: they run on Main under the global fence.
+        if (PlayerRemoteState.reachesOutsideOwnIsland(player)) return false;
         return kind == IslandPlayerTurnSession.PlayerKind.CARPET
                 || (player.connection.hasClientLoaded() && !player.hasDisconnected());
     }

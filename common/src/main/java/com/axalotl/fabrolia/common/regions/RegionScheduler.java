@@ -1474,6 +1474,11 @@ public final class RegionScheduler {
                                 BooleanSupplier admission, Runnable completion,
                                 boolean vanillaGuarded, boolean allIslandsFenced,
                                 long publishedNanos) implements Runnable {
+        MainSyncTask withAllIslandsFenced() {
+            return new MainSyncTask(entity, vehicle, permit, admission, completion,
+                    vanillaGuarded, true, publishedNanos);
+        }
+
         @Override
         public void run() {
             // runWithMainEntityClaim has established this entity's current level
@@ -1600,6 +1605,33 @@ public final class RegionScheduler {
      */
     public static void runWithMainEntityClaim(Entity entity, Runnable body,
                                               java.util.function.BooleanSupplier finishWithoutBody) {
+        runWithMainEntityClaim(entity, body, finishWithoutBody, false);
+    }
+
+    /**
+     * {@link #runWithMainEntityClaim} for a player tick body (a MAIN_SYNC entity
+     * tick, a Main listener tick). Such a body also resolves the player's open menu
+     * and block-break progress ({@link PlayerRemoteState}); when those point into
+     * another island than the one claimed, the body runs under the global fence
+     * instead, which nests under a single claim Main already holds.
+     */
+    public static void runPlayerTickWithMainClaim(Entity entity, Runnable body,
+                                                  java.util.function.BooleanSupplier finishWithoutBody) {
+        runWithMainEntityClaim(entity, body, finishWithoutBody, true);
+    }
+
+    private static void runClaimedEntityBody(Entity entity, Runnable body,
+                                             boolean playerTick) {
+        if (playerTick && PlayerRemoteState.treeReachesOutsideIsland(entity)) {
+            AsyncIslandPlayerTicks.runFencedMainMutation(PlayerRemoteState.FENCE_OPERATION, body);
+        } else {
+            runSuccessBodyIfHealthy(body);
+        }
+    }
+
+    private static void runWithMainEntityClaim(Entity entity, Runnable body,
+                                               java.util.function.BooleanSupplier finishWithoutBody,
+                                               boolean playerTick) {
         if (entity == null || body == null) throw new NullPointerException();
         if (!(entity.level() instanceof ServerLevel level)) {
             Throwable failure = null;
@@ -1658,7 +1690,7 @@ public final class RegionScheduler {
                 }
                 Throwable failure = null;
                 try {
-                    runSuccessBodyIfHealthy(body);
+                    runClaimedEntityBody(entity, body, playerTick);
                 } catch (Throwable primary) {
                     failure = publishFatalAndSelectWinner(primary);
                 }
@@ -1688,7 +1720,7 @@ public final class RegionScheduler {
                     // still win the shared fatal slot while Main waits for the exact claim.
                     // Give the actual vanilla body its own atomic admission after the
                     // wait/revalidation; a plain health read here has a W-vs-entry race.
-                    runSuccessBodyIfHealthy(body);
+                    runClaimedEntityBody(entity, body, playerTick);
                     bodyCompleted = true;
                 }
             } catch (Throwable primary) {
@@ -1785,7 +1817,7 @@ public final class RegionScheduler {
                 || e.isRemoved() || !(e.level() instanceof ServerLevel)) {
             return;
         }
-        runWithMainEntityClaim(e, queued);
+        runPlayerTickWithMainClaim(e, queued, null);
     }
 
     /**
@@ -1962,6 +1994,22 @@ public final class RegionScheduler {
 
     private enum DrainMode { COMPLETE, READY, OVERDUE, OUT_OF_PHASE }
 
+    /**
+     * Decided on Main when the task is polled: a tree whose player still points into
+     * another island ({@link PlayerRemoteState}) is served as a fenced task, in queue
+     * order and by entity-phase drains only, like every other cross-owner body. A
+     * bucket would claim only the player's island. The decision is kept in the
+     * requeued record; {@link #runPlayerTickWithMainClaim} covers state that appears
+     * after the poll.
+     */
+    private static MainSyncTask fenceRemotePlayerState(MainSyncTask queued) {
+        if (queued.allIslandsFenced()
+                || !PlayerRemoteState.treeReachesOutsideIsland(queued.entity())) {
+            return queued;
+        }
+        return queued.withAllIslandsFenced();
+    }
+
     /** Main-confined nesting depth of MAIN_SYNC drains (a body may drain again). */
     private static int mainSyncDrainDepth;
 
@@ -1975,7 +2023,9 @@ public final class RegionScheduler {
         }
         if (!MAIN_CLAIM_BATCHING) {
             MainSyncTask queued;
-            while ((queued = MAIN_SYNC.poll()) != null) runOneMainSync(queued);
+            while ((queued = MAIN_SYNC.poll()) != null) {
+                runOneMainSync(fenceRemotePlayerState(queued));
+            }
             return true;
         }
         mainSyncDrainDepth++;
@@ -2002,6 +2052,7 @@ public final class RegionScheduler {
         boolean ran = false;
         MainSyncTask queued;
         while ((queued = MAIN_SYNC.poll()) != null) {
+            queued = fenceRemotePlayerState(queued);
             if (queued.allIslandsFenced()) {
                 if (mode == DrainMode.OUT_OF_PHASE) {
                     // Serve only the islands queued before it; the fenced body
