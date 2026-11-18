@@ -4035,7 +4035,6 @@ public final class AsyncIslandPlayerTicks {
         if (player.level() != level) return "level changed";
         if (player.isRemoved()) return "removed";
         if (player.isChangingDimension()) return "changing dimension";
-        if (RaidOwnership.expiresThisTurn(player)) return "raid omen expires";
         if (player.getVehicle() != null) return "riding";
         if (!player.getPassengers().isEmpty()) return "has passengers";
         if (player.getCamera() != player) return "spectating camera";
@@ -4085,7 +4084,6 @@ public final class AsyncIslandPlayerTicks {
                 || (portalProcess != null
                 && !(portalProcess.portal instanceof NetherPortalBlock))
                 || player.connection == null || player.connection.player != player
-                || RaidOwnership.expiresThisTurn(player)
                 || !PlayerTickKnownModEnvelope.idleForAsync(player, kind)) {
             return false;
         }
