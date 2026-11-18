@@ -148,6 +148,24 @@ final class TimerClocksGoalWiringTest {
                 TimerClocks.STROLL_TO_POI_LIST_MAX_LEAD));
     }
 
+    /** /data writes of live entities and spawners convert back at the read's clock readings. */
+    @Test
+    void liveReloadsGoBackToTheirClockAtOnce() throws IOException {
+        String entity = read("src/main/java/com/axalotl/fabrolia/common/mixin/timer/EntityTimerClockMixin.java");
+        int load = entity.indexOf("private void fabrolia$loadedTimersAreWall(");
+        assertTrue(load > 0);
+        String body = entity.substring(load, entity.indexOf("@WrapMethod", load));
+        assertTrue(body.contains("this.levelCallback != EntityInLevelCallback.NULL"),
+                "only an entity already in its level (chunk loads and dimension copies load before they are added)");
+        assertTrue(body.contains("TimerClocks.reloadedInPlace(this, previous, level)"));
+        String spawner = read("src/main/java/com/axalotl/fabrolia/common/mixin/timer/"
+                + "TrialSpawnerBlockEntityTimerClockMixin.java");
+        assertTrue(spawner.contains("@WrapMethod(method = \"loadAdditional\")"));
+        assertTrue(spawner.contains("TimerClocks.reloadedInPlace(spawner, previous, level)"));
+        assertTrue(spawner.indexOf("spawner.fabrolia$timerBasis()") < spawner.indexOf("original.call(input)"),
+                "the basis is read before the load resets it to W");
+    }
+
     @Test
     void mobThrottlesAreMovedFromShiftEntityOnBothSelectorsAndTheOwnNavigation() throws IOException {
         String clocks = read("src/main/java/com/axalotl/fabrolia/common/regions/TimerClocks.java");

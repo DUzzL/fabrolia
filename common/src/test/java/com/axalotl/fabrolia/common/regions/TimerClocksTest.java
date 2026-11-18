@@ -115,6 +115,34 @@ final class TimerClocksTest {
     }
 
     @Test
+    void aDataMergeEveryTickDoesNotHoldTheTimer() {
+        // /data merge reads (save) and writes (load) under the command's claim,
+        // at one reading of both clocks. Converting back at the next island tick
+        // used a later W reading: when the island ticked before Main (W not yet
+        // advanced) every merge added one tick (cooldown 1606 instead of ~1602
+        // after three merges); a datapack merging every tick froze the timer.
+        IslandRegistry.PIsland ahead = island(1, 50_400L);
+        long wall = 50_000L;
+        OneTimer reloaded = new OneTimer(ahead, 50_400L + 1600L, 0L);
+        OneTimer deferred = new OneTimer(ahead, 50_400L + 1600L, 0L);
+        for (int tick = 1; tick <= 20; tick++) {
+            // merge: read, write back, convert at the same readings (reloadedInPlace)
+            reloaded.stamp = save(reloaded, wall);
+            IslandRegistry.PIsland previous = reloaded.basis;
+            reloaded.basis = null;
+            TimerClocks.moveTo(reloaded, previous, wall);
+            deferred.stamp = save(deferred, wall);
+            deferred.basis = null;
+            // the island ticks before Main: L + 1, W unchanged
+            ahead.logicalTick++;
+            TimerClocks.moveTo(reloaded, ahead, wall); // ensureCurrent: same basis, no move
+            TimerClocks.moveTo(deferred, ahead, wall);
+        }
+        assertEquals(1600L - 20L, reloaded.stamp - ahead.logicalTick, "counts down as in vanilla");
+        assertEquals(1600L, deferred.stamp - ahead.logicalTick, "the old deferred conversion held it");
+    }
+
+    @Test
     void aBehindIslandStillSavesInWallTime() {
         IslandRegistry.PIsland behind = island(1, 9_790L);
         long wall = 10_000L;

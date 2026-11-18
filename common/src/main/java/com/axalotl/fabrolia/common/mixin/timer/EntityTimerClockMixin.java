@@ -7,9 +7,11 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.entity.EntityInLevelCallback;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -23,6 +25,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(Entity.class)
 public abstract class EntityTimerClockMixin implements TimerClocks.Stamped {
+
+    @Shadow
+    private EntityInLevelCallback levelCallback;
 
     @Unique
     private IslandRegistry.PIsland fabrolia$timerBasis = TimerClocks.currentBasis();
@@ -50,10 +55,19 @@ public abstract class EntityTimerClockMixin implements TimerClocks.Stamped {
         }
     }
 
-    /** Loaded values are in W, the clock saves use. */
+    /** Loaded values are in W, the clock saves use. An entity already in its
+     *  level (a {@code /data} write of a live entity; chunk loads and dimension
+     *  copies load before they are added) goes straight back to its clock
+     *  ({@link TimerClocks#reloadedInPlace}). */
     @Inject(method = "load", at = @At("TAIL"))
     private void fabrolia$loadedTimersAreWall(ValueInput input, CallbackInfo ci) {
+        IslandRegistry.PIsland previous = this.fabrolia$timerBasis;
         this.fabrolia$timerBasis = null;
+        Entity self = (Entity) (Object) this;
+        if (previous != null && this.levelCallback != EntityInLevelCallback.NULL
+                && !(self instanceof Player) && self.level() instanceof ServerLevel level) {
+            TimerClocks.reloadedInPlace(this, previous, level);
+        }
     }
 
     /** Write the timers in W, then restore them: the owner (or a claim holder)

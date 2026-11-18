@@ -238,6 +238,20 @@ public final class TimerClocks {
         return basis == null ? 0L : wall - now(basis, wall);
     }
 
+    /**
+     * A live entity or block entity loaded again in place ({@code /data merge},
+     * {@code modify}, {@code remove}: a read and a write in one command, under
+     * the command's claim, so at one reading of both clocks). The load left its
+     * timers in W; move them back to {@code previous} with the same readings the
+     * read used, so that writing back what was read is the identity. Leaving
+     * them in W until the next tick would convert them with a later W reading:
+     * up to one tick per merge whenever the island ticks before Main does (a
+     * datapack merging every tick would freeze the timer).
+     */
+    public static void reloadedInPlace(Stamped s, IslandRegistry.PIsland previous, ServerLevel level) {
+        if (previous != null) moveTo(s, previous, IslandClock.wallTime(level));
+    }
+
     // ------------------------------------------------------------ rules
 
     /** A timer moved by {@code d}: sentinels ({@code v <= floor}) stay; with
