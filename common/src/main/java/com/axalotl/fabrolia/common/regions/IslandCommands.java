@@ -343,7 +343,7 @@ public final class IslandCommands {
         // Routed: one shard, exactly once, on the serialized main batch.
         Invocation inv = new Invocation("command_block", sourcePos, owner.id,
                 owner.logicalTick, command);
-        return routeAndPark(rs, owner, inv, original, isGlobalNoFence(command), "routed command");
+        return routeAndPark(rs, owner, inv, original, "routed command");
     }
 
     /**
@@ -356,15 +356,14 @@ public final class IslandCommands {
     static boolean routeFencedIslandBody(RegionizedServer rs, IslandRegistry.PIsland owner,
                                          String label, BooleanSupplier body) {
         Invocation inv = new Invocation("function", null, owner.id, owner.logicalTick, label);
-        return routeAndPark(rs, owner, inv, body, false, "routed function line");
+        return routeAndPark(rs, owner, inv, body, "routed function line");
     }
 
     private static boolean routeAndPark(RegionizedServer rs, IslandRegistry.PIsland owner,
-                                        Invocation inv, BooleanSupplier body, boolean fenceless,
-                                        String lane) {
+                                        Invocation inv, BooleanSupplier body, String lane) {
         RoutedResult fut = new RoutedResult();
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            ROUTED.add(new RoutedCmd(inv, body, fut, fenceless, null));
+            ROUTED.add(new RoutedCmd(inv, body, fut, null));
             // Self-nudge: main drains its task queue while idling between slots,
             // so the batch runs within ~ms instead of at the next drive head.
             var sv = RegionScheduler.getServer();
@@ -580,22 +579,21 @@ public final class IslandCommands {
         }
     }
 
+    /**
+     * One accepted routed body. Every routed body executes under the
+     * all-island fence; there is no fenceless lane. Even a selector-free
+     * {@code scoreboard} command mutates shared, non-thread-safe vanilla state
+     * (the {@code objectivesByCriteria} lists, {@code objectivesByName}, each
+     * holder's {@code PlayerScores} map, display slots) that running islands
+     * iterate concurrently, e.g. the A5 stat award's
+     * {@code Scoreboard.forAllObjectives} on every player tick.
+     */
     private record RoutedCmd(Invocation inv, BooleanSupplier body, RoutedResult fut,
-                             boolean fenceless, Runnable trackedBody) {
+                             Runnable trackedBody) {
     }
 
     private static final java.util.concurrent.ConcurrentLinkedQueue<RoutedCmd> ROUTED =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
-
-    static boolean isGlobalNoFence(String cmd) {
-        if (cmd.indexOf('@') >= 0) {
-            return false;
-        }
-        String t = cmd.startsWith("/") ? cmd.substring(1) : cmd;
-        int sp = t.indexOf(' ');
-        String root = sp < 0 ? t.trim() : t.substring(0, sp);
-        return "scoreboard".equals(root);
-    }
 
     public static boolean hasRoutedPending() {
         return !ROUTED.isEmpty();
@@ -672,7 +670,7 @@ public final class IslandCommands {
                 ROUTED.add(new RoutedCmd(inv, () -> {
                     tracked.run();
                     return true;
-                }, receipt, false, tracked));
+                }, receipt, tracked));
                 var server = RegionScheduler.getServer();
                 if (server != null) {
                     server.schedule(new net.minecraft.server.TickTask(server.getTickCount(), () -> {
@@ -693,27 +691,14 @@ public final class IslandCommands {
         RoutedCmd detached = null;
         Throwable batchFailure = null;
         try {
-            inBatch = true;
-            try {
-                while ((detached = ROUTED.poll()) != null) {
-                    if (detached.fenceless) {
-                        RoutedCmd owned = detached;
-                        RegionScheduler.commitSuccessIfHealthy(
-                                () -> done.add(owned));
-                        detached = null;
-                        RegionScheduler.runSuccessBodyIfHealthy(
-                                () -> execute(owned));
-                    } else {
-                        // Publish ledger ownership before entering any body. If
-                        // allocation fails, detached still names the exact receipt.
-                        RoutedCmd owned = detached;
-                        RegionScheduler.commitSuccessIfHealthy(
-                                () -> fenced.add(owned));
-                        detached = null;
-                    }
-                }
-            } finally {
-                inBatch = false;
+            while ((detached = ROUTED.poll()) != null) {
+                // Publish ledger ownership before entering any body. If
+                // allocation fails, detached still names the exact receipt.
+                // No body runs before the fence below is held.
+                RoutedCmd owned = detached;
+                RegionScheduler.commitSuccessIfHealthy(
+                        () -> fenced.add(owned));
+                detached = null;
             }
             if (!fenced.isEmpty()) {
                 long q0 = System.nanoTime();

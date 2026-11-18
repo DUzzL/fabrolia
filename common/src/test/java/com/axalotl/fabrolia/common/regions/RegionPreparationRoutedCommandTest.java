@@ -502,6 +502,78 @@ class RegionPreparationRoutedCommandTest {
         }
     }
 
+    /**
+     * R1 (night campaign 2026-11-18): a selector-free {@code scoreboard}
+     * command block took a fenceless routed lane and mutated the objective
+     * lists on Main while island workers iterated them for A5 stat awards
+     * (ConcurrentModificationException in Scoreboard.forAllObjectives). Every
+     * routed scoreboard body must execute under the all-island fence.
+     */
+    @Test
+    void selectorFreeScoreboardCommandBlocksExecuteUnderTheAllIslandFence() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.pool.start();
+            for (String command : List.of(
+                    "scoreboard objectives add tmp0 minecraft.custom:minecraft.play_time",
+                    "scoreboard objectives remove tmp0",
+                    "/scoreboard players reset * pt_7",
+                    "scoreboard players add #arn t 1")) {
+                AtomicBoolean entered = new AtomicBoolean();
+                boolean result = routeFromIslandUnit(f, command, () -> {
+                    assertSame(f.main, Thread.currentThread(),
+                            "a routed scoreboard body executes on physical Main");
+                    assertTrue(IslandCommands.fenceWindowHeld(),
+                            () -> "routed '" + command + "' ran outside the all-island fence");
+                    assertTrue(f.runtime.currentThreadHoldsAllClaims(),
+                            () -> "routed '" + command + "' ran without every island claim");
+                    entered.set(true);
+                    return true;
+                });
+                assertTrue(result);
+                assertTrue(entered.get(), () -> "routed '" + command + "' never executed");
+            }
+        }
+    }
+
+    /** Routes {@code command} from an island unit on the pool's worker while
+     *  this (Main) thread pumps the scheduled routed drains. */
+    private static boolean routeFromIslandUnit(Fixture f, String command,
+                                               java.util.function.BooleanSupplier body) throws Exception {
+        CountDownLatch done = new CountDownLatch(1);
+        AtomicReference<Boolean> result = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        assertTrue(f.pool.enqueueUnit(() -> {
+            RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
+            boolean claimed = false;
+            try {
+                assertTrue(f.island.tryClaimAutonomousWork());
+                claimed = true;
+                f.island.noteClaim("routed-command-regression");
+                worker.currentDomain = f.island.domain;
+                result.set(IslandCommands.routeCommandBlock(command, f.level,
+                        BlockPos.ZERO, null, body));
+            } catch (Throwable problem) {
+                failure.set(problem);
+            } finally {
+                worker.currentDomain = null;
+                if (claimed) {
+                    f.island.clearClaim();
+                    f.island.unitClaim.set(false);
+                }
+                done.countDown();
+            }
+        }));
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!done.await(1, TimeUnit.MILLISECONDS)) {
+            for (TickTask task; (task = f.tasks.poll()) != null;) task.run();
+            assertTrue(System.nanoTime() < deadline, () -> "routed '" + command + "' did not complete");
+        }
+        if (failure.get() != null) {
+            throw new AssertionError("routed '" + command + "' failed", failure.get());
+        }
+        return result.get();
+    }
+
     @Test
     void selectorCommandsKeepTheVanillaCommandBlockEnvelope() throws Exception {
         try (Fixture f = new Fixture(CommandLevel.class)) {
