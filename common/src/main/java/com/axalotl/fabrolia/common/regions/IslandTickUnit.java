@@ -913,11 +913,13 @@ public final class IslandTickUnit {
                 terminalOutcome = AttemptOutcome.RETIRED;
                 return;
             }
-            // Async OFF races the pre-claim check: Main writes asyncActive=false
-            // and then reads unitClaim (its OFF catch-up fences iff a claim is
-            // visible); this unit wrote unitClaim and now reads asyncActive.
-            // Both volatile: at least one side sees the other, so a unit never
-            // runs beside Main's unfenced catch-up over the same entities.
+            // Async OFF races the pre-claim check: Main takes every island
+            // claim of the level and only then writes asyncActive=false
+            // (RegionizedServer.switchToWallUnderQuiesce). A unit that holds its
+            // claim before that runs its whole body under the ON latch and Main
+            // waits for its complete(); a unit claiming after Main's release
+            // reads false here (the claim CAS orders it after the write) and
+            // retires without a body.
             if (globalSprintRequest == null && !rs.asyncActive) {
                 terminalOutcome = AttemptOutcome.RETIRED;
                 return;

@@ -368,8 +368,10 @@ public final class IslandFunctionHead {
     }
 
     /**
-     * Async OFF flip of {@code level} (islands quiescent): entities that ticked
-     * on retired islands after their last island head owe this tick's pass,
+     * Async OFF flip of {@code level} (islands quiescent: the flip ran under
+     * every island claim of the level, {@code RegionizedServer
+     * .switchToWallUnderQuiesce}, and no later unit of this level enters a body):
+     * entities that ticked on retired islands after their last island head owe this tick's pass,
      * which Main skipped for them at the tick tag. Loops are included only when
      * this tick's TimerQueue already ran (otherwise its Main remainder covers
      * the now non-async level).
@@ -389,7 +391,7 @@ public final class IslandFunctionHead {
         // Claim first: an entity claimed here cannot be passed by an island
         // head until its next tick. Members that live in an async level (lazy
         // index moves can put an island-ticked entity into a global region;
-        // the OFF catch-up runs while retiring units may still finish) run
+        // the OFF catch-up runs before the rebuild retires the old topology) run
         // under the global fence, so no body overlaps an island tick.
         FunctionPartition.Pass pass = partition.open(passId, acceptSame);
         if (pass.isEmpty()) return;

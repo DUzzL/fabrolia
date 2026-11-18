@@ -297,21 +297,31 @@ public final class RegionizedServer {
             // tick; 48s later a rate change doubled its frequency and main
             // wedged inside a concurrently-corrupted global structure. The live
             // OFF collapse is the SAME code path `/fabrolia regions async`
-            // exercises (quiesce → domain collapse → carry-state unstash),
-            // hardened since (claimWanted fences, migration drains) and proven
-            // by the a8toggle battery — so containment now actually contains:
-            // collapse to SYNC at this tick head; the trip is session-only.
+            // exercises (head quiesce → latch flip and tag collapse → rebuild
+            // quiesce → domain collapse → carry-state unstash), hardened since
+            // (claimWanted fences, migration drains) and proven by the a8toggle
+            // battery — so containment now actually contains: collapse to SYNC
+            // at this tick head; the trip is session-only.
             LOGGER.error("[async-islands] FAIL-CLOSED containment: collapsing to SYNC now "
                     + "(this tick head) for {} — async stays refused for the rest of this session "
                     + "(a restart clears it).",
                     level.dimension().identifier());
         }
         if (wantAsync != asyncActive) {
-            asyncActive = wantAsync;
-            RegionScheduler.updateAsyncLive();
-            islandsDirty = true;   // force a rebuild → domain (re)assignment pass
-            if (!wantAsync) {
-                // ASYNC→SYNC (task #13): collapse every loaded container's
+            if (wantAsync) {
+                // SYNC→ASYNC: no island unit of this level is in a body (every
+                // claimer since the OFF switch read OFF and retired), and the
+                // rebuild below quiesces before it islandizes any region.
+                asyncActive = true;
+                RegionScheduler.updateAsyncLive();
+                islandsDirty = true;   // force a rebuild → domain (re)assignment pass
+            } else {
+                // ASYNC→SYNC: the latch flip and the tag collapse happen only
+                // while Main holds every island claim of this level. A unit
+                // admitted before the switch finishes its whole body under the
+                // ON latch (A5 publication, tracker routing and its L tail all
+                // read it); a unit claiming afterwards reads OFF and retires.
+                // Task #13: collapse every loaded container's
                 // island tag NOW, while the registry still holds the live
                 // islands (the rebuild below retires them) — the same
                 // delay-preserving translation the shutdown path runs. The
@@ -321,7 +331,7 @@ public final class RegionizedServer {
                 // sync session, where the wall lane never heals them and
                 // schedule-time deltas rot against the frozen island clock
                 // (the 6gt QC trencher stall zone starting at a static seam).
-                TickDomains.collapseAllToWall(java.util.List.of(this));
+                switchToWallUnderQuiesce();
                 // Entities that ticked on the retiring islands after their last
                 // function head owe this tick's datapack pass, which Main's tick
                 // tag skipped as island work (FunctionPassMark keeps it single).
@@ -341,10 +351,64 @@ public final class RegionizedServer {
         }
         // Shadow clocks only advance in sync mode — in async mode the tick units
         // advance PIsland.logicalTick/lag for real (IslandTickUnit.complete).
+        // On the ASYNC→SYNC switch tick this write is safe only because the
+        // switch above outlived every unit admitted before it; a later
+        // claimer reads asyncActive=false and retires without a body.
         if (!asyncActive) {
             islandRegistry.advanceShadow(this, level.getGameTime());
         }
         globalDomain.epoch++;
+    }
+
+    /**
+     * ASYNC→SYNC switch of the level head (live {@code /fabrolia regions async
+     * off} and FAIL-CLOSED containment). An island unit admitted before the
+     * switch may still be running: its body reads this level's latch (A5
+     * late publication, tracker routing, its own admission), its
+     * {@code complete()} is the only legal writer of L, and it still consumes
+     * and schedules into its island-tagged containers. Main therefore first
+     * takes every island claim of the level with the same all-island quiesce
+     * the topology rebuild and the shutdown boundary use, and only then, as
+     * one admitted body, flips {@code asyncActive} to false and translates the
+     * container tags against each island's final L. A unit that claims after
+     * the release reads OFF at its admission and retires without a body, so
+     * the function catch-up, the shadow-clock advance and the topology rebuild
+     * that follow at this head observe a quiescent level.
+     */
+    private void switchToWallUnderQuiesce() {
+        boolean quiesced = quiesceAllIslands();
+        Throwable failure = null;
+        try {
+            RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                if (!currentThreadHoldsAllClaims()) {
+                    throw new IllegalStateException(
+                            "async OFF switch without every island claim of "
+                                    + level.dimension().identifier());
+                }
+                asyncActive = false;
+                RegionScheduler.updateAsyncLive();
+                islandsDirty = true;   // force a rebuild → domain collapse pass
+                TickDomains.collapseAllToWall(java.util.List.of(this));
+            });
+        } catch (Throwable primary) {
+            failure = RegionScheduler.publishFatalAndSelectWinner(primary);
+        }
+        if (quiesced) {
+            failure = releaseAllIslands(failure);
+        }
+        if (failure == null) {
+            try {
+                // Claim release is cleanup, not a success edge: a peer winner
+                // published meanwhile must stop this tick head here.
+                RegionScheduler.commitSuccessIfHealthy(() -> {});
+            } catch (Throwable completionFailure) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(completionFailure);
+            }
+        }
+        if (failure != null) {
+            FailStops.<RuntimeException>rethrow(
+                    RegionScheduler.publishFatalAndSelectWinner(failure));
+        }
     }
 
 
