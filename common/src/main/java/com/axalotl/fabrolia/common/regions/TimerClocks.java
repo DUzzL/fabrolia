@@ -104,13 +104,12 @@ import net.minecraft.world.level.block.entity.trialspawner.TrialSpawner;
  * recompute and stuck timeout, patrol cooldown, bee validation and unreachable
  * flowers, farmer/sleep/gift/breeding/bone meal/long jump/ram/idle behaviours,
  * kinetic weapon hits). Throttles held in vanilla lambdas are out of reach:
- * AcquirePoi, SetClosestHomeAsWalkTarget and the raider banner cache treat a
- * stamp further ahead than any legal one as due, and one moved into the past
+ * AcquirePoi, SetClosestHomeAsWalkTarget, StrollToPoi, StrollToPoiList,
+ * StrollAroundPoi and the raider banner cache treat a stamp further ahead than
+ * any legal one as due ({@link #healFutureStart}), and one moved into the past
  * only makes the next check come early once; TryFindLand, TryFindLandNearLiquid
  * and TryFindLiquid rewrite their stamp on the first blocked call (at most one
- * cooldown late); StrollToPoi, StrollToPoiList and StrollAroundPoi keep a stamp
- * from a clock that was ahead until the new clock reaches it (a villager's
- * meeting-point and job-site strolls pause by the gap once). Potent sulfur's
+ * cooldown late). Potent sulfur's
  * eruption time is read only on clients. Vault, brushable blocks, Lithium
  * hopper sleep, vibrations, warden warnings and torch history keep their own
  * fixes and are not touched here; players are not stamped.
@@ -159,6 +158,11 @@ public final class TimerClocks {
     public static final long HOME_SEARCH_CACHE_MAX_LEAD = 60L;
     /** Raider banner pickup: unreachable until {@code now + 600}. */
     public static final long BANNER_RETRY_MAX_LEAD = 600L;
+    /** Villager strolls: next start {@code now + 80} (StrollToPoi),
+     *  {@code now + 100} (StrollToPoiList), {@code now + 180} (StrollAroundPoi). */
+    public static final long STROLL_TO_POI_MAX_LEAD = 80L;
+    public static final long STROLL_TO_POI_LIST_MAX_LEAD = 100L;
+    public static final long STROLL_AROUND_POI_MAX_LEAD = 180L;
 
     /** Retired-island bases resolved (diagnostic; see the class deviations). */
     public static final LongAdder RETIRED_BASIS_READS = new LongAdder();
@@ -254,6 +258,20 @@ public final class TimerClocks {
     /** A start stamp further ahead than any legal one is cross-clock residue. */
     public static boolean isFutureResidue(long stamp, long now, long maxLead) {
         return stamp - now > maxLead;
+    }
+
+    /**
+     * A lambda-held "next start" throttle ({@code start}, read as {@code stamp})
+     * that is residue of a clock that was ahead becomes due: one tick before
+     * {@code now}, so both {@code now > next} and {@code now <= next} checks
+     * start the behaviour. Returns the value the vanilla read sees.
+     */
+    public static long healFutureStart(org.apache.commons.lang3.mutable.MutableLong start, long stamp,
+                                       long now, long maxLead) {
+        if (!isFutureResidue(stamp, now, maxLead)) return stamp;
+        long due = now - 1L;
+        start.setValue(due);
+        return due;
     }
 
     // ------------------------------------------------------------ stores

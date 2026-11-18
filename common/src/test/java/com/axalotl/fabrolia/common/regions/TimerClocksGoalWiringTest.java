@@ -99,6 +99,55 @@ final class TimerClocksGoalWiringTest {
         }
     }
 
+    /** The stroll heals wrap the single {@code MutableLong.longValue()} read in
+     *  {@code lambda$create$2}, whose only long argument is the brain timestamp. */
+    @Test
+    void strollHealTargetsTheTimestampLambdaOfEachBehaviour() throws IOException {
+        for (String name : List.of("StrollToPoi", "StrollToPoiList", "StrollAroundPoi")) {
+            org.objectweb.asm.tree.ClassNode node = new org.objectweb.asm.tree.ClassNode();
+            try (var in = getClass().getResourceAsStream("/net/minecraft/world/entity/ai/behavior/" + name + ".class")) {
+                assertNotNull(in, name);
+                new org.objectweb.asm.ClassReader(in).accept(node, 0);
+            }
+            org.objectweb.asm.tree.MethodNode lambda = node.methods.stream()
+                    .filter(m -> m.name.equals("lambda$create$2")).findFirst().orElseThrow();
+            org.objectweb.asm.Type[] args = org.objectweb.asm.Type.getArgumentTypes(lambda.desc);
+            assertEquals(1, java.util.Arrays.stream(args).filter(t -> t == org.objectweb.asm.Type.LONG_TYPE).count(),
+                    name + " has one long argument (the timestamp)");
+            assertEquals(org.objectweb.asm.Type.LONG_TYPE, args[args.length - 1], name);
+            long reads = java.util.stream.StreamSupport.stream(lambda.instructions.spliterator(), false)
+                    .filter(i -> i instanceof org.objectweb.asm.tree.MethodInsnNode m
+                            && m.owner.equals("org/apache/commons/lang3/mutable/MutableLong")
+                            && m.name.equals("longValue"))
+                    .count();
+            assertEquals(1L, reads, name + " reads its throttle once");
+            String mixin = read("src/main/java/com/axalotl/fabrolia/common/mixin/timer/" + name + "TimerClockMixin.java");
+            assertTrue(mixin.contains("method = \"lambda$create$2\"") && mixin.contains("require = 1, allow = 1"), name);
+            assertTrue(read("src/main/resources/fabrolia.common.mixins.json")
+                    .contains("\"timer." + name + "TimerClockMixin\""), name);
+        }
+    }
+
+    @Test
+    void aStrollStampFromAClockThatWasAheadIsDueNow() {
+        long now = 10_000L;
+        org.apache.commons.lang3.mutable.MutableLong next = new org.apache.commons.lang3.mutable.MutableLong(now + 80L);
+        assertEquals(now + 80L, TimerClocks.healFutureStart(next, next.longValue(), now,
+                TimerClocks.STROLL_TO_POI_MAX_LEAD), "a legal lead stays");
+        next.setValue(now + 470L);
+        long read = TimerClocks.healFutureStart(next, next.longValue(), now, TimerClocks.STROLL_TO_POI_MAX_LEAD);
+        assertEquals(now - 1L, read);
+        assertEquals(now - 1L, next.longValue());
+        assertFalse(now <= read, "StrollToPoi / StrollAroundPoi: not on cooldown");
+        assertTrue(now > read, "StrollToPoiList: due");
+        next.setValue(now + 181L);
+        assertEquals(now - 1L, TimerClocks.healFutureStart(next, next.longValue(), now,
+                TimerClocks.STROLL_AROUND_POI_MAX_LEAD));
+        next.setValue(now + 100L);
+        assertEquals(now + 100L, TimerClocks.healFutureStart(next, next.longValue(), now,
+                TimerClocks.STROLL_TO_POI_LIST_MAX_LEAD));
+    }
+
     @Test
     void mobThrottlesAreMovedFromShiftEntityOnBothSelectorsAndTheOwnNavigation() throws IOException {
         String clocks = read("src/main/java/com/axalotl/fabrolia/common/regions/TimerClocks.java");

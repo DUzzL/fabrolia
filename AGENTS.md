@@ -465,9 +465,9 @@ All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   ticks, and an entity tick moves them to the clock the thread reads. Goal, navigation and
   behaviour throttles in fields (melee check, path recompute, patrol, bee validation,
   farmer/sleep/breeding behaviours) move the same way (`TimerClocksGoalWiringTest`).
-  Throttles in vanilla lambdas are out of reach: AcquirePoi, SetClosestHomeAsWalkTarget and
-  the raider banner cache heal future residue; StrollToPoi, StrollToPoiList and
-  StrollAroundPoi pause once by the gap (named in `TimerClocks`). A retired island in a basis reads as its
+  Throttles in vanilla lambdas are out of reach: AcquirePoi, SetClosestHomeAsWalkTarget, the
+  villager strolls (StrollToPoi, StrollToPoiList, StrollAroundPoi) and the raider banner cache
+  heal future residue instead. A retired island in a basis reads as its
   final L plus the wall time since it retired. Chunk tickets of an island that is behind count
   down once per island tick (`TicketStorageMixin`); only an island that has not advanced for
   6000 wall ticks falls back to wall cadence. There is no extra lease for portal-active
