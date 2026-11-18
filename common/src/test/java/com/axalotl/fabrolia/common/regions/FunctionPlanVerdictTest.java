@@ -266,4 +266,55 @@ class FunctionPlanVerdictTest {
         assertNotNull(loop);
         assertEquals(Map.of(1, PARTITION, 2, REARM), FunctionPlanFixture.kinds(loop));
     }
+
+    /**
+     * W1: a TimerQueue write in a per-tick root line keeps the whole root
+     * Main-resident. Partitioned, the line ran once per island tick while
+     * schedule keys on the world tick and dedupes (id, time): under Main tick
+     * jitter `schedule ... append` lost 10-29 % of its executions.
+     */
+    @Test
+    void scheduleInAPerTickRootLineKeepsTheRootMainResident() {
+        FunctionPlanFixture f = new FunctionPlanFixture()
+                .function("pack:append",
+                        "execute as @e[tag=site] run schedule function pack:later 2t append",
+                        "execute as @e[tag=m] run scoreboard players add @s w 1")
+                .function("pack:replace", "execute as @a run schedule function pack:later 2t")
+                .function("pack:clear", "execute as @a run schedule clear pack:later")
+                .function("pack:via_callee", "execute as @e[tag=m] run function pack:schedules")
+                .function("pack:schedules", "tag @s add s", "schedule function pack:later 1t append")
+                .function("pack:control", "execute as @e[tag=m] run scoreboard players add #fake w 1")
+                .function("pack:later", "scoreboard players add #later w 1")
+                .function("pack:loop",
+                        "execute as @a run schedule function pack:later 3t",
+                        "schedule function pack:loop 1t")
+                .tag("minecraft:tick", "pack:append", "pack:replace", "pack:clear", "pack:via_callee",
+                        "pack:control");
+        FunctionPlan plan = f.plan();
+        String described = String.join("\n", plan.describe());
+
+        FunctionPlan.RootPlan append = plan.tickRoots.get(0);
+        assertFalse(append.partitioned(), described);
+        assertEquals(Map.of(1, GLOBAL, 2, PARTITION), FunctionPlanFixture.kinds(append));
+        assertTrue(append.blocking().startsWith("pack:append:1: "), append.blocking());
+        assertTrue(append.lines().getFirst().reason().contains("schedule"), append.lines().getFirst().reason());
+        assertNull(plan.partitionedTickRoot(f.fn("pack:append")));
+        for (int i = 1; i <= 3; i++) {
+            FunctionPlan.RootPlan root = plan.tickRoots.get(i);
+            assertFalse(root.partitioned(), root.id() + "\n" + described);
+            assertEquals(GLOBAL, root.lines().getFirst().kind(), root.id().toString());
+        }
+        assertTrue(plan.tickRoots.get(3).lines().getFirst().reason().contains("pack:schedules:2"),
+                "the callee's schedule line blocks the caller's root line");
+
+        FunctionPlan.RootPlan control = plan.tickRoots.get(4);
+        assertTrue(control.partitioned(), described);
+        assertEquals(ESCALATE, control.lines().getFirst().kind(), "a fake-player write still escalates");
+
+        FunctionPlan.RootPlan loop = plan.loops.get(net.minecraft.resources.Identifier.parse("pack:loop"));
+        assertNotNull(loop, described);
+        assertFalse(loop.partitioned(), described);
+        assertEquals(Map.of(1, GLOBAL, 2, REARM), FunctionPlanFixture.kinds(loop),
+                "the loop's own re-arm stays REARM");
+    }
 }

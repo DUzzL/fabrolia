@@ -21,6 +21,15 @@ final class FunctionEffects {
     record FakeScore(String holder, String objective) {}
 
     String globalReason;
+    /**
+     * Non-null when the closure writes the server TimerQueue ({@code schedule}).
+     * Vanilla keys that queue on the world tick and dedupes {@code (id, time)},
+     * which assumes the writing line runs once per world tick. An island head
+     * runs its root once per ISLAND tick and Main drains those escalations in
+     * bursts, so a per-tick root holding such a line cannot be partitioned
+     * (FunctionPlanner.classifyRootLine keeps it Main-resident).
+     */
+    String timerReason;
     final Set<String> reads = new LinkedHashSet<>();
     final Set<String> writes = new LinkedHashSet<>();
     final Set<FakeScore> fakeReads = new LinkedHashSet<>();
@@ -33,6 +42,12 @@ final class FunctionEffects {
 
     void global(String where, String why) {
         if (globalReason == null) globalReason = where + ": " + why;
+    }
+
+    /** A TimerQueue write: global (Main-only state) and root-blocking. */
+    void timerQueue(String where, String why) {
+        global(where, why);
+        if (timerReason == null) timerReason = where + ": " + why;
     }
 
     void read(String key) {
@@ -50,6 +65,7 @@ final class FunctionEffects {
 
     void addAll(FunctionEffects other) {
         if (other.globalReason != null && globalReason == null) globalReason = other.globalReason;
+        if (other.timerReason != null && timerReason == null) timerReason = other.timerReason;
         reads.addAll(other.reads);
         writes.addAll(other.writes);
         fakeReads.addAll(other.fakeReads);

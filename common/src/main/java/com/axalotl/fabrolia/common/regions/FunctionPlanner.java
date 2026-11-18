@@ -351,10 +351,24 @@ public final class FunctionPlanner {
                 return;
             }
         }
-        dl.fanOutStage = fan;
-        dl.fanOut = selector;
         Ctx body = new Ctx(self, false);
         stages(stages, fan + 1, body, fx, where, true);
+        if (fx.timerReason != null) {
+            // A partitioned line runs once per ISLAND tick (island head, escalated
+            // to Main), but schedule computes its trigger time from the world tick
+            // W and the TimerQueue dedupes (id, time): island ticks Main drains
+            // within one W tick collapse into one event (append lost executions
+            // under Main jitter), a W tick without an island tick queues nothing
+            // (a replace that vanilla keeps postponing fires), and several islands
+            // add one event each. Deliberate: the whole root stays Main-resident,
+            // so it runs once per W tick like the queue it writes (its other lines
+            // keep W cadence too, and the root takes the tick-head fence).
+            dl.kind = FunctionPlan.LineKind.GLOBAL;
+            dl.reason = fx.timerReason + " (the world-tick TimerQueue needs one execution per world tick)";
+            return;
+        }
+        dl.fanOutStage = fan;
+        dl.fanOut = selector;
         dl.fx = fx;
         if (fx.isGlobal()) {
             dl.kind = FunctionPlan.LineKind.ESCALATE;
@@ -582,6 +596,7 @@ public final class FunctionPlanner {
                 // rejected by classifyRootLine (it would end the whole root).
             }
             case "scoreboard" -> scoreboard(s, lits, ctx, fx, where);
+            case "schedule" -> fx.timerQueue(where, "command schedule writes the world-tick TimerQueue");
             case "tag" -> {
                 if (s.hasLiteral("add") || s.hasLiteral("remove")) {
                     fx.write("tag:" + textOf(s.arg("name")));

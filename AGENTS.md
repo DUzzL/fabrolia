@@ -144,7 +144,7 @@ Core concepts and the classes that own them:
 - **Clocks**:
   - **W** = world/day time: global and real-time anchored. Read with `IslandClock.wallTime` (`RawGameTime`).
   - **L** = island logical tick: `PIsland.logicalTick` / `EpochDomain.unitGameTime`. `PrimaryLevelDataMixin` serves it from `getGameTime()` via `IslandClock.contextTime()`.
-  - A routed island body (command block, escalated function line) runs on Main and keeps W for its world effects; only vanilla's once-per-tick command-block guard and `time query gametime` read the routing island's L, bound by `IslandClock.callWithRoutedOwnerTime` (`BaseCommandBlockMixin`, `TimeCommandMixin`). `schedule` stays on the W-ticked TimerQueue.
+  - A routed island body (command block, escalated function line) runs on Main and keeps W for its world effects; only vanilla's once-per-tick command-block guard and `time query gametime` read the routing island's L, bound by `IslandClock.callWithRoutedOwnerTime` (`BaseCommandBlockMixin`, `TimeCommandMixin`). `schedule` stays on the W-ticked TimerQueue; a per-tick root line that writes it keeps its root Main-resident (`FunctionPlanner`), so the line runs once per W tick as the queue's `(id, time)` dedupe assumes.
   - **G** = `server.getTickCount()`, for infrastructure only.
   - Rates and the pacer live in `C/regions/TemporalControl.java` (`Pacer`, `ensurePaced`). Rates never touch clocks.
   - **Naming trap:** in fail-stop comments, "W" means the winning fatal Throwable, not the world clock.
@@ -416,6 +416,12 @@ All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   `/fabrolia regions debug fallbacks` reports both sides (Main waits per caller, island
   stops per lane).
 - Islands do not catch up ticks lost to a pause (Main does).
+- `schedule` inside a routed island body (command block, enchantment `run_function`, a
+  function they call) computes its trigger time in W, and the TimerQueue dedupes `(id, time)`.
+  When Main drains two island ticks of the same body within one W tick (Main tick jitter,
+  island rate or sprint), `append` keeps one event and a `replace` that vanilla keeps
+  postponing can fire. Exact parity needs a timer queue in island time; per-tick datapack
+  roots avoid it by staying Main-resident.
 - No world or player save after a Fabrolia fatal: `ParallelProcessor.stopServerRuntime()`
   rethrows the failed generation's winner from SERVER_STOPPING, which aborts vanilla's
   `stopServer` before it saves players and worlds. Vanilla saves after a tick crash. This
