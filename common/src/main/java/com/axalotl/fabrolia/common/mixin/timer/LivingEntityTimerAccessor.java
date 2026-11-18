@@ -16,4 +16,15 @@ public interface LivingEntityTimerAccessor {
 
     @Accessor("lastDamageSource")
     DamageSource fabrolia$lastDamageSource();
+
+    /** Kinetic weapon hit feedback throttle; negative = never. */
+    @Accessor("lastKineticHitFeedbackTime")
+    long fabrolia$lastKineticHitFeedbackTime();
+
+    @Accessor("lastKineticHitFeedbackTime")
+    void fabrolia$setLastKineticHitFeedbackTime(long value);
+
+    /** Kinetic weapon: when each target was last stabbed (null when no weapon is in use). */
+    @Accessor("recentKineticEnemies")
+    it.unimi.dsi.fastutil.objects.Object2LongMap<net.minecraft.world.entity.Entity> fabrolia$recentKineticEnemies();
 }

@@ -1,28 +1,50 @@
 package com.axalotl.fabrolia.common.regions;
 
+import com.axalotl.fabrolia.common.mixin.timer.AnimalMakeLoveTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.BeePollinateGoalTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.BeeValidateFlowerGoalTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.BeeValidateHiveGoalTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.BehaviorTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.BrainTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.CopperGolemTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.DoNothingTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.GateBehaviorTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.GiveGiftToHeroTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.HarvestFarmlandTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.LivingEntityTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.LongJumpToRandomPosTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.MeleeAttackGoalTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.MobTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.NearestBedSensorTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.PathNavigationTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.PatrolGoalTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.PrepareRamNearestTargetTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.SleepInBedTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.TrialSpawnerStateDataTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.UseBonemealTimerAccessor;
+import com.axalotl.fabrolia.common.mixin.timer.VillagerMakeLoveTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.VillagerTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.WorkAtPoiTimerAccessor;
 import it.unimi.dsi.fastutil.longs.Long2LongMap;
+import it.unimi.dsi.fastutil.objects.Object2LongMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.LongAdder;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.NeutralMob;
 import net.minecraft.world.entity.ai.Brain;
 import net.minecraft.world.entity.ai.behavior.Behavior;
 import net.minecraft.world.entity.ai.behavior.BehaviorControl;
 import net.minecraft.world.entity.ai.behavior.GateBehavior;
 import net.minecraft.world.entity.ai.behavior.WorkAtPoi;
+import net.minecraft.world.entity.ai.goal.GoalSelector;
+import net.minecraft.world.entity.ai.goal.WrappedGoal;
+import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.ai.memory.MemorySlot;
 import net.minecraft.world.entity.ai.sensing.NearestBedSensor;
@@ -77,11 +99,19 @@ import net.minecraft.world.level.block.entity.trialspawner.TrialSpawner;
  * gametime} (island clock) is off by the gap; a retired island in a basis is read as its
  * final L plus the wall time since it retired; an entity read by a neighbour
  * between a clock change and its own first tick there (outside a region
- * rebase) reads the old clock once. Throttles held in vanilla lambdas and goal
- * fields out of reach (AcquirePoi, SetClosestHomeAsWalkTarget, the raider
- * banner cache) are not moved: a stamp further ahead than any legal one is
- * treated as due, and one moved into the past only makes the next check come
- * early once. Potent sulfur's eruption time is read only on clients. Vault, brushable blocks, Lithium
+ * rebase) reads the old clock once. Goal, navigation and behaviour throttles
+ * held in fields move with the entity ({@link #shiftEntity}: melee check, path
+ * recompute and stuck timeout, patrol cooldown, bee validation and unreachable
+ * flowers, farmer/sleep/gift/breeding/bone meal/long jump/ram/idle behaviours,
+ * kinetic weapon hits). Throttles held in vanilla lambdas are out of reach:
+ * AcquirePoi, SetClosestHomeAsWalkTarget and the raider banner cache treat a
+ * stamp further ahead than any legal one as due, and one moved into the past
+ * only makes the next check come early once; TryFindLand, TryFindLandNearLiquid
+ * and TryFindLiquid rewrite their stamp on the first blocked call (at most one
+ * cooldown late); StrollToPoi, StrollToPoiList and StrollAroundPoi keep a stamp
+ * from a clock that was ahead until the new clock reaches it (a villager's
+ * meeting-point and job-site strolls pause by the gap once). Potent sulfur's
+ * eruption time is read only on clients. Vault, brushable blocks, Lithium
  * hopper sleep, vibrations, warden warnings and torch history keep their own
  * fixes and are not touched here; players are not stamped.
  */
@@ -114,6 +144,9 @@ public final class TimerClocks {
 
     /** Never a sentinel: every value is a time. */
     static final long NO_SENTINEL = Long.MIN_VALUE;
+
+    /** {@code LivingEntity.lastKineticHitFeedbackTime}: negative = never hit. */
+    static final long KINETIC_FEEDBACK_UNSET = -1L;
 
     /** Largest lead a legal AcquirePoi start stamp has over "now"
      *  ({@code timestamp + 20 + nextInt(20)}, first stamp {@code now + nextInt(20)}). */
@@ -233,7 +266,20 @@ public final class TimerClocks {
             if (a.fabrolia$lastDamageSource() != null) {
                 a.fabrolia$setLastDamageStamp(shift(a.fabrolia$lastDamageStamp(), d, NO_SENTINEL, clamp));
             }
+            // Kinetic weapons (mobs carry spears too): feedback throttle and
+            // the per-target re-hit window.
+            a.fabrolia$setLastKineticHitFeedbackTime(
+                    shift(a.fabrolia$lastKineticHitFeedbackTime(), d, KINETIC_FEEDBACK_UNSET, clamp));
+            Object2LongMap<Entity> stabbed = a.fabrolia$recentKineticEnemies();
+            if (stabbed != null) {
+                for (Object2LongMap.Entry<Entity> entry : stabbed.object2LongEntrySet()) {
+                    entry.setValue(shift(entry.getLongValue(), d, NO_SENTINEL, clamp));
+                }
+            }
             shiftBrain(le.getBrain(), d, clamp);
+        }
+        if (e instanceof Mob mob) {
+            shiftMob(mob, d, clamp);
         }
         if (e instanceof NeutralMob m) {
             m.setPersistentAngerEndTime(shift(m.getPersistentAngerEndTime(), d, 0L, clamp));
@@ -257,6 +303,45 @@ public final class TimerClocks {
         if (e instanceof CopperGolem g) {
             CopperGolemTimerAccessor a = (CopperGolemTimerAccessor) (Object) g;
             a.fabrolia$setNextWeatheringTick(shift(a.fabrolia$nextWeatheringTick(), d, 0L, clamp));
+        }
+    }
+
+    /**
+     * Goal and navigation throttles of a mob. They are never saved, so only a
+     * clock change moves them (K2, night campaign 2026-11-18: a husk moved into
+     * an island 470 ticks behind kept its MeleeAttackGoal check stamped in the
+     * old clock and stood next to its target for 477-480 ticks; vanilla 28).
+     * Every field is a plain "compare with now" stamp: moved without a sentinel,
+     * "now - stamp" stays exactly what vanilla reads.
+     */
+    private static void shiftMob(Mob mob, long d, boolean clamp) {
+        MobTimerAccessor m = (MobTimerAccessor) mob;
+        PathNavigation nav = m.fabrolia$ownNavigation();
+        if (nav != null) {
+            PathNavigationTimerAccessor n = (PathNavigationTimerAccessor) nav;
+            n.fabrolia$setTimeLastRecompute(shift(n.fabrolia$timeLastRecompute(), d, NO_SENTINEL, clamp));
+            n.fabrolia$setLastTimeoutCheck(shift(n.fabrolia$lastTimeoutCheck(), d, NO_SENTINEL, clamp));
+        }
+        shiftGoals(m.fabrolia$goalSelector(), d, clamp);
+        shiftGoals(m.fabrolia$targetSelector(), d, clamp);
+    }
+
+    private static void shiftGoals(GoalSelector selector, long d, boolean clamp) {
+        for (WrappedGoal wrapped : selector.getAvailableGoals()) {
+            Object goal = wrapped.getGoal();
+            if (goal instanceof MeleeAttackGoalTimerAccessor g) {
+                g.fabrolia$setLastCanUseCheck(shift(g.fabrolia$lastCanUseCheck(), d, NO_SENTINEL, clamp));
+            } else if (goal instanceof PatrolGoalTimerAccessor g) {
+                g.fabrolia$setCooldownUntil(shift(g.fabrolia$cooldownUntil(), d, NO_SENTINEL, clamp));
+            } else if (goal instanceof BeeValidateFlowerGoalTimerAccessor g) {
+                g.fabrolia$setLastValidateTick(shift(g.fabrolia$lastValidateTick(), d, NO_SENTINEL, clamp));
+            } else if (goal instanceof BeeValidateHiveGoalTimerAccessor g) {
+                g.fabrolia$setLastValidateTick(shift(g.fabrolia$lastValidateTick(), d, NO_SENTINEL, clamp));
+            } else if (goal instanceof BeePollinateGoalTimerAccessor g) {
+                for (Long2LongMap.Entry entry : g.fabrolia$unreachableFlowerCache().long2LongEntrySet()) {
+                    entry.setValue(shift(entry.getLongValue(), d, NO_SENTINEL, clamp));
+                }
+            }
         }
     }
 
@@ -299,6 +384,32 @@ public final class TimerClocks {
         if (behavior instanceof WorkAtPoi w) {
             WorkAtPoiTimerAccessor a = (WorkAtPoiTimerAccessor) (Object) w;
             a.fabrolia$setLastCheck(shift(a.fabrolia$lastCheck(), d, 0L, clamp));
+        }
+        // Behaviour fields stamped from the brain's timestamp; plain "compare
+        // with now" stamps, moved without a sentinel.
+        Object o = behavior;
+        if (o instanceof HarvestFarmlandTimerAccessor a) {
+            a.fabrolia$setNextOkStartTime(shift(a.fabrolia$nextOkStartTime(), d, NO_SENTINEL, clamp));
+        } else if (o instanceof SleepInBedTimerAccessor a) {
+            a.fabrolia$setNextOkStartTime(shift(a.fabrolia$nextOkStartTime(), d, NO_SENTINEL, clamp));
+        } else if (o instanceof GiveGiftToHeroTimerAccessor a) {
+            a.fabrolia$setTimeSinceStart(shift(a.fabrolia$timeSinceStart(), d, NO_SENTINEL, clamp));
+        } else if (o instanceof VillagerMakeLoveTimerAccessor a) {
+            a.fabrolia$setBirthTimestamp(shift(a.fabrolia$birthTimestamp(), d, NO_SENTINEL, clamp));
+        } else if (o instanceof AnimalMakeLoveTimerAccessor a) {
+            a.fabrolia$setSpawnChildAtTime(shift(a.fabrolia$spawnChildAtTime(), d, NO_SENTINEL, clamp));
+        } else if (o instanceof UseBonemealTimerAccessor a) {
+            a.fabrolia$setNextWorkCycleTime(shift(a.fabrolia$nextWorkCycleTime(), d, NO_SENTINEL, clamp));
+        } else if (o instanceof LongJumpToRandomPosTimerAccessor a) {
+            a.fabrolia$setPrepareJumpStart(shift(a.fabrolia$prepareJumpStart(), d, NO_SENTINEL, clamp));
+        } else if (o instanceof PrepareRamNearestTargetTimerAccessor a) {
+            Optional<Long> reached = a.fabrolia$reachedRamPositionTimestamp();
+            if (reached.isPresent()) {
+                a.fabrolia$setReachedRamPositionTimestamp(
+                        Optional.of(shift(reached.get(), d, NO_SENTINEL, clamp)));
+            }
+        } else if (o instanceof DoNothingTimerAccessor a) {
+            a.fabrolia$setEndTimestamp(shift(a.fabrolia$endTimestamp(), d, NO_SENTINEL, clamp));
         }
         if (behavior instanceof GateBehavior<?> g) {
             for (BehaviorControl<?> inner : ((GateBehaviorTimerAccessor) (Object) g).fabrolia$behaviors()) {

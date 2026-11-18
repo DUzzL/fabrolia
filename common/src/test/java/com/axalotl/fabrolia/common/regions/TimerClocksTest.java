@@ -153,6 +153,51 @@ final class TimerClocksTest {
         assertEquals(5_001L, live.stamp);
     }
 
+    /** MeleeAttackGoal.canUse: false while {@code now - lastCanUseCheck < 20}. */
+    private static long ticksUntilMeleeCanUse(long lastCanUseCheck, long now) {
+        long k = 0;
+        while ((now + k) - lastCanUseCheck < 20L) k++;
+        return k;
+    }
+
+    @Test
+    void aMeleeThrottleMovedIntoAnIslandBehindKeepsTheVanillaCadence() {
+        // K2 (night campaign B2): a husk checked canUse on a fresh island
+        // (L=2000), then was teleported into an island 470 ticks behind. Its
+        // lastCanUseCheck stayed in the old clock: 490 ticks without a melee
+        // attempt (measured 477-480 island ticks to the first hit, vanilla 28).
+        IslandRegistry.PIsland fresh = island(1, 2000L);
+        IslandRegistry.PIsland behind = island(2, 1530L);
+        long wall = 2010L;
+        long stamp = 2000L;
+        assertEquals(490L, ticksUntilMeleeCanUse(stamp, behind.logicalTick), "before the fix");
+        long d = TimerClocks.delta(fresh, behind, wall);
+        long moved = TimerClocks.shift(stamp, d, TimerClocks.NO_SENTINEL, true);
+        assertEquals(20L, ticksUntilMeleeCanUse(moved, behind.logicalTick), "as in vanilla");
+    }
+
+    @Test
+    void goalAndBehaviourStampsKeepNowMinusStampAcrossAnyClockChange() {
+        // Goal, navigation and behaviour throttles (path recompute, patrol
+        // cooldown, bee validation, farmer/sleep/breeding behaviours, idle end)
+        // are plain "compare with now" stamps, including their defaults (0, -1,
+        // Integer.MIN_VALUE): moved without a sentinel, now - stamp is unchanged
+        // in both directions, so every comparison reads as in vanilla.
+        long source = 90_000L;
+        for (long target : new long[] {89_530L, 90_470L, 1_000L, 500_000L}) {
+            long d = target - source;
+            for (long stamp : new long[] {0L, -1L, -2_147_483_648L, 89_990L, 90_000L, 90_600L}) {
+                long moved = TimerClocks.shift(stamp, d, TimerClocks.NO_SENTINEL, true);
+                assertEquals(source - stamp, target - moved, "stamp " + stamp + " -> clock " + target);
+            }
+        }
+        // The kinetic hit feedback throttle keeps "never" (negative) as is.
+        assertEquals(-2_147_483_648L, TimerClocks.shift(-2_147_483_648L, 470L,
+                TimerClocks.KINETIC_FEEDBACK_UNSET, true));
+        assertEquals(0L, TimerClocks.shift(300L, -5_000L, TimerClocks.KINETIC_FEEDBACK_UNSET, true),
+                "a hit long ago stays a hit (0), not never");
+    }
+
     @Test
     void sameClockIsANoOp() {
         IslandRegistry.PIsland p = island(1, 500L);
