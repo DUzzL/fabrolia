@@ -4362,7 +4362,23 @@ public final class RegionizedServer {
                     && vg.fabrolia$isPortalPending()) {
                 return;
             }
-            if (!vehicle.isRemoved() && vehicle.hasPassenger(e)) return;
+            if (!vehicle.isRemoved() && vehicle.hasPassenger(e)) {
+                // VANILLA ORDER (26.3 ServerLevel guarded entity loop, bytecode-
+                // verified): checkDespawn runs for every tick-list entity BEFORE
+                // the vehicle decision, so a riding mob gets it each tick although
+                // its body is ticked by the vehicle. Mob.checkDespawn resets
+                // noActionTime while a player is within 32 blocks and discards
+                // hostile riders in peaceful. Without the call a rider's
+                // noActionTime only grew: a raider held in a boat could no longer
+                // join a raid after 2400 ticks (Raids.canJoinRaid) and was dropped
+                // from its raid by updateRaiders (raid farm A/B, 2026-11-18).
+                // Players define no despawn check and may tick on Main.
+                if (!directPlayer) {
+                    e.checkDespawn();
+                    if (e.isRemoved()) dropFromRegion(region, e);
+                }
+                return;
+            }
             e.stopRiding();
         }
 
