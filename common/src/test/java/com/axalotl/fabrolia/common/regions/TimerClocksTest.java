@@ -33,6 +33,28 @@ final class TimerClocksTest {
     }
 
     @Test
+    void aHitFromMainKeepsTheArmorStandsDoubleHitWindow() {
+        // Raid farm A/B (2026-11-18): the island was 21 ticks behind W, the
+        // player hit the stand once per second, and one hit ran on Main.
+        // ArmorStand.hurtServer breaks the stand when now - lastHit <= 5.
+        long wall = 8834162L;
+        IslandRegistry.PIsland island = island(1, wall - 21L);
+        OneTimer lastHit = new OneTimer(island, island.logicalTick - 20L, 0L);
+
+        // Unconverted, the Main hit would store W and the next island hit read -1.
+        assertEquals(-1L, (island.logicalTick + 20L) - wall);
+
+        TimerClocks.moveTo(lastHit, null, wall);          // the hit handler on Main
+        assertEquals(20L, wall - lastHit.stamp);
+        lastHit.stamp = wall;                             // vanilla stores "now"
+
+        island.logicalTick += 1L;                         // the stand's next island tick
+        TimerClocks.moveTo(lastHit, island, wall + 1L);
+        island.logicalTick += 19L;                        // the next hit, on the island again
+        assertEquals(20L, island.logicalTick - lastHit.stamp);
+    }
+
+    @Test
     void mergeIntoALaggedIslandKeepsTheRemainingTime() {
         // Run B of the review: a 60 s cooldown on a fresh island (L=2000), merged
         // into the player's island 1300 ticks behind. Before the fix it ended

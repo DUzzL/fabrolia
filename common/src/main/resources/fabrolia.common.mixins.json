@@ -118,6 +118,7 @@
     "entity.spawn.SpawnStateMixin",
     "entity.WardenSpawnTrackerMixin",
     "timer.AcquirePoiRetryTimerClockMixin",
+    "timer.ArmorStandHitClockMixin",
     "timer.ArmorStandTimerAccessor",
     "timer.RaiderBannerGoalTimerClockMixin",
     "timer.SetClosestHomeAsWalkTargetTimerClockMixin",
