@@ -340,7 +340,9 @@ public final class IslandCommands {
         // Sharding its command text here bypasses the enable-command-block
         // gate, success callback and lastExecution update, and substitutes a
         // command result for the boolean controlling unconditional chains.
-        // Routed: one shard, exactly once, on the serialized main batch.
+        // Routed: one shard, exactly once, on the serialized main batch. The
+        // body reads this island's clock for vanilla's once-per-tick guard
+        // (lastExecution) and `time query gametime`; see routeAndPark.
         Invocation inv = new Invocation("command_block", sourcePos, owner.id,
                 owner.logicalTick, command);
         return routeAndPark(rs, owner, inv, original, "routed command");
@@ -362,8 +364,16 @@ public final class IslandCommands {
     private static boolean routeAndPark(RegionizedServer rs, IslandRegistry.PIsland owner,
                                         Invocation inv, BooleanSupplier body, String lane) {
         RoutedResult fut = new RoutedResult();
+        // The island tick this body belongs to: exactly what an inline body of
+        // this coordinator reads from getGameTime (unitGameTime = L+1). Main
+        // binds it around the body (IslandClock.callWithRoutedOwnerTime), so
+        // vanilla's per-tick command-block guard dedupes per ISLAND tick and
+        // `time query gametime` answers L. Keying them on W on Main dropped
+        // every second execution whenever Main drained two island ticks of
+        // the same block within one W tick (sprint, rate, Main jitter).
+        long ownerTime = IslandClock.contextTime();
         RegionScheduler.runSuccessBodyIfHealthy(() -> {
-            ROUTED.add(new RoutedCmd(inv, body, fut, null));
+            ROUTED.add(new RoutedCmd(inv, body, fut, null, ownerTime));
             // Self-nudge: main drains its task queue while idling between slots,
             // so the batch runs within ~ms instead of at the next drive head.
             var sv = RegionScheduler.getServer();
@@ -589,7 +599,7 @@ public final class IslandCommands {
      * {@code Scoreboard.forAllObjectives} on every player tick.
      */
     private record RoutedCmd(Invocation inv, BooleanSupplier body, RoutedResult fut,
-                             Runnable trackedBody) {
+                             Runnable trackedBody, long ownerTime) {
     }
 
     private static final java.util.concurrent.ConcurrentLinkedQueue<RoutedCmd> ROUTED =
@@ -670,7 +680,7 @@ public final class IslandCommands {
                 ROUTED.add(new RoutedCmd(inv, () -> {
                     tracked.run();
                     return true;
-                }, receipt, tracked));
+                }, receipt, tracked, -1L));
                 var server = RegionScheduler.getServer();
                 if (server != null) {
                     server.schedule(new net.minecraft.server.TickTask(server.getTickCount(), () -> {
@@ -810,7 +820,7 @@ public final class IslandCommands {
         }
         rc.inv.state = 1;
         try {
-            rc.inv.result = rc.body.getAsBoolean() ? 1 : 0;
+            rc.inv.result = IslandClock.callWithRoutedOwnerTime(rc.ownerTime, rc.body) ? 1 : 0;
         } catch (Throwable t) {
             Throwable failure = publishFatalPreserving(t);
             rc.inv.failure = failure;

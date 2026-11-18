@@ -535,9 +535,53 @@ class RegionPreparationRoutedCommandTest {
         }
     }
 
-    /** Routes {@code command} from an island unit on the pool's worker while
-     *  this (Main) thread pumps the scheduled routed drains. */
+    /**
+     * R4/R2 (night campaign 2026-11-18): a routed body executes on Main, whose
+     * getGameTime is W. Vanilla's per-tick command-block guard and
+     * {@code time query gametime} must read the island tick the body belongs
+     * to, or two island ticks drained within one W tick collapse into one
+     * execution. Two consecutive island ticks routed back to back must bind
+     * two distinct, consecutive owner times while Main's context clock stays W.
+     */
+    @Test
+    void routedIslandBodiesReadTheirIslandTickInsteadOfTheWallClock() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.pool.start();
+            long[] commandBlock = new long[2];
+            long[] functionLine = new long[2];
+            for (int i = 0; i < 2; i++) {
+                long islandTick = 5_000L + i;
+                int index = i;
+                assertTrue(routeFromIslandUnit(f, "scoreboard players add #runs t 1", islandTick, () -> {
+                    assertSame(f.main, Thread.currentThread());
+                    assertEquals(-1L, IslandClock.contextTime(),
+                            "Main keeps W for the body's world effects");
+                    commandBlock[index] = IslandClock.routedOwnerTime();
+                    return true;
+                }));
+                assertFalse(routeFromIslandUnit(f, null, islandTick, () -> {
+                    assertSame(f.main, Thread.currentThread());
+                    functionLine[index] = IslandClock.routedOwnerTime();
+                    return false;
+                }));
+            }
+            assertArrayEquals(new long[]{5_000L, 5_001L}, commandBlock,
+                    "a routed command block reads its island's unit time, once per island tick");
+            assertArrayEquals(new long[]{5_000L, 5_001L}, functionLine,
+                    "an escalated function line reads its island's unit time");
+            assertEquals(-1L, IslandClock.routedOwnerTime(), "no binding leaks past the batch");
+        }
+    }
+
     private static boolean routeFromIslandUnit(Fixture f, String command,
+                                               java.util.function.BooleanSupplier body) throws Exception {
+        return routeFromIslandUnit(f, command, 0L, body);
+    }
+
+    /** Routes {@code command} (null: an escalated function line) from an island
+     *  unit at {@code unitGameTime} (0: no published unit time) on the pool's
+     *  worker while this (Main) thread pumps the scheduled routed drains. */
+    private static boolean routeFromIslandUnit(Fixture f, String command, long unitGameTime,
                                                java.util.function.BooleanSupplier body) throws Exception {
         CountDownLatch done = new CountDownLatch(1);
         AtomicReference<Boolean> result = new AtomicReference<>();
@@ -549,12 +593,17 @@ class RegionPreparationRoutedCommandTest {
                 assertTrue(f.island.tryClaimAutonomousWork());
                 claimed = true;
                 f.island.noteClaim("routed-command-regression");
+                f.island.domain.unitGameTime = unitGameTime;
                 worker.currentDomain = f.island.domain;
-                result.set(IslandCommands.routeCommandBlock(command, f.level,
-                        BlockPos.ZERO, null, body));
+                result.set(command == null
+                        ? IslandCommands.routeFencedIslandBody(f.runtime, f.island,
+                                "routed-clock-regression", body)
+                        : IslandCommands.routeCommandBlock(command, f.level,
+                                BlockPos.ZERO, null, body));
             } catch (Throwable problem) {
                 failure.set(problem);
             } finally {
+                f.island.domain.unitGameTime = 0L;
                 worker.currentDomain = null;
                 if (claimed) {
                     f.island.clearClaim();

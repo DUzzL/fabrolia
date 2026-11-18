@@ -85,6 +85,53 @@ public final class IslandClock {
         return level.getGameTime();
     }
 
+    /** Island time of the routed island body Main is executing right now. */
+    private record RoutedOwnerTime(long time) {}
+
+    private static final ThreadLocal<RoutedOwnerTime> ROUTED_OWNER_TIME = new ThreadLocal<>();
+
+    /**
+     * Runs a routed island body (command block or escalated function line) on
+     * physical Main with {@code ownerTime} bound as the routing island's clock:
+     * the L value ({@link #contextTime()}) the island coordinator read when it
+     * routed the body and parked. -1 (the router read W) binds nothing.
+     *
+     * <p>The binding is NOT a second {@link #contextTime()}: Main keeps W for
+     * every world effect of the body (scheduled-tick rebase, entity timer
+     * bases, the W-ticked TimerQueue of {@code schedule}, the world border),
+     * which all resolve the caller clock from the thread. Only the readers
+     * that vanilla evaluates in the block's own tick read the binding through
+     * {@link #routedOwnerTime()}: {@code BaseCommandBlock.performCommand}'s
+     * once-per-tick guard and {@code time query gametime}. Deliberate
+     * boundary: inside a routed island body {@code time query gametime}
+     * answers the island clock L while {@code schedule} still queues in W,
+     * as on an island head.
+     */
+    public static boolean callWithRoutedOwnerTime(long ownerTime,
+                                                  java.util.function.BooleanSupplier body) {
+        if (ownerTime < 0L) {
+            return body.getAsBoolean();
+        }
+        RoutedOwnerTime previous = ROUTED_OWNER_TIME.get();
+        ROUTED_OWNER_TIME.set(new RoutedOwnerTime(ownerTime));
+        try {
+            return body.getAsBoolean();
+        } finally {
+            if (previous == null) {
+                ROUTED_OWNER_TIME.remove();
+            } else {
+                ROUTED_OWNER_TIME.set(previous);
+            }
+        }
+    }
+
+    /** The routing island's clock bound by {@link #callWithRoutedOwnerTime}
+     *  on this thread, or -1 outside a routed island body. */
+    public static long routedOwnerTime() {
+        RoutedOwnerTime bound = ROUTED_OWNER_TIME.get();
+        return bound != null ? bound.time : -1L;
+    }
+
     /** Island-local game time for the current execution context, or -1 when
      *  the context is global (caller falls through to the real counter).
      *  Hot path: two reference loads on worker threads, one type check on

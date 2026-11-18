@@ -30,6 +30,7 @@
     "commands.ServerFunctionLibraryMixin",
     "commands.ServerFunctionManagerMixin",
     "commands.ServerLevelFunctionPassMixin",
+    "commands.TimeCommandMixin",
     "commands.TimerQueueMixin",
     "entity.AbstractMinecartPortalFreezeMixin",
     "entity.NewMinecartBehaviorPortalReservationMixin",
