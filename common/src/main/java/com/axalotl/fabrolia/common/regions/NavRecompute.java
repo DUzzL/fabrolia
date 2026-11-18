@@ -152,11 +152,20 @@ public final class NavRecompute {
                 // W-vs-entry window; admit the body at the shared cut.
                 RegionScheduler.runSuccessBodyIfHealthy(inlineRecompute);
             } else {
-                // Publication is itself success-only. If execute() enqueues
+                // Publication is itself success-only. If schedule() enqueues
                 // and then throws, the queued wrapper observes the selected W
                 // and refuses its body.
+                // Never MinecraftServer.execute here: once the server is
+                // stopped it runs its task inline on the caller. The redispatch
+                // resolves the same ownerless mob again, so a worker would
+                // recurse without bound while units still run during the stop
+                // (the same inline-on-stop rule drained the routed command
+                // batch on a worker, f068a2e). A tick task is always queued; on
+                // a stopped server it is never run, which only skips a path
+                // recompute.
                 RegionScheduler.runSuccessBodyIfHealthy(
-                        () -> srv.execute(() -> runFailStopMainTask(redispatch)));
+                        () -> srv.schedule(new net.minecraft.server.TickTask(srv.getTickCount(),
+                                () -> runFailStopMainTask(redispatch))));
             }
             return;
         }
