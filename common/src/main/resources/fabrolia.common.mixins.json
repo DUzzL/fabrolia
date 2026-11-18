@@ -27,6 +27,7 @@
     "commands.IslandFunctionStorageGuardMixin",
     "commands.PlayerListFunctionSnapshotMixin",
     "commands.RconClientCommandFenceMixin",
+    "commands.RunFunctionMixin",
     "commands.ServerFunctionLibraryMixin",
     "commands.ServerFunctionManagerMixin",
     "commands.ServerLevelFunctionPassMixin",

@@ -44,6 +44,8 @@ public final class FunctionFenceDiag {
     public static final LongAdder STALE_ESCALATIONS = new LongAdder();
     /** Worker-side ServerFunctionManager.execute proven owner-local (C3). */
     public static final LongAdder WORKER_OWNER_LOCAL = new LongAdder();
+    /** Enchantment run_function bodies an island coordinator handed to fenced Main. */
+    public static final LongAdder ENCHANTMENT_FUNCTIONS_ROUTED = new LongAdder();
     private static final ConcurrentHashMap<String, LongAdder> ESCALATIONS_BY_LINE =
             new ConcurrentHashMap<>();
 
@@ -71,7 +73,7 @@ public final class FunctionFenceDiag {
                 FUNCTION_FENCES, ISLAND_ROOT_PASSES, ISLAND_ESCALATIONS, MAIN_ROOT_PASSES,
                 MAIN_ESCALATIONS, MAIN_ESCALATION_FENCES, MAIN_REMAINDER_FENCES, MAIN_SYNC_ENTITY_PASSES,
                 LOOP_REARMS, STALE_ESCALATIONS,
-                WORKER_OWNER_LOCAL}) {
+                WORKER_OWNER_LOCAL, ENCHANTMENT_FUNCTIONS_ROUTED}) {
             a.reset();
         }
         FUNCTION_FENCES_BY_ID.clear();
@@ -99,6 +101,8 @@ public final class FunctionFenceDiag {
         out.add(" loop re-arms without fence: " + rate(LOOP_REARMS, ticks)
                 + ", stale escalations: " + STALE_ESCALATIONS.sum()
                 + ", worker owner-local functions: " + WORKER_OWNER_LOCAL.sum());
+        out.add(" enchantment functions routed to fenced Main: "
+                + rate(ENCHANTMENT_FUNCTIONS_ROUTED, ticks));
         top(out, ESCALATIONS_BY_LINE, ticks);
         return out;
     }

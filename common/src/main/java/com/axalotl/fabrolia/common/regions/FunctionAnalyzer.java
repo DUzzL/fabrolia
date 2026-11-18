@@ -407,6 +407,17 @@ public final class FunctionAnalyzer {
         }
 
         @Override
+        public Map<Identifier, List<String>> enchantmentFunctions() {
+            var registry = server.registryAccess().lookup(Registries.ENCHANTMENT);
+            if (registry.isEmpty()) return Map.of();
+            ArrayList<Map.Entry<Identifier, net.minecraft.world.item.enchantment.Enchantment>> entries =
+                    new ArrayList<>();
+            registry.get().listElements().forEach(holder ->
+                    entries.add(Map.entry(holder.key().identifier(), holder.value())));
+            return EnchantmentFunctionRouting.functionSites(entries);
+        }
+
+        @Override
         public List<Identifier> rewardFunctions() {
             ArrayList<Identifier> out = new ArrayList<>();
             for (AdvancementHolder holder : server.getAdvancements().getAllAdvancements()) {

@@ -63,6 +63,7 @@ final class FunctionPlanFixture implements FunctionPlanner.Sources {
     private final HashMap<Identifier, List<Identifier>> tags = new HashMap<>();
     private final HashMap<String, JsonElement> predicates = new HashMap<>();
     private final ArrayList<Identifier> rewards = new ArrayList<>();
+    private final LinkedHashMap<Identifier, List<String>> enchantmentFunctions = new LinkedHashMap<>();
 
     FunctionPlanFixture() {
         bootstrap();
@@ -96,6 +97,11 @@ final class FunctionPlanFixture implements FunctionPlanner.Sources {
 
     FunctionPlanFixture reward(String functionId) {
         rewards.add(Identifier.parse(functionId));
+        return this;
+    }
+
+    FunctionPlanFixture enchantmentFunction(String functionId, String site) {
+        enchantmentFunctions.computeIfAbsent(Identifier.parse(functionId), k -> new ArrayList<>()).add(site);
         return this;
     }
 
@@ -135,6 +141,11 @@ final class FunctionPlanFixture implements FunctionPlanner.Sources {
     @Override
     public List<Identifier> rewardFunctions() {
         return rewards;
+    }
+
+    @Override
+    public Map<Identifier, List<String>> enchantmentFunctions() {
+        return enchantmentFunctions;
     }
 
     static Map<Integer, FunctionPlan.LineKind> kinds(FunctionPlan.RootPlan root) {

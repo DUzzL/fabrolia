@@ -42,6 +42,13 @@ public final class FunctionPlanner {
         JsonElement predicate(String id);
         /** Reward function ids of every loaded advancement. */
         List<Identifier> rewardFunctions();
+        /**
+         * Function ids of every enchantment {@code run_function} effect, each with
+         * the "enchantment slot" labels that reach it, in registry order.
+         */
+        default Map<Identifier, List<String>> enchantmentFunctions() {
+            return Map.of();
+        }
     }
 
     enum Self { NONE, PLAYER, NON_PLAYER, ANY;
@@ -144,8 +151,30 @@ public final class FunctionPlanner {
         if (!mainResident.isEmpty()) {
             notes.add("Main-resident functions considered by the conflict rule: " + mainResident.size());
         }
+        // Callback functions vanilla runs inside an entity's or player's tick:
+        // owner-local ones run there, the rest take the fenced Main route.
+        for (Map.Entry<Identifier, List<String>> e : sources.enchantmentFunctions().entrySet()) {
+            notes.add(callbackNote("enchantment run_function", e.getKey(), e.getValue(), ownerLocalIds,
+                    "on the entity's owner", "routed: the owner parks, fenced Main runs it at that point"));
+        }
+        for (Identifier reward : new LinkedHashSet<>(sources.rewardFunctions())) {
+            notes.add(callbackNote("advancement reward", reward, List.of(), ownerLocalIds,
+                    "on the player's owner", "routed to fenced Main (advancement FIFO)"));
+        }
         return new FunctionPlan(List.copyOf(tickRoots), Collections.unmodifiableMap(loops),
                 ownerLocal, Set.copyOf(ownerLocalIds), List.copyOf(notes));
+    }
+
+    private String callbackNote(String kind, Identifier id, List<String> sites, Set<Identifier> ownerLocalIds,
+                                String local, String routed) {
+        StringBuilder sb = new StringBuilder(kind).append(' ').append(id);
+        if (!sites.isEmpty()) sb.append(" (").append(String.join(", ", sites)).append(')');
+        if (sources.ir(id) == null) return sb.append(": not analyzed (unknown or macro function)").toString();
+        if (ownerLocalIds.contains(id)) return sb.append(": OWNER-LOCAL, ").append(local).toString();
+        FunctionEffects fx = analyzeFunction(id, new Ctx(Self.PLAYER, true));
+        String why = fx.globalReason != null ? fx.globalReason
+                : "reads fake-player scores " + fx.fakeReads;
+        return sb.append(": NOT OWNER-LOCAL, ").append(routed).append(" [").append(why).append(']').toString();
     }
 
     private static final class Draft {
