@@ -78,6 +78,27 @@ public final class AsyncIslandPlayerTicks {
     private static final LongAdder FAILURES = new LongAdder();
     private static final int MAX_ROUTED_MUTATIONS = 4_096;
 
+    /**
+     * A client decides how many packet continuations (book edits) it produces, so
+     * they must never reach {@link #MAX_ROUTED_MUTATIONS}, whose overflow stops the
+     * server: with this many unprocessed routed entries of one player, further
+     * continuations of that player's packets are dropped. A vanilla client sends
+     * one book edit per closed book screen, and the lane is drained every Main
+     * tick; a burst of 6000 empty book edits stopped the server without a save
+     * before this bound (2026-11-18).
+     */
+    static final int MAX_CLIENT_ROUTED_MUTATIONS = 256;
+
+    /** What became of a routed mutation offered for a packet of the player's own client. */
+    public enum ClientRoutedOffer {
+        /** Appended to the player's routed lane. */
+        ACCEPTED,
+        /** A5 does not own this listener: the caller keeps the vanilla path. */
+        NOT_OWNED,
+        /** Discarded: the listener is disconnecting, or its client has too many outstanding. */
+        DROPPED
+    }
+
     private enum MainDisconnectOrigin {
         DEFERRED_OWNER,
         PHYSICAL_MAIN
@@ -2897,14 +2918,31 @@ public final class AsyncIslandPlayerTicks {
      */
     public static boolean enqueueRoutedMutation(ServerPlayer player, String operation,
                                                 RoutedPlayerMutation mutation) {
+        return offerRoutedMutation(player, operation, mutation, false) == ClientRoutedOffer.ACCEPTED;
+    }
+
+    /**
+     * {@link #enqueueRoutedMutation} for the continuation of a packet of the player's
+     * own client. What the client controls never fail-stops here: a continuation
+     * whose listener is disconnecting is dropped (its player lifetime ended), and so
+     * is one beyond {@link #MAX_CLIENT_ROUTED_MUTATIONS} unprocessed entries.
+     */
+    public static ClientRoutedOffer offerClientRoutedMutation(ServerPlayer player, String operation,
+                                                              RoutedPlayerMutation mutation) {
+        return offerRoutedMutation(player, operation, mutation, true);
+    }
+
+    private static ClientRoutedOffer offerRoutedMutation(ServerPlayer player, String operation,
+                                                         RoutedPlayerMutation mutation,
+                                                         boolean clientDriven) {
         Objects.requireNonNull(mutation, "mutation");
         if (player == null || !(player instanceof AsyncIslandPlayerAccess)
                 || classifyPlayer(player) == null) {
-            return false;
+            return ClientRoutedOffer.NOT_OWNED;
         }
 
         ServerGamePacketListenerImpl listener = player.connection;
-        if (listener == null || listener.player != player) return false;
+        if (listener == null || listener.player != player) return ClientRoutedOffer.NOT_OWNED;
         RegionizedServer currentRuntime = player.level() instanceof ServerLevel level
                 ? RegionScheduler.forLevel(level) : null;
         boolean venueActive = enabledForAsync(currentRuntime);
@@ -2921,10 +2959,11 @@ public final class AsyncIslandPlayerTicks {
             IslandPlayerTurnSession.View view = state.session.view();
             if (!venueActive && view.phase() == IslandPlayerTurnSession.Phase.MAIN
                     && !hasOwnerAdmissionCutLocked(state)) {
-                return false;
+                return ClientRoutedOffer.NOT_OWNED;
             }
             if (view.phase() == IslandPlayerTurnSession.Phase.DISCONNECTED
                     || state.mainDisconnectPending) {
+                if (clientDriven) return ClientRoutedOffer.DROPPED;
                 throw new IllegalStateException(
                         "A5 routed player mutation '" + label
                                 + "' targeted a disconnecting listener");
@@ -2932,6 +2971,10 @@ public final class AsyncIslandPlayerTicks {
             if (state.listenerGate != null && state.listenerGate != listener) {
                 throw new IllegalStateException(
                         "A5 routed mutation crossed listener identity");
+            }
+            if (clientDriven && state.routedIngressCount >= MAX_CLIENT_ROUTED_MUTATIONS) {
+                droppedClientRoutedMutation(player, label);
+                return ClientRoutedOffer.DROPPED;
             }
             if (state.routedIngressCount >= MAX_ROUTED_MUTATIONS) {
                 throw new IllegalStateException(
@@ -2966,8 +3009,17 @@ public final class AsyncIslandPlayerTicks {
                 scheduleMainHandoffLocked(state, oldPlayer, false);
             }
             PACKETS_QUEUED.increment();
-            return true;
+            return ClientRoutedOffer.ACCEPTED;
         }
+    }
+
+    /** One WARN per 10 s for all players together; the rest is counted by the throttle. */
+    private static void droppedClientRoutedMutation(ServerPlayer player, String label) {
+        String name = player.getScoreboardName();
+        ThrottledLog.warn(LOGGER, "a5-client-routed-drop", "drop",
+                "Dropped a '{}' packet continuation of {}: more than {} are unprocessed "
+                        + "(a vanilla client never sends that many)",
+                label, name, MAX_CLIENT_ROUTED_MUTATIONS);
     }
 
     private enum MinecraftThreadCheck { YES, NO }

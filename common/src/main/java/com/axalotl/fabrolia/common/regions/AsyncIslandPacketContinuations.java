@@ -175,13 +175,15 @@ public final class AsyncIslandPacketContinuations {
         if (!isCurrent(owner, owner.listener)) return true;
         if (disconnected(owner)) return true;
         if (!venueActive(owner)) return false;
-        boolean accepted = AsyncIslandPlayerTicks.enqueueRoutedMutation(
+        // The player's client decides how many of these exist: the offer never
+        // fail-stops for a disconnecting listener or a flood, it drops them.
+        AsyncIslandPlayerTicks.ClientRoutedOffer offer = AsyncIslandPlayerTicks.offerClientRoutedMutation(
                 owner.player, operation, (runtime, region, island) -> {
                     if (isCurrent(owner, owner.listener) && !disconnected(owner)) {
                         continuation.run();
                     }
                 });
-        if (accepted) return true;
+        if (offer != AsyncIslandPlayerTicks.ClientRoutedOffer.NOT_OWNED) return true;
         return rejectedPublication(owner, "player");
     }
 
