@@ -393,7 +393,9 @@ public final class FunctionPlanner {
             // so it runs once per W tick like the queue it writes (its other lines
             // keep W cadence too, and the root takes the tick-head fence).
             dl.kind = FunctionPlan.LineKind.GLOBAL;
-            dl.reason = fx.timerReason + " (the world-tick TimerQueue needs one execution per world tick)";
+            String timer = fx.timerReason.startsWith(where + ": ")
+                    ? fx.timerReason.substring(where.length() + 2) : fx.timerReason;
+            dl.reason = timer + " (the world-tick TimerQueue needs one execution per world tick)";
             return;
         }
         dl.fanOutStage = fan;

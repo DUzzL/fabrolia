@@ -296,7 +296,7 @@ class FunctionPlanVerdictTest {
         FunctionPlan.RootPlan append = plan.tickRoots.get(0);
         assertFalse(append.partitioned(), described);
         assertEquals(Map.of(1, GLOBAL, 2, PARTITION), FunctionPlanFixture.kinds(append));
-        assertTrue(append.blocking().startsWith("pack:append:1: "), append.blocking());
+        assertTrue(append.blocking().startsWith("pack:append:1: command schedule"), append.blocking());
         assertTrue(append.lines().getFirst().reason().contains("schedule"), append.lines().getFirst().reason());
         assertNull(plan.partitionedTickRoot(f.fn("pack:append")));
         for (int i = 1; i <= 3; i++) {
