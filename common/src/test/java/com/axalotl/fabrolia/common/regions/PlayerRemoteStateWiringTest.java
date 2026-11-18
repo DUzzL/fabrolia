@@ -65,21 +65,22 @@ final class PlayerRemoteStateWiringTest {
         String scheduler = source("common/regions/RegionScheduler.java");
         assertTrue(section(scheduler, "private static void runMainSyncEntityTask(MainSyncTask queued)",
                 "private static void runOneMainSync(")
-                .contains("runPlayerTickWithMainClaim(e, queued, null);"));
+                .contains("runPlayerTickWithMainClaim(e, queued, null, PlayerRemoteState.FENCE_ENTITY_TICK);"));
         String body = section(scheduler, "private static void runClaimedEntityBody(",
                 "private static void runWithMainEntityClaim(Entity entity, Runnable body,");
-        int test = body.indexOf("playerTick && PlayerRemoteState.treeReachesOutsideIsland(entity)");
+        int test = body.indexOf(
+                "remoteStateFence != null && PlayerRemoteState.treeReachesOutsideIsland(entity)");
         int fence = body.indexOf(
-                "AsyncIslandPlayerTicks.runFencedMainMutation(PlayerRemoteState.FENCE_OPERATION, body);",
+                "AsyncIslandPlayerTicks.runFencedMainMutation(remoteStateFence, body);",
                 test);
         int plain = body.indexOf("runSuccessBodyIfHealthy(body);", fence);
         assertTrue(test >= 0 && fence > test && plain > fence);
         String claim = section(scheduler, "private static void runWithMainEntityClaim(Entity entity, Runnable body,",
                 "Publishes a failed Main operation into the generation's first-wins fatal slot");
-        assertEquals(2, count(claim, "runClaimedEntityBody(entity, body, playerTick);"),
+        assertEquals(2, count(claim, "runClaimedEntityBody(entity, body, remoteStateFence);"),
                 "owner-gap body and claimed body");
         int revalidate = claim.indexOf("&& !owner.retired) {");
-        int claimed = claim.indexOf("runClaimedEntityBody(entity, body, playerTick);", revalidate);
+        int claimed = claim.indexOf("runClaimedEntityBody(entity, body, remoteStateFence);", revalidate);
         assertTrue(revalidate >= 0 && claimed > revalidate,
                 "the escalation decision follows the claim wait and its revalidation");
     }
@@ -90,10 +91,11 @@ final class PlayerRemoteStateWiringTest {
         String direct = section(a5, "public static void runMainListenerTick(",
                 "private static boolean cancelDirectMainListenerTick(");
         assertTrue(direct.contains("RegionScheduler.runPlayerTickWithMainClaim(player, () -> {"));
+        assertTrue(direct.contains("PlayerRemoteState.FENCE_LISTENER_TICK);"));
         assertTrue(!direct.contains("runWithMainEntityClaim("));
         String deferred = section(a5, "lease.execute(() -> RegionScheduler.runPlayerTickWithMainClaim(player, () -> {",
                 "public static boolean deferBlockingDisconnect(");
-        assertTrue(deferred.contains("}, null));"));
+        assertTrue(deferred.contains("}, null, PlayerRemoteState.FENCE_LISTENER_TICK));"));
     }
 
     @Test
@@ -114,6 +116,7 @@ final class PlayerRemoteStateWiringTest {
         int replay = menu.indexOf("AsyncIslandPlayerTicks.inPacketReplay(this.player)", remote);
         int fail = menu.indexOf("throw AsyncIslandPlayerTicks.packetInteractionFailure(", replay);
         int fence = menu.indexOf("AsyncIslandPlayerTicks.runFencedMainMutation(", fail);
+        assertTrue(menu.contains("PlayerRemoteState.FENCE_MENU_PACKET, body);"));
         int local = menu.indexOf("withPlayerOwner(body);", fence);
         assertTrue(raw >= 0 && remote > raw && replay > remote && fail > replay
                 && fence > fail && local > fence);

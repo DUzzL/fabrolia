@@ -47,8 +47,10 @@ import java.util.function.LongFunction;
  */
 public final class PlayerRemoteState {
 
-    /** Diagnostics name of the fence a player body takes for remote state. */
-    public static final String FENCE_OPERATION = "player state in another island";
+    /** Diagnostics names (regions debug fallbacks) of the fences taken for remote state. */
+    public static final String FENCE_ENTITY_TICK = "player state in another island (entity tick)";
+    public static final String FENCE_LISTENER_TICK = "player state in another island (listener tick)";
+    public static final String FENCE_MENU_PACKET = "player state in another island (menu packet)";
 
     private PlayerRemoteState() {}
 

@@ -287,7 +287,7 @@ public abstract class PlayerInteractionOwnerMixin {
                         "A5 menu packet reached another island inside an island packet body");
             }
             AsyncIslandPlayerTicks.runFencedMainMutation(
-                    com.axalotl.fabrolia.common.regions.PlayerRemoteState.FENCE_OPERATION, body);
+                    com.axalotl.fabrolia.common.regions.PlayerRemoteState.FENCE_MENU_PACKET, body);
             return;
         }
         withPlayerOwner(body);

@@ -1605,7 +1605,7 @@ public final class RegionScheduler {
      */
     public static void runWithMainEntityClaim(Entity entity, Runnable body,
                                               java.util.function.BooleanSupplier finishWithoutBody) {
-        runWithMainEntityClaim(entity, body, finishWithoutBody, false);
+        runWithMainEntityClaim(entity, body, finishWithoutBody, null);
     }
 
     /**
@@ -1614,16 +1614,19 @@ public final class RegionScheduler {
      * and block-break progress ({@link PlayerRemoteState}); when those point into
      * another island than the one claimed, the body runs under the global fence
      * instead, which nests under a single claim Main already holds.
+     * {@code fenceOperation} names that fence in the fallback diagnostics.
      */
     public static void runPlayerTickWithMainClaim(Entity entity, Runnable body,
-                                                  java.util.function.BooleanSupplier finishWithoutBody) {
-        runWithMainEntityClaim(entity, body, finishWithoutBody, true);
+                                                  java.util.function.BooleanSupplier finishWithoutBody,
+                                                  String fenceOperation) {
+        if (fenceOperation == null) throw new NullPointerException("fenceOperation");
+        runWithMainEntityClaim(entity, body, finishWithoutBody, fenceOperation);
     }
 
     private static void runClaimedEntityBody(Entity entity, Runnable body,
-                                             boolean playerTick) {
-        if (playerTick && PlayerRemoteState.treeReachesOutsideIsland(entity)) {
-            AsyncIslandPlayerTicks.runFencedMainMutation(PlayerRemoteState.FENCE_OPERATION, body);
+                                             String remoteStateFence) {
+        if (remoteStateFence != null && PlayerRemoteState.treeReachesOutsideIsland(entity)) {
+            AsyncIslandPlayerTicks.runFencedMainMutation(remoteStateFence, body);
         } else {
             runSuccessBodyIfHealthy(body);
         }
@@ -1631,7 +1634,7 @@ public final class RegionScheduler {
 
     private static void runWithMainEntityClaim(Entity entity, Runnable body,
                                                java.util.function.BooleanSupplier finishWithoutBody,
-                                               boolean playerTick) {
+                                               String remoteStateFence) {
         if (entity == null || body == null) throw new NullPointerException();
         if (!(entity.level() instanceof ServerLevel level)) {
             Throwable failure = null;
@@ -1690,7 +1693,7 @@ public final class RegionScheduler {
                 }
                 Throwable failure = null;
                 try {
-                    runClaimedEntityBody(entity, body, playerTick);
+                    runClaimedEntityBody(entity, body, remoteStateFence);
                 } catch (Throwable primary) {
                     failure = publishFatalAndSelectWinner(primary);
                 }
@@ -1720,7 +1723,7 @@ public final class RegionScheduler {
                     // still win the shared fatal slot while Main waits for the exact claim.
                     // Give the actual vanilla body its own atomic admission after the
                     // wait/revalidation; a plain health read here has a W-vs-entry race.
-                    runClaimedEntityBody(entity, body, playerTick);
+                    runClaimedEntityBody(entity, body, remoteStateFence);
                     bodyCompleted = true;
                 }
             } catch (Throwable primary) {
@@ -1817,7 +1820,7 @@ public final class RegionScheduler {
                 || e.isRemoved() || !(e.level() instanceof ServerLevel)) {
             return;
         }
-        runPlayerTickWithMainClaim(e, queued, null);
+        runPlayerTickWithMainClaim(e, queued, null, PlayerRemoteState.FENCE_ENTITY_TICK);
     }
 
     /**

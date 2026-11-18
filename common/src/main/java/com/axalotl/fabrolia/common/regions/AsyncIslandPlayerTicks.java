@@ -2100,7 +2100,8 @@ public final class AsyncIslandPlayerTicks {
             RegionScheduler.runPlayerTickWithMainClaim(player, () -> {
                 if (!cancelDirectMainListenerTick(
                         lease.state, listener, player, lifecycle)) body.run();
-            }, () -> cancelDirectMainListenerTick(lease.state, listener, player, lifecycle));
+            }, () -> cancelDirectMainListenerTick(lease.state, listener, player, lifecycle),
+                    PlayerRemoteState.FENCE_LISTENER_TICK);
         });
     }
 
@@ -2283,7 +2284,7 @@ public final class AsyncIslandPlayerTicks {
                 }
             }
             body.run();
-        }, null));
+        }, null, PlayerRemoteState.FENCE_LISTENER_TICK));
     }
 
     /**
