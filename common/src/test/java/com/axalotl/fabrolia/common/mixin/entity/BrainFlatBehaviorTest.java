@@ -27,7 +27,7 @@ import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** Drives the production flattened startEachNonRunningBehavior against vanilla's loop shape. */
+/** Drives the production flattened startEachNonRunningBehavior and running list against vanilla's loop shape. */
 class BrainFlatBehaviorTest {
     @BeforeAll
     static void bootstrap() {
@@ -60,6 +60,57 @@ class BrainFlatBehaviorTest {
         // the CORE entry that was active when reached runs to its end, the
         // later CORE entry sees it inactive, IDLE is unaffected.
         assertEquals(List.of("first", "second", "idle"), started);
+    }
+
+    @Test
+    void runningListMatchesVanillasWalkOverEveryActivityInOrder() throws Exception {
+        BrainMixin<LivingEntity> brain = new BrainMixin<>();
+        List<String> started = new ArrayList<>();
+        Recording a = new Recording("a", started, null).status(Behavior.Status.RUNNING);
+        Recording b = new Recording("b", started, null);
+        Recording c = new Recording("c", started, null).status(Behavior.Status.RUNNING);
+        Recording d = new Recording("d", started, null).status(Behavior.Status.RUNNING);
+        Recording e = new Recording("e", started, null).status(Behavior.Status.RUNNING);
+
+        Map<Integer, Map<Activity, Set<BehaviorControl<? super LivingEntity>>>> byPriority = new TreeMap<>();
+        byPriority.put(5, entry(Activity.REST, e));
+        Map<Activity, Set<BehaviorControl<? super LivingEntity>>> priorityZero = new HashMap<>();
+        priorityZero.putAll(entry(Activity.CORE, a, b));
+        priorityZero.putAll(entry(Activity.WORK, c));
+        byPriority.put(0, priorityZero);
+        byPriority.put(1, entry(Activity.IDLE, d));
+        set(brain, "availableBehaviorsByPriority", byPriority);
+        // Only IDLE is active: vanilla collects running behaviors of inactive activities too.
+        set(brain, "activeActivities", new HashSet<>(Set.of(Activity.IDLE)));
+
+        // Vanilla's getRunningBehaviors(): priorities ascending, the inner map's own order,
+        // each set in insertion order, RUNNING only.
+        List<BehaviorControl<? super LivingEntity>> vanilla = new ArrayList<>();
+        for (Map<Activity, Set<BehaviorControl<? super LivingEntity>>> byActivity : byPriority.values()) {
+            for (Set<BehaviorControl<? super LivingEntity>> behaviors : byActivity.values()) {
+                for (BehaviorControl<? super LivingEntity> behavior : behaviors) {
+                    if (behavior.getStatus() == Behavior.Status.RUNNING) vanilla.add(behavior);
+                }
+            }
+        }
+
+        List<BehaviorControl<? super LivingEntity>> flat = running(brain);
+        assertEquals(vanilla, flat);
+        assertEquals(4, flat.size());
+
+        // The list is a snapshot: a behavior that stops while the list is walked stays in it,
+        // and the next call reads the statuses again.
+        c.status(Behavior.Status.STOPPED);
+        assertEquals(4, flat.size());
+        assertEquals(3, running(brain).size());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<BehaviorControl<? super LivingEntity>> running(BrainMixin<LivingEntity> brain) throws Exception {
+        Method method = BrainMixin.class.getDeclaredMethod("fabrolia$runningFromFlat",
+                net.minecraft.world.entity.ai.Brain.class, Operation.class);
+        method.setAccessible(true);
+        return (List<BehaviorControl<? super LivingEntity>>) method.invoke(brain, null, null);
     }
 
     private static Map<Activity, Set<BehaviorControl<? super LivingEntity>>> entry(
@@ -105,7 +156,14 @@ class BrainFlatBehaviorTest {
             this.onStart = onStart;
         }
 
-        @Override public Behavior.Status getStatus() { return Behavior.Status.STOPPED; }
+        private Behavior.Status status = Behavior.Status.STOPPED;
+
+        Recording status(Behavior.Status status) {
+            this.status = status;
+            return this;
+        }
+
+        @Override public Behavior.Status getStatus() { return status; }
         @Override public Set<MemoryModuleType<?>> getRequiredMemories() { return Set.of(); }
 
         @Override
