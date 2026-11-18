@@ -73,14 +73,12 @@ final class MixinShadowStateOwnershipTest {
     private static final Set<String> ALLOWED_SHADOW_INITIALIZERS = Set.of(
             // Baseline of the 2026-10-25 audit (A-27): each replaces a freshly constructed
             // empty collection (or a lock/semaphore) by its thread-safe counterpart.
-            // GoalSelectorMixin#availableGoals is pending review with audit A-05.
             "AttributeMapMixin#attributes",
             "BeehiveBlockEntityBeeMixin#stored",
             "ChunkMapTrackedEntityMixin#seenBy",
             "CombatTrackerMixin#entries",
             "DistanceManagerMixin#chunksToUpdateFutures",
             "DistanceManagerMixin#ticketsToRelease",
-            "GoalSelectorMixin#availableGoals",
             "GossipContainerMixin#gossips",
             "LevelTicksMixin#allContainers",
             "LevelTicksMixin#nextTickForContainer",
