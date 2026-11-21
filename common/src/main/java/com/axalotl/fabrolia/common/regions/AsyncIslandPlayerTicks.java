@@ -1407,9 +1407,138 @@ public final class AsyncIslandPlayerTicks {
         return true;
     }
 
+    /**
+     * Rig fault injection ({@code regions debug softcutlate <player> [mode]}, only with
+     * {@code -Dfabrolia.debugCommands=true}): the next island unit that queued this
+     * player's late half mutates the player before the late slot, between its early
+     * and its late half (the state of the 2026-11-19 production fail-stop).
+     * <ul>
+     *   <li>{@code worker}: same-level teleport in place on the island worker;</li>
+     *   <li>{@code main}: the same teleport on fenced Main while this coordinator
+     *       parks for a routed island body ({@link IslandCommands#routeFencedIslandBody});</li>
+     *   <li>{@code mainfar}: a teleport 10000 blocks away on fenced Main;</li>
+     *   <li>{@code mainisland}: a teleport to another player (another island) on fenced
+     *       Main; like {@code mainfarslow} it then holds the open turn for 150 ms so the
+     *       destination's pass meets the player first;</li>
+     *   <li>{@code maindim}: a teleport into another dimension on fenced Main;</li>
+     *   <li>{@code maindisconnect}: a kick of the player on fenced Main;</li>
+     *   <li>{@code foreignfar}, {@code foreigndisconnect}: a far teleport or the
+     *       disconnect body in a separate fenced Main task queued ahead of a no-op
+     *       routed body (a foreign fence meeting the parked coordinator).</li>
+     * </ul>
+     */
+    private record DebugSoftCut(ServerPlayer player, String mode) {}
+
+    private static final java.util.concurrent.atomic.AtomicReference<DebugSoftCut>
+            DEBUG_SOFT_CUT_BEFORE_LATE = new java.util.concurrent.atomic.AtomicReference<>();
+
+    public static void armDebugSoftCutBeforeLate(ServerPlayer player, String mode) {
+        Objects.requireNonNull(player, "player");
+        if (!Set.of("worker", "main", "mainfar", "mainfarslow", "mainisland", "maindim",
+                "maindisconnect",
+                "foreignfar", "foreigndisconnect").contains(mode)) {
+            throw new IllegalArgumentException("unknown softcutlate mode " + mode);
+        }
+        DEBUG_SOFT_CUT_BEFORE_LATE.set(new DebugSoftCut(player, mode));
+    }
+
+    private static void runDebugSoftCutBeforeLate(IslandRegistry.PIsland island) {
+        DebugSoftCut armed = DEBUG_SOFT_CUT_BEFORE_LATE.get();
+        if (armed == null) return;
+        ServerPlayer target = armed.player();
+        boolean queued = false;
+        for (PendingLate pending : island.pendingPlayerLate) {
+            if (pending.player == target) {
+                queued = true;
+                break;
+            }
+        }
+        if (!queued || !DEBUG_SOFT_CUT_BEFORE_LATE.compareAndSet(armed, null)) return;
+        String mode = armed.mode();
+        Runnable body = () -> {
+            LOGGER.warn("[softcutlate] running {} for {} on {} before its late half "
+                    + "(debug injector)", mode, target.getScoreboardName(),
+                    Thread.currentThread().getName());
+            if (mode.equals("maindisconnect")) {
+                target.connection.disconnect(
+                        net.minecraft.network.chat.Component.literal("softcutlate"));
+                return;
+            }
+            if (mode.equals("foreigndisconnect")) {
+                target.connection.onDisconnect(new net.minecraft.network.DisconnectionDetails(
+                        net.minecraft.network.chat.Component.literal("softcutlate")));
+                return;
+            }
+            ServerLevel destinationLevel = target.level();
+            if (mode.equals("maindim")) {
+                for (ServerLevel candidate : target.level().getServer().getAllLevels()) {
+                    if (candidate != target.level()) {
+                        destinationLevel = candidate;
+                        break;
+                    }
+                }
+            }
+            ServerPlayer other = null;
+            for (ServerPlayer candidate : target.level().players()) {
+                if (candidate != target) {
+                    other = candidate;
+                    break;
+                }
+            }
+            net.minecraft.world.phys.Vec3 destination =
+                    mode.equals("mainisland") && other != null
+                            ? other.position()
+                            : mode.startsWith("mainfar") || mode.equals("foreignfar")
+                            ? target.position().add(10000.0, 0.0, 0.0)
+                            : mode.equals("maindim")
+                            ? new net.minecraft.world.phys.Vec3(0.5, 120.0, 0.5)
+                            : target.position();
+            target.teleport(new net.minecraft.world.level.portal.TeleportTransition(
+                    destinationLevel, destination, net.minecraft.world.phys.Vec3.ZERO,
+                    target.getYRot(), target.getXRot(), Set.of(),
+                    net.minecraft.world.level.portal.TeleportTransition.DO_NOTHING));
+        };
+        if (mode.equals("worker")) {
+            body.run();
+            return;
+        }
+        RegionizedServer runtime = RegionScheduler.forLevel(target.level());
+        if (mode.startsWith("foreign")) {
+            // A Main task of its own, queued ahead of the routed body's drain: it takes
+            // an ordinary all-island fence while this coordinator parks below.
+            MinecraftServer server = target.level().getServer();
+            server.execute(() -> {
+                boolean took = IslandCommands.quiesceAllExcept(null);
+                try {
+                    body.run();
+                } finally {
+                    if (took) IslandCommands.releaseAllExcept();
+                }
+            });
+            IslandCommands.routeFencedIslandBody(runtime, island,
+                    "softcutlate " + mode, () -> {
+                        // Keep the park open long enough for the queued Main task.
+                        LOGGER.warn("[softcutlate] routed no-op body of {} on {}", mode,
+                                Thread.currentThread().getName());
+                        return true;
+                    });
+            return;
+        }
+        IslandCommands.routeFencedIslandBody(runtime, island, "softcutlate " + mode, () -> {
+            body.run();
+            return true;
+        });
+        if (mode.equals("mainisland") || mode.equals("mainfarslow")) {
+            // Hold the open turn so the destination's own pass (another island's unit,
+            // Main's global pass) reaches the player before this island closes it.
+            java.util.concurrent.locks.LockSupport.parkNanos(150_000_000L);
+        }
+    }
+
     /** Late real-player listener slot: after BEs, before final chunk snapshots. */
     public static void runLate(IslandRegistry.PIsland island) {
         if (island == null) return;
+        if (DEBUG_SOFT_CUT_BEFORE_LATE.get() != null) runDebugSoftCutBeforeLate(island);
         // Polling and consuming one exact PendingLate token are a single admitted
         // vanilla obligation.  If a peer selects W first, the token stays queued;
         // if this body wins entry, its external permit observes any later peer W
@@ -1428,6 +1557,10 @@ public final class AsyncIslandPlayerTicks {
             boolean hardLifecycleCut;
             boolean deathLateAuthority;
             long deathLateLifecycleEpoch;
+            boolean softLateAuthority;
+            boolean softLateEpochAdvance;
+            boolean mainLateTransfer;
+            String softCutLegs = null;
             synchronized (pending.state) {
                 immutableLateAuthority =
                         pendingRealPlayerBeforeLateInvariantLocked(pending, island);
@@ -1441,23 +1574,50 @@ public final class AsyncIslandPlayerTicks {
                         && hardLifecycleCut
                         && pendingDeathLateAuthorityLocked(pending, island);
                 deathLateLifecycleEpoch = pending.state.deathLateLifecycleEpoch;
+                // Another body of this island unit (or this player's own early body)
+                // may run a same-level teleport, mount or dismount of this player after
+                // its early half. That cut is soft: the listener tick it owes still runs
+                // here, and the post-physics publication hands the player to Main.
+                softLateEpochAdvance = pending.state.auditedLifecycleMutationPending
+                        && !pending.state.hardLifecycleExitPending;
+                boolean softCut = lifecycleCut && !hardLifecycleCut;
+                boolean softLive = softCut
+                        && IslandEntityTracking.pendingRealPlayerSoftLateLiveLocked(
+                        pending, island);
+                boolean onSourceIsland = softCut && onSourceIslandForLate(pending.player, island);
+                softLateAuthority = softLateAuthority(immutableLateAuthority, lifecycleCut,
+                        hardLifecycleCut, softLive, onSourceIsland, pending.player.isRemoved());
+                mainLateTransfer = mainLateTransfer(immutableLateAuthority, lifecycleCut,
+                        deathLateAuthority, softLateAuthority,
+                        pending.state.mainDisconnectPending);
+                if (mainLateTransfer) {
+                    softCutLegs = softLateCutLegsLocked(pending, island, immutableLateAuthority,
+                            softLive, onSourceIsland);
+                }
             }
             if (!immutableLateAuthority) {
                 throw failPendingLateBeforeListener(pending,
                         "A5 late entry violated immutable PendingLate authority",
                         "A5 invalid PendingLate containment rejected its exact permit");
             }
-            if (hardLifecycleCut && !deathLateAuthority) {
+            if (lifecycleCut && !deathLateAuthority && !softLateAuthority
+                    && !mainLateTransfer) {
+                // A disconnect owns this session's close; it never meets an entered
+                // turn (beginPhysicalMainDisconnect), so this state is unexplained.
                 throw failPendingLateBeforeListener(pending,
-                        "A5 hard lifecycle transition could not preserve the required "
-                                + "listener tick",
-                        "A5 hard lifecycle cut could not close PendingLate");
+                        "A5 lifecycle transition with a pending disconnect could not "
+                                + "preserve the required listener tick",
+                        "A5 disconnecting lifecycle cut could not close PendingLate");
             }
-            if (lifecycleCut && !deathLateAuthority) {
-                throw failPendingLateBeforeListener(pending,
-                        "A5 soft lifecycle transition lost the source-island authority "
-                                + "required by the listener tick",
-                        "A5 soft lifecycle cut could not close PendingLate");
+            if (mainLateTransfer) {
+                // A lifecycle cut this island cannot serve, from a routed body on fenced
+                // Main or another body of this unit: the player is off the island, in
+                // another dimension or removed. The exact PendingLate is intact, so the
+                // island closes its turn without a body and Main runs the listener tick.
+                LOGGER.warn("A5 hands the owed listener tick of {} to Main after a {} "
+                                + "lifecycle cut between its early and late half: {}",
+                        pending.player.getScoreboardName(),
+                        hardLifecycleCut ? "hard" : "soft", softCutLegs);
             }
             if (pending.owner.islandIdentity() != island || isCarpetFake(pending.player)) {
                 throw failPendingLateBeforeListener(pending,
@@ -1465,12 +1625,19 @@ public final class AsyncIslandPlayerTicks {
                         "A5 wrong-owner PendingLate containment rejected its exact permit");
             }
             RegionizedServer rs = RegionScheduler.forLevel(pending.player.level());
-            boolean currentForLate = deathLateAuthority
+            boolean currentForLate = mainLateTransfer
+                    // The live player may be anywhere; the immutable proof above is
+                    // the whole authority this island still needs to close its turn.
+                    || (deathLateAuthority
                     ? stillCurrentForDeathLate(pending.owner, pending.player,
                     pending.listener, rs, island, island.domain,
                     deathLateLifecycleEpoch)
-                    : stillCurrent(pending.owner, pending.player, rs, island, island.domain);
-            if (!currentForLate || pending.player.connection != pending.listener
+                    : softLateAuthority
+                    ? stillCurrent(pending.owner, pending.player, rs, island, island.domain,
+                    softLateEpochAdvance)
+                    : stillCurrent(pending.owner, pending.player, rs, island, island.domain));
+            if (!currentForLate
+                    || !mainLateTransfer && pending.player.connection != pending.listener
                     || !pending.state.session.beginRealLate(pending.permit)) {
                 throw failPendingLateBeforeListener(pending,
                         "A5 real-player session changed before late listener",
@@ -1479,50 +1646,55 @@ public final class AsyncIslandPlayerTicks {
             TurnContext context = new TurnContext(pending.state, pending.player,
                     island, pending.owner, pending.permit, true);
             Throwable failure = null;
-            boolean postPhysicsHandoff = deathLateAuthority;
+            boolean postPhysicsHandoff = deathLateAuthority || mainLateTransfer;
             try {
                 if (TURN.get() != null) throw new IllegalStateException("nested A5 late turn");
-                TURN.set(context);
-                // Keep the complete listener state machine on one owner. Splitting
-                // only tickPlayer left its ack/keepalive/throttler/idle tail running
-                // concurrently on physical Main and also lost tickPlayer's early-
-                // return semantics. Connection.tick skips this exact listener call
-                // while the session is island-owned; its transport/disconnect/flush
-                // shell remains on Main.
-                // Minecraft 26.2 listener.tick reaches ServerPlayer.doTick via
-                // tickPlayer; its Player.tick advances ItemCooldowns exactly once.
-                // Keep that clock here: adding a separate Main/island cooldown tick would
-                // either reconnect island cadence to Main or halve cooldowns.
-                MinecraftServer server = pending.player.level().getServer();
-                if (server == null) {
-                    throw new IllegalStateException("A5 late listener lost its server");
-                }
-                synchronized (pending.state) {
-                    pending.state.lastIslandListenerServerTick = server.getTickCount();
-                    pending.state.lastIslandListenerPlayer = pending.player;
-                }
-                sendPredictedBlockCorrections(pending);
-                pending.listener.tick();
-                // doTick is this player's entity body; unlike the regional
-                // tickEntity path it has no outer departure-visibility closer.
-                // The queued transfer stays reserved, but source tracking must
-                // see the real live player after the completed physics body.
-                NetherPortalTransfers.completeTickLocalDeparture(pending.player);
-                if (!deathLateAuthority) {
-                    // Packet replay may have applied a Lunge impulse before the
-                    // early entity body. Vanilla publishes player motion only
-                    // after listener.tick/doTick physics has consumed that impulse
-                    // (including block friction). Keep the exact LATE_RUNNING
-                    // permit live across this one self-tracker generation.
-                    IslandEntityTracking.PostPhysicsResult publication =
-                            IslandEntityTracking.publishPendingRealPlayerAfterPhysics(
-                                    pending, island);
-                    if (publication == IslandEntityTracking.PostPhysicsResult.INVALID) {
-                        throw new IllegalStateException(
-                                "A5 post-physics player publication violated exact ownership");
+                if (mainLateTransfer) {
+                    // No island body: the turn closes through the ordinary handoff.
+                    handOwedListenerTickToMain(pending);
+                } else {
+                    TURN.set(context);
+                    // Keep the complete listener state machine on one owner. Splitting
+                    // only tickPlayer left its ack/keepalive/throttler/idle tail running
+                    // concurrently on physical Main and also lost tickPlayer's early-
+                    // return semantics. Connection.tick skips this exact listener call
+                    // while the session is island-owned; its transport/disconnect/flush
+                    // shell remains on Main.
+                    // Minecraft 26.2 listener.tick reaches ServerPlayer.doTick via
+                    // tickPlayer; its Player.tick advances ItemCooldowns exactly once.
+                    // Keep that clock here: adding a separate Main/island cooldown tick would
+                    // either reconnect island cadence to Main or halve cooldowns.
+                    MinecraftServer server = pending.player.level().getServer();
+                    if (server == null) {
+                        throw new IllegalStateException("A5 late listener lost its server");
                     }
-                    postPhysicsHandoff = publication
-                            == IslandEntityTracking.PostPhysicsResult.HANDOFF;
+                    synchronized (pending.state) {
+                        pending.state.lastIslandListenerServerTick = server.getTickCount();
+                        pending.state.lastIslandListenerPlayer = pending.player;
+                    }
+                    sendPredictedBlockCorrections(pending);
+                    pending.listener.tick();
+                    // doTick is this player's entity body; unlike the regional
+                    // tickEntity path it has no outer departure-visibility closer.
+                    // The queued transfer stays reserved, but source tracking must
+                    // see the real live player after the completed physics body.
+                    NetherPortalTransfers.completeTickLocalDeparture(pending.player);
+                    if (!deathLateAuthority) {
+                        // Packet replay may have applied a Lunge impulse before the
+                        // early entity body. Vanilla publishes player motion only
+                        // after listener.tick/doTick physics has consumed that impulse
+                        // (including block friction). Keep the exact LATE_RUNNING
+                        // permit live across this one self-tracker generation.
+                        IslandEntityTracking.PostPhysicsResult publication =
+                                IslandEntityTracking.publishPendingRealPlayerAfterPhysics(
+                                        pending, island);
+                        if (publication == IslandEntityTracking.PostPhysicsResult.INVALID) {
+                            throw new IllegalStateException(
+                                    "A5 post-physics player publication violated exact ownership");
+                        }
+                        postPhysicsHandoff = publication
+                                == IslandEntityTracking.PostPhysicsResult.HANDOFF;
+                    }
                 }
             } catch (Throwable thrown) {
                 // listener.tick and post-physics publication are entered simulation.
@@ -1575,6 +1747,63 @@ public final class AsyncIslandPlayerTicks {
                 FailStops.rethrow(publishFatalFailure(failure));
             }
             return true;
+    }
+
+    static final LongAdder MAIN_LATE_TRANSFERS = new LongAdder();
+    static final LongAdder MAIN_LATE_REPLAYS = new LongAdder();
+    static final LongAdder ORDINALS_SKIPPED_BEFORE_LATE_CLOSE = new LongAdder();
+    private static final boolean DEBUG_LATE_TRANSFER_LOG =
+            Boolean.getBoolean("fabrolia.debugCommands");
+
+    /**
+     * Vanilla runs the listener tick once per server tick whatever the entity bodies
+     * before it did to the player. When this island can no longer serve it, the tick
+     * joins the listener's ordered Main ingress: it runs on Main after the handoff this
+     * turn publishes, behind Main packets accepted earlier and with the Main claim of
+     * wherever the player is then. Deviation from vanilla: that is later than the
+     * island's late slot, and a Main entity tick of the same wall tick may precede it.
+     * A listener that is disconnecting or no longer bound to a player owes no tick.
+     */
+    private static void handOwedListenerTickToMain(PendingLate pending) {
+        ServerGamePacketListenerImpl listener = pending.listener;
+        synchronized (pending.state) {
+            ServerPlayer current = listener.player;
+            if (transferredListenerTickOwed(pending.state.listenerGate == listener,
+                    pending.state.mainDisconnectPending,
+                    current != null && current.connection == listener)) {
+                enqueueMainIngressLocked(pending.state, listener,
+                        InboundPacket.listenerTick(listener, () -> {
+                            MAIN_LATE_REPLAYS.increment();
+                            if (DEBUG_LATE_TRANSFER_LOG) {
+                                LOGGER.warn("[softcutlate] owed listener tick of {} runs on {}",
+                                        listener.player.getScoreboardName(),
+                                        Thread.currentThread().getName());
+                            }
+                            listener.tick();
+                        }));
+            }
+        }
+        MAIN_LATE_TRANSFERS.increment();
+        MainFallbackStats.HANDOFFS.increment("lifecycle cut between halves");
+    }
+
+    /**
+     * Whether an intact PendingLate closes on this island without a body and leaves
+     * its listener tick to Main: a lifecycle cut that neither the death proof nor the
+     * same-island soft proof covers. A broken PendingLate and a pending disconnect
+     * keep the fail-stop.
+     */
+    static boolean mainLateTransfer(boolean immutableLateAuthority, boolean lifecycleCut,
+                                    boolean deathLateAuthority, boolean softLateAuthority,
+                                    boolean disconnectPending) {
+        return immutableLateAuthority && lifecycleCut
+                && !deathLateAuthority && !softLateAuthority && !disconnectPending;
+    }
+
+    static boolean transferredListenerTickOwed(boolean listenerGateCurrent,
+                                               boolean disconnectPending,
+                                               boolean listenerPlayerBound) {
+        return listenerGateCurrent && !disconnectPending && listenerPlayerBound;
     }
 
     /**
@@ -1771,6 +2000,56 @@ public final class AsyncIslandPlayerTicks {
                 && player.connection == pending.listener
                 && pending.listener.player == player
                 && player.level() == island.domainLevel();
+    }
+
+    /**
+     * Whether a soft lifecycle cut published between this player's early and late half
+     * keeps the owed listener tick on the source island. Vanilla runs that listener tick
+     * once per server tick whatever the entity bodies before it did to the player; the
+     * post-physics publication then hands the player to Main. Hard exits, disconnects,
+     * a removed player, a player moved off the source island and anything the
+     * post-physics proof would reject keep the fail-stop.
+     *
+     * @param softLive {@link IslandEntityTracking#pendingRealPlayerSoftLateLiveLocked}:
+     *        live session on the source island; a strict lifecycle-epoch advance only
+     *        for an audited soft mutation, otherwise the exact epoch
+     */
+    static boolean softLateAuthority(boolean immutableLateAuthority, boolean lifecycleCut,
+                                     boolean hardLifecycleCut, boolean softLive,
+                                     boolean onSourceIsland, boolean removed) {
+        return immutableLateAuthority && lifecycleCut && !hardLifecycleCut
+                && softLive && onSourceIsland && !removed;
+    }
+
+    /** The player's chunk still belongs to the island whose unit runs the late slot. */
+    private static boolean onSourceIslandForLate(ServerPlayer player,
+                                                 IslandRegistry.PIsland island) {
+        if (!(player.level() instanceof ServerLevel level) || level != island.domainLevel()) {
+            return false;
+        }
+        RegionizedServer rs = RegionScheduler.forLevel(level);
+        return rs != null && rs.islandOwnerOfChunk(player.chunkPosition().pack()) == island;
+    }
+
+    /** Names every leg of a refused soft late cut; constant work, diagnosis only. */
+    private static String softLateCutLegsLocked(PendingLate pending,
+                                                IslandRegistry.PIsland island,
+                                                boolean immutableLateAuthority,
+                                                boolean softLive, boolean onSourceIsland) {
+        PlayerState state = pending.state;
+        ServerPlayer player = pending.player;
+        long lifecycle = ((PlayerTickPhaseStamp) player).fabrolia$playerLifecycleEpoch();
+        return "player=" + player.getScoreboardName()
+                + " phase=" + state.session.view().phase()
+                + " invalidated=" + state.lifecycleInvalidated
+                + " audited=" + state.auditedLifecycleMutationPending
+                + " eligible=" + state.eligible
+                + " lifecycleEpoch=" + lifecycle + "/" + pending.owner.lifecycleEpoch()
+                + " immutable=" + immutableLateAuthority
+                + " live=" + softLive
+                + " onSourceIsland=" + onSourceIsland
+                + " removed=" + player.isRemoved()
+                + " island=" + island.id;
     }
 
     /** Same-source death proof, intentionally bypassing only hasClientLoaded(). */
@@ -3395,8 +3674,11 @@ public final class AsyncIslandPlayerTicks {
         }
         if (!(player instanceof AsyncIslandPlayerAccess)) return;
         PlayerState state = state(player);
+        boolean betweenHalves = false;
         synchronized (state) {
             IslandPlayerTurnSession.View view = state.session.view();
+            betweenHalves = view.owner() != null
+                    && view.phase() == IslandPlayerTurnSession.Phase.EARLY_DONE;
             if (view.owner() == null) {
                 updateTrackingTopologyGapForLifecycleLocked(state, kind);
                 state.eligible = false;
@@ -3450,6 +3732,32 @@ public final class AsyncIslandPlayerTicks {
                 scheduleMainHandoffLocked(state, player, false);
             }
         }
+        if (betweenHalves
+                && kind == RegionalPlayerEntityTicksV2.LifecycleMutationKind.SOFT_HANDOFF) {
+            logLifecycleMutationBetweenHalves(player, kind);
+        }
+    }
+
+    private static final AtomicLong BETWEEN_HALVES_LOG_NANOS = new AtomicLong(Long.MIN_VALUE);
+    private static final LongAdder BETWEEN_HALVES_MUTATIONS = new LongAdder();
+
+    /**
+     * A lifecycle mutation of a player waiting for its late half is legal but rare;
+     * name its origin (at most once a minute) so a production report shows which
+     * mod or vanilla path ran it.
+     */
+    private static void logLifecycleMutationBetweenHalves(
+            ServerPlayer player, RegionalPlayerEntityTicksV2.LifecycleMutationKind kind) {
+        BETWEEN_HALVES_MUTATIONS.increment();
+        long now = System.nanoTime();
+        long last = BETWEEN_HALVES_LOG_NANOS.get();
+        if (last != Long.MIN_VALUE && now - last < 60_000_000_000L) return;
+        if (!BETWEEN_HALVES_LOG_NANOS.compareAndSet(last, now)) return;
+        LOGGER.warn("A5 {} lifecycle mutation of {} between its early and late half on {} "
+                        + "({} so far); the late half hands the player to Main",
+                kind, player.getScoreboardName(), Thread.currentThread().getName(),
+                BETWEEN_HALVES_MUTATIONS.sum(),
+                new Throwable("origin of the lifecycle mutation"));
     }
 
     /** Only an explicit pre-early-body mutation may request a replacement Main body. */
@@ -4130,6 +4438,26 @@ public final class AsyncIslandPlayerTicks {
     }
 
     /**
+     * Main's global entity pass reached a player whose session an island still owns or
+     * whose handoff to Main has not closed: a lifecycle cut moved the player into a
+     * global-lane cell and the closer is still queued. Its entity body then joins the
+     * ordered Main ingress behind that handoff instead of running here.
+     *
+     * @return true when the pass must not run the body itself
+     */
+    public static boolean deferGlobalPassPlayerTick(ServerPlayer player) {
+        if (!(player instanceof AsyncIslandPlayerAccess) || !enabledForAsync()) return false;
+        ServerGamePacketListenerImpl listener = player.connection;
+        if (listener == null || listener.player != player) return false;
+        PlayerState state = state(player);
+        synchronized (state) {
+            IslandPlayerTurnSession.View view = state.session.view();
+            if (view.owner() == null && !isMainHandoffPhase(view.phase())) return false;
+        }
+        return markMainFallback(player, true, "global pass before handoff");
+    }
+
+    /**
      * @return true when an ordered ISLAND->MAIN handoff owns this ordinal or an
      * authenticated disconnect cancels it before entry; neither may reach MAIN_SYNC.
      */
@@ -4197,6 +4525,21 @@ public final class AsyncIslandPlayerTicks {
             if (isMainHandoffPhase(view.phase())) {
                 enqueueMainIngressLocked(state, listener,
                         newMainEntityOrdinalLocked(state, listener, player));
+                return true;
+            }
+
+            // A lifecycle cut between the halves moved this player out of its island
+            // while that island still owes the late close of the turn (runLate hands
+            // the listener tick to Main). The player had this tick's entity body
+            // there; another pass reaching it in that window owes no second one.
+            if (view.phase() == IslandPlayerTurnSession.Phase.EARLY_DONE
+                    && state.lifecycleInvalidated) {
+                ORDINALS_SKIPPED_BEFORE_LATE_CLOSE.increment();
+                if (DEBUG_LATE_TRANSFER_LOG) {
+                    LOGGER.warn("[softcutlate] {} skipped the entity ordinal of {} before "
+                                    + "its old island closed the turn ({})",
+                            Thread.currentThread().getName(), player.getScoreboardName(), cause);
+                }
                 return true;
             }
 

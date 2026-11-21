@@ -692,6 +692,16 @@ public final class RegionCommand {
                                     "[failunittail] armed for next {} units (debug injector)", n);
                             return 1;
                         })));
+        if (DEBUG_COMMANDS) dbg.then(literal("softcutlate").requires(PlatformPermission.require("command.regions", 2))
+                .then(Commands.argument("target", net.minecraft.commands.arguments.EntityArgument.player())
+                        // 2026-11-19 reproduction hook: a lifecycle mutation of an island
+                        // player between its early and late half (AsyncIslandPlayerTicks
+                        // .runLate): on the island worker, or on fenced Main while the
+                        // coordinator parks for a routed body.
+                        .executes(ctx -> armSoftCutLate(ctx, "worker"))
+                        .then(Commands.argument("mode", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                .executes(ctx -> armSoftCutLate(ctx,
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "mode"))))));
         if (DEBUG_COMMANDS) dbg.then(literal("offmainpkt").requires(PlatformPermission.require("command.regions", 2))
                         .executes(ctx -> {
                             // task #25 reproduction hook: dispatch a REAL
@@ -1025,6 +1035,19 @@ public final class RegionCommand {
         send(ctx, "spawnable chunks: ", sb.toString(), false);
         send(ctx, "measure with: ", "/fabrolia regions debug spawnrate (checks vs accepts per category;"
                 + " the first call starts recording)", false);
+    }
+
+    private static int armSoftCutLate(
+            com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx, String mode)
+            throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+        net.minecraft.server.level.ServerPlayer target =
+                net.minecraft.commands.arguments.EntityArgument.getPlayer(ctx, "target");
+        com.axalotl.fabrolia.common.regions.AsyncIslandPlayerTicks
+                .armDebugSoftCutBeforeLate(target, mode);
+        send(ctx, "", "softcutlate " + mode + " armed for " + target.getScoreboardName(), false);
+        org.slf4j.LoggerFactory.getLogger("fabrolia").warn(
+                "[softcutlate] {} armed for {} (debug injector)", mode, target.getScoreboardName());
+        return 1;
     }
 
     private static void send(CommandContext<CommandSourceStack> ctx, String head, String highlight, boolean broadcast) {

@@ -712,7 +712,13 @@ public final class IslandCommands {
             }
             if (!fenced.isEmpty()) {
                 long q0 = System.nanoTime();
-                boolean took = quiesceAllExcept(null);
+                boolean took;
+                routedBatchFenceRequest = true;
+                try {
+                    took = quiesceAllExcept(null);
+                } finally {
+                    routedBatchFenceRequest = false;
+                }
                 if (!took && (ACTIVE_FENCE != null
                         || requiresMainFence())) {
                     // An existing global frame is not borrowable here: completing
@@ -885,11 +891,26 @@ public final class IslandCommands {
         long heldNanos;
         String ledgerCaller;
 
+        /** Only the routed batch's own fence may borrow a parked coordinator's claim. */
+        final boolean routedBatch;
+
         GlobalFenceFrame(Thread owner, IslandRegistry.PIsland except) {
+            this(owner, except, false);
+        }
+
+        GlobalFenceFrame(Thread owner, IslandRegistry.PIsland except, boolean routedBatch) {
             this.owner = owner;
             this.except = except;
+            this.routedBatch = routedBatch;
         }
     }
+
+    /** Physical Main only: the next global fence is the routed batch's own. */
+    private static boolean routedBatchFenceRequest;
+
+    /** Fences that met a coordinator parked for a routed body, drained it and retried. */
+    public static final java.util.concurrent.atomic.LongAdder FENCE_RETRIES_AFTER_ROUTED_PARK =
+            new java.util.concurrent.atomic.LongAdder();
 
     /** Volatile so a foreign callback can never borrow Main's frame.  Frame
      * lists themselves remain confined to the exact owner. */
@@ -1327,7 +1348,9 @@ public final class IslandCommands {
             }
             if (!anyAsync || !needsClaims) return false;
 
-            frame = new GlobalFenceFrame(Thread.currentThread(), except);
+            boolean routedBatch = routedBatchFenceRequest;
+            routedBatchFenceRequest = false;
+            frame = new GlobalFenceFrame(Thread.currentThread(), except, routedBatch);
             ACTIVE_FENCE = frame;
             for (RegionizedServer rs : levels) {
                 if (!requiresMainFence(rs) || rs.mainHoldsAllClaims()) continue;
@@ -1344,12 +1367,27 @@ public final class IslandCommands {
                                         + "/gen" + island.gen + ": " + claimForensics(island));
                     }
                     boolean claimed = false;
+                    boolean drainRoutedFirst = false;
                     island.announceClaimInterest();
                     try {
                         long spinStarted = System.nanoTime();
                         int stuck = 0;
                         while (!(claimed = island.unitClaim.compareAndSet(false, true))
-                                && !commandWaiterParkedForGlobalFence(rs, island, frame)) {
+                                && !(frame.routedBatch
+                                && commandWaiterParkedForGlobalFence(rs, island, frame))) {
+                            if (!frame.routedBatch && island.waitingOnRoutedCommand
+                                    && hasRoutedPending()) {
+                                // The coordinator parks in the middle of its unit for a
+                                // routed body. Its park is a claim substitute for that
+                                // body's own fence only: any other fenced Main body would
+                                // run between two stages of the island tick (players
+                                // between their early and late half), where vanilla runs
+                                // nothing. Leave the spin; the frame is given back below.
+                                // With no routed body left to run, the coordinator is
+                                // about to resume: the ordinary wait covers that.
+                                drainRoutedFirst = true;
+                                break;
+                            }
                             if (!RegionScheduler.poolRunning()) {
                                 RegionScheduler.throwWorkerFailureIfAny();
                                 throw new IllegalStateException(
@@ -1381,6 +1419,25 @@ public final class IslandCommands {
                         }
                     } finally {
                         island.withdrawClaimInterest();
+                    }
+                    if (drainRoutedFirst) {
+                        // Run the routed batch so the parked unit can finish, then
+                        // acquire again. The drain is unbounded by design and does not
+                        // count against a fence budget.
+                        long drainStarted = System.nanoTime();
+                        GlobalFenceFrame released = frame;
+                        frame = null;
+                        Throwable cleanup = releaseGlobalFenceFrame(released, null);
+                        if (cleanup != null) FailStops.<RuntimeException>rethrow(cleanup);
+                        RegionScheduler.commitSuccessIfHealthy(() -> {});
+                        drainRoutedBatch();
+                        FENCE_RETRIES_AFTER_ROUTED_PARK.increment();
+                        // Shown by /fabrolia regions debug fallbacks: how often a fence
+                        // met an island parked in the middle of its unit.
+                        MainFallbackStats.FENCES.increment("retry after a parked routed body");
+                        return quiesceAllExcept(except, deadline == Long.MAX_VALUE
+                                ? Long.MAX_VALUE
+                                : Math.max(0L, deadline - drainStarted));
                     }
                     if (claimed) {
                         try {

@@ -214,6 +214,54 @@ final class IslandPlayerTurnSessionTest {
     }
 
     @Test
+    void unservableCutBetweenHalvesHandsTheListenerTickToMainOnlyWithAnIntactPendingLate() {
+        for (int row = 0; row < 32; row++) {
+            boolean immutable = (row & 1) != 0;
+            boolean cut = (row & 2) != 0;
+            boolean death = (row & 4) != 0;
+            boolean soft = (row & 8) != 0;
+            boolean disconnecting = (row & 16) != 0;
+            assertEquals(immutable && cut && !death && !soft && !disconnecting,
+                    AsyncIslandPlayerTicks.mainLateTransfer(
+                            immutable, cut, death, soft, disconnecting),
+                    "row " + row);
+        }
+        // The tick is owed only to a bound listener that is not disconnecting.
+        assertTrue(AsyncIslandPlayerTicks.transferredListenerTickOwed(true, false, true));
+        assertFalse(AsyncIslandPlayerTicks.transferredListenerTickOwed(false, false, true));
+        assertFalse(AsyncIslandPlayerTicks.transferredListenerTickOwed(true, true, true));
+        assertFalse(AsyncIslandPlayerTicks.transferredListenerTickOwed(true, false, false));
+    }
+
+    @Test
+    void softCutBetweenEarlyAndLateKeepsTheListenerTickOnlyWithFullSourceProof() {
+        // 2026-11-19 production fail-stop: a same-level teleport/mount/dismount of a
+        // player waiting for its late half. The owed listener tick runs on the source
+        // island only when every leg holds; every other combination keeps the fail-stop.
+        assertTrue(AsyncIslandPlayerTicks.softLateAuthority(
+                true, true, false, true, true, false));
+        for (int bits = 0; bits < 64; bits++) {
+            boolean immutable = (bits & 1) != 0;
+            boolean cut = (bits & 2) != 0;
+            boolean hard = (bits & 4) != 0;
+            boolean live = (bits & 8) != 0;
+            boolean onSource = (bits & 16) != 0;
+            boolean removed = (bits & 32) != 0;
+            boolean expected = immutable && cut && !hard && live && onSource && !removed;
+            assertEquals(expected, AsyncIslandPlayerTicks.softLateAuthority(
+                    immutable, cut, hard, live, onSource, removed),
+                    "immutable=" + immutable + " cut=" + cut + " hard=" + hard
+                            + " live=" + live + " onSource=" + onSource + " removed=" + removed);
+        }
+        assertFalse(AsyncIslandPlayerTicks.softLateAuthority(
+                true, true, true, true, true, false),
+                "a hard exit or disconnect never borrows the soft late authority");
+        assertFalse(AsyncIslandPlayerTicks.softLateAuthority(
+                true, true, false, true, false, false),
+                "a player moved off the source island may not run physics under its claim");
+    }
+
+    @Test
     void lifecycleFallbackAndActiveTurnModelsForbidLateOrCompetingBodyReplay() {
         assertTrue(AsyncIslandPlayerTicks.shouldArmLifecycleFallback(true, false, false),
                 "an audited mutation during early packet replay replaces the skipped body once");

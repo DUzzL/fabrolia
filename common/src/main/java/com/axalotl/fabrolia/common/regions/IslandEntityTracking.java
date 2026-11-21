@@ -1289,6 +1289,17 @@ public final class IslandEntityTracking {
                 && pending.state.session.isRunningRealLate(pending.permit);
     }
 
+    /**
+     * The same live proof before the late listener tick: a soft cut published between
+     * the early and the late half may enter the listener tick only when the
+     * post-physics publication will accept it afterwards. Caller owns pending.state.
+     */
+    static boolean pendingRealPlayerSoftLateLiveLocked(
+            AsyncIslandPlayerTicks.PendingLate pending,
+            IslandRegistry.PIsland island) {
+        return pendingRealPlayerAfterPhysicsPublicationIdentityCurrentLocked(pending, island);
+    }
+
     /** Mutable live proof for a generic handoff or an authenticated soft mutation. */
     private static boolean pendingRealPlayerAfterPhysicsPublicationIdentityCurrentLocked(
             AsyncIslandPlayerTicks.PendingLate pending,

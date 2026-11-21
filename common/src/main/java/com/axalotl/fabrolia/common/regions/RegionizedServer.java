@@ -2977,6 +2977,10 @@ public final class RegionizedServer {
                     if (current != owner.gridKey) indexMove(entity, owner, current);
                 }
                 if (((RegionKeyed) entity).fabrolia$tryMarkRegionTick(globalDomain.tickToken())) {
+                    if (entity instanceof net.minecraft.server.level.ServerPlayer player
+                            && AsyncIslandPlayerTicks.deferGlobalPassPlayerTick(player)) {
+                        return;
+                    }
                     consumer.accept(entity);
                 }
             });
