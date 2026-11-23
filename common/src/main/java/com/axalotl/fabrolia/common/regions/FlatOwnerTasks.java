@@ -33,16 +33,21 @@ public final class FlatOwnerTasks {
 
     static void execute(ServerLevel level, ChunkPos pos, Entity entity, Runnable task) {
         Objects.requireNonNull(task, "task");
-        MinecraftServer server = level.getServer();
+        Objects.requireNonNull(level, "level");
         FlatOwnerTasks generation = live;
-        boolean main = RegionalPlayerEntityTicksV2.isPhysicalServerThread(server);
         Throwable failure = RegionScheduler.workerFailureOrNull();
         boolean inline = false;
         try {
-            if (failure == null && generation != null && generation.server == server) {
+            if (failure == null && generation != null && generation.server == level.getServer()) {
+                MinecraftServer server = generation.server;
+                boolean main = RegionalPlayerEntityTicksV2.isPhysicalServerThread(server);
+                // An accepted transfer/reward can call back after region deactivation but
+                // before its runtime reference is cleared. Only its actual Main owner can pass.
+                boolean continuation = main && (generation.inAcceptedBody || AdvancementBatchScope.rewardFunctionActive()
+                        || NetherPortalTransfers.currentTransfer() != null && NetherPortalTransfers.owns(level,
+                            entity == null ? pos.getWorldPosition() : entity.blockPosition()));
                 synchronized (generation.pending) {
-                    if ((!generation.closed || main && (generation.inAcceptedBody
-                            || AdvancementBatchScope.rewardFunctionActive()))
+                    if (continuation || !generation.closed
                             && (RegionScheduler.getServer() == null || RegionScheduler.isActive())) {
                         if (!main) {
                             Delivery delivery = generation.new Delivery(level, pos, entity, task);

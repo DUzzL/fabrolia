@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.regions;
 
+import com.axalotl.fabrolia.common.api.FabroliaIslandApi;
 import com.axalotl.fabrolia.api.utils.SyncItemPickup;
 import com.google.common.collect.ImmutableList;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
@@ -37,6 +38,49 @@ class NetherTransferAdmissionTest {
     static void bootstrap() {
         SharedConstants.tryDetectVersion();
         Bootstrap.bootStrap();
+    }
+
+    @Test
+    void aQuiescentPortalContinuationKeepsItsOwnerDuringRegionRetirement() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            field(RegionScheduler.class, "active").set(null, false);
+            field(RegionScheduler.class, "pool").set(null, null);
+            // As in stopOutsideLifecycleLock: the server identity outlives active workers.
+            field(MinecraftServer.class, "levels").set(fixture.server, Map.of(Level.OVERWORLD, fixture.level));
+            var changes = new java.util.ArrayList<String>();
+            FlatOwnerTasks.start(fixture.server);
+            try {
+                FlatOwnerTasks.closeAdmission();
+                assertNull(FlatOwnerTasks.finish(null));
+                try (Fixture.Claim claim = fixture.attach(fixture.tryClaims(List.of(
+                        new NetherPortalPreparation.ChunkRef(fixture.level, 0L)), true))) {
+                    assertTrue(NetherPortalTransfers.owns(fixture.level, BlockPos.ZERO));
+                    FabroliaIslandApi.executeOnOwner(fixture.level, BlockPos.ZERO, () -> changes.add("position"));
+                    FabroliaIslandApi.executeOnOwner(fixture.entity, () -> changes.add("entity"));
+                }
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> FabroliaIslandApi.executeOnOwner(fixture.level, BlockPos.ZERO, () -> changes.add("late")));
+                assertEquals(List.of("position", "entity"), changes);
+            } finally {
+                FlatOwnerTasks.retire();
+            }
+        }
+    }
+
+    @Test
+    void entityLookupFailureCancelsTheOwnerCallbackBeforeEntry() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            field(RegionScheduler.class, "pool").set(null, null);
+            field(RegionScheduler.class, "active").set(null, false);
+            var failure = new IllegalStateException("entity level lookup failed");
+            var cancellation = new AtomicReference<Throwable>();
+            fixture.entity.levelFailure = failure;
+            Runnable callback = RegionScheduler.cancellableRoot(() -> fail("no owner was resolved"), cancellation::set);
+            assertSame(failure, assertThrows(IllegalStateException.class,
+                    () -> FabroliaIslandApi.executeOnOwner(fixture.entity, callback)));
+            assertSame(failure, RegionScheduler.workerFailureOrNull());
+            assertSame(failure, cancellation.get());
+        }
     }
 
     @Test
@@ -231,13 +275,20 @@ class NetherTransferAdmissionTest {
         }
 
         AutoCloseable tryClaims(List<NetherPortalPreparation.ChunkRef> footprint) throws Exception {
+            return tryClaims(footprint, false);
+        }
+
+        AutoCloseable tryClaims(List<NetherPortalPreparation.ChunkRef> footprint, boolean quiescent) throws Exception {
             Method acquire = claimsType.getDeclaredMethod("tryAcquire", List.class, boolean.class);
             acquire.setAccessible(true);
-            return (AutoCloseable) acquire.invoke(null, footprint, false);
+            return (AutoCloseable) acquire.invoke(null, footprint, quiescent);
         }
 
         Claim acquire() throws Exception {
-            AutoCloseable claims = tryClaims();
+            return attach(tryClaims());
+        }
+
+        Claim attach(AutoCloseable claims) throws Exception {
             assertNotNull(claims);
             Constructor<?> transferConstructor = transferType.getDeclaredConstructor(
                     Entity.class, ServerLevel.class, EpochDomain.class, long.class);
@@ -282,6 +333,11 @@ class NetherTransferAdmissionTest {
 
     private static final class TestEntity extends ItemEntity implements SyncItemPickup.Guarded {
         Runnable beforeSecondPositionRead;
+        RuntimeException levelFailure;
+        @Override public Level level() {
+            if (levelFailure != null) throw levelFailure;
+            return super.level();
+        }
         BlockPos location;
         int positionReads;
         SyncItemPickup.Guard guard;

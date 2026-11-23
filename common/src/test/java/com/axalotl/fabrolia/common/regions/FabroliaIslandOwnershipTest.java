@@ -351,18 +351,23 @@ class FabroliaIslandOwnershipTest {
     }
 
     @Test
-    void failedNativePublicationAndFailedLookupCancelUnstartedBodyWithFirstFailure() throws Exception {
-        for (boolean failPublication : new boolean[]{false, true}) {
+    void submissionAndDeliveryFailuresCancelTheUnstartedBodyWithFirstFailure() throws Exception {
+        for (String stage : java.util.List.of("server lookup", "after enqueue", "during delivery")) {
             MinecraftServer server = serverOwnedBy(Thread.currentThread());
             TestLevel level = TestLevel.create(server);
-            var expected = new IllegalStateException(failPublication ? "after enqueue" : "during lookup");
+            var expected = new IllegalStateException(stage);
             var cancelled = new java.util.ArrayList<Throwable>();
             var writes = new java.util.concurrent.atomic.AtomicInteger();
             Runnable root = RegionScheduler.cancellableRoot(writes::incrementAndGet, cancelled::add);
             Object previous = get(RegionScheduler.class, null, "orphanFatalFailure");
             FlatOwnerTasks.start(server);
             try {
-                if (failPublication) {
+                if (stage.equals("server lookup")) {
+                    level.lookupFailure = expected;
+                    onThread(false, () -> org.junit.jupiter.api.Assertions.assertSame(expected,
+                            org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                                    () -> FabroliaIslandApi.executeOnOwner(level, OWN, root))));
+                } else if (stage.equals("after enqueue")) {
                     set(net.minecraft.util.thread.BlockableEventLoop.class, server, "pendingRunnables",
                             new java.util.concurrent.ConcurrentLinkedQueue<net.minecraft.server.TickTask>() {
                                 @Override public boolean add(net.minecraft.server.TickTask wake) {
@@ -590,6 +595,7 @@ class FabroliaIslandOwnershipTest {
 
     private static final class TestLevel extends ServerLevel {
         private MinecraftServer owner;
+        private RuntimeException lookupFailure;
 
         private TestLevel() {
             super(null, null, null, null, null, null, false, 0, null, false);
@@ -602,7 +608,10 @@ class FabroliaIslandOwnershipTest {
             return level;
         }
 
-        @Override public MinecraftServer getServer() { return owner; }
+        @Override public MinecraftServer getServer() {
+            if (lookupFailure != null) throw lookupFailure;
+            return owner;
+        }
         @Override public ResourceKey<Level> dimension() { return Level.OVERWORLD; }
     }
 

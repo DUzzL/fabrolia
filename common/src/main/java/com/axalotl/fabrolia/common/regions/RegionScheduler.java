@@ -2979,7 +2979,16 @@ public final class RegionScheduler {
     }
 
     public static void executeForEntity(Entity entity, Runnable task) {
-        if (!(entity.level() instanceof ServerLevel sl)) {
+        java.util.Objects.requireNonNull(entity, "entity");
+        net.minecraft.world.level.Level level;
+        try {
+            level = entity.level();
+        } catch (Throwable unexpected) {
+            Throwable winner = publishFatalAndSelectWinner(unexpected);
+            FailStops.<RuntimeException>rethrow(cancelRejectedRoot(null, task, winner));
+            return;
+        }
+        if (!(level instanceof ServerLevel sl)) {
             runRootInlineIfHealthy(task);
             return;
         }
