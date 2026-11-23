@@ -778,6 +778,7 @@ class RegionPreparationRoutedCommandTest {
             AtomicReference<Throwable> workerFailure = new AtomicReference<>();
             AtomicReference<Throwable> mainFailure = new AtomicReference<>();
             AtomicBoolean prepared = new AtomicBoolean();
+            AtomicReference<TickTask> workerWake = new AtomicReference<>();
             AtomicBoolean timedOut = new AtomicBoolean();
             List<String> effects = new CopyOnWriteArrayList<>();
             RegionizedTaskQueue nextUnit = new RegionizedTaskQueue();
@@ -795,6 +796,8 @@ class RegionPreparationRoutedCommandTest {
                 }
             }, "preparation-route-watchdog");
             watchdog.setDaemon(true);
+            // Vanilla execute() may run a submitted body inline on the caller after stop.
+            set(MinecraftServer.class, f.server, "stopped", true);
             f.pool.start();
             watchdog.start();
             try {
@@ -843,6 +846,8 @@ class RegionPreparationRoutedCommandTest {
                             "late-publication latch must run inside the pause request");
                     publishCommand.countDown();
                     await(f.published, "the worker did not publish its causal Main receipt");
+                    workerWake.set(f.tasks.element());
+                    assertTrue(effects.isEmpty(), "the stopped server cannot enter the command on its worker");
                 }));
                 assertTrue(RegionalPlayerEntityTicksV2.schedulerLifecycleTransitionAllowed(f.server),
                         "fixture Main must be at a physically completed server-tick boundary");
@@ -864,6 +869,12 @@ class RegionPreparationRoutedCommandTest {
                 effects.add("preparation");
                 RegionScheduler.resumeExactPlayerTurn();
                 nextUnit.drain(Integer.MAX_VALUE);
+                AtomicBoolean nextEntered = new AtomicBoolean();
+                IslandCommands.enqueueFencedBody(() -> nextEntered.set(true));
+                workerWake.get().run();
+                assertFalse(nextEntered.get(), "a parked command's old wake must not drain a later receipt");
+                IslandCommands.drainRoutedBatch();
+                assertTrue(nextEntered.get());
             } catch (Throwable failure) {
                 mainFailure.set(failure);
             } finally {

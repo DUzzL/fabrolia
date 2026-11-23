@@ -1,6 +1,8 @@
 package com.axalotl.fabrolia.common.regions;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerLevel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -381,10 +383,7 @@ public final class IslandCommands {
                 // The routed receipt is already visible.  Publishing its Main
                 // successor is a separate success stage: a peer W selected after
                 // ROUTED.add must cancel the queued receipt, not enqueue new work.
-                RegionScheduler.runSuccessBodyIfHealthy(
-                        () -> sv.schedule(new net.minecraft.server.TickTask(sv.getTickCount(), () -> {
-                            if (!fut.isDone()) drainRoutedBatch();
-                        })));
+                RegionScheduler.runSuccessBodyIfHealthy(() -> scheduleRoutedDrain(sv, fut));
             }
         });
         RegionScheduler.commitSuccessIfHealthy(ROUTED_GLOBAL::increment);
@@ -683,9 +682,7 @@ public final class IslandCommands {
                 }, receipt, tracked, -1L));
                 var server = RegionScheduler.getServer();
                 if (server != null) {
-                    server.schedule(new net.minecraft.server.TickTask(server.getTickCount(), () -> {
-                        if (!receipt.isDone()) drainRoutedBatch();
-                    }));
+                    scheduleRoutedDrain(server, receipt);
                 }
             }, body);
         } catch (Throwable failure) {
@@ -693,6 +690,11 @@ public final class IslandCommands {
         }
     }
 
+    private static void scheduleRoutedDrain(MinecraftServer server, RoutedResult receipt) {
+        server.schedule(new TickTask(server.getTickCount(), () -> {
+            if (!receipt.isDone()) drainRoutedBatch();
+        }));
+    }
 
     private static void fabrolia$drainRoutedBatchEntered() {
         // Retain every detached obligation until its exact post-release completion.
