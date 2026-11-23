@@ -22,6 +22,18 @@ class NaturalSpawnChunksTest {
             RegionizedServer.ISLAND_BFS_RADIUS * CELL + 1;
 
     @Test
+    void laneCountTracksSharedAndOverlappingPlayerChunks() {
+        LongArrayList players = new LongArrayList();
+        assertEquals(0, NaturalSpawnChunks.count(players));
+        players.add(ChunkPos.pack(-6, 2));
+        assertEquals(MAGIC_NUMBER, NaturalSpawnChunks.count(players));
+        players.add(ChunkPos.pack(-6, 2));
+        assertEquals(MAGIC_NUMBER, NaturalSpawnChunks.count(players));
+        players.add(ChunkPos.pack(-2, 2));
+        assertEquals(17 * 21, NaturalSpawnChunks.count(players));
+    }
+
+    @Test
     void islandEdgePlayerCountsChunksBeyondTheIslandExactlyLikeVanilla() {
         // One player standing on the last loaded chunk of an island: vanilla's
         // naturalSpawnChunkCounter still counts the full 17×17 square, including

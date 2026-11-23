@@ -1322,8 +1322,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
                     .fabrolia$forEachSpawnCountedPlayer((player, chunkKey) -> {
                         if (rs.islandOwnerOfChunk(chunkKey) == null) lanePlayerChunks.add(chunkKey);
                     });
-            laneChunkCount = com.axalotl.fabrolia.common.regions.NaturalSpawnChunks
-                    .candidates(lanePlayerChunks.iterator()).size();
+            laneChunkCount = NaturalSpawnChunks.count(lanePlayerChunks);
             islandSlots = rs.spawnCapLanes.sum(rs.islandRegistry().identitySnapshot(), null, false);
             stateChunkCount = laneChunkCount + islandSlots[SpawnCapLanes.CHUNKS];
         }

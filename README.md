@@ -27,6 +27,11 @@ synchronous region threading, where the whole world finishes each tick together.
 Fabrolia only helps where work can be split: one huge base with all players in it
 is still one island. It does not skip or reorder vanilla work to gain TPS.
 
+Nearby-item searches and serial island entity passes reuse only private working
+arrays. Nested searches get separate storage. Neither the lists returned by the
+world nor a mob's remembered item are recycled. Buffer sizes limit retained
+memory, not how many entities can be checked or ticked.
+
 ## When it helps
 
 Fabrolia gains where work is spread over separate areas, for example players in

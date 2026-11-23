@@ -3,6 +3,7 @@ package com.axalotl.fabrolia.common.regions;
 import com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
+import it.unimi.dsi.fastutil.objects.ObjectArrays;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.server.level.DistanceManager;
@@ -15,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.LockSupport;
@@ -4004,9 +4006,9 @@ public final class RegionizedServer {
         RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
         EpochDomain domain = island.domain;
         var phases = new java.util.LinkedHashMap<Region, IslandEntityRegionPhase>();
-        var visits = new ArrayList<IslandEntityVisit>();
+        var visits = IslandVisits.take(worker);
         Throwable failure = null;
-        try (IslandEntityPhaseScope ignored = IslandEntityPhaseScope.enter(this, island)) {
+        try (visits; IslandEntityPhaseScope ignored = IslandEntityPhaseScope.enter(this, island)) {
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
                 List<Entity> snapshot = ((EntityTickListSnapshotAccess) level.entityTickList)
                         .fabrolia$snapshotEntities();
@@ -4026,7 +4028,7 @@ public final class RegionizedServer {
                         phaseByKey.put(key, phase);
                     }
                     if (phase != IslandEntityRegionPhase.FOREIGN) {
-                        visits.add(new IslandEntityVisit(entity, phase));
+                        visits.add(entity, phase);
                     }
                 }
             });
@@ -4048,11 +4050,11 @@ public final class RegionizedServer {
                 }
                 TickRateManager tickRate = level.tickRateManager();
                 DistanceManager distance = level.getChunkSource().chunkMap.getDistanceManager();
-                for (IslandEntityVisit visit : visits) {
-                    IslandEntityRegionPhase phase = visit.phase;
+                for (int i = 0, n = visits.size; i < n; i++) {
+                    IslandEntityRegionPhase phase = visits.phases[i];
                     worker.currentRegion = phase.region;
                     long start = System.nanoTime();
-                    tickOne(phase.region, visit.entity, level, tickRate, distance, phase.gate);
+                    tickOne(phase.region, visits.entities[i], level, tickRate, distance, phase.gate);
                     phase.nanos += System.nanoTime() - start;
                 }
                 for (IslandEntityRegionPhase phase : phases.values()) {
@@ -4096,7 +4098,75 @@ public final class RegionizedServer {
         RegionScheduler.throwWorkerFailureIfAny();
     }
 
-    private record IslandEntityVisit(Entity entity, IslandEntityRegionPhase phase) {}
+    /** Ordered (entity, phase at the cut) pairs. Only the idle frame is worker-reachable. */
+    static final class IslandVisits implements AutoCloseable {
+        // Bound idle memory, not gameplay: even an oversized cut grows normally.
+        private static final int MAX_RETAINED = 4096;
+        private static final Entity[] NO_ENTITIES = new Entity[0];
+        private static final IslandEntityRegionPhase[] NO_PHASES = new IslandEntityRegionPhase[0];
+
+        private final RegionWorkerThread worker;
+        private Entity[] entities = NO_ENTITIES;
+        private IslandEntityRegionPhase[] phases = NO_PHASES;
+        // Keep the last in-budget pair while a larger cut is active.
+        private Entity[] retainedEntities;
+        private IslandEntityRegionPhase[] retainedPhases;
+        private int size;
+
+        private IslandVisits(RegionWorkerThread worker) {
+            this.worker = worker;
+        }
+
+        private static IslandVisits take(RegionWorkerThread worker) {
+            IslandVisits visits = worker.idleIslandVisits;
+            if (visits == null) return new IslandVisits(worker);
+            worker.idleIslandVisits = null;
+            return visits;
+        }
+
+        private void add(Entity entity, IslandEntityRegionPhase phase) {
+            if (size == entities.length) {
+                // Keep the old pair intact if either allocation fails.
+                Entity[] grown = grow(entities);
+                IslandEntityRegionPhase[] grownPhases = grow(phases);
+                if (size == MAX_RETAINED) {
+                    retainedEntities = entities;
+                    retainedPhases = phases;
+                }
+                entities = grown;
+                phases = grownPhases;
+            }
+            entities[size] = entity;
+            phases[size] = phase;
+            size++;
+        }
+
+        private static <T> T[] grow(T[] slots) {
+            int n = slots.length;
+            // Don't cross the idle limit just because fastutil grows by half.
+            if (n < MAX_RETAINED && n + (n >> 1) > MAX_RETAINED) {
+                return Arrays.copyOf(slots, MAX_RETAINED);
+            }
+            return ObjectArrays.grow(slots, Math.max(16, n + 1));
+        }
+
+        @Override public void close() {
+            if (retainedEntities != null) {
+                entities = retainedEntities;
+                phases = retainedPhases;
+                retainedEntities = null;
+                retainedPhases = null;
+                size = entities.length;
+            }
+            Arrays.fill(entities, 0, size, null);
+            Arrays.fill(phases, 0, size, null);
+            size = 0;
+            // A nested pass may already have returned a usable frame.
+            if (worker.idleIslandVisits == null || entities.length >= worker.idleIslandVisits.entities.length) {
+                worker.idleIslandVisits = this;
+            }
+        }
+    }
 
     /**
      * Primed TNT and all minecarts depend on Vanilla insertion order across

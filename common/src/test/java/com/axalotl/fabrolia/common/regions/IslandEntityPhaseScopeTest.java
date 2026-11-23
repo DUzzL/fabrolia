@@ -4,16 +4,21 @@ import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ChunkMap;
+import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.TickRateManager;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.PrimedTnt;
 import net.minecraft.world.flag.FeatureFlags;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Explosion;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.entity.EntityTickList;
 import net.minecraft.world.level.gamerules.GameRules;
 import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.BeforeAll;
@@ -249,6 +254,168 @@ class IslandEntityPhaseScopeTest {
     }
 
     @Test
+    void oversizedCutVisitsEveryEntityAndUnwindsBothClaimsOnPostFailure() throws Exception {
+        try (Fixture f = new Fixture()) {
+            PassCut cut = installCut(f);
+            List<Object> trace = new ArrayList<>();
+            List<Entity> members = new ArrayList<>();
+            for (int id = 1; id <= 8_192; id++) members.add(VisitProbe.at(id, f.source, 0, trace));
+            members.add(VisitProbe.at(8_193, f.target, 8, trace));
+            cut.entities = List.copyOf(members);
+            onWorker(() -> {
+                RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
+                f.claimUnit(worker);
+                Object oldHook = get(RegionTickHooks.class, null, "hook");
+                Object oldFailure = get(RegionScheduler.class, null, "orphanFatalFailure");
+                Object oldPool = get(RegionScheduler.class, null, "pool");
+                Object oldTransition = get(RegionScheduler.class, null, "transitionPool");
+                AssertionError primary = new AssertionError("second post failed");
+                try {
+                    set(RegionScheduler.class, null, "pool", null);
+                    set(RegionScheduler.class, null, "transitionPool", null);
+                    set(RegionScheduler.class, null, "orphanFatalFailure", null);
+                    RegionTickHooks.register(new RegionTickHooks.Hook() {
+                        @Override public void preEntityTick(Region r) { trace.add(r); }
+                        @Override public void postEntityTick(Region r) {
+                            trace.add(r);
+                            if (r == f.target) throw primary;
+                        }
+                    });
+                    assertSame(primary, assertThrows(AssertionError.class,
+                            () -> f.runtime.tickIslandEntitiesInVanillaOrder(f.own)));
+                    assertSame(primary, assertThrows(AssertionError.class, RegionScheduler::throwWorkerFailureIfAny));
+                    int n = members.size();
+                    assertEquals(n + 4, trace.size());
+                    assertEquals(List.of(f.source, f.target), trace.subList(0, 2));
+                    for (int i = 0; i < n; i++) assertEquals(i + 1, trace.get(i + 2));
+                    assertEquals(List.of(f.source, f.target), trace.subList(n + 2, n + 4));
+                    for (Region region : List.of(f.source, f.target)) {
+                        assertNull(region.currentWorker());
+                        assertEquals(0, region.activeClaimTransactions());
+                    }
+                    assertNull(worker.currentRegion);
+                    assertIdleVisitsReleased(worker);
+                } finally {
+                    set(RegionTickHooks.class, null, "hook", oldHook);
+                    set(RegionScheduler.class, null, "orphanFatalFailure", oldFailure);
+                    set(RegionScheduler.class, null, "transitionPool", oldTransition);
+                    set(RegionScheduler.class, null, "pool", oldPool);
+                    f.releaseUnit(worker);
+                }
+            });
+        }
+    }
+
+    @Test
+    void nestedPreHookCannotReplaceOuterVisitsOrReassignTheirCapturedPhases() throws Exception {
+        try (Fixture f = new Fixture()) {
+            PassCut cut = installCut(f);
+            List<Object> trace = new ArrayList<>();
+            VisitProbe first = VisitProbe.at(30, f.source, 0, trace);
+            VisitProbe second = VisitProbe.at(20, f.target, 8, trace);
+            VisitProbe third = VisitProbe.at(10, f.source, 0, trace);
+            VisitProbe nested = VisitProbe.at(40, f.target, 8, trace);
+            cut.entities = List.of(first, second, third);
+            onWorker(() -> {
+                RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
+                f.claimUnit(worker);
+                Object oldHook = get(RegionTickHooks.class, null, "hook");
+                try {
+                    RegionTickHooks.register(new RegionTickHooks.Hook() {
+                        @Override public void preEntityTick(Region r) {
+                            assertSame(worker, r.currentWorker());
+                            assertSame(r, worker.currentRegion);
+                            trace.add(r == f.source ? "pre source" : "pre target");
+                            if (r == f.source) {
+                                // The target hasn't been claimed by the outer pass yet.
+                                second.key = f.foreign.gridKey;
+                                cut.entities = List.of(nested);
+                                f.runtime.tickIslandEntitiesInVanillaOrder(f.own);
+                            }
+                        }
+
+                        @Override public void postEntityTick(Region r) {
+                            assertSame(worker, r.currentWorker());
+                            assertSame(r, worker.currentRegion);
+                            trace.add(r == f.source ? "post source" : "post target");
+                        }
+                    });
+                    f.runtime.tickIslandEntitiesInVanillaOrder(f.own);
+                    assertEquals(List.of("pre source", "pre target", 40, "post target",
+                            "pre target", 30, 20, 10, "post source", "post target"), trace);
+                    assertNull(worker.currentRegion);
+                    assertEquals(0, f.source.activeClaimTransactions());
+                    assertEquals(0, f.target.activeClaimTransactions());
+                    assertIdleVisitsReleased(worker);
+                    trace.clear();
+                    f.runtime.tickIslandEntitiesInVanillaOrder(f.own);
+                    assertEquals(List.of("pre target", 40, "post target"), trace);
+                    assertIdleVisitsReleased(worker);
+                } finally {
+                    set(RegionTickHooks.class, null, "hook", oldHook);
+                    f.releaseUnit(worker);
+                }
+            });
+        }
+    }
+
+    private static void assertIdleVisitsReleased(RegionWorkerThread worker) {
+        Object idle = worker.idleIslandVisits;
+        assertNotNull(idle);
+        for (String field : List.of("entities", "phases")) {
+            Object[] refs = (Object[]) get(idle.getClass(), idle, field);
+            assertTrue(refs.length <= 4096, "a peak cut cannot pin its arrays on the worker");
+            for (Object ref : refs) assertNull(ref, "a returned frame cannot retain world references");
+        }
+    }
+
+    private static PassCut installCut(Fixture f) throws Exception {
+        PassCut cut = new PassCut();
+        set(ServerLevel.class, f.level, "entityTickList", cut);
+        var chunks = (ServerChunkCache) unsafe().allocateInstance(ServerChunkCache.class);
+        set(ServerChunkCache.class, chunks, "chunkMap", unsafe().allocateInstance(ChunkMap.class));
+        set(ServerLevel.class, f.level, "chunkSource", chunks);
+        f.level.rate = new TickRateManager();
+        return cut;
+    }
+
+    /** Mixins aren't applied here. Supply their immutable snapshot at the existing cut. */
+    private static final class PassCut extends EntityTickList implements EntityTickListSnapshotAccess {
+        List<Entity> entities;
+        @Override public List<Entity> fabrolia$snapshotEntities() { return entities; }
+    }
+
+    /** Observe the real tick admission on its captured region, then decline the token. */
+    private static final class VisitProbe extends PrimedTnt implements RegionKeyed {
+        private long key;
+        private Region capturedRegion;
+        private List<Object> trace;
+
+        private VisitProbe() { super(null, null); }
+
+        static VisitProbe at(int id, Region region, int chunkX, List<Object> trace) throws Exception {
+            VisitProbe probe = (VisitProbe) unsafe().allocateInstance(VisitProbe.class);
+            set(Entity.class, probe, "chunkPosition", new ChunkPos(chunkX, 0));
+            probe.setId(id);
+            probe.key = region.gridKey;
+            probe.capturedRegion = region;
+            probe.trace = trace;
+            return probe;
+        }
+
+        @Override public long fabrolia$getRegionKey() { return key; }
+        @Override public void fabrolia$setRegionKey(long key) { this.key = key; }
+        @Override public boolean fabrolia$tryMarkRegionTick(long token) {
+            assertSame(capturedRegion, ((RegionWorkerThread) Thread.currentThread()).currentRegion);
+            trace.add(getId());
+            return false;
+        }
+        @Override public boolean fabrolia$carryRegionTickMark(long from, long to) {
+            throw new AssertionError("unexpected carry");
+        }
+    }
+
+    @Test
     void ordinaryVanillaBlastAndFinalMovementStayInsideTheExclusiveHalo() throws Exception {
         try (Fixture fixture = new Fixture()) {
             assertTrue(TntExplosionFootprint.ownsFootprint(fixture.runtime, fixture.own,
@@ -407,6 +574,7 @@ class IslandEntityPhaseScopeTest {
         List<Entity> entities;
         RandomSource random;
         GameRules rules;
+        TickRateManager rate;
         int ids;
         private TestLevel() { super(null, null, null, null, null, null, false, 0, null, false); }
 
@@ -428,6 +596,7 @@ class IslandEntityPhaseScopeTest {
         }
 
         @Override public ResourceKey<Level> dimension() { return Level.OVERWORLD; }
+        @Override public TickRateManager tickRateManager() { return rate; }
         @Override public GameRules getGameRules() { return rules; }
         @Override public RandomSource getRandom() { return random; }
         @Override public int getNextEntityId() { return ++ids; }
