@@ -125,48 +125,48 @@ public class MinecraftServerMixin {
     @WrapMethod(method = "tickChildren(Ljava/util/function/BooleanSupplier;)V")
     private void fabrolia$regionalPlayerServerPhase(BooleanSupplier haveTime,
                                                      Operation<Void> original) {
-        if (!RegionalPlayerEntityTicksV2.enabled()) {
-            RegionScheduler.runSuccessBodyIfHealthy(() -> original.call(haveTime));
-            return;
-        }
         MinecraftServer self = (MinecraftServer) (Object) this;
-        boolean[] phaseBegan = new boolean[1];
-        boolean[] completed = new boolean[1];
-        boolean bodyReturned = false;
+        // Mutable across the admission's terminal failure edge; disabled actors need no receipt.
+        boolean[] phase = RegionalPlayerEntityTicksV2.enabled() ? new boolean[2] : null;
         Throwable failure = null;
         try {
             // This short permit is the exact root-entry cut. It deliberately
             // ends after beginServerTick: tickChildren later requests the exact
             // pool fixed point, and retaining our own external permit across
             // that wait would make the root wait on itself forever.
-            RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                RegionalPlayerEntityTicksV2.beginServerTick(self);
-                phaseBegan[0] = true;
-            });
+            if (phase != null) {
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    RegionalPlayerEntityTicksV2.beginServerTick(self);
+                    phase[0] = true;
+                });
+            } else {
+                // The shared-clock entity pass must not wait for its own tickChildren permit.
+                RegionScheduler.commitSuccessIfHealthy(() -> {});
+            }
             original.call(haveTime);
-            bodyReturned = true;
         } catch (Throwable thrown) {
             // Whether phase setup, its terminal admission, or vanilla failed,
             // select exact W before any phase fence can be released.
             failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
         }
-        if (failure == null && bodyReturned) {
+        if (failure == null) {
             try {
                 // Atomically decide normal finish versus fail-stop abort. A W
                 // which won before this cut keeps the exact phase fence held.
-                RegionScheduler.commitSuccessIfHealthy(() -> completed[0] = true);
+                if (phase != null) RegionScheduler.commitSuccessIfHealthy(() -> phase[1] = true);
+                else RegionScheduler.commitSuccessIfHealthy(() -> {});
             } catch (Throwable peerFailure) {
                 failure = RegionScheduler.publishFatalAndSelectWinner(peerFailure);
             }
         }
-        if (phaseBegan[0]) {
+        if (phase != null && phase[0]) {
             Throwable cleanup = null;
             try {
                 // A successful body retains the final worker fence through connection,
                 // PlayerList and chunk-send tails, then releases it here. An exceptional
                 // body seals/awaits every accepted obligation before preserving the
                 // original vanilla crash as primary.
-                cleanup = completed[0]
+                cleanup = phase[1]
                         ? RegionalPlayerEntityTicksV2.finishServerTick()
                         : RegionalPlayerEntityTicksV2.abortServerTick();
             } catch (Throwable cleanupFailure) {

@@ -150,6 +150,7 @@ public final class RegionScheduler {
         drainMainSyncOutOfPhase();
         if (IslandCommands.hasRoutedPending()) IslandCommands.drainRoutedBatch();
         drainReadyMainTracking();
+        FlatOwnerTasks.drainSharedAtTickBoundary(mcServer);
         while (true) {
             DeferredLifecycleTransition task;
             synchronized (DEFERRED_LIFECYCLE_LOCK) {
@@ -244,6 +245,7 @@ public final class RegionScheduler {
     }
 
     public static boolean isActive() { return active; }
+    static boolean acceptsSharedOwnerTasks() { return accepting; }
     public static MinecraftServer getServer() { return server; }
     public static int workerCount() { return pool == null ? 0 : pool.size(); }
     public static RegionGrid grid() { return grid; }
@@ -434,11 +436,12 @@ public final class RegionScheduler {
                 });
             }
             runSuccessBodyIfHealthy(() -> LOGGER.warn(
-                    "RegionScheduler: ACTIVE with {} workers, grid shift={} ({}x{} chunks/region) — "
+                    "RegionScheduler: ACTIVE with {} workers, grid shift={} ({}x{} chunks/region), clock={} — "
                             + "experimental Fabrolia region threading. Report issues at "
                             + "https://github.com/DUzzL/fabrolia/issues with [region] tag",
                     n, buildDraft.grid.shift,
-                    1 << buildDraft.grid.shift, 1 << buildDraft.grid.shift));
+                    1 << buildDraft.grid.shift, 1 << buildDraft.grid.shift,
+                    FabroliaConfig.asyncIslands ? "independent (experimental)" : "shared"));
             boolean playerTickPreferenceApplied = callSuccessBooleanIfHealthy(
                     () -> RegionalPlayerEntityTicksV2.applyConfiguredPreference(mcServer));
             runSuccessBodyIfHealthy(() -> {
@@ -621,10 +624,11 @@ public final class RegionScheduler {
         // where the pacer is intentionally neither Main nor a pool worker.
         try {
             TemporalControl.drainPacer();
-        } catch (Throwable pacerStopFailure) {
-            stopFailure = FailStops.mergeFailureCapped(stopFailure, pacerStopFailure);
+            if (!failedGeneration && stoppingPool != null) FlatOwnerTasks.drainBeforeRegionStop(server);
+        } catch (Throwable retirementFailure) {
+            stopFailure = FailStops.mergeFailureCapped(stopFailure, retirementFailure);
             if (stoppingPool != null) {
-                stoppingPool.publishFatalFailure(pacerStopFailure);
+                stoppingPool.publishFatalFailure(retirementFailure);
                 stopFailure = FailStops.mergeFailureCapped(
                         stoppingPool.fatalFailureOrNull(), stopFailure);
             }
@@ -1214,6 +1218,31 @@ public final class RegionScheduler {
         return true;
     }
 
+    /** Physical Main, outside a long-lived scheduler permit. Retain unpaid region entries;
+     * finish accepted routed bodies before retrying. Only release a fence acquired here. */
+    static void runSharedClockTurn(Runnable body) {
+        boolean acquired = false;
+        Throwable failure = null;
+        try {
+            if (!ownsExactExecutionTurn()) {
+                while (!pauseMainPreparationTurn()) IslandCommands.drainRoutedBatch();
+                acquired = true;
+            }
+            body.run();
+        } catch (Throwable thrown) {
+            failure = publishFatalAndSelectWinner(thrown);
+        } finally {
+            if (acquired) {
+                try {
+                    resumeExactPlayerTurn();
+                } catch (Throwable cleanup) {
+                    failure = publishFatalAndSelectWinner(FailStops.mergeFailureCapped(failure, cleanup));
+                }
+            }
+        }
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
+    }
+
     public static void resumeExactPlayerTurn() {
         RegionWorkerPool current = pool;
         if (current == null) {
@@ -1294,6 +1323,7 @@ public final class RegionScheduler {
             }
         }
         // Server-thread identity alone does not fence region workers.
+        if (physicalMain && pool == null && transitionPool == null && FlatOwnerTasks.ownsFinalCallback(level)) return true;
         if (physicalServer != null && physicalServer == server && physicalMain) {
             return ownsExactExecutionTurn();
         }
@@ -2888,8 +2918,12 @@ public final class RegionScheduler {
 
     /** Generic submit at (level, chunk). Inline under authenticated existing ownership. */
     public static void executeAt(ServerLevel level, ChunkPos pos, Runnable task) {
+        executeAt(level, pos, null, task);
+    }
+
+    private static void executeAt(ServerLevel level, ChunkPos pos, Entity entity, Runnable task) {
         if (!active) {
-            FlatOwnerTasks.execute(level, pos, null, task);
+            FlatOwnerTasks.execute(level, pos, entity, task);
             return;
         }
         boolean exactRoot = ownsExactRootExecution(task);
@@ -2897,6 +2931,11 @@ public final class RegionScheduler {
         if (rs == null) {
             throw new IllegalStateException(
                     "region task targeted a level outside the active scheduler generation");
+        }
+        if (!FabroliaConfig.ALLOW_INDEPENDENT_CLOCKS && !rs.asyncActive && !exactRoot) {
+            if (ownsCurrentContext(level, pos.getWorldPosition())) runRootInlineIfHealthy(task);
+            else FlatOwnerTasks.postShared(level, pos, entity, task);
+            return;
         }
         // An idle eviction can retire the Region after lookup but before the pool's
         // in-lock ownsRuntime check. A fresh replacement starts with idleStreak=0, so one
@@ -2996,7 +3035,7 @@ public final class RegionScheduler {
             FlatOwnerTasks.execute(sl, null, entity, task);
             return;
         }
-        executeAt(sl, entity.chunkPosition(), task);
+        executeAt(sl, entity.chunkPosition(), entity, task);
     }
 
     public static void wakeWorkers() {
@@ -3426,7 +3465,7 @@ public final class RegionScheduler {
      * same wall tick. Live-runtime and wall-phase state are separate cuts.
      */
     static boolean asyncModeWantedAtLevelHead() {
-        return FabroliaConfig.asyncIslands
+        return FabroliaConfig.ALLOW_INDEPENDENT_CLOCKS && FabroliaConfig.asyncIslands
                 && !FabroliaConfig.asyncFailClosedTripped
                 && FabroliaConfig.regionEventScheduler
                 && FabroliaConfig.useRegionColorGate()

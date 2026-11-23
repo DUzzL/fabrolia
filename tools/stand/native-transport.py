@@ -217,7 +217,7 @@ def prepare(a):
         'graceful_stop_seconds': 600, 'terminate_seconds': 5,
         # debugCommands: the gameplay exchange flips `fabrolia regions async on|off` live.
         'java_args': ['-Dfabrolia.debugCommands=true']
-                     + (['-Dfabrolia.syncMode=true'] if a.async_mode != 'on' else [])
+                     + ['-Dfabrolia.syncMode=' + ('false' if a.async_mode == 'on' else 'true')]
                      + ['-Xms2G', '-Xmx24G', '-Duser.language=en', '-Duser.country=US',
                       '--add-modules=jdk.internal.vm.ci', '--add-opens=java.base/java.lang=ALL-UNNAMED',
                       '--enable-native-access=ALL-UNNAMED', '-XX:-UseCodeCacheFlushing',

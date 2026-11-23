@@ -44,9 +44,9 @@ public final class FabroliaIslandApi {
      *  game time when the region runtime or owner is unavailable. */
     public static long islandLogicalTick(ServerLevel level, BlockPos pos) {
         RegionizedServer rs = RegionScheduler.forLevel(level);
-        if (rs == null) return level.getGameTime();
+        if (rs == null || !rs.asyncActive) return IslandClock.wallTime(level);
         IslandRegistry.PIsland p = rs.islandRegistry.byCell(rs.beCellKeyFor(pos));
-        return p == null ? level.getGameTime() : p.logicalTick;
+        return p == null ? IslandClock.wallTime(level) : p.logicalTick;
     }
 
     /** Dimension-global calendar time (the W clock: day/night, weather,
@@ -56,13 +56,14 @@ public final class FabroliaIslandApi {
     }
 
     /**
-     * Run {@code task} under the ownership/ordering domain of the given
-     * position: inline with existing region ownership, otherwise queued to the
-     * owner. With regions off, physical Main runs it inline; other callers post
-     * to the server's task queue. Returning from a queued submit does not mean
-     * the callback has finished. Do not wait for Main from a flat tick helper.
-     * If regions start before delivery, the task is routed to the current owner;
-     * it does not run in a replacement for an unloaded target level.
+     * Run {@code task} inline under existing spatial ownership. With a shared clock and
+     * region workers, unowned submissions run FIFO on exclusive Main after the tick.
+     * With independent clocks they route to the target owner. With regions off, physical
+     * Main runs inline; other callers post to its native queue. Queued submission is not
+     * completion. Do not wait for the callback from a tick that must finish first.
+     * A position never retargets a replacement level; an entity follows its current level.
+     * Turning regions off finishes already accepted shared tasks before retiring their owner;
+     * new submissions can be rejected during the transition. Normal stop settles accepted work before saving.
      */
     public static void executeOnOwner(ServerLevel level, BlockPos pos, Runnable task) {
         RegionScheduler.executeAt(level, new ChunkPos(pos.getX() >> 4, pos.getZ() >> 4), task);

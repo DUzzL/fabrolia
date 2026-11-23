@@ -216,25 +216,26 @@ class FabroliaIslandOwnershipTest {
     }
 
     @Test
-    void foreignCallbackCannotRunWhileAnotherThreadHoldsItsRegion() throws Exception {
+    void sharedClockCallbacksWaitForTheExclusiveTurnAndKeepReadModifyWriteOrder() throws Exception {
         try (Fixture fixture = new Fixture(false)) {
-            CountDownLatch completed = new CountDownLatch(1);
-            java.util.concurrent.atomic.AtomicBoolean ran =
-                    new java.util.concurrent.atomic.AtomicBoolean();
-            withForeignClaim(fixture.ownRegion, () -> {
-                FabroliaIslandApi.executeOnOwner(fixture.level, OWN, () -> {
-                    assertTrue(fixture.owns(OWN));
-                    ran.set(true);
-                    completed.countDown();
-                });
-                assertFalse(ran.get(), "a foreign caller borrowed the existing claim");
-            });
-            // The fixture's bare foreign claim has no worker release tail.
-            var publishReady = RegionWorkerPool.class.getDeclaredMethod("publishReady", Region.class);
-            publishReady.setAccessible(true);
-            publishReady.invoke(fixture.pool, fixture.ownRegion);
-            assertTrue(completed.await(5, TimeUnit.SECONDS),
-                    "the queued callback must run after the foreign claim releases");
+            set(MinecraftServer.class, fixture.server, "levels", Map.of(Level.OVERWORLD, fixture.level));
+            var values = new java.util.ArrayList<Integer>();
+            FlatOwnerTasks.start(fixture.server);
+            try {
+                withForeignClaim(fixture.ownRegion, () -> onThread(false, () -> {
+                    for (int delta : new int[]{5, -2}) {
+                        FabroliaIslandApi.executeOnOwner(fixture.level, OWN, () -> {
+                            assertTrue(fixture.owns(OWN));
+                            values.add((values.isEmpty() ? 0 : values.getLast()) + delta);
+                        });
+                    }
+                }));
+                assertTrue(values.isEmpty(), "submission did not borrow the worker's claim");
+                drainSharedOnMain(fixture);
+                org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of(5, 3), values);
+            } finally {
+                closeFlatFixture(null);
+            }
         }
     }
 
@@ -276,6 +277,7 @@ class FabroliaIslandOwnershipTest {
             onThread(false, () -> {
                 FabroliaIslandApi.executeOnOwner(level, OWN, () -> {
                     org.junit.jupiter.api.Assertions.assertSame(main, Thread.currentThread());
+                    assertTrue(FabroliaIslandApi.ownsCurrentContext(level, OWN));
                     order.add("first");
                     FabroliaIslandApi.executeOnOwner(level, OWN, () -> order.add("nested"));
                 });
@@ -331,18 +333,62 @@ class FabroliaIslandOwnershipTest {
                         () -> writes.complete(fixture.owns(OWN))));
                 set(RegionScheduler.class, null, "server", fixture.server);
                 set(RegionScheduler.class, null, "active", true);
+                var shared = new java.util.ArrayList<String>();
+                onThread(false, () -> FabroliaIslandApi.executeOnOwner(fixture.level, OWN, () -> shared.add("shared")));
+                drainSharedOnMain(fixture);
+                org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of("shared"), shared);
+                assertFalse(writes.isDone(), "the shared cut must not steal a callback from vanilla's FIFO");
                 withForeignClaim(fixture.ownRegion, () -> {
                     nativeTasks(fixture.server).remove().run();
                     assertFalse(writes.isDone(), "physical Main did not acquire the occupied region");
                 });
-                var publishReady = RegionWorkerPool.class.getDeclaredMethod("publishReady", Region.class);
-                publishReady.setAccessible(true);
-                publishReady.invoke(fixture.pool, fixture.ownRegion);
-                assertTrue(writes.get(5, TimeUnit.SECONDS), "the target region must own the eventual write");
+                drainSharedOnMain(fixture);
+                assertTrue(writes.get(5, TimeUnit.SECONDS), "the eventual write must own its target");
             } finally {
                 closeFlatFixture(null);
             }
         }
+    }
+
+    @Test
+    void nativeReceiptReroutedToSharedStillFollowsTheEntityWhenItsFirstLevelUnloads() throws Exception {
+        try (Fixture f = new Fixture(false)) {
+            TestLevel destination = f.otherLevel;
+            destination.key = Level.NETHER;
+            f.levels.put(destination, new RegionizedServer(destination, new RegionGrid(3)));
+            FlatOwnerTasks.start(f.server);
+            try {
+                set(MinecraftServer.class, f.server, "levels", Map.of(Level.OVERWORLD, f.level, Level.NETHER, destination));
+                var entity = (net.minecraft.world.entity.item.ItemEntity) unsafe().allocateInstance(
+                        net.minecraft.world.entity.item.ItemEntity.class);
+                var type = net.minecraft.world.entity.Entity.class;
+                set(type, entity, "level", f.level);
+                set(type, entity, "chunkPosition", net.minecraft.world.level.ChunkPos.containing(OWN));
+                var writes = new java.util.ArrayList<ServerLevel>();
+                set(RegionScheduler.class, null, "active", false);
+                set(RegionScheduler.class, null, "server", null);
+                onThread(false, () -> FabroliaIslandApi.executeOnOwner(entity, () -> {
+                    assertTrue(FabroliaIslandApi.ownsCurrentContext(destination, OWN));
+                    writes.add((ServerLevel) entity.level());
+                }));
+                set(RegionScheduler.class, null, "server", f.server);
+                set(RegionScheduler.class, null, "active", true);
+                nativeTasks(f.server).remove().run();
+                assertTrue(writes.isEmpty());
+                set(type, entity, "level", destination);
+                set(MinecraftServer.class, f.server, "levels", Map.of(Level.NETHER, destination));
+                drainSharedOnMain(f);
+                org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of(destination), writes);
+            } finally {
+                try { closeFlatFixture(null); } finally { f.levels.remove(destination); }
+            }
+        }
+    }
+
+    private static void drainSharedOnMain(Fixture fixture) {
+        fixture.pool.pauseExactTurnAndAwait(() -> {});
+        try { FlatOwnerTasks.drainSharedAtTickBoundary(fixture.server); }
+        finally { fixture.pool.resumeExactTurn(); }
     }
 
     private static void closeFlatFixture(Throwable failure) {
@@ -543,6 +589,7 @@ class FabroliaIslandOwnershipTest {
         final Object previousPool = get(RegionScheduler.class, null, "pool");
         final Object previousServer = get(RegionScheduler.class, null, "server");
         final Object previousActive = get(RegionScheduler.class, null, "active");
+        final Object previousAccepting = get(RegionScheduler.class, null, "accepting");
 
         @SuppressWarnings("unchecked")
         Fixture(boolean autonomous) throws Exception {
@@ -573,6 +620,7 @@ class FabroliaIslandOwnershipTest {
             set(RegionScheduler.class, null, "pool", pool);
             set(RegionScheduler.class, null, "server", server);
             set(RegionScheduler.class, null, "active", true);
+            set(RegionScheduler.class, null, "accepting", true);
             levels.put(level, runtime);
         }
 
@@ -587,6 +635,7 @@ class FabroliaIslandOwnershipTest {
             } finally {
                 levels.remove(level);
                 set(RegionScheduler.class, null, "active", previousActive);
+                set(RegionScheduler.class, null, "accepting", previousAccepting);
                 set(RegionScheduler.class, null, "server", previousServer);
                 set(RegionScheduler.class, null, "pool", previousPool);
             }
@@ -595,6 +644,7 @@ class FabroliaIslandOwnershipTest {
 
     private static final class TestLevel extends ServerLevel {
         private MinecraftServer owner;
+        private ResourceKey<Level> key;
         private RuntimeException lookupFailure;
 
         private TestLevel() {
@@ -605,6 +655,7 @@ class FabroliaIslandOwnershipTest {
         static TestLevel create(MinecraftServer server) throws Exception {
             TestLevel level = (TestLevel) unsafe().allocateInstance(TestLevel.class);
             level.owner = server;
+            level.key = Level.OVERWORLD;
             return level;
         }
 
@@ -612,7 +663,7 @@ class FabroliaIslandOwnershipTest {
             if (lookupFailure != null) throw lookupFailure;
             return owner;
         }
-        @Override public ResourceKey<Level> dimension() { return Level.OVERWORLD; }
+        @Override public ResourceKey<Level> dimension() { return key; }
     }
 
     private static MinecraftServer serverOwnedBy(Thread thread) throws Exception {

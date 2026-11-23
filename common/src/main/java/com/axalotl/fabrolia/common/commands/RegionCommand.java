@@ -281,7 +281,7 @@ public final class RegionCommand {
                         })));
         // The live mode flip is the A/B control for "is this bug async-specific?":
         // it exists only with -Dfabrolia.debugCommands=true and is never saved.
-        // Normal servers start synchronous only through -Dfabrolia.syncMode=true.
+        // Only a server explicitly started for independent-clock testing may turn them on.
         if (DEBUG_COMMANDS) {
             asyncCmd.executes(ctx -> setAsyncIslands(ctx, !FabroliaConfig.asyncIslands))
                     .then(literal("on").executes(ctx -> setAsyncIslands(ctx, true)))
@@ -1664,6 +1664,10 @@ public final class RegionCommand {
                     "REFUSED — scheduler modes may only change on the server thread", false);
             return 0;
         }
+        if (turningOn && !FabroliaConfig.ALLOW_INDEPENDENT_CLOCKS) {
+            send(ctx, "async islands: ", "REFUSED — this server started with a shared clock", false);
+            return 0;
+        }
         if (turningOn && (!FabroliaConfig.regionEventScheduler || !FabroliaConfig.useRegionColorGate())) {
             send(ctx, "async islands: ", "requires the event scheduler + color gate (both on by default)", false);
             return 0;
@@ -1846,6 +1850,11 @@ public final class RegionCommand {
     }
 
     private static int applyRate(net.minecraft.commands.CommandSourceStack src, Object[] t, float tps) {
+        if (!FabroliaConfig.ALLOW_INDEPENDENT_CLOCKS) {
+            src.sendFailure(net.minecraft.network.chat.Component.literal(
+                    "Island rate unavailable with a shared clock; /tick rate changes the whole server."));
+            return 0;
+        }
         if (t == null) { src.sendSystemMessage(net.minecraft.network.chat.Component.literal("island not found (id reused? use handle from island list)")); return 0; }
         var rs = (com.axalotl.fabrolia.common.regions.RegionizedServer) t[0];
         var isl = (com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland) t[1];
@@ -1869,6 +1878,11 @@ public final class RegionCommand {
     }
 
     private static int applySprint(net.minecraft.commands.CommandSourceStack src, Object[] t, long ticks) {
+        if (!FabroliaConfig.ALLOW_INDEPENDENT_CLOCKS) {
+            src.sendFailure(net.minecraft.network.chat.Component.literal(
+                    "Island sprint unavailable with a shared clock; /tick sprint advances the whole server."));
+            return 0;
+        }
         if (t == null) { src.sendSystemMessage(net.minecraft.network.chat.Component.literal("island not found (id reused? use handle from island list)")); return 0; }
         var rs = (com.axalotl.fabrolia.common.regions.RegionizedServer) t[0];
         var isl = (com.axalotl.fabrolia.common.regions.IslandRegistry.PIsland) t[1];

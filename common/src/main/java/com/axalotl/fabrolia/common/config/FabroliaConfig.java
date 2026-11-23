@@ -89,16 +89,11 @@ public class FabroliaConfig {
     // same per-region [spawn][random][entities] FIFO and serial entity order. false = legacy
     // group dispatch (rollback lever). Tunable live: /fabrolia regions eventsched.
     public static boolean regionEventScheduler = true;
-    /** System property that starts the server in synchronous region threading (no
-     *  independent island clocks). A diagnostic control for "is this bug
-     *  async-specific?", not a configuration key. */
+    /** Startup clock policy. Only an explicit false permits independent clocks. */
     public static final String SYNC_MODE_PROPERTY = "fabrolia.syncMode";
-    // A2 async islands: independent per-island deadline ticking. Always on unless
-    // -Dfabrolia.syncMode=true; never read from the config file. With
-    // -Dfabrolia.debugCommands=true, /fabrolia regions debug async on|off flips it
-    // live (not persisted). Requires the event scheduler + color gate, see
-    // docs/ASYNC-ISLANDS.md.
-    public static volatile boolean asyncIslands = !Boolean.getBoolean(SYNC_MODE_PROPERTY);
+    public static final boolean ALLOW_INDEPENDENT_CLOCKS =
+            "false".equalsIgnoreCase(System.getProperty(SYNC_MODE_PROPERTY));
+    public static volatile boolean asyncIslands = ALLOW_INDEPENDENT_CLOCKS;
     /** Entity phase of an async island unit. false (default): one serial pass
      *  over the island in Vanilla EntityTickList insertion order (3.0.0 TNT
      *  fix). true: the member regions tick their entities in parallel under the

@@ -2944,6 +2944,10 @@ public final class RegionizedServer {
                 || !globalDomain.entityDispatchPublication.isAccepted()) {
             throw new IllegalStateException("global ordered entity pass outside its Main queue boundary");
         }
+        if (!FabroliaConfig.ALLOW_INDEPENDENT_CLOCKS) {
+            tickSharedClockEntities(consumer);
+            return;
+        }
         // An entity is visited only through its region key, and indexAdd/indexMove
         // admit it to that region's set before publishing the key. With async
         // islands every populated cell joined an island at this tick's head
@@ -2969,23 +2973,35 @@ public final class RegionizedServer {
                 }
                 regionsByKey.put(key, region);
             }
-            Region owner = region;
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                // Lazy cross-cell re-routing, as the region tick body did for
-                // global entities: keep the ownership index on the entity's
-                // current cell so an island adopts it once it walks in.
-                if (!entity.isRemoved()) {
-                    long current = regionizer.grid.keyFor(entity.chunkPosition().pack());
-                    if (current != owner.gridKey) indexMove(entity, owner, current);
-                }
-                if (((RegionKeyed) entity).fabrolia$tryMarkRegionTick(globalDomain.tickToken())) {
-                    if (entity instanceof net.minecraft.server.level.ServerPlayer player
-                            && AsyncIslandPlayerTicks.deferGlobalPassPlayerTick(player)) {
-                        return;
-                    }
+                reindexGlobalEntityIfMoved(entity, key);
+                if (((RegionKeyed) entity).fabrolia$tryMarkRegionTick(globalDomain.tickToken())
+                        && !(entity instanceof ServerPlayer player && AsyncIslandPlayerTicks.deferGlobalPassPlayerTick(player))) {
                     consumer.accept(entity);
                 }
             });
+        }
+    }
+
+    /** A golem can still address its old container, and a vehicle can acquire a golem
+     * during its own tick. Keep the native list turn, not just a pickup/put-down method,
+     * exclusive. Do not consume queued regional work owed to a future chunk phase. */
+    private void tickSharedClockEntities(java.util.function.Consumer<Entity> consumer) {
+        RegionScheduler.runSharedClockTurn(() -> level.entityTickList.forEach(entity ->
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    reindexGlobalEntityIfMoved(entity, ((RegionKeyed) entity).fabrolia$getRegionKey());
+                    // Only this iterator visits roots. A birth before its cut is owed a turn
+                    // even if an early chunk worker stamped the regional dispatch token.
+                    consumer.accept(entity);
+                })));
+    }
+
+    private void reindexGlobalEntityIfMoved(Entity entity, long indexedKey) {
+        if (indexedKey == RegionKeyed.NO_REGION || entity.isRemoved() || entity.level() != level) return;
+        long current = regionizer.grid.keyFor(entity.chunkPosition().pack());
+        if (current != indexedKey) {
+            Region old = regionizer.peekByGridKey(indexedKey);
+            if (old != null) indexMove(entity, old, current);
         }
     }
 
