@@ -81,7 +81,7 @@ class ScheduledFluidFrontierTest {
     void directUnownedWriteStillFailsClosed() throws Exception {
         try (Fixture fixture = new Fixture(false)) {
             fixture.run(() -> assertThrows(IllegalStateException.class,
-                    () -> RegionAccessDetector.onBlockWrite(fixture.tick.pos().east())));
+                    () -> RegionAccessDetector.onBlockWrite(fixture.level, fixture.tick.pos().east())));
             assertTrue(FabroliaConfig.asyncFailClosedTripped);
         }
     }
@@ -188,7 +188,7 @@ class ScheduledFluidFrontierTest {
             runtime.fluidTicker = (java.util.function.BiConsumer<BlockPos, Fluid>) (pos, fluid) -> {
                 // The native FlowingFluid spreadTo path writes its immediate neighbour.
                 // Holder readiness is intentionally true; it is not ownership authority.
-                RegionAccessDetector.onBlockWrite(pos.east());
+                RegionAccessDetector.onBlockWrite(level, pos.east());
                 writes.incrementAndGet();
             };
         }

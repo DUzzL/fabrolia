@@ -23,8 +23,9 @@ class CopperIslandClaimsTest {
         assertTrue(source.tryClaimAutonomousWork());
         source.noteClaim("test source");
         try (var window = new CopperIslandClaims.Window(source, false)) {
-            window.accept(chest);
-            window.accept(chest); // a double chest and its opener search can name the same owner
+            assertTrue(window.test(chest));
+            assertTrue(window.test(chest)); // double chest and opener searches can name the same owner
+            assertFalse(window.test(null), "a global cell is not covered by an island claim");
             assertFalse(window.missed);
             assertTrue(CopperIslandClaims.ownsExtra(chest, source));
             var peer = new FutureTask<>(() -> {

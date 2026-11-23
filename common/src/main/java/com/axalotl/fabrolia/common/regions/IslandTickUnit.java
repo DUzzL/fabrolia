@@ -196,6 +196,27 @@ public final class IslandTickUnit {
             }
         }
 
+        CopperIslandClaims.Window awaitClaims() {
+            long lastReport = System.nanoTime();
+            while (true) {
+                receipt.throwIfFailed();
+                receipt.requireUncommitted();
+                // tryClaim validates this exact request, fence and live island under admission.
+                CopperIslandClaims.Window window = runtime.copperContainers.tryUnit(runtime, island, this);
+                if (window != CopperIslandClaims.Window.BUSY) return window;
+                if (!RegionScheduler.poolRunning()) {
+                    throw new IllegalStateException("global sprint unit lost its worker pool before claim");
+                }
+                long now = System.nanoTime();
+                if (now - lastReport > 5_000_000_000L) {
+                    lastReport = now;
+                    LOGGER.warn("[async-islands] global sprint waiting for source or container claim: {}",
+                            IslandCommands.claimForensics(island));
+                }
+                LockSupport.parkNanos(this, 20_000L);
+            }
+        }
+
         void start() {
             try {
                 if (!RegionScheduler.enqueueUnit(runtime, queuedUnit)) {
@@ -832,31 +853,7 @@ public final class IslandTickUnit {
                     return;
                 }
                 if (globalSprintRequest != null) {
-                    long waitStarted = System.nanoTime();
-                    int stuckReports = 0;
-                    while ((containerClaims = rs.copperContainers.tryUnit(rs, island, globalSprintRequest))
-                            == CopperIslandClaims.Window.BUSY) {
-                        RegionScheduler.throwWorkerFailureIfAny();
-                        if (!rs.asyncActive || island.retired
-                                || island.globalSprintRequest != globalSprintRequest
-                                || !island.globalSprintFenced) {
-                            throw new IllegalStateException(
-                                    "global sprint unit lost its exact claim reservation");
-                        }
-                        if (!RegionScheduler.poolRunning()) {
-                            throw new IllegalStateException(
-                                    "global sprint unit lost its worker pool before claim");
-                        }
-                        if (System.nanoTime() - waitStarted > 5_000_000_000L) {
-                            waitStarted = System.nanoTime();
-                            if (++stuckReports >= 3) {
-                                throw new IllegalStateException(
-                                        "global sprint unit could not acquire island claim: "
-                                                + IslandCommands.claimForensics(island));
-                            }
-                        }
-                        LockSupport.parkNanos(20_000L);
-                    }
+                    containerClaims = globalSprintRequest.awaitClaims();
                     claimAcquired = true;
                 } else if (island.mainInterest() || rs.mainClaimsFenceActive()) {
                     // Main announced interest (a claim waiter, entity-status

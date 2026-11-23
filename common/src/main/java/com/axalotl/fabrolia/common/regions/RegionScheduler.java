@@ -392,6 +392,7 @@ public final class RegionScheduler {
                     startedLevels.put(lvl, rs);
                     final int[] count = {0};
                     lvl.entityTickList.forEach(e -> { rs.indexAdd(e); count[0]++; });
+                    rs.seedTrackedCopper();
                     bootstrapped += count[0];
                     var rta = (RegionTickingAccess) lvl.getChunkSource().chunkMap;
                     for (net.minecraft.server.level.ChunkHolder h : rta.fabrolia$visibleHolders()) {
@@ -1307,6 +1308,9 @@ public final class RegionScheduler {
         RegionizedServer runtime = PER_LEVEL.get(level);
         if (ownsRuntimeGeneration(runtime)) {
             if (runtime.currentThreadHoldsAllClaims()) return true;
+            if (caller instanceof RegionWorkerThread worker && worker.exclusiveEntityPhase != null) {
+                return worker.exclusiveEntityPhase.ownsTarget(level, pos);
+            }
             long chunk = ChunkPos.pack(pos);
             Region target = runtime.regionizer().peekRegionForChunk(chunk);
             EpochDomain domain = null;
@@ -1330,10 +1334,8 @@ public final class RegionScheduler {
             if (owner != null && owner.domain == domain
                     && owner.domainLevel() == level && !owner.retired) {
                 if (physicalMain && IslandCommands.mainHolds(owner)) return true;
-                if (caller instanceof RegionWorkerThread worker && worker.exclusiveEntityPhase != null
-                        && worker.currentDomain != null && CopperIslandClaims.ownsExtra(owner, worker.currentDomain.owner)) return true;
                 if (caller instanceof RegionWorkerThread worker
-                        && worker.currentRegion == null
+                        && !worker.islandDispatchInFlight && worker.currentRegion == null
                         && worker.currentDomain == domain
                         && owner.unitClaim.get() && owner.claimHolder == caller
                         && domain.entityPending.get() == 0
@@ -1534,10 +1536,17 @@ public final class RegionScheduler {
     private record MainSyncTask(Entity entity, Entity vehicle, RegionWorkerPool.ExternalPermit permit,
                                 BooleanSupplier admission, Runnable completion,
                                 boolean vanillaGuarded, boolean allIslandsFenced,
-                                long publishedNanos) implements Runnable {
+                                ServerLevel joinLevel, long publishedNanos) implements Runnable {
         MainSyncTask withAllIslandsFenced() {
             return new MainSyncTask(entity, vehicle, permit, admission, completion,
-                    vanillaGuarded, true, publishedNanos);
+                    vanillaGuarded, true, joinLevel, publishedNanos);
+        }
+
+        boolean awaitsGlobalJoin() {
+            if (joinLevel == null) return false;
+            if (!globalWorkJoined(joinLevel)) return true;
+            return entity.level() instanceof ServerLevel current && current != joinLevel
+                    && !globalWorkJoined(current);
         }
 
         @Override
@@ -1596,14 +1605,18 @@ public final class RegionScheduler {
     /** A vehicle can acquire a rider after the root's original admission. Never restart
      * the vehicle or tick an unprotected rider on its helper's authority. */
     public static boolean deferUnclaimedCopperPassenger(Entity vehicle, Entity passenger) {
-        if (!(Thread.currentThread() instanceof RegionWorkerThread worker)
-                || !(passenger.level() instanceof ServerLevel level)
-                || !ParallelProcessor.containsCopperGolemTree(passenger)) return false;
-        var runtime = publishedForLevel(level);
-        EpochDomain domain = worker.currentRegion != null ? worker.currentRegion.domain : worker.currentDomain;
-        if (runtime == null || !runtime.asyncActive || domain == null
-                || !CopperIslandClaims.treeNeedsMain(runtime, domain.owner, passenger)) return false;
-        queueMainSyncTick(passenger, vehicle, () -> true, null, false, true);
+        if (!(passenger.level() instanceof ServerLevel level)) return false;
+        if (Thread.currentThread() instanceof RegionWorkerThread worker) {
+            if (!ParallelProcessor.containsCopperGolemTree(passenger)) return false;
+            var runtime = publishedForLevel(level);
+            EpochDomain domain = worker.currentRegion != null ? worker.currentRegion.domain : worker.currentDomain;
+            if (runtime == null || !runtime.asyncActive || (domain != null
+                    && !CopperIslandClaims.treeNeedsMain(runtime, domain.owner, passenger))) return false;
+        } else if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())
+                || globalWorkJoined(level) || !ParallelProcessor.containsCopperGolemTree(passenger)) {
+            return false;
+        }
+        publishMainSync(passenger, vehicle, () -> true, null, false, true, level);
         return true;
     }
 
@@ -1640,6 +1653,17 @@ public final class RegionScheduler {
         queueMainSyncTick(e, null, admission, completion, false, true);
     }
 
+    /** An unproved copper footprint can include ownerless global cells as well as islands. */
+    static void queueMainSyncJoinedTick(Entity entity, BooleanSupplier admission, Runnable completion) {
+        publishMainSync(entity, null, admission, completion, false, true, (ServerLevel) entity.level());
+    }
+
+    /** Physical Main only: island claims alone do not join the level's global callbacks. */
+    static boolean globalWorkJoined(ServerLevel level) {
+        var runtime = publishedForLevel(level);
+        return runtime == null || !runtime.globalPreEntityWorkPending;
+    }
+
     /**
      * Publishes a Main-owned entity body with a completion edge which runs on
      * physical Main after the body but before its pool obligation is released.  A5 uses
@@ -1652,6 +1676,12 @@ public final class RegionScheduler {
     private static void queueMainSyncTick(Entity e, Entity vehicle, BooleanSupplier admission,
                                           Runnable completion, boolean vanillaGuarded,
                                           boolean allIslandsFenced) {
+        publishMainSync(e, vehicle, admission, completion, vanillaGuarded, allIslandsFenced, null);
+    }
+
+    private static void publishMainSync(Entity e, Entity vehicle, BooleanSupplier admission,
+                                        Runnable completion, boolean vanillaGuarded, boolean allIslandsFenced,
+                                        ServerLevel joinLevel) {
         if (admission == null) throw new NullPointerException("admission");
         RegionWorkerPool owner = pool;
         if (owner == null) {
@@ -1659,7 +1689,7 @@ public final class RegionScheduler {
         }
         if (!owner.publishExternalRoot(permit ->
                 MAIN_SYNC.add(new MainSyncTask(e, vehicle, permit, admission, completion,
-                        vanillaGuarded, allIslandsFenced, System.nanoTime())))) {
+                        vanillaGuarded, allIslandsFenced, joinLevel, System.nanoTime())))) {
             throw new IllegalStateException("MAIN_SYNC publication rejected by worker-pool lifecycle");
         }
     }
@@ -2072,6 +2102,17 @@ public final class RegionScheduler {
 
     private enum DrainMode { COMPLETE, READY, OVERDUE, OUT_OF_PHASE }
 
+    /** Wait for global work before reading a late rider's footprint. This is not an
+     * all-island claim: an ordinary Main-only golem acquires just its actual owners. */
+    private static MainSyncTask joinLateCopperTree(MainSyncTask task) {
+        if (task.joinLevel() == null && task.entity().level() instanceof ServerLevel level
+                && ParallelProcessor.containsCopperGolemTree(task.entity())) {
+            return new MainSyncTask(task.entity(), task.vehicle(), task.permit(), task.admission(),
+                    task.completion(), task.vanillaGuarded(), task.allIslandsFenced(), level, task.publishedNanos());
+        }
+        return task;
+    }
+
     /**
      * Decided on Main when the task is polled: a tree whose player still points into
      * another island ({@link PlayerRemoteState}) is served as a fenced task, in queue
@@ -2090,8 +2131,12 @@ public final class RegionScheduler {
 
     /** Main-confined nesting depth of MAIN_SYNC drains (a body may drain again). */
     private static int mainSyncDrainDepth;
+    // A fenced head is detached while earlier island buckets are serviced.
+    // A nested pump must not see the suffix without its FIFO barrier.
+    private static boolean flushingBeforeMainSyncFence;
 
     private static boolean drainMainSyncTicks(DrainMode mode) {
+        if (flushingBeforeMainSyncFence) return false;
         if (MAIN_SYNC.isEmpty()) {
             // Nothing queued and no outer drain holding detached tasks: no
             // standing service request may outlive the work it was raised for
@@ -2100,11 +2145,22 @@ public final class RegionScheduler {
             return false;
         }
         if (!MAIN_CLAIM_BATCHING) {
+            boolean ran = false;
             MainSyncTask queued;
             while ((queued = MAIN_SYNC.poll()) != null) {
+                try {
+                    queued = joinLateCopperTree(queued);
+                    if (queued.awaitsGlobalJoin()) {
+                        MAIN_SYNC.addFirst(queued);
+                        break;
+                    }
+                } catch (Throwable failure) {
+                    FailStops.<RuntimeException>rethrow(cancelQueuedMainSync(queued, publishFatalAndSelectWinner(failure)));
+                }
                 runOneMainSync(fenceRemotePlayerState(queued));
+                ran = true;
             }
-            return true;
+            return ran;
         }
         mainSyncDrainDepth++;
         try {
@@ -2130,24 +2186,32 @@ public final class RegionScheduler {
         boolean ran = false;
         MainSyncTask queued;
         while ((queued = MAIN_SYNC.poll()) != null) {
-            queued = fenceRemotePlayerState(queued);
-            if (queued.allIslandsFenced()) {
+            try {
+                queued = joinLateCopperTree(queued);
+                queued = fenceRemotePlayerState(queued);
+            } catch (Throwable failure) {
+                buckets.abort(cancelQueuedMainSync(queued, publishFatalAndSelectWinner(failure)));
+            }
+            if (queued.allIslandsFenced() || queued.awaitsGlobalJoin()) {
                 if (mode == DrainMode.OUT_OF_PHASE) {
                     // Serve only the islands queued before it; the fenced body
                     // and everything after it wait for an entity-phase drain.
-                    // It is republished only after those buckets ran, so a
-                    // nested drain from a body or tail cannot overtake them.
+                    // A nested drain must not overtake the detached copper barrier.
+                    flushingBeforeMainSyncFence = queued.joinLevel() != null;
                     try {
                         ran |= buckets.flushIdleIslands(true);
                     } finally {
+                        flushingBeforeMainSyncFence = false;
                         MAIN_SYNC.addFirst(queued);
                         requeueMainSync(buckets.drainRemaining());
                     }
                     return ran;
                 }
                 boolean blocked = false;
+                flushingBeforeMainSyncFence = queued.joinLevel() != null;
                 try {
                     if (mode == DrainMode.COMPLETE) {
+                        ran |= !buckets.isEmpty();
                         buckets.flush();
                     } else {
                         // The ready and tail drains never wait. A busy earlier
@@ -2158,19 +2222,28 @@ public final class RegionScheduler {
                                 : buckets.flushReady();
                         blocked = !buckets.isEmpty();
                     }
+                    blocked |= queued.awaitsGlobalJoin();
                 } catch (Throwable thrown) {
                     // The fenced task is already out of the queue: cancel its
                     // permit here, or the fail-stop sweep never sees it.
                     FailStops.<RuntimeException>rethrow(publishFatalAndSelectWinner(
                             cancelQueuedMainSync(queued, thrown)));
+                } finally {
+                    flushingBeforeMainSyncFence = false;
                 }
                 if (blocked) {
                     MAIN_SYNC.addFirst(queued);
                     requeueMainSync(buckets.drainRemaining());
                     return ran;
                 }
-                runOneMainSync(queued);
-                ran = true;
+                if (queued.allIslandsFenced()) {
+                    runOneMainSync(queued);
+                    ran = true;
+                } else {
+                    // A nested prefix drain completed the join. Preserve normal source
+                    // bucket admission rather than blocking READY on unrelated claims.
+                    buckets.add(mainClaimOwnerOf(queued.entity()), queued);
+                }
                 continue;
             }
             buckets.add(mainClaimOwnerOf(queued.entity()), queued);

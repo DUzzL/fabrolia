@@ -323,10 +323,10 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         if (vehicle.getRemovalReason() == null && entity.getRemovalReason() == null
                 && (com.axalotl.fabrolia.common.regions.NetherPortalTransfers.isSourceMutationBlocked(vehicle)
                 || com.axalotl.fabrolia.common.regions.NetherPortalTransfers.isSourceMutationBlocked(entity))) return;
+        if (RegionScheduler.deferUnclaimedCopperPassenger(vehicle, entity)) return;
         // A subtree with a player this region worker does not own (attached by the
         // vehicle's own tick after the root visit chose this lane) ticks on Main.
         if (RegionScheduler.deferForeignPlayerPassenger(vehicle, entity)) return;
-        if (RegionScheduler.deferUnclaimedCopperPassenger(vehicle, entity)) return;
         ParallelProcessor.TickGuard guard = (ParallelProcessor.TickGuard) entity;
         if (!guard.fabrolia$tryBeginTick()) return;
         Throwable failure = null;
@@ -629,18 +629,11 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             // tasks (chunk phase submitted them first) — per-region FIFO gives every
             // area vanilla's spawn → random ticks → entities order; this single barrier
             // covers all three phases at once.
-            // Deferred chunk-work arm: the chunk phase only COLLECTED spawn/random-tick
-            // work; submit it to the region queues NOW — after main's runBlockEvents
-            // (piston/block-event writes are complete, so region workers can no longer
-            // race them inside player-area chunks) and before entity dispatch (ColorGate
-            // submit-before-dispatch invariant, per-region FIFO preserved).
+            // Dispatch arms deferred global spawn/random work before its queue cut;
+            // join the group AND those chunk receipts before the vanilla entity list.
             var rsLease = RegionScheduler.forLevel(self);
             if (rsLease != null) {
                 com.axalotl.fabrolia.common.regions.CrossDimArrivals.rearmPendingLeases(rsLease);
-            }
-            if (((Object) this.chunkSource) instanceof SpawnFutureTaker armTaker) {
-                RegionScheduler.runSuccessBodyIfHealthy(
-                        armTaker::fabrolia$armDeferredChunkWork);
             }
             java.util.concurrent.atomic.AtomicReference<CompletableFuture<Void>> regionAllRef =
                     new java.util.concurrent.atomic.AtomicReference<>();
@@ -648,17 +641,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                     RegionScheduler.dispatchPreEntityWork(self)));
             CompletableFuture<Void> regionAll = java.util.Objects.requireNonNull(
                     regionAllRef.get(), "region dispatch did not publish its barrier");
-            if (((Object) this.chunkSource) instanceof SpawnFutureTaker t) {
-                CompletableFuture<Void> regionSpawnFut = t.fabrolia$takeSpawnFuture();
-                if (regionSpawnFut != null) {
-                    regionAll = CompletableFuture.allOf(regionAll, regionSpawnFut);
-                }
-                CompletableFuture<Void> regionBlockTicks = t.fabrolia$takeBlockTicksFuture();
-                if (regionBlockTicks != null) {
-                    regionAll = CompletableFuture.allOf(regionAll, regionBlockTicks);
-                }
-            }
-            ParallelProcessor.pumpUntilDone(regionAll);
+            rsLease.joinGlobalPreEntityWork(regionAll);
             // Ordinary region producers are now quiescent. In async mode islands
             // chain ahead of Main and keep publishing: Main services the islands
             // that are idle now and leaves the rest queued for its next barrier

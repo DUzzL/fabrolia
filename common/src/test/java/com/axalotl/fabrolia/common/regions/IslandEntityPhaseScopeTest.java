@@ -77,13 +77,20 @@ class IslandEntityPhaseScopeTest {
 
                     fixture.own.domain.deferredOps.clear();
                     fixture.level.resetBlock();
-                    try (var ignored = IslandEntityPhaseScope.enter(fixture.runtime, fixture.own)) {
-                        hitTwice(fixture.level);
-                        PrimedTnt actual = onlyTnt(fixture.level);
-                        assertEquals(expectedFuse, actual.getFuse());
-                        assertEquals(expectedVelocity, actual.getDeltaMovement());
-                        assertTrue(fixture.level.block.isAir());
-                        assertTrue(fixture.own.domain.deferredOps.isEmpty());
+                    try (var serial = IslandEntityPhaseScope.enter(fixture.runtime, fixture.own)) {
+                        serial.selectRegion(fixture.source);
+                        assertTrue(fixture.source.tryClaimIslandEntityPhase(worker, fixture.own.domain, fixture.own.domain.epoch));
+                        try {
+                            hitTwice(fixture.level);
+                            PrimedTnt actual = onlyTnt(fixture.level);
+                            assertEquals(expectedFuse, actual.getFuse());
+                            assertEquals(expectedVelocity, actual.getDeltaMovement());
+                            assertTrue(fixture.level.block.isAir());
+                            assertTrue(fixture.own.domain.deferredOps.isEmpty());
+                        } finally {
+                            fixture.source.release(worker);
+                            fixture.source.finishClaimTransaction();
+                        }
                     }
                     assertSame(fixture.runtime,
                             CrossRegionGuard.crossRegionTargetOrNull(fixture.level, TARGET));
@@ -186,6 +193,141 @@ class IslandEntityPhaseScopeTest {
                     fixture.releaseUnit(worker);
                 }
             });
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    void strictPreflightSurvivesTwoSuccessiveEightSecondClaimHolders() throws Exception {
+        try (Fixture f = new Fixture()) {
+            RegionWorkerPool pool = new RegionWorkerPool(1);
+            Object previousPool = get(RegionScheduler.class, null, "pool");
+            var firstClaim = new java.util.concurrent.CountDownLatch(1);
+            var releaseFirst = new java.util.concurrent.CountDownLatch(1);
+            var first = new FutureTask<Void>(() -> {
+                assertTrue(f.own.unitClaim.compareAndSet(false, true));
+                f.own.noteClaim("first holder");
+                firstClaim.countDown();
+                try {
+                    assertTrue(releaseFirst.await(25, TimeUnit.SECONDS));
+                } finally {
+                    f.own.clearClaim();
+                    f.own.unitClaim.set(false);
+                }
+                return null;
+            });
+            var constructor = IslandTickUnit.GlobalSprintRequest.class.getDeclaredConstructor(
+                    RegionizedServer.class, IslandRegistry.PIsland.class, long.class);
+            constructor.setAccessible(true);
+            var request = constructor.newInstance(f.runtime, f.own, f.own.logicalTick);
+            f.own.globalSprintRequest = request;
+            f.own.globalSprintFenced = true;
+            pool.start();
+            try {
+                set(RegionScheduler.class, null, "pool", pool);
+                Thread.ofPlatform().daemon().start(first);
+                assertTrue(firstClaim.await(3, TimeUnit.SECONDS));
+                var waiter = new FutureTask<>(request::awaitClaims);
+                Thread worker = Thread.ofPlatform().daemon().start(waiter);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (java.util.concurrent.locks.LockSupport.getBlocker(worker) != request) {
+                    assertFalse(waiter.isDone());
+                    assertTrue(System.nanoTime() < deadline, "strict request never reached BUSY");
+                    Thread.onSpinWait();
+                }
+                // Model real elapsed contention, not time used as a thread-start oracle.
+                assertThrows(java.util.concurrent.TimeoutException.class, () -> waiter.get(8, TimeUnit.SECONDS));
+                synchronized (f.own.unitAdmissionLock) {
+                    releaseFirst.countDown();
+                    first.get(2, TimeUnit.SECONDS);
+                    assertTrue(f.own.unitClaim.compareAndSet(false, true));
+                    f.own.noteClaim("second holder");
+                }
+                try {
+                    assertThrows(java.util.concurrent.TimeoutException.class, () -> waiter.get(8, TimeUnit.SECONDS));
+                } finally {
+                    f.own.clearClaim();
+                    f.own.unitClaim.set(false);
+                }
+                assertNull(waiter.get(3, TimeUnit.SECONDS), "exact request acquired source only");
+                assertTrue(f.own.unitClaim.get());
+                assertFalse(request.receipt.isDone());
+                assertEquals(request.fromLogicalTick, f.own.logicalTick);
+            } finally {
+                releaseFirst.countDown();
+                f.own.globalSprintRequest = null;
+                f.own.globalSprintFenced = false;
+                f.own.unitClaim.set(false);
+                try {
+                    pool.stop(() -> pool.drainMainSafeAll(true));
+                } finally {
+                    set(RegionScheduler.class, null, "pool", previousPool);
+                }
+            }
+        }
+    }
+
+    @Test
+    void borrowedOwnerCallbackWritesInlineOnlyDuringTheExactSerialPhase() throws Exception {
+        try (Fixture f = new Fixture()) {
+            var pool = new RegionWorkerPool(1);
+            Object previousPool = get(RegionScheduler.class, null, "pool");
+            boolean previousDebug = FabroliaConfig.fabroliaDebugRegionAccess;
+            pool.start();
+            try {
+                set(RegionScheduler.class, null, "pool", pool);
+                FabroliaConfig.fabroliaDebugRegionAccess = true;
+                onWorker(() -> {
+                    RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
+                    f.claimUnit(worker);
+                    try (var window = new CopperIslandClaims.Window(f.own, false)) {
+                        assertTrue(window.test(f.other));
+                        assertFalse(RegionScheduler.ownsCurrentContext(f.level, FOREIGN));
+                        try (var phase = IslandEntityPhaseScope.enter(f.runtime, f.own)) {
+                            for (Region stamp : new Region[]{null, f.source}) {
+                                phase.selectRegion(stamp);
+                                if (stamp != null) assertTrue(stamp.tryClaimIslandEntityPhase(worker, f.own.domain, f.own.domain.epoch));
+                                f.level.resetBlock();
+                                assertTrue(RegionScheduler.ownsCurrentContext(f.level, TARGET));
+                                assertTrue(RegionScheduler.ownsCurrentContext(f.level, FOREIGN));
+                                com.axalotl.fabrolia.common.api.FabroliaIslandApi.executeOnOwner(f.level, FOREIGN,
+                                        () -> f.level.setBlock(FOREIGN, Blocks.AIR.defaultBlockState(), 3, 512));
+                                assertTrue(f.level.block.isAir());
+                                assertTrue(f.other.domain.deferredOps.isEmpty());
+                                if (stamp != null) {
+                                    worker.currentRegion = f.target; // same-domain helper, not a serial visit
+                                    assertFalse(RegionScheduler.ownsCurrentContext(f.level, FOREIGN));
+                                    assertSame(f.runtime, CrossRegionGuard.crossRegionTargetOrNull(f.level, FOREIGN));
+                                    worker.currentRegion = stamp;
+                                    stamp.release(worker);
+                                    stamp.finishClaimTransaction();
+                                }
+                            }
+                            phase.selectRegion(null);
+                            assertFalse(RegionScheduler.ownsCurrentContext(f.otherLevel, FOREIGN));
+                            worker.currentRegion = f.foreign;
+                            assertFalse(RegionScheduler.ownsCurrentContext(f.level, FOREIGN));
+                            worker.currentRegion = null;
+                            f.own.domain.islandEntityQueueEpoch--;
+                            assertFalse(RegionScheduler.ownsCurrentContext(f.level, FOREIGN));
+                            assertSame(f.runtime, CrossRegionGuard.crossRegionTargetOrNull(f.level, FOREIGN));
+                            f.own.domain.islandEntityQueueEpoch++;
+                            f.other.claimHolder = new Thread();
+                            assertFalse(RegionScheduler.ownsCurrentContext(f.level, FOREIGN));
+                            f.other.claimHolder = worker;
+                        }
+                    } finally {
+                        f.releaseUnit(worker);
+                    }
+                });
+            } finally {
+                try {
+                    pool.stop(() -> pool.drainMainSafeAll(true));
+                } finally {
+                    set(RegionScheduler.class, null, "pool", previousPool);
+                    FabroliaConfig.fabroliaDebugRegionAccess = previousDebug;
+                }
+            }
         }
     }
 
@@ -603,6 +745,7 @@ class IslandEntityPhaseScopeTest {
         @Override public BlockState getBlockState(BlockPos pos) { return block; }
         @Override public boolean addFreshEntity(Entity entity) { entities.add(entity); return true; }
         @Override public boolean setBlock(BlockPos pos, BlockState state, int flags, int recursion) {
+            RegionAccessDetector.onBlockWrite(this, pos);
             RegionizedServer deferred = CrossRegionGuard.crossRegionTargetOrNull(this, pos);
             if (deferred != null) deferred.deferCrossRegion(() -> block = state, pos.immutable());
             else block = state;

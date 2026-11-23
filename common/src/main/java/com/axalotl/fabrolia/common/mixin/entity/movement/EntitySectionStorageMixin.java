@@ -2,10 +2,14 @@ package com.axalotl.fabrolia.common.mixin.entity.movement;
 
 import com.axalotl.fabrolia.api.fastutil.ConcurrentLongSortedSet;
 import com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap;
+import com.axalotl.fabrolia.common.regions.CopperSectionAccess;
+import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
+import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.LongSortedSet;
+import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.entity.EntityAccess;
 import net.minecraft.world.level.entity.EntitySection;
 import net.minecraft.world.level.entity.EntitySectionStorage;
@@ -51,6 +55,19 @@ public abstract class EntitySectionStorageMixin<T extends EntityAccess> {
         ConcurrentLongSortedSet newIds = new ConcurrentLongSortedSet();
         newIds.addAll(this.sectionIds);
         this.sectionIds = newIds;
+    }
+
+    @ModifyReturnValue(method = "createSection", at = @At("RETURN"), require = 1)
+    private EntitySection<T> fabrolia$bindCopperSection(EntitySection<T> section, long key) {
+        ((CopperSectionAccess) section).fabrolia$bindCopperSection(SectionPos.sectionToChunk(key));
+        return section;
+    }
+
+    @ModifyExpressionValue(method = "remove", at = @At(value = "INVOKE",
+            target = "Lit/unimi/dsi/fastutil/longs/Long2ObjectMap;remove(J)Ljava/lang/Object;"), require = 1)
+    private Object fabrolia$detachCopperSection(Object removed) {
+        if (removed != null) ((CopperSectionAccess) removed).fabrolia$detachCopperSection();
+        return removed;
     }
 
     @WrapMethod(method = "getOrCreateSection")

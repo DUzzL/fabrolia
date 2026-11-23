@@ -23,6 +23,7 @@ public final class IslandEntityPhaseScope implements AutoCloseable {
     private final long epoch;
     private final IslandEntityPhaseScope previous;
     private boolean closed;
+    private Region selectedRegion;
 
     private IslandEntityPhaseScope(RegionWorkerThread worker, RegionizedServer runtime,
                                    IslandRegistry.PIsland island,
@@ -33,6 +34,7 @@ public final class IslandEntityPhaseScope implements AutoCloseable {
         this.domain = island.domain;
         this.epoch = domain.epoch;
         this.previous = previous;
+        this.selectedRegion = previous == null ? null : previous.selectedRegion;
     }
 
     /** Enter only after the exact queue-only dispatch completed successfully. */
@@ -44,7 +46,7 @@ public final class IslandEntityPhaseScope implements AutoCloseable {
         }
         EpochDomain domain = island.domain;
         long epoch = domain.epoch;
-        if (island.retired || island.domainLevel() != runtime.level || domain.owner != island
+        if (worker.islandDispatchInFlight || island.retired || island.domainLevel() != runtime.level || domain.owner != island
                 || !island.unitClaim.get() || island.claimHolder != worker
                 || worker.currentDomain != domain
                 || worker.currentRegion != null && worker.currentRegion.domain != domain) {
@@ -90,11 +92,21 @@ public final class IslandEntityPhaseScope implements AutoCloseable {
                 && scope.runtime.islandOwnerOfCell(region.gridKey) == scope.island;
     }
 
+    /** Set by the serial visit loop, never by nested worker helpers. */
+    void selectRegion(Region region) {
+        selectedRegion = region;
+        worker.currentRegion = region;
+    }
+
     /** A context stamp cannot authorize a foreign level, island, or helper body. */
     boolean ownsTarget(Level level, BlockPos position) {
-        if (!liveAuthority() || level != runtime.level) return false;
+        if (level != runtime.level || worker.islandDispatchInFlight || !liveAuthority()
+                || worker.currentRegion != selectedRegion
+                || selectedRegion != null && selectedRegion.currentWorker() != worker
+                || !queueJoinSucceeded(domain, epoch)) return false;
         IslandRegistry.PIsland owner = runtime.islandOwnerOfChunk(ChunkPos.pack(position));
-        return owner == island || CopperIslandClaims.ownsExtra(owner, island);
+        return owner == island || owner != null && owner.domainLevel() == level
+                && owner.domain.owner == owner && CopperIslandClaims.ownsExtra(owner, island);
     }
 
     @Override

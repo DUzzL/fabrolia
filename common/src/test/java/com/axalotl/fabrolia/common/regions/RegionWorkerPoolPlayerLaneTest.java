@@ -1907,6 +1907,7 @@ class RegionWorkerPoolPlayerLaneTest {
                     Runnable.class,
                     boolean.class,
                     boolean.class,
+                    net.minecraft.server.level.ServerLevel.class,
                     long.class);
             constructor.setAccessible(true);
             java.util.function.BooleanSupplier admission = () -> {
@@ -1914,7 +1915,7 @@ class RegionWorkerPoolPlayerLaneTest {
                 return true;
             };
             return constructor.newInstance(null, null, permit, admission,
-                    (Runnable) completionRuns::incrementAndGet, false, false, System.nanoTime());
+                    (Runnable) completionRuns::incrementAndGet, false, false, null, System.nanoTime());
         } catch (ReflectiveOperationException reflectionFailure) {
             throw new AssertionError(reflectionFailure);
         }

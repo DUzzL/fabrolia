@@ -74,7 +74,7 @@ public abstract class LevelMixin implements LevelAccessor, AutoCloseable,
                                          net.minecraft.world.level.block.state.BlockState state,
                                          int flags, int recursionLeft,
                                          org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
-        com.axalotl.fabrolia.common.regions.RegionAccessDetector.onBlockWrite(pos);
+        com.axalotl.fabrolia.common.regions.RegionAccessDetector.onBlockWrite((Level) (Object) this, pos);
         // Cross-region containment: a worker writing a block state OUTSIDE its claimed
         // region (fire spread, plant growth, a contraption straddling the boundary) would
         // race a concurrent same-colour region two cells away — and even a distance-1

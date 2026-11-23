@@ -247,7 +247,7 @@ class FabroliaIslandOwnershipTest {
                 f.own.noteClaim("source");
                 coordinator.currentDomain = f.own.domain;
                 try (var window = new CopperIslandClaims.Window(f.own, false)) {
-                    window.accept(f.other);
+                    assertTrue(window.test(f.other));
                     assertTrue(CopperIslandClaims.ownsExtra(f.other, f.own));
                     coordinator.islandDispatchInFlight = true;
                     try {
@@ -355,13 +355,13 @@ class FabroliaIslandOwnershipTest {
                 f.own.noteClaim("test native source");
                 try {
                     try (var window = new CopperIslandClaims.Window(f.own, false)) {
-                        window.accept(f.other);
+                        assertTrue(window.test(f.other));
                         assertTrue(CopperIslandClaims.ownsExtra(f.other, f.own));
                         entered.countDown();
                         assertTrue(release.await(5, TimeUnit.SECONDS), "Main waited on the live native turn");
                     }
                     try (var next = new CopperIslandClaims.Window(f.own, false)) {
-                        next.accept(f.other);
+                        assertFalse(next.test(f.other));
                         assertTrue(next.missed, "a new window overtook the waiting callback");
                     }
                 } finally {

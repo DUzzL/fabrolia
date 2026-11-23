@@ -57,6 +57,16 @@ public class CopperGolemMixin implements CopperContainerFootprint.OpenChest {
             return false;
         }
         CopperGolem self = (CopperGolem) (Object) this;
+        // A chest recheck outside an AI turn can see a TRACKED golem teleported
+        // from a distant chest. No block state at that position can make it this
+        // chest or its second half. Preserve Level.getBlockState's bounds and
+        // FULL chunk lookup (including a cold load), without racing its palette.
+        if ((open.getY() != blockPos.getY()
+                || Math.abs((long) open.getX() - blockPos.getX()) + Math.abs((long) open.getZ() - blockPos.getZ()) > 1)
+                && self.level() instanceof ServerLevel level && CopperIslandClaims.unownedOpenerState(level, open)) {
+            if (level.isInValidBounds(open)) level.getChunkAt(open);
+            return false;
+        }
         net.minecraft.world.level.block.state.BlockState state = self.level().getBlockState(open);
         if (open.equals(blockPos)) {
             return true;

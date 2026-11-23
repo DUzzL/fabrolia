@@ -22,6 +22,9 @@ A copper golem can remember a chest after a teleport to another island. When its
 next turn needs both islands, the worker reserves the chest's island before it
 starts the turn. The chest's own clock does not advance with the golem. An
 unrelated island can keep ticking while a write to that chest waits.
+This includes nearby golems that are visible to the chest but are not themselves
+ticking. If a required cell belongs to no island, the affected turn waits for
+that level's global work instead of treating an island lock as permission to read it.
 
 To compare behavior against a shared clock, start the server with
 `-Dfabrolia.syncMode=true`. In this diagnostic mode the server thread visits the

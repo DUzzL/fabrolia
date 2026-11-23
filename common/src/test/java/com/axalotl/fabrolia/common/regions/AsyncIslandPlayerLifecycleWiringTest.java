@@ -76,8 +76,8 @@ final class AsyncIslandPlayerLifecycleWiringTest {
                 RegionWorkerThread self = (RegionWorkerThread) Thread.currentThread();
                 Region claimed = self.currentRegion;
                 self.currentRegion = null;
-                try (IslandEntityPhaseScope ignored = IslandEntityPhaseScope.enter(f.runtime, f.island)) {
-                    self.currentRegion = claimed;
+                try (IslandEntityPhaseScope serial = IslandEntityPhaseScope.enter(f.runtime, f.island)) {
+                    serial.selectRegion(claimed);
                     assertTrue(f.owns(), "the exclusive serial pass owns its island's player lifecycle");
                 } finally {
                     self.currentRegion = claimed;

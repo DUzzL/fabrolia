@@ -69,7 +69,7 @@ public final class CrossRegionGuard {
         IslandEntityPhaseScope exclusive = w.exclusiveEntityPhase;
         if (exclusive != null) {
             if (exclusive.ownsTarget(level, pos)) {
-                return null; // one serial entity pass owns this entire island + halo
+                return null; // source core/halo or an exact borrowed owner for this serial pass
             }
             // An exclusive phase is spatially bounded. In particular, do not
             // let its null currentRegion stamp open writes to another island.
