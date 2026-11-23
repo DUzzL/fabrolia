@@ -48,20 +48,13 @@ public final class RaidOwnership {
             RegionScheduler.runSuccessBodyIfHealthy(body);
             return;
         }
-        if (Thread.currentThread() instanceof RegionWorkerThread worker && worker.currentDomain != null) {
-            var domain = worker.currentDomain;
-            var owner = domain.owner;
-            if (owner != null && !owner.retired
-                    && owner.domainLevel() == level && owner.domain == domain
-                    && owner.unitClaim.get() && owner.claimHolder == worker
-                    && (worker.currentRegion == null && domain.entityPending.get() == 0
-                        || IslandEntityPhaseScope.owns(worker.currentRegion))) {
-                IslandCommands.routeFencedIslandBody(runtime, owner, label, () -> {
-                    body.run();
-                    return true;
-                });
-                return;
-            }
+        var owner = IslandCommands.exclusiveCoordinatorIsland(level);
+        if (runtime != null && owner != null) {
+            IslandCommands.routeFencedIslandBody(runtime, owner, label, () -> {
+                body.run();
+                return true;
+            });
+            return;
         }
         throw new IllegalStateException(label + " requires physical Main or its exclusive island coordinator");
     }

@@ -650,8 +650,7 @@ class RegionPreparationRoutedCommandTest {
                 result.set(command == null
                         ? IslandCommands.routeFencedIslandBody(f.runtime, f.island,
                                 "routed-clock-regression", body)
-                        : IslandCommands.routeCommandBlock(command, f.level,
-                                BlockPos.ZERO, null, body));
+                        : IslandCommands.routeCommandBlock(new CommandBlock(null, command), f.level, body));
             } catch (Throwable problem) {
                 failure.set(problem);
             } finally {
@@ -676,7 +675,7 @@ class RegionPreparationRoutedCommandTest {
     }
 
     @Test
-    void selectorCommandsKeepTheVanillaCommandBlockEnvelope() throws Exception {
+    void parkedCoordinatorLendsItsChestClaimAndKeepsTheVanillaCommandBlockEnvelope() throws Throwable {
         try (Fixture f = new Fixture(CommandLevel.class)) {
             CommandLevel level = (CommandLevel) f.level;
             level.rules = new GameRules(FeatureFlagSet.of());
@@ -691,6 +690,9 @@ class RegionPreparationRoutedCommandTest {
             dispatcher.setConsumer(ExecutionCommandSource.resultConsumer());
             set(Commands.class, commands, "dispatcher", dispatcher);
             installCommands(f.server, commands);
+            f.runtime.islandRegistry.applyRebuildCells(List.of(LongArrayList.of(0L), LongArrayList.of(3L)), 17L);
+            IslandRegistry.PIsland chest = f.runtime.islandRegistry.byCell(3L);
+            chest.level = f.level;
 
             CountDownLatch done = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
@@ -699,11 +701,13 @@ class RegionPreparationRoutedCommandTest {
                 assertTrue(f.pool.enqueueUnit(() -> {
                     RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
                     boolean claimed = false;
-                    try {
+                    try (var window = new CopperIslandClaims.Window(f.island, false)) {
                         assertTrue(f.island.tryClaimAutonomousWork());
                         claimed = true;
                         f.island.noteClaim("command-envelope-regression");
                         worker.currentDomain = f.island.domain;
+                        window.accept(chest);
+                        assertTrue(CopperIslandClaims.ownsExtra(chest, f.island));
                         CommandBlock disabled = new CommandBlock(target, "tag @s add disabled");
                         disabled.setSuccessCount(7);
                         assertTrue(executeBlock(f, disabled));
@@ -725,6 +729,8 @@ class RegionPreparationRoutedCommandTest {
                         assertEquals(1, next.getSuccessCount(),
                                 "vanilla success callbacks must update comparator/conditional state");
                         assertFalse(executeBlock(f, next));
+                        assertTrue(CopperIslandClaims.ownsExtra(chest, f.island));
+                        assertEquals(17L, chest.logicalTick, "lending a claim never ticks that island");
                     } catch (Throwable problem) {
                         failure.set(problem);
                     } finally {
@@ -736,11 +742,11 @@ class RegionPreparationRoutedCommandTest {
                         done.countDown();
                     }
                 }));
-                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                while (!done.await(1, TimeUnit.MILLISECONDS)) {
-                    for (TickTask task; (task = f.tasks.poll()) != null;) task.run();
-                    assertTrue(System.nanoTime() < deadline, "command envelope route did not complete");
-                }
+                withPoolDeadline(f, () -> {
+                    while (!done.await(1, TimeUnit.MILLISECONDS)) {
+                        for (TickTask task; (task = f.tasks.poll()) != null;) task.run();
+                    }
+                });
                 assertNull(failure.get(), () -> "command envelope failed: " + failure.get());
             } finally {
                 if (done.getCount() != 0) {
@@ -766,12 +772,11 @@ class RegionPreparationRoutedCommandTest {
     }
 
     private static boolean executeBlock(Fixture fixture, CommandBlock block) {
-        CommandSourceStack source = block.createCommandSourceStack(fixture.level, CommandSource.NULL);
-        return IslandCommands.routeCommandBlock(block.getCommand(), fixture.level,
-                BlockPos.ZERO, source, () -> {
-                    assertSame(fixture.main, Thread.currentThread());
-                    return block.performCommand(fixture.level);
-                });
+        return IslandCommands.routeCommandBlock(block, fixture.level, () -> {
+            assertSame(fixture.main, Thread.currentThread());
+            assertTrue(fixture.runtime.currentThreadHoldsAllClaims());
+            return block.performCommand(fixture.level);
+        });
     }
 
     private static final class CommandBlock extends BaseCommandBlock {
@@ -863,8 +868,8 @@ class RegionPreparationRoutedCommandTest {
                         worker.currentDomain = f.island.domain;
                         workerEntered.countDown();
                         await(publishCommand, "worker publication was never released");
-                        result.set(IslandCommands.routeCommandBlock("say preparation regression", f.level,
-                                BlockPos.ZERO, null, () -> {
+                        result.set(IslandCommands.routeCommandBlock(new CommandBlock(null, "say preparation regression"),
+                                f.level, () -> {
                                     assertSame(Thread.currentThread(), f.main,
                                             "the original nonlocal command must execute on physical Main");
                                     assertTrue(f.pool.mayServiceDetachedTransfers(),

@@ -93,7 +93,11 @@ class IslandEntityPhaseModeTest {
         int sensitive = unit.indexOf("&& !RegionizedServer.holdsOrderSensitiveEntity(members);", mode);
         int dispatch = unit.indexOf("rs.dispatchEntityPhase(d, members, regionParallel);", sensitive);
         int barrier = unit.indexOf("awaitEntityBarrier(rs, island, d, members, barrier);", dispatch);
+        int overlapStart = unit.indexOf("me.islandDispatchInFlight = true;", sensitive);
+        int overlapEnd = unit.indexOf("me.islandDispatchInFlight = false;", barrier);
         int serial = unit.indexOf("if (!regionParallel) rs.tickIslandEntitiesInVanillaOrder(island);", barrier);
+        assertTrue(overlapStart > sensitive && overlapStart < dispatch && overlapEnd > barrier && overlapEnd < serial,
+                "no callback lends the coordinator's claims between dispatch publication and its exact join");
         assertTrue(mode > 0 && sensitive > mode && dispatch > sensitive && barrier > dispatch && serial > barrier,
                 "one mode read, order-sensitivity check, dispatch with that mode, join, then the serial pass only in vanilla mode");
         assertEquals(1, count(unit, "rs.dispatchEntityPhase("), "the unit dispatches its entity phase once");

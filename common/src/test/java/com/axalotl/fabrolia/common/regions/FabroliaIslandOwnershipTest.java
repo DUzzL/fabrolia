@@ -3,11 +3,14 @@ package com.axalotl.fabrolia.common.regions;
 import com.axalotl.fabrolia.common.api.FabroliaIslandApi;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import net.minecraft.commands.CommandSource;
+import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.BaseCommandBlock;
 import net.minecraft.world.level.Level;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -213,6 +216,86 @@ class FabroliaIslandOwnershipTest {
                 }
             }));
             done.get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void regionClaimAndUnjoinedCoordinatorCannotPublishACommandOrRunItsEnvelope() throws Exception {
+        try (Fixture f = new Fixture(true)) {
+            var attempts = new java.util.concurrent.atomic.AtomicInteger();
+            var runs = new java.util.concurrent.atomic.AtomicInteger();
+            long routed = IslandCommands.ROUTED_GLOBAL.sum();
+            var block = new BaseCommandBlock() {
+                @Override public void onUpdated(ServerLevel level) { throw new AssertionError("updated before admission"); }
+                @Override public boolean isValid() { return true; }
+                @Override public CommandSourceStack createCommandSourceStack(ServerLevel level, CommandSource source) {
+                    throw new AssertionError("read command source before admission");
+                }
+            };
+            Runnable command = () -> {
+                attempts.incrementAndGet();
+                for (String text : java.util.List.of("scoreboard objectives list", "setblock ~ ~ ~ stone")) {
+                    block.setCommand(text);
+                    var rejected = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                            () -> IslandCommands.routeCommandBlock(block, f.level, () -> runs.incrementAndGet() > 0));
+                    assertTrue(rejected.getMessage().contains("exclusive island coordinator"));
+                }
+            };
+            onThread(true, () -> {
+                RegionWorkerThread coordinator = (RegionWorkerThread) Thread.currentThread();
+                assertTrue(f.own.tryClaimAutonomousWork());
+                f.own.noteClaim("source");
+                coordinator.currentDomain = f.own.domain;
+                try (var window = new CopperIslandClaims.Window(f.own, false)) {
+                    window.accept(f.other);
+                    assertTrue(CopperIslandClaims.ownsExtra(f.other, f.own));
+                    coordinator.islandDispatchInFlight = true;
+                    try {
+                        // Queue-only dispatch has no event-scheduler pending count.
+                        org.junit.jupiter.api.Assertions.assertEquals(0, f.own.domain.entityPending.get());
+                        command.run();
+                        onThread(true, () -> {
+                            RegionWorkerThread helper = (RegionWorkerThread) Thread.currentThread();
+                            helper.currentRegion = f.ownRegion;
+                            claim(f.ownRegion);
+                            try {
+                                // Valid addressed callback, NOT a loan of the entire island.
+                                FabroliaIslandApi.executeOnOwner(f.level, OWN, command);
+                            } finally {
+                                release(f.ownRegion);
+                                helper.currentRegion = null;
+                            }
+                        });
+                    } finally { coordinator.islandDispatchInFlight = false; }
+                    assertFalse(f.own.hasRoutedWaiter() || f.other.hasRoutedWaiter());
+                } finally {
+                    coordinator.currentDomain = null;
+                    f.own.clearClaim();
+                    f.own.unitClaim.set(false);
+                }
+            });
+            org.junit.jupiter.api.Assertions.assertEquals(2, attempts.get());
+            org.junit.jupiter.api.Assertions.assertEquals(0, runs.get());
+            org.junit.jupiter.api.Assertions.assertEquals(routed, IslandCommands.ROUTED_GLOBAL.sum());
+            assertFalse(IslandCommands.hasRoutedPending());
+
+            // A caller that needs a synchronous result chooses its complete operation's
+            // venue before submission. The caller of performCommand sees false, not a queue ACK.
+            var results = new java.util.ArrayList<Boolean>();
+            FlatOwnerTasks.start(f.server);
+            try {
+                onThread(false, () -> RegionScheduler.enqueueGlobal(() -> {
+                    assertTrue(Thread.currentThread() == f.physicalMain && RegionScheduler.ownsExactExecutionTurn());
+                    results.add(IslandCommands.routeCommandBlock(block, f.level, () -> {
+                        runs.incrementAndGet();
+                        return false;
+                    }));
+                }));
+                assertTrue(results.isEmpty());
+                RegionScheduler.drainDeferredLifecycleTransitionsAtPostTickBoundary(f.server);
+                org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of(false), results);
+                org.junit.jupiter.api.Assertions.assertEquals(1, runs.get());
+            } finally { closeFlatFixture(null); }
         }
     }
 

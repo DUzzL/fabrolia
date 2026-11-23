@@ -1190,9 +1190,13 @@ public final class IslandTickUnit {
                     // ColorGate. TNT and minecarts keep the serial pass in both modes.
                     boolean regionParallel = com.axalotl.fabrolia.common.config.FabroliaConfig.islandEntityParallel
                             && !RegionizedServer.holdsOrderSensitiveEntity(members);
-                    CompletableFuture<Void> barrier = rs.dispatchEntityPhase(d, members, regionParallel);
-
-                    awaitEntityBarrier(rs, island, d, members, barrier);
+                    me.islandDispatchInFlight = true;
+                    try {
+                        CompletableFuture<Void> barrier = rs.dispatchEntityPhase(d, members, regionParallel);
+                        awaitEntityBarrier(rs, island, d, members, barrier);
+                    } finally {
+                        me.islandDispatchInFlight = false;
+                    }
                     if (!regionParallel) rs.tickIslandEntitiesInVanillaOrder(island);
                     long debugCost = island.debugCostNanos;
                     if (debugCost > 0) {

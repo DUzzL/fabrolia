@@ -64,6 +64,14 @@ public final class FabroliaIslandApi {
      * A position never retargets a replacement level; an entity follows its current level.
      * Turning regions off finishes already accepted shared tasks before retiring their owner;
      * new submissions can be rejected during the transition. Normal stop settles accepted work before saving.
+     *
+     * <p>An addressed callback may run on one region helper, not the island's exclusive
+     * coordinator. It cannot synchronously invoke a command block there: even the local
+     * command proof covers an entire island. With the region scheduler active, submit
+     * the <em>whole</em> command-capable operation through {@link RegionScheduler#enqueueGlobal}
+     * instead, before it starts. Resolve its target and consume the actual command result
+     * inside that exclusive Main callback. Never queue just the command and wait for it
+     * while retaining a region claim.
      */
     public static void executeOnOwner(ServerLevel level, BlockPos pos, Runnable task) {
         RegionScheduler.executeAt(level, new ChunkPos(pos.getX() >> 4, pos.getZ() >> 4), task);
