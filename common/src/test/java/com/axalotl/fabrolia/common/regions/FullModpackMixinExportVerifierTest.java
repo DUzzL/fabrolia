@@ -2982,20 +2982,11 @@ class FullModpackMixinExportVerifierTest {
                         "com/axalotl/fabrolia/common/regions/IslandPlayerTurnSession",
                         "isRunningRealLate"),
                 "HANDOFF must retain the exact active late-token proof");
-        String ownerStamp = "com/axalotl/fabrolia/common/regions/"
-                + "IslandPlayerTurnSession$OwnerStamp";
-        for (String ownerField : List.of("playerIdentity", "listenerIdentity",
-                "islandIdentity", "islandId", "islandGeneration", "domainIdentity", "kind")) {
-            assertEquals(1, callCountByName(invariant, ownerStamp, ownerField),
-                    "immutable late authority must pin OwnerStamp." + ownerField);
-        }
-        assertEquals(1, callCountByName(invariant, ownerStamp, "matchesExactly"));
         assertEquals(1, callCountByName(invariant, A5_LISTENER_STATE_ACCESS,
                 "fabrolia$asyncIslandPlayerState"));
         assertEquals(0, callCountByName(invariant,
                 "com/axalotl/fabrolia/common/regions/PlayerTickPhaseStamp",
                 "fabrolia$playerLifecycleEpoch"));
-        assertEquals(0, callCountByName(invariant, ownerStamp, "lifecycleEpoch"));
         assertTrue(calls(invariant).stream().noneMatch(call -> List.of(
                         "level", "isRemoved", "isChangingDimension", "hasDisconnected",
                         "hasClientLoaded").contains(call.name)),

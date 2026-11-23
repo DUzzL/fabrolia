@@ -1325,14 +1325,7 @@ public final class IslandEntityTracking {
         if (pending == null || island == null || !Thread.holdsLock(pending.state)
                 || pending.player == null || pending.listener == null
                 || pending.state.listenerGate != pending.listener
-                || pending.owner.playerIdentity() != pending.player
-                || pending.owner.listenerIdentity() != pending.listener
-                || pending.owner.islandIdentity() != island
-                || pending.owner.islandId() != island.id
-                || pending.owner.islandGeneration() != island.gen
-                || pending.owner.domainIdentity() != island.domain
-                || pending.owner.kind() != IslandPlayerTurnSession.PlayerKind.REAL
-                || !pending.permit.owner().matchesExactly(pending.owner)
+                || !pending.matchesSourceOwnerLocked(island)
                 || !pending.state.session.isRunningRealLate(pending.permit)) {
             return false;
         }
@@ -1387,15 +1380,7 @@ public final class IslandEntityTracking {
                 || !pending.state.eligible
                 || !allowHandoffRequest && pending.state.lifecycleInvalidated
                 || pending.state.mainDisconnectPending
-                || pending.owner.playerIdentity() != pending.player
-                || pending.owner.listenerIdentity() != pending.listener
-                || pending.owner.islandIdentity() != island
-                || pending.owner.islandId() != island.id
-                || pending.owner.islandGeneration() != island.gen
-                || pending.owner.domainIdentity() != island.domain
-                || pending.owner.kind()
-                != IslandPlayerTurnSession.PlayerKind.REAL
-                || !pending.permit.owner().matchesExactly(pending.owner)) return false;
+                || !pending.matchesSourceOwnerLocked(island)) return false;
         if (!(pending.listener instanceof AsyncIslandListenerAccess listenerAccess)
                 || listenerAccess.fabrolia$asyncIslandPlayerState()
                 != pending.state) return false;
