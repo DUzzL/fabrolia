@@ -278,6 +278,58 @@ class RegionPreparationRoutedCommandTest {
     }
 
     @Test
+    void unaddressedReceiptSettlesAtRegionOffOrAfterWholeServerJoin() throws Throwable {
+        for (boolean stoppingServer : List.of(false, true)) {
+            List<Thread> deliveries = new CopyOnWriteArrayList<>();
+            try (Fixture f = new Fixture()) {
+                f.pool.start();
+                f.levels.remove(f.level, f.runtime);
+                FlatOwnerTasks.start(f.server);
+                Object previous = get(RegionScheduler.class, null, "accepting");
+                try {
+                    set(RegionScheduler.class, null, "accepting", true);
+                    RegionScheduler.enqueueGlobal(() -> deliveries.add(Thread.currentThread()));
+                    if (stoppingServer) FlatOwnerTasks.closeAdmission();
+                    withPoolDeadline(f, () -> stopFixtureScheduler(f));
+                    assertTrue(f.pool.isTerminated());
+                    assertEquals(stoppingServer ? List.of() : List.of(f.main), deliveries);
+                } finally { set(RegionScheduler.class, null, "accepting", previous); }
+            } finally {
+                // Full shutdown keeps the receipt through the join, then settles before save.
+                FlatOwnerTasks.closeAdmission();
+                try { assertNull(FlatOwnerTasks.finish(null)); } finally { FlatOwnerTasks.retire(); }
+            }
+            assertEquals(List.of(Thread.currentThread()), deliveries);
+        }
+    }
+
+    @Test
+    void failedRegionStopCancelsUnaddressedReceiptBeforeDetachingGeneration() throws Throwable {
+        try (Fixture f = new Fixture()) {
+            f.pool.start();
+            f.levels.remove(f.level, f.runtime);
+            FlatOwnerTasks.start(f.server);
+            var winner = new IllegalStateException("first worker failure");
+            List<Throwable> cancellations = new CopyOnWriteArrayList<>();
+            Object previous = get(RegionScheduler.class, null, "accepting");
+            try {
+                set(RegionScheduler.class, null, "accepting", true);
+                RegionScheduler.enqueueGlobal(RegionScheduler.cancellableRoot(
+                        () -> fail("failed generation entered an unaddressed callback"), cancellations::add));
+                f.pool.publishFatalFailure(winner);
+                withPoolDeadline(f, () -> assertSame(winner, assertThrows(Throwable.class, () -> stopFixtureScheduler(f))));
+                assertTrue(f.pool.isTerminated());
+                assertEquals(List.of(winner), cancellations);
+            } finally {
+                set(RegionScheduler.class, null, "accepting", previous);
+                FlatOwnerTasks.closeAdmission();
+                try { assertSame(winner, FlatOwnerTasks.finish(winner)); } finally { FlatOwnerTasks.retire(); }
+            }
+            assertEquals(List.of(winner), cancellations);
+        }
+    }
+
+    @Test
     void canonicalPauseFinishesAnAcceptedRetiredTaskWithoutRunningItsRawNudge() throws Throwable {
         try (Fixture f = new Fixture()) {
             f.pool.start();

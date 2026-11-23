@@ -216,6 +216,96 @@ class FabroliaIslandOwnershipTest {
     }
 
     @Test
+    void unaddressedReaderWaitsPastTwoClaimsAndBarrierPumpsButOwnedGroupsRun() throws Exception {
+        try (Fixture f = new Fixture(true)) {
+            var order = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+            FlatOwnerTasks.start(f.server);
+            try {
+                IslandCommands.mainClaim(f.own);
+                try {
+                    IslandCommands.mainClaim(f.other);
+                    try {
+                        onThread(false, () -> RegionScheduler.enqueueGlobal(() -> {
+                            assertTrue(Thread.currentThread() == f.physicalMain && RegionScheduler.ownsExactExecutionTurn());
+                            order.add("reader");
+                            RegionScheduler.enqueueGlobal(() -> order.add("next cut"));
+                        }));
+                        var groupDone = new FutureTask<>(() -> {
+                            order.add("continuation");
+                            return Thread.currentThread();
+                        });
+                        RegionScheduler.enqueueOwnedGroup(() -> {
+                            order.add("group");
+                            RegionScheduler.enqueueOwnedGroup(groupDone);
+                        });
+                        RegionScheduler.wakeWorkers();
+                        assertTrue(f.pool.isOwnWorker(groupDone.get(5, TimeUnit.SECONDS)));
+                        RegionScheduler.stealOneRegionTask();
+                        RegionScheduler.drainMainSafeNow();
+                        org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of("group", "continuation"),
+                                java.util.List.copyOf(order));
+                    } finally { IslandCommands.mainRelease(f.other); }
+                } finally { IslandCommands.mainRelease(f.own); }
+                order.add("returned");
+                RegionScheduler.drainDeferredLifecycleTransitionsAtPostTickBoundary(f.server);
+                org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of("group", "continuation", "returned", "reader"),
+                        java.util.List.copyOf(order));
+                RegionScheduler.drainDeferredLifecycleTransitionsAtPostTickBoundary(f.server);
+                org.junit.jupiter.api.Assertions.assertEquals(
+                        java.util.List.of("group", "continuation", "returned", "reader", "next cut"),
+                        java.util.List.copyOf(order));
+            } finally { closeFlatFixture(null); }
+        }
+    }
+
+    @Test
+    void pendingReaderDoesNotPrepareAnAllWorkerFenceWhileContainerTurnIsLive() throws Exception {
+        try (Fixture f = new Fixture(true)) {
+            set(IslandRegistry.class, f.runtime.islandRegistry, "identitySnapshot", java.util.List.of(f.own, f.other));
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var reader = new java.util.concurrent.CompletableFuture<Thread>();
+            FlatOwnerTasks.start(f.server);
+            var turn = new FutureTask<>(() -> {
+                assertTrue(f.own.tryClaimAutonomousWork());
+                f.own.noteClaim("test native source");
+                try {
+                    try (var window = new CopperIslandClaims.Window(f.own, false)) {
+                        window.accept(f.other);
+                        assertTrue(CopperIslandClaims.ownsExtra(f.other, f.own));
+                        entered.countDown();
+                        assertTrue(release.await(5, TimeUnit.SECONDS), "Main waited on the live native turn");
+                    }
+                    try (var next = new CopperIslandClaims.Window(f.own, false)) {
+                        next.accept(f.other);
+                        assertTrue(next.missed, "a new window overtook the waiting callback");
+                    }
+                } finally {
+                    f.own.clearClaim();
+                    f.own.unitClaim.set(false);
+                }
+                return true;
+            });
+            try {
+                RegionScheduler.enqueueOwnedGroup(turn);
+                RegionScheduler.wakeWorkers();
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                onThread(false, () -> RegionScheduler.enqueueGlobal(() -> reader.complete(Thread.currentThread())));
+                RegionScheduler.drainDeferredLifecycleTransitionsAtPostTickBoundary(f.server);
+                assertFalse(reader.isDone());
+                release.countDown();
+                assertTrue(turn.get(5, TimeUnit.SECONDS));
+                RegionScheduler.drainDeferredLifecycleTransitionsAtPostTickBoundary(f.server);
+                org.junit.jupiter.api.Assertions.assertSame(f.physicalMain, reader.get(5, TimeUnit.SECONDS));
+                assertFalse(FlatOwnerTasks.newContainerWindowMustYield());
+            } finally {
+                release.countDown();
+                closeFlatFixture(null);
+            }
+        }
+    }
+
+    @Test
     void sharedClockCallbacksWaitForTheExclusiveTurnAndKeepReadModifyWriteOrder() throws Exception {
         try (Fixture fixture = new Fixture(false)) {
             set(MinecraftServer.class, fixture.server, "levels", Map.of(Level.OVERWORLD, fixture.level));

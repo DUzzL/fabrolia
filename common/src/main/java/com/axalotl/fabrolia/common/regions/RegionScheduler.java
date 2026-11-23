@@ -183,7 +183,7 @@ public final class RegionScheduler {
                 || !RegionalPlayerEntityTicksV2
                 .schedulerLifecycleTransitionAllowed(mcServer)
                 || RegionWorkerPool.currentThreadCausalOwnerOrNull() != null
-                || IslandCommands.fenceWindowHeld()) {
+                || IslandCommands.fenceWindowHeld() || IslandCommands.mainHoldsAnyClaim()) {
             throw new IllegalStateException(
                     "deferred region lifecycle drain lost its post-tick physical-Main boundary");
         }
@@ -471,6 +471,7 @@ public final class RegionScheduler {
         }
 
         accepting = false;
+        failure = FlatOwnerTasks.cancelFailedRegionCut(mcServer, failure);
         if (startedPool != null) {
             try {
                 startedPool.stop();
@@ -634,6 +635,7 @@ public final class RegionScheduler {
             }
             failedGeneration = true;
         }
+        if (failedGeneration) stopFailure = FlatOwnerTasks.cancelFailedRegionCut(server, stopFailure);
 
         // The pacer join above is bounded by that daemon alone; it does not wait
         // for pool work. Any unrelated root which entered in this short interval
@@ -1167,15 +1169,15 @@ public final class RegionScheduler {
      * {@link #resumeExactPlayerTurn()}.
      */
     public static void pauseExactPlayerTurn() {
-        pauseExactPlayerTurn(false);
+        pauseExactPlayerTurn(false, null);
     }
 
     /** Retain next-unit FIFO; false defers preparation until routed Main work can finish. */
     static boolean pauseMainPreparationTurn() {
-        return pauseExactPlayerTurn(true);
+        return pauseExactPlayerTurn(true, null);
     }
 
-    private static boolean pauseExactPlayerTurn(boolean retainQueuedRegions) {
+    private static boolean pauseExactPlayerTurn(boolean retainQueuedRegions, BooleanSupplier yieldWhileBusy) {
         RegionWorkerPool current = pool;
         if (!active || current == null) {
             throw new IllegalStateException("exact player turn requires a live region pool");
@@ -1213,7 +1215,7 @@ public final class RegionScheduler {
                 IslandCommands.drainRoutedBatch();
             }
         };
-        if (retainQueuedRegions) return current.pauseMainPreparationAndAwait(progress);
+        if (retainQueuedRegions) return current.pauseMainPreparationAndAwait(progress, yieldWhileBusy);
         current.pauseExactTurnAndAwait(progress);
         return true;
     }
@@ -1221,11 +1223,35 @@ public final class RegionScheduler {
     /** Physical Main, outside a long-lived scheduler permit. Retain unpaid region entries;
      * finish accepted routed bodies before retrying. Only release a fence acquired here. */
     static void runSharedClockTurn(Runnable body) {
+        runExclusiveTurn(body, null);
+    }
+
+    /** Only a nonempty external cut asks for this turn. An already running two-island
+     * operation can finish at its own pace without holding back unrelated island units. */
+    static void runPostTickCallbackTurn(Runnable body) {
+        runExclusiveTurn(body, RegionScheduler::hasBorrowedContainerIsland);
+    }
+
+    private static boolean hasBorrowedContainerIsland() {
+        for (RegionizedServer rs : PER_LEVEL.values()) {
+            var islands = rs.islandRegistry.identitySnapshot();
+            for (int i = 0; i < islands.size(); i++) {
+                if (islands.get(i).containerClaimSource != null) return true;
+            }
+        }
+        return false;
+    }
+
+    private static void runExclusiveTurn(Runnable body, BooleanSupplier yieldWhileBusy) {
         boolean acquired = false;
         Throwable failure = null;
         try {
             if (!ownsExactExecutionTurn()) {
-                while (!pauseMainPreparationTurn()) IslandCommands.drainRoutedBatch();
+                if (yieldWhileBusy != null && yieldWhileBusy.getAsBoolean()) return;
+                while (!pauseExactPlayerTurn(true, yieldWhileBusy)) {
+                    if (yieldWhileBusy != null && yieldWhileBusy.getAsBoolean()) return;
+                    IslandCommands.drainRoutedBatch();
+                }
                 acquired = true;
             }
             body.run();
@@ -3293,8 +3319,17 @@ public final class RegionScheduler {
         }
     }
 
-    /** Submit a pool-level region-group work unit (dispatch coalescing). */
+    /**
+     * Submit an unaddressed callback for a later exclusive physical-Main turn.
+     * Publication is not execution: even the Main owner of an in-progress operation
+     * must return before this callback enters. Use {@link #executeAt} for spatial work.
+     */
     public static void enqueueGlobal(Runnable task) {
+        FlatOwnerTasks.postUnaddressed(task);
+    }
+
+    /** Internal dispatch groups manage their own regions/slices and join within the phase. */
+    static void enqueueOwnedGroup(Runnable task) {
         if (ownsExactRootExecution(task)) {
             runRootInlineIfHealthy(task);
             return;

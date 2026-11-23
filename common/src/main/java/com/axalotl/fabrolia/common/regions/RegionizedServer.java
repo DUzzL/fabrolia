@@ -3560,7 +3560,7 @@ public final class RegionizedServer {
                 }
             } else if (roots != null) {
                 for (int i = 0, n = roots.size(); i < n; i++) {
-                    RegionScheduler.enqueueGlobal(roots.get(i));
+                    RegionScheduler.enqueueOwnedGroup(roots.get(i));
                 }
             }
 
@@ -3962,7 +3962,7 @@ public final class RegionizedServer {
                     }
                 }
                 RegionScheduler.throwWorkerFailureIfAny();
-                RegionScheduler.enqueueGlobal(
+                RegionScheduler.enqueueOwnedGroup(
                         cancellableGroupRoot(rest, depth + 1, cf, tickEntities,
                                 rest.get(0).domain.entityDispatchPublication));
             }

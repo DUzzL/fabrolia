@@ -382,7 +382,7 @@ public final class IslandBlockEntityTicks {
             int workerRunners = Math.min(slices.size(), Math.max(1, RegionScheduler.workerCount()));
             for (int i = 0; i < workerRunners && !gate.failed(); i++) {
                 try {
-                    RegionScheduler.enqueueGlobal(runner);
+                    RegionScheduler.enqueueOwnedGroup(runner);
                 } catch (Throwable submissionFailure) {
                     gate.failAndSelect(submissionFailure);
                     break;

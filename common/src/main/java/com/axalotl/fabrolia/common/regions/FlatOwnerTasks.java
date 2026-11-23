@@ -10,9 +10,9 @@ import net.minecraft.world.level.ChunkPos;
 import java.util.Objects;
 import java.util.concurrent.RejectedExecutionException;
 
-/** Server-lifetime owner callbacks. Flat callbacks use the native FIFO; shared-clock callbacks
- * without a spatial claim wait for an exclusive Main turn. Both use the same admission and
- * stop receipt, so stopping after the last tick cannot discard an accepted write. */
+/** Server-lifetime callbacks. Flat owner callbacks use the native FIFO; shared-clock owner
+ * callbacks and unaddressed region submissions wait for an exclusive Main turn. The stop
+ * receipt preserves accepted writes even when the server never ticks again. */
 public final class FlatOwnerTasks {
     private static volatile FlatOwnerTasks live;
 
@@ -20,6 +20,7 @@ public final class FlatOwnerTasks {
     private final ReferenceLinkedOpenHashSet<Delivery> pending = new ReferenceLinkedOpenHashSet<>();
     private volatile Delivery firstShared; // Main's lock-free empty check; links under pending
     private Delivery lastShared;
+    private volatile boolean callbackCutWaiting;
     private boolean closed;
     private boolean inAcceptedBody; // physical Main only
 
@@ -39,6 +40,30 @@ public final class FlatOwnerTasks {
 
     static void postShared(ServerLevel level, ChunkPos pos, Entity entity, Runnable task) {
         submit(level, pos, entity, task, true);
+    }
+
+    /** No position to claim. Never enter inline, even on an exact-turn owner. */
+    static void postUnaddressed(Runnable task) {
+        Objects.requireNonNull(task, "task");
+        FlatOwnerTasks generation = live;
+        Throwable failure = null;
+        if (generation != null) {
+            try {
+                synchronized (generation.pending) {
+                    failure = RegionScheduler.workerFailureOrNull();
+                    if (failure == null && !generation.closed && RegionScheduler.acceptsSharedOwnerTasks()
+                            && RegionScheduler.getServer() == generation.server) {
+                        generation.enqueueLocked(generation.new Delivery(null, null, null, task), true);
+                        return;
+                    }
+                }
+            } catch (Throwable thrown) {
+                failure = RegionScheduler.publishFatalAndSelectWinner(thrown);
+            }
+        }
+        if (failure == null) failure = RegionScheduler.workerFailureOrNull();
+        if (failure == null) failure = new RejectedExecutionException("unaddressed task has no live region scheduler");
+        FailStops.<RuntimeException>rethrow(RegionScheduler.cancelRejectedRoot(null, task, failure));
     }
 
     private static void submit(ServerLevel level, ChunkPos pos, Entity entity, Runnable task, boolean shared) {
@@ -61,20 +86,7 @@ public final class FlatOwnerTasks {
                             && (continuation || !generation.closed
                             && (RegionScheduler.getServer() == null || RegionScheduler.isActive()))) {
                         if (!main || shared) {
-                            Delivery delivery = generation.new Delivery(level, pos, entity, task);
-                            try {
-                                generation.pending.add(delivery);
-                                if (shared) {
-                                    if (generation.lastShared == null) generation.firstShared = delivery;
-                                    else generation.lastShared.nextShared = delivery;
-                                    generation.lastShared = delivery;
-                                } else server.schedule(server.wrapRunnable(delivery));
-                            } catch (Throwable thrown) {
-                                // Even enqueue-then-throw cannot give a queued copy the body.
-                                generation.pending.remove(delivery);
-                                delivery.clear();
-                                throw thrown;
-                            }
+                            generation.enqueueLocked(generation.new Delivery(level, pos, entity, task), shared);
                             return;
                         }
                         inline = true;
@@ -95,12 +107,36 @@ public final class FlatOwnerTasks {
         FailStops.<RuntimeException>rethrow(RegionScheduler.cancelRejectedRoot(null, task, failure));
     }
 
+    private void enqueueLocked(Delivery delivery, boolean shared) {
+        try {
+            pending.add(delivery);
+            if (shared) {
+                if (lastShared == null) firstShared = delivery;
+                else lastShared.nextShared = delivery;
+                lastShared = delivery;
+            } else server.schedule(server.wrapRunnable(delivery));
+        } catch (Throwable thrown) {
+            // Even enqueue-then-throw cannot give a queued native copy the body.
+            pending.remove(delivery);
+            delivery.clear();
+            throw thrown;
+        }
+    }
+
     /** Called only on physical Main after both region pool references have retired. */
     static boolean ownsFinalCallback(ServerLevel level) {
         FlatOwnerTasks generation = live;
         if (generation == null || !generation.inAcceptedBody || generation.server != level.getServer()) return false;
         var helpers = com.axalotl.fabrolia.common.ParallelProcessor.executor;
         return (helpers == null || helpers.isTerminated()) && generation.server.getLevel(level.dimension()) == level;
+    }
+
+    /** A complete Main tick has offered the waiting cut. Only new multi-owner windows
+     * yield; an entered window keeps every claim it needs to finish, and independent
+     * units do not consult this flag. Repeated overlapping windows cannot starve Main. */
+    static boolean newContainerWindowMustYield() {
+        FlatOwnerTasks generation = live;
+        return generation != null && generation.callbackCutWaiting;
     }
 
     /** One finite FIFO prefix at the physical post-tick boundary, never from a worker wait.
@@ -111,7 +147,11 @@ public final class FlatOwnerTasks {
         if (generation.server != server || !RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
             throw new IllegalStateException("shared owner dispatch outside its server");
         }
-        RegionScheduler.runSharedClockTurn(generation::deliverSharedCut);
+        synchronized (generation.pending) {
+            if (generation.closed || generation.firstShared == null) return;
+            generation.callbackCutWaiting = true;
+        }
+        RegionScheduler.runPostTickCallbackTurn(generation::deliverSharedCut);
     }
 
     /** Runtime /regions off: accepting is already false. Taking the admission lock pairs with
@@ -126,9 +166,22 @@ public final class FlatOwnerTasks {
     }
 
     private void deliverSharedCut() {
+        Throwable failure = settleSharedCut(null);
+        if (failure != null) FailStops.<RuntimeException>rethrow(failure);
+    }
+
+    /** Called after region admission closes, including rollback of an already published start. */
+    static Throwable cancelFailedRegionCut(MinecraftServer server, Throwable failure) {
+        FlatOwnerTasks generation = live;
+        if (generation == null || generation.server != server) return failure;
+        return generation.settleSharedCut(Objects.requireNonNull(failure));
+    }
+
+    private Throwable settleSharedCut(Throwable failure) {
         Delivery next;
         synchronized (pending) {
-            if (closed) return;
+            callbackCutWaiting = false;
+            if (closed && failure == null) return null; // whole-server stop settles after both joins
             next = firstShared;
             firstShared = lastShared = null;
         }
@@ -139,13 +192,22 @@ public final class FlatOwnerTasks {
             synchronized (pending) {
                 if (!pending.remove(current)) continue; // already settled by a reentrant stop
             }
-            try { current.deliver(); } finally { current.clear(); }
+            try {
+                if (failure == null) current.deliver();
+                else failure = RegionScheduler.cancelRejectedRoot(null, current.takeTask(), failure);
+            } catch (Throwable thrown) {
+                failure = FailStops.mergeFailureCapped(failure, thrown);
+            } finally { current.clear(); }
         }
+        return failure;
     }
 
     public static void closeAdmission() {
         FlatOwnerTasks generation = live;
-        if (generation != null) synchronized (generation.pending) { generation.closed = true; }
+        if (generation != null) synchronized (generation.pending) {
+            generation.closed = true;
+            generation.callbackCutWaiting = false;
+        }
     }
 
     /** Both worker pools have finished. Settle accepted callbacks before vanilla saves the world. */
@@ -157,6 +219,7 @@ public final class FlatOwnerTasks {
         }
         synchronized (generation.pending) {
             generation.closed = true;
+            generation.callbackCutWaiting = false;
             generation.firstShared = generation.lastShared = null;
         }
         while (true) {
@@ -228,6 +291,13 @@ public final class FlatOwnerTasks {
             if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(server)) {
                 throw new IllegalStateException("flat owner dispatch consumed off physical Main");
             }
+            if (level == null) { // unaddressed receipt, never placed on vanilla's FIFO
+                if (RegionScheduler.isActive() && !RegionScheduler.ownsExactExecutionTurn()) {
+                    throw new IllegalStateException("unaddressed callback without exclusive Main turn");
+                }
+                runMainBody();
+                return;
+            }
             ServerLevel target = entity == null ? level
                     : entity.level() instanceof ServerLevel current ? current : null;
             if (target == null || target.getServer() != server || server.getLevel(target.dimension()) != target) {
@@ -241,13 +311,7 @@ public final class FlatOwnerTasks {
                 return;
             }
             if (!RegionScheduler.isActive()) {
-                boolean stopBody = closed;
-                if (stopBody) inAcceptedBody = true;
-                try {
-                    RegionScheduler.runRootInlineIfHealthy(takeTask());
-                } finally {
-                    if (stopBody) inAcceptedBody = false;
-                }
+                runMainBody();
                 return;
             }
             // /regions on won before this native queue entry. Main alone is no longer the owner.
@@ -260,6 +324,16 @@ public final class FlatOwnerTasks {
             } catch (Throwable failure) {
                 Throwable winner = RegionScheduler.publishFatalAndSelectWinner(failure);
                 FailStops.<RuntimeException>rethrow(RegionScheduler.cancelRejectedRoot(null, routed, winner));
+            }
+        }
+
+        private void runMainBody() {
+            boolean stopBody = closed;
+            if (stopBody) inAcceptedBody = true;
+            try {
+                RegionScheduler.runRootInlineIfHealthy(takeTask());
+            } finally {
+                if (stopBody) inAcceptedBody = false;
             }
         }
 
