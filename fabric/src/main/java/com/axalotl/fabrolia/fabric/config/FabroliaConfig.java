@@ -195,7 +195,7 @@ public class FabroliaConfig {
     private static void loadConfigValues() {
         // asyncIslands left the config file; saveConfig drops the stale key, so say so once.
         if (CONFIG.get("asyncIslands") != null) {
-            LOGGER.warn("Ignoring obsolete asyncIslands setting. The server uses a shared clock unless started with -D{}=false.",
+            LOGGER.warn("Ignoring obsolete asyncIslands setting. Islands tick independently by default; start with -D{}=true for synchronous diagnostics.",
                     com.axalotl.fabrolia.common.config.FabroliaConfig.SYNC_MODE_PROPERTY);
         }
         for (Entry entry : ENTRIES) {

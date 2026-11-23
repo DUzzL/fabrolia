@@ -61,7 +61,8 @@ def prepare(config, run, world_template, port, xmx, view_distance, simulation_di
             (run / 'config' / 'fabrolia.toml').write_text(
                 'enablePlayerTickActor = %s\nenableRegionThreading = true\n'
                 'islandEntityParallel = %s\n' % (on, 'true' if mode == 'parallel' else 'false'))
-            sync_flag = ['-Dfabrolia.syncMode=' + ('true' if mode == 'default' else 'false')]
+            if mode == 'default':  # Historical synchronous comparison.
+                sync_flag = ['-Dfabrolia.syncMode=true']
     if world_template is not None:
         shutil.copytree(world_template, run / 'world')
     srv = mc.Server(run, loader, port, xmx=xmx, jvm_extra=mc.AIKAR + sync_flag)

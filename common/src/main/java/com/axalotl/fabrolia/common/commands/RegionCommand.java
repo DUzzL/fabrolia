@@ -281,7 +281,7 @@ public final class RegionCommand {
                         })));
         // The live mode flip is the A/B control for "is this bug async-specific?":
         // it exists only with -Dfabrolia.debugCommands=true and is never saved.
-        // Only a server explicitly started for independent-clock testing may turn them on.
+        // A server started with the synchronous diagnostic stays in that mode.
         if (DEBUG_COMMANDS) {
             asyncCmd.executes(ctx -> setAsyncIslands(ctx, !FabroliaConfig.asyncIslands))
                     .then(literal("on").executes(ctx -> setAsyncIslands(ctx, true)))
@@ -1850,7 +1850,8 @@ public final class RegionCommand {
     }
 
     private static int applyRate(net.minecraft.commands.CommandSourceStack src, Object[] t, float tps) {
-        if (!FabroliaConfig.ALLOW_INDEPENDENT_CLOCKS) {
+        if (!FabroliaConfig.asyncIslands || t != null
+                && !((com.axalotl.fabrolia.common.regions.RegionizedServer) t[0]).asyncActive) {
             src.sendFailure(net.minecraft.network.chat.Component.literal(
                     "Island rate unavailable with a shared clock; /tick rate changes the whole server."));
             return 0;
@@ -1878,7 +1879,8 @@ public final class RegionCommand {
     }
 
     private static int applySprint(net.minecraft.commands.CommandSourceStack src, Object[] t, long ticks) {
-        if (!FabroliaConfig.ALLOW_INDEPENDENT_CLOCKS) {
+        if (!FabroliaConfig.asyncIslands || t != null
+                && !((com.axalotl.fabrolia.common.regions.RegionizedServer) t[0]).asyncActive) {
             src.sendFailure(net.minecraft.network.chat.Component.literal(
                     "Island sprint unavailable with a shared clock; /tick sprint advances the whole server."));
             return 0;

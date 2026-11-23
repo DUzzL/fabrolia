@@ -13,16 +13,15 @@ like in vanilla.
 Vanilla Minecraft ticks everything on one thread, so a server with many players
 in different places is limited by a single core. Fabrolia splits every dimension
 into regions of 8×8 chunks. Loaded regions that touch form an **island**, for
-example a player's base and everything around it. By default the regions share
-the world's clock. Workers can process chunk work, but the server thread visits
-the native entity list in order, with region workers paused. Moving a copper golem
-between regions of one dimension does not clear its remembered container or schedule another turn.
+example a player's base and everything around it. By default each island ticks
+on its own clock. Different islands can tick entities, block entities and
+scheduled ticks at the same time. Within one island the default entity pass
+follows vanilla insertion order.
 
-**Independent island clocks are experimental.** Start with `-Dfabrolia.syncMode=false`
-only on a test world if you need different island rates. A golem on one island
-can still read its remembered chest while the owner of another island changes it.
-Leaving the option unset (or setting it to `true`) selects the shared clock for
-the whole session; neither a config reload nor a command can switch it on the fly.
+To compare behavior against a shared clock, start the server with
+`-Dfabrolia.syncMode=true`. In this diagnostic mode the server thread visits the
+native entity list with region workers paused. Restart without the flag to return
+to independent clocks. The old `asyncIslands` config key has no effect.
 
 Fabrolia only helps where work can be split: one huge base with all players in it
 is still one island. The goal is to preserve vanilla work and its observable order.
@@ -76,6 +75,7 @@ Operators:
 | `/fabrolia regions islandentities [vanilla\|parallel]` | 4 | Choose entity order inside an autonomous island; does not change the shared-clock pass. |
 | `/fabrolia regions on\|off\|toggle` | 4 | Region threading on or off. |
 | `/fabrolia regions rate here <tps>` | 4 | Change an autonomous island's rate. With a shared clock use vanilla `/tick rate`. |
+| `/fabrolia regions sprint here <ticks>` | 4 | Advance an autonomous island by a tick count. With a shared clock use vanilla `/tick sprint`. |
 | `/fabrolia regions top verbose [count]` | 4 | Raw island figures for diagnosis. |
 | `/fabrolia regions crossdim [on\|off]` | 4 | Overworld/Nether island coupling. |
 | `/fabrolia config reload` | 4 | Reloads `config/fabrolia.toml`. |

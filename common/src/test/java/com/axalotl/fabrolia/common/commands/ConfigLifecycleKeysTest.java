@@ -37,6 +37,19 @@ final class ConfigLifecycleKeysTest {
     }
 
     @Test
+    void asyncIslandsFollowsStartupPolicyAndIsNotPersisted() throws Exception {
+        boolean independent = !Boolean.getBoolean(FabroliaConfig.SYNC_MODE_PROPERTY);
+        assertEquals(independent, FabroliaConfig.ALLOW_INDEPENDENT_CLOCKS);
+        assertEquals(independent, FabroliaConfig.asyncIslands);
+        for (String loader : new String[]{"fabric", "neoforge"}) {
+            String config = Files.readString(Path.of("..", loader, "src/main/java/com/axalotl/fabrolia",
+                    loader, "config/FabroliaConfig.java"));
+            assertTrue(!config.contains("\"asyncIslands\", "), loader + " must not define the key");
+            assertTrue(!config.contains("asyncIslandsPersister"), loader + " must not persist it");
+        }
+    }
+
+    @Test
     void workerReadSwitchesAreVolatile() throws Exception {
         for (String name : new String[]{"disabled", "enableRegionThreading", "asyncIslands"}) {
             assertTrue(Modifier.isVolatile(FabroliaConfig.class.getField(name).getModifiers()), name);

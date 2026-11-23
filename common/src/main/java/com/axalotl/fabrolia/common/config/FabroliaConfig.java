@@ -89,10 +89,10 @@ public class FabroliaConfig {
     // same per-region [spawn][random][entities] FIFO and serial entity order. false = legacy
     // group dispatch (rollback lever). Tunable live: /fabrolia regions eventsched.
     public static boolean regionEventScheduler = true;
-    /** Startup clock policy. Only an explicit false permits independent clocks. */
+    /** Opt-in synchronous diagnostic; independent island clocks are the startup default. */
     public static final String SYNC_MODE_PROPERTY = "fabrolia.syncMode";
     public static final boolean ALLOW_INDEPENDENT_CLOCKS =
-            "false".equalsIgnoreCase(System.getProperty(SYNC_MODE_PROPERTY));
+            !Boolean.getBoolean(SYNC_MODE_PROPERTY);
     public static volatile boolean asyncIslands = ALLOW_INDEPENDENT_CLOCKS;
     /** Entity phase of an async island unit. false (default): one serial pass
      *  over the island in Vanilla EntityTickList insertion order (3.0.0 TNT
