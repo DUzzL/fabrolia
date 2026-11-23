@@ -110,9 +110,12 @@ Internal switches are not config keys. The `/fabrolia regions debug` toggles and
 `/fabrolia config setFabroliaEntitySpawn|setFabroliaRandomTicks|setFabroliaDespawn` change the
 running server only and are never saved.
 
-With region threading off, the entity list is taken after the flat spawn jobs finish.
+With Fabrolia enabled and region threading off, the entity list is taken after the flat spawn jobs finish.
 If that list contains a copper golem (including a passenger), its entire pass runs in
 insertion order on the server thread: each entity's despawn check stays with its turn.
+Nested checks for the same chest use the vanilla opener list; matching coordinates in
+different dimensions do not interfere. Two threads checking the same chest at once still
+get Fabrolia's older busy fallback on the contending thread. This is not an inventory lock.
 
 ## Building
 

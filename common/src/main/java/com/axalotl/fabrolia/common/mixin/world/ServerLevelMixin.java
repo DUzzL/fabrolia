@@ -3,6 +3,7 @@ package com.axalotl.fabrolia.common.mixin.world;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.parallelised.utils.FabroliaNavigationBatch;
+import com.axalotl.fabrolia.common.regions.FlatEntityTickListAccess;
 import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.api.utils.ConcurrentCollections;
 import com.axalotl.fabrolia.api.utils.SnapshotList;
@@ -236,21 +237,6 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     @Unique
     private static void fabrolia$recordFlatCleanupFailure(FabroliaFlatFailureGate failure, Throwable cleanup) {
         failure.recordCleanup(cleanup);
-    }
-
-
-    @Unique
-    private void fabrolia$awaitAcceptedFlatWork(CompletableFuture<?> first, CompletableFuture<?> second,
-                                                FabroliaFlatFailureGate failure) {
-        fabrolia$awaitFlatTerminal(first, failure);
-        if (second != null && second != first) {
-            fabrolia$awaitFlatTerminal(second, failure);
-        }
-        try {
-            RegionScheduler.throwWorkerFailureIfAny();
-        } catch (Throwable globalWinner) {
-            failure.publish(globalWinner);
-        }
     }
 
     @Unique
@@ -725,7 +711,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         // Vanilla finishes the chunk phase before starting the entity list. A birth in
         // an accepted spawn callback belongs to this cut, and can itself change its venue.
         if (spawnFuture != null) {
-            fabrolia$awaitAcceptedFlatWork(spawnFuture, null, flatFailure);
+            fabrolia$awaitFlatTerminal(spawnFuture, flatFailure);
             fabrolia$throwFlatFailure(flatFailure);
         }
         DistanceManager distanceManager = this.chunkSource.chunkMap.getDistanceManager();
@@ -739,17 +725,13 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         try {
             if (FabroliaConfig.disabled) {
                 flatFailure.runNext(() -> entityTickList.forEach(captureLive));
-            } else {
-                List<Entity> cut = ((com.axalotl.fabrolia.common.regions.EntityTickListSnapshotAccess)
-                        entityTickList).fabrolia$snapshotEntities();
-                if (ParallelProcessor.flatCutRequiresSerialTicks(cut)) {
-                    if (fabrolia$syncBuf != null) fabrolia$syncBuf.clear();
-                    fabrolia$tickFlatSerialCut(cut, self, tickRateManager, distanceManager, flatFailure);
-                    RegionScheduler.runSuccessBodyIfHealthy(
-                            () -> ParallelProcessor.onEntityTickBatchEnd(batchStart));
-                    return;
-                }
-                flatFailure.runNext(() -> cut.forEach(captureLive));
+            } else if (((FlatEntityTickListAccess) entityTickList).fabrolia$visitFlatEntities(captureLive,
+                    entity -> fabrolia$tickFlatSerialEntity(entity, self, tickRateManager, distanceManager,
+                            profiler, flatFailure))) {
+                if (fabrolia$syncBuf != null) fabrolia$syncBuf.clear();
+                RegionScheduler.runSuccessBodyIfHealthy(
+                        () -> ParallelProcessor.onEntityTickBatchEnd(batchStart));
+                return;
             }
         } catch (Throwable thrown) {
             fabrolia$recordFlatFailure(flatFailure, thrown);
@@ -778,7 +760,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
                             });
                         }
                     });
-            fabrolia$awaitAcceptedFlatWork(despawnWork, null, flatFailure);
+            fabrolia$awaitFlatTerminal(despawnWork, flatFailure);
         } else if (flatFailure.failureOrNull() == null) {
             boolean pushed = false;
             try {
@@ -814,7 +796,6 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             }
         }
 
-        fabrolia$awaitAcceptedFlatWork(null, null, flatFailure);
         fabrolia$throwFlatFailure(flatFailure);
 
         ArrayList<Entity> pendingFabrolia = new ArrayList<>(fabrolia$lastBatchSize);
@@ -892,7 +873,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
             }
         }
 
-        fabrolia$awaitAcceptedFlatWork(entityWork, null, flatFailure);
+        fabrolia$awaitFlatTerminal(entityWork, flatFailure);
         fabrolia$throwFlatFailure(flatFailure);
         RegionScheduler.commitSuccessIfHealthy(() -> {
             fabrolia$lastBatchSize = Math.max(64, pendingCount + (pendingCount >> 2));
@@ -904,26 +885,39 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
     /** No despawn fanout here: an earlier tick may change whether a later mob
      * persists, is frozen, still exists, or is now riding another entity. */
     @Unique
-    private static void fabrolia$tickFlatSerialCut(List<Entity> cut, ServerLevel level, TickRateManager tickRateManager,
-                                                   DistanceManager distanceManager, FabroliaFlatFailureGate gate) {
-        ProfilerFiller profiler = Profiler.get();
-        for (int i = 0; i < cut.size(); i++) {
-            Entity entity = cut.get(i);
-            gate.runNext(() -> {
-                if (entity.isRemoved() || tickRateManager.isEntityFrozen(entity)
-                        || ((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return;
+    private static void fabrolia$tickFlatSerialEntity(Entity entity, ServerLevel level, TickRateManager tickRateManager,
+                                                      DistanceManager distanceManager, ProfilerFiller profiler,
+                                                      FabroliaFlatFailureGate gate) {
+        gate.runNext(() -> {
+            if (entity.isRemoved() || tickRateManager.isEntityFrozen(entity)
+                    || ((ParallelProcessor.TickGuard) entity).fabrolia$tickLease().isArrivalPending()) return;
+            boolean sectionOpen = false;
+            try {
                 profiler.push("checkDespawn");
+                sectionOpen = true;
                 entity.checkDespawn();
+                sectionOpen = false;  // a throwing pop must not be retried
                 profiler.pop();
-                // 26.3 checks range and vehicle *after* checkDespawn, without
-                // repeating the removal/freeze gates from the start of the slot.
+                // 26.3 checks range and vehicle after despawn, without repeating the removal/freeze gates.
                 if (fabrolia$admitFlatRoot(entity, distanceManager)) {
                     profiler.push("tick");
+                    sectionOpen = true;
                     ParallelProcessor.tickEntity(level, entity, false);
+                    sectionOpen = false;
                     profiler.pop();
                 }
-            });
-        }
+            } catch (Throwable thrown) {
+                Throwable winner = gate.publish(thrown);
+                if (sectionOpen) {
+                    try {
+                        profiler.pop();
+                    } catch (Throwable cleanup) {
+                        gate.recordCleanup(cleanup);
+                    }
+                }
+                FailStops.<RuntimeException>rethrow(winner);
+            }
+        });
     }
 
     @Unique

@@ -2,12 +2,15 @@ package com.axalotl.fabrolia.common.mixin.world;
 
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.regions.EntityTickLease;
+import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import net.minecraft.SharedConstants;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.DistanceManager;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.profiling.InactiveProfiler;
+import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.TickRateManager;
 import net.minecraft.world.entity.Entity;
@@ -20,6 +23,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Isolated;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -34,7 +39,7 @@ class FlatSerialEntityCutTest {
     }
 
     @Test
-    void earlierTickCanPreventALaterMobsNativeHardDespawn() throws Exception {
+    void earlierTickCanPreventALaterMobsNativeHardDespawn() throws Throwable {
         TestLevel level = allocate(TestLevel.class);
         level.first = allocate(FirstRoot.class);
         level.first.lease = new EntityTickLease();
@@ -55,15 +60,55 @@ class FlatSerialEntityCutTest {
                 return super.isEntityFrozen(entity);
             }
         };
-        var visit = ServerLevelMixin.class.getDeclaredMethod("fabrolia$tickFlatSerialCut", List.class,
-                ServerLevel.class, TickRateManager.class, DistanceManager.class, ServerLevelMixin.FabroliaFlatFailureGate.class);
-        visit.setAccessible(true); // static mixin helpers must be private even before transformation
-        visit.invoke(null, List.of(level.first, level.zombie), level, rate, allocate(InRange.class),
-                new ServerLevelMixin.FabroliaFlatFailureGate());
+        visit(List.of(level.first, level.zombie), level, rate, InactiveProfiler.INSTANCE);
 
         assertFalse(level.zombie.discarded);
         assertEquals(List.of("first freeze check", "first tick", "zombie freeze check",
                 "zombie despawn check", "zombie tick"), level.events);
+    }
+
+    @Test
+    void failingProfilerCleanupKeepsTheDespawnFailureAndStopsThePass() throws Throwable {
+        var fatal = RegionScheduler.class.getDeclaredField("orphanFatalFailure");
+        fatal.setAccessible(true);
+        Object previous = fatal.get(null);
+        try {
+            fatal.set(null, null);
+            var level = allocate(TestLevel.class);
+            level.first = allocate(FirstRoot.class);
+            level.first.lease = new EntityTickLease();
+            level.first.despawnFailure = new IllegalStateException("despawn");
+            var cleanup = new IllegalStateException("pop");
+            var trace = new ArrayList<String>();
+            var profiler = (ProfilerFiller) Proxy.newProxyInstance(getClass().getClassLoader(),
+                    new Class<?>[]{ProfilerFiller.class}, (proxy, method, args) -> {
+                        if (method.getName().equals("push")) { trace.add((String) args[0]); return null; }
+                        if (method.getName().equals("pop")) { trace.add("pop"); throw cleanup; }
+                        throw new AssertionError(method);
+                    });
+            var actual = assertThrows(IllegalStateException.class, () ->
+                    visit(List.of(level.first, level.first), level, new TickRateManager(), profiler));
+            assertSame(level.first.despawnFailure, actual);
+            assertArrayEquals(new Throwable[]{cleanup}, actual.getSuppressed());
+            assertEquals(List.of("checkDespawn", "pop"), trace);
+        } finally {
+            fatal.set(null, previous);
+        }
+    }
+
+    private static void visit(List<Entity> cut, TestLevel level, TickRateManager rate, ProfilerFiller profiler)
+            throws Throwable {
+        var method = ServerLevelMixin.class.getDeclaredMethod("fabrolia$tickFlatSerialEntity", Entity.class,
+                ServerLevel.class, TickRateManager.class, DistanceManager.class, ProfilerFiller.class,
+                ServerLevelMixin.FabroliaFlatFailureGate.class);
+        method.setAccessible(true);
+        var gate = new ServerLevelMixin.FabroliaFlatFailureGate();
+        var distance = allocate(InRange.class);
+        try {
+            for (Entity entity : cut) method.invoke(null, entity, level, rate, distance, profiler, gate);
+        } catch (InvocationTargetException wrapped) {
+            throw wrapped.getCause();
+        }
     }
 
     private static final class TestLevel extends ServerLevel {
@@ -85,6 +130,11 @@ class FlatSerialEntityCutTest {
 
     private static final class FirstRoot extends ServerPlayer implements ParallelProcessor.TickGuard {
         EntityTickLease lease;
+        RuntimeException despawnFailure;
+        @Override public void checkDespawn() {
+            if (despawnFailure != null) throw despawnFailure;
+            super.checkDespawn();
+        }
         private FirstRoot() { super(null, null, null, null); }
         @Override public double distanceToSqr(Entity entity) { return 256.0 * 256.0; }
         @Override public EntityTickLease fabrolia$tickLease() { return lease; }

@@ -664,10 +664,10 @@ public final class ParallelProcessor {
      * member's eligibility. Even a normally parallel entity can destroy the
      * golem's chest. Births after capture do not become new roots; vanilla
      * still traverses each vehicle's live passenger list at its turn. */
-    public static boolean flatCutRequiresSerialTicks(List<Entity> members) {
+    public static boolean flatCutRequiresSerialTicks(Iterable<Entity> members) {
         if (FabroliaConfig.disabled) return false;
-        for (int i = 0; i < members.size(); i++) {
-            if (containsCopperGolemTree(members.get(i))) return true;
+        for (Entity entity : members) {
+            if (containsCopperGolemTree(entity)) return true;
         }
         return false;
     }
