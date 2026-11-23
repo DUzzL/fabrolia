@@ -13,10 +13,9 @@ like in vanilla.
 Vanilla Minecraft ticks everything on one thread, so a server with many players
 in different places is limited by a single core. Fabrolia splits every dimension
 into regions of 8×8 chunks. Loaded regions that touch form an **island**, for
-example a player's base and everything around it. Islands that are far enough
-apart cannot affect each other within one tick, so Fabrolia ticks them at the
-same time on worker threads: entities, block entities, redstone and scheduled
-ticks, random ticks and mob spawning. The main thread keeps everything global:
+example a player's base and everything around it. Fabrolia ticks separate
+islands concurrently on worker threads: entities, block entities, redstone,
+scheduled ticks, random ticks and mob spawning. The main thread handles
 commands, players joining and leaving, and work that crosses islands.
 
 By default every island also keeps its own clock (**async islands**): a lagging
@@ -25,7 +24,7 @@ island. For diagnosis, the JVM option `-Dfabrolia.syncMode=true` starts the serv
 synchronous region threading, where the whole world finishes each tick together.
 
 Fabrolia only helps where work can be split: one huge base with all players in it
-is still one island. It does not skip or reorder vanilla work to gain TPS.
+is still one island. The goal is to preserve vanilla work and its observable order.
 
 Nearby-item searches and serial island entity passes reuse only private working
 arrays. Nested searches get separate storage. Neither the lists returned by the
@@ -116,6 +115,11 @@ insertion order on the server thread: each entity's despawn check stays with its
 Nested checks for the same chest use the vanilla opener list; matching coordinates in
 different dimensions do not interfere. Two threads checking the same chest at once still
 get Fabrolia's older busy fallback on the contending thread. This is not an inventory lock.
+
+`FabroliaIslandApi.executeOnOwner` with regions off runs inline on the server
+thread. Other threads submit to that server's task queue; returning does not
+mean the callback has run. With independent islands, a callback on one owner
+can still overlap a golem on another island that remembers the same chest.
 
 ## Building
 

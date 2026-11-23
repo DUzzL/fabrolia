@@ -12,10 +12,8 @@ import net.minecraft.world.level.ChunkPos;
 /**
  * Public island API for mods.
  *
- * <p>Work routed via {@link #executeOnOwner} retains the owning region's
- * ordering in both wall-tick and async-island modes. Async islands retain
- * their local clocks and deadlines, but mutable gameplay bodies execute
- * serially across islands on their actual worker owners or physical Main.
+ * <p>Routing to one region does not serialize work in another: independent
+ * islands can run mutable callbacks concurrently on different local clocks.
  *
  * <p>Ownership rules for mods, enforced by RegionAccessDetector in
  * development/compat modes: reading or mutating entities, block entities,
@@ -59,8 +57,12 @@ public final class FabroliaIslandApi {
 
     /**
      * Run {@code task} under the ownership/ordering domain of the given
-     * position: inline only with both region ownership and current gameplay
-     * admission, otherwise queued to the owning region's task lane.
+     * position: inline with existing region ownership, otherwise queued to the
+     * owner. With regions off, physical Main runs it inline; other callers post
+     * to the server's task queue. Returning from a queued submit does not mean
+     * the callback has finished. Do not wait for Main from a flat tick helper.
+     * If regions start before delivery, the task is routed to the current owner;
+     * it does not run in a replacement for an unloaded target level.
      */
     public static void executeOnOwner(ServerLevel level, BlockPos pos, Runnable task) {
         RegionScheduler.executeAt(level, new ChunkPos(pos.getX() >> 4, pos.getZ() >> 4), task);

@@ -319,6 +319,9 @@ public final class RegionScheduler {
             throw new IllegalStateException(
                     "RegionScheduler.start requires physical main between server-tick phases");
         }
+        if (ParallelProcessor.serverStopping(mcServer)) {
+            throw new IllegalStateException("region scheduler cannot start during server shutdown");
+        }
         boolean regionThreadingEnabled = callSuccessBooleanIfHealthy(() -> {
             if (!FabroliaConfig.enableRegionThreading) {
                 LOGGER.debug("RegionScheduler: enableRegionThreading=false, scheduler dormant");
@@ -2885,16 +2888,11 @@ public final class RegionScheduler {
 
     /** Generic submit at (level, chunk). Inline under authenticated existing ownership. */
     public static void executeAt(ServerLevel level, ChunkPos pos, Runnable task) {
-        boolean exactRoot = ownsExactRootExecution(task);
         if (!active) {
-            MinecraftServer current = server;
-            if (current != null && !current.isSameThread()) {
-                throw new IllegalStateException(
-                        "region task submitted from a worker after scheduler admission closed");
-            }
-            runRootInlineIfHealthy(task);
+            FlatOwnerTasks.execute(level, pos, null, task);
             return;
         }
+        boolean exactRoot = ownsExactRootExecution(task);
         RegionizedServer rs = forLevel(level);
         if (rs == null) {
             throw new IllegalStateException(
@@ -2981,9 +2979,12 @@ public final class RegionScheduler {
     }
 
     public static void executeForEntity(Entity entity, Runnable task) {
-        if (!active) { runRootInlineIfHealthy(task); return; }
         if (!(entity.level() instanceof ServerLevel sl)) {
             runRootInlineIfHealthy(task);
+            return;
+        }
+        if (!active) {
+            FlatOwnerTasks.execute(sl, null, entity, task);
             return;
         }
         executeAt(sl, entity.chunkPosition(), task);
@@ -3163,8 +3164,7 @@ public final class RegionScheduler {
         }
     }
 
-    private static Throwable cancelRejectedRoot(RegionWorkerPool owner, Runnable task,
-                                                Throwable primary) {
+    static Throwable cancelRejectedRoot(RegionWorkerPool owner, Runnable task, Throwable primary) {
         if (owner != null) return owner.cancelQueuedEntry(task, primary);
         Throwable failure = primary;
         if (task instanceof RegionTaskFanIn.CancellableQueueEntry cancellable) {
@@ -3178,7 +3178,7 @@ public final class RegionScheduler {
     }
 
     /** Inline roots still need the same atomic W-vs-entry cut as queued roots. */
-    private static void runRootInlineIfHealthy(Runnable task) {
+    static void runRootInlineIfHealthy(Runnable task) {
         try {
             runSuccessBodyIfHealthy(task);
         } catch (Throwable failure) {

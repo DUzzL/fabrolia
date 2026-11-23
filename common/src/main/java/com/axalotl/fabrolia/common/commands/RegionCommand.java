@@ -1487,6 +1487,11 @@ public final class RegionCommand {
                     .withStyle(ChatFormatting.RED)));
             return;
         }
+        if (com.axalotl.fabrolia.common.ParallelProcessor.serverStopping(src.getServer())) {
+            src.sendFailure(prefix.copy().append(Component.literal(
+                    "Region threading cannot change during server shutdown").withStyle(ChatFormatting.RED)));
+            return;
+        }
         if (!com.axalotl.fabrolia.common.regions.RegionalPlayerEntityTicksV2
                 .schedulerLifecycleTransitionAllowed(src.getServer())) {
             src.sendFailure(prefix.copy().append(Component.literal(

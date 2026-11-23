@@ -239,6 +239,205 @@ class FabroliaIslandOwnershipTest {
     }
 
     @Test
+    void unloadedFlatTargetCannotWriteIntoItsReplacementOrCancelTheNextWorldsWork() throws Exception {
+        MinecraftServer server = serverOwnedBy(Thread.currentThread());
+        TestLevel old = TestLevel.create(server);
+        TestLevel replacement = TestLevel.create(server);
+        set(MinecraftServer.class, server, "levels", Map.of(Level.OVERWORLD, old));
+        var cancelled = new java.util.ArrayList<Throwable>();
+        var writes = new java.util.ArrayList<String>();
+        FlatOwnerTasks.start(server);
+        try {
+            onThread(false, () -> FabroliaIslandApi.executeOnOwner(old, OWN,
+                    RegionScheduler.cancellableRoot(() -> writes.add("unloaded"), cancelled::add)));
+            set(MinecraftServer.class, server, "levels", Map.of(Level.OVERWORLD, replacement));
+            onThread(false, () -> FabroliaIslandApi.executeOnOwner(replacement, OWN,
+                    () -> writes.add("replacement")));
+            FlatOwnerTasks.closeAdmission();
+            assertNull(FlatOwnerTasks.finish(null));
+            org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of("replacement"), writes);
+            org.junit.jupiter.api.Assertions.assertEquals(1, cancelled.size());
+            org.junit.jupiter.api.Assertions.assertInstanceOf(
+                    java.util.concurrent.RejectedExecutionException.class, cancelled.getFirst());
+        } finally {
+            closeFlatFixture(null);
+        }
+    }
+
+    @Test
+    void flatMainDrainsAcceptedOwnerCallbacksBeforeSaveEvenWithoutAnotherPoll() throws Exception {
+        MinecraftServer server = serverOwnedBy(Thread.currentThread());
+        TestLevel level = TestLevel.create(server);
+        set(MinecraftServer.class, server, "levels", Map.of(Level.OVERWORLD, level));
+        var order = new java.util.ArrayList<String>();
+        FlatOwnerTasks.start(server);
+        try {
+            Thread main = Thread.currentThread();
+            onThread(false, () -> {
+                FabroliaIslandApi.executeOnOwner(level, OWN, () -> {
+                    org.junit.jupiter.api.Assertions.assertSame(main, Thread.currentThread());
+                    order.add("first");
+                    FabroliaIslandApi.executeOnOwner(level, OWN, () -> order.add("nested"));
+                });
+                FabroliaIslandApi.executeOnOwner(level, OWN, () -> order.add("second"));
+            });
+            assertTrue(order.isEmpty(), "the submitting thread cannot enter the world");
+            FlatOwnerTasks.closeAdmission();
+            assertNull(FlatOwnerTasks.finish(null));
+            for (var wake : nativeTasks(server)) wake.run();
+            org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of("first", "nested", "second"), order);
+            org.junit.jupiter.api.Assertions.assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> FabroliaIslandApi.executeOnOwner(level, OWN, () -> order.add("late")));
+        } finally {
+            closeFlatFixture(null);
+        }
+    }
+
+    @Test
+    void flatFailureBeforeNativePollCancelsWithOriginalCauseWithoutRunningWorldBody() throws Exception {
+        MinecraftServer server = serverOwnedBy(Thread.currentThread());
+        TestLevel level = TestLevel.create(server);
+        set(MinecraftServer.class, server, "levels", Map.of(Level.OVERWORLD, level));
+        Object previous = get(RegionScheduler.class, null, "orphanFatalFailure");
+        var cancellations = new java.util.ArrayList<Throwable>();
+        var winner = new IllegalStateException("first worker failure");
+        var bodies = new java.util.concurrent.atomic.AtomicInteger();
+        FlatOwnerTasks.start(server);
+        try {
+            onThread(false, () -> FabroliaIslandApi.executeOnOwner(level, OWN,
+                    RegionScheduler.cancellableRoot(bodies::incrementAndGet, cancellations::add)));
+            RegionScheduler.publishFatalFailure(winner);
+            FlatOwnerTasks.closeAdmission();
+            org.junit.jupiter.api.Assertions.assertSame(winner, FlatOwnerTasks.finish(null));
+            for (var wake : nativeTasks(server)) wake.run();
+            org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of(winner), cancellations);
+            org.junit.jupiter.api.Assertions.assertEquals(0, bodies.get());
+        } finally {
+            closeFlatFixture(winner);
+            set(RegionScheduler.class, null, "orphanFatalFailure", previous);
+        }
+    }
+
+    @Test
+    void flatSubmissionReroutesAfterRegionsStartRatherThanBorrowingMain() throws Exception {
+        try (Fixture fixture = new Fixture(false)) {
+            set(MinecraftServer.class, fixture.server, "levels", Map.of(Level.OVERWORLD, fixture.level));
+            var writes = new java.util.concurrent.CompletableFuture<Boolean>();
+            FlatOwnerTasks.start(fixture.server);
+            try {
+                set(RegionScheduler.class, null, "active", false);
+                set(RegionScheduler.class, null, "server", null);
+                onThread(false, () -> FabroliaIslandApi.executeOnOwner(fixture.level, OWN,
+                        () -> writes.complete(fixture.owns(OWN))));
+                set(RegionScheduler.class, null, "server", fixture.server);
+                set(RegionScheduler.class, null, "active", true);
+                withForeignClaim(fixture.ownRegion, () -> {
+                    nativeTasks(fixture.server).remove().run();
+                    assertFalse(writes.isDone(), "physical Main did not acquire the occupied region");
+                });
+                var publishReady = RegionWorkerPool.class.getDeclaredMethod("publishReady", Region.class);
+                publishReady.setAccessible(true);
+                publishReady.invoke(fixture.pool, fixture.ownRegion);
+                assertTrue(writes.get(5, TimeUnit.SECONDS), "the target region must own the eventual write");
+            } finally {
+                closeFlatFixture(null);
+            }
+        }
+    }
+
+    private static void closeFlatFixture(Throwable failure) {
+        FlatOwnerTasks.closeAdmission();
+        try { FlatOwnerTasks.finish(failure); } finally { FlatOwnerTasks.retire(); }
+    }
+
+    @Test
+    void failedNativePublicationAndFailedLookupCancelUnstartedBodyWithFirstFailure() throws Exception {
+        for (boolean failPublication : new boolean[]{false, true}) {
+            MinecraftServer server = serverOwnedBy(Thread.currentThread());
+            TestLevel level = TestLevel.create(server);
+            var expected = new IllegalStateException(failPublication ? "after enqueue" : "during lookup");
+            var cancelled = new java.util.ArrayList<Throwable>();
+            var writes = new java.util.concurrent.atomic.AtomicInteger();
+            Runnable root = RegionScheduler.cancellableRoot(writes::incrementAndGet, cancelled::add);
+            Object previous = get(RegionScheduler.class, null, "orphanFatalFailure");
+            FlatOwnerTasks.start(server);
+            try {
+                if (failPublication) {
+                    set(net.minecraft.util.thread.BlockableEventLoop.class, server, "pendingRunnables",
+                            new java.util.concurrent.ConcurrentLinkedQueue<net.minecraft.server.TickTask>() {
+                                @Override public boolean add(net.minecraft.server.TickTask wake) {
+                                    super.add(wake);
+                                    throw expected;
+                                }
+                            });
+                    onThread(false, () -> org.junit.jupiter.api.Assertions.assertSame(expected,
+                            org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                                    () -> FabroliaIslandApi.executeOnOwner(level, OWN, root))));
+                    nativeTasks(server).remove().run();
+                } else {
+                    onThread(false, () -> FabroliaIslandApi.executeOnOwner(level, OWN, root));
+                    set(MinecraftServer.class, server, "levels", new java.util.HashMap<>() {
+                        @Override public Object get(Object key) { throw expected; }
+                    });
+                    org.junit.jupiter.api.Assertions.assertSame(expected,
+                            org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                                    nativeTasks(server).remove()::run));
+                }
+                org.junit.jupiter.api.Assertions.assertSame(expected, RegionScheduler.workerFailureOrNull());
+                org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of(expected), cancelled);
+                org.junit.jupiter.api.Assertions.assertEquals(0, writes.get());
+            } finally {
+                closeFlatFixture(expected);
+                set(RegionScheduler.class, null, "orphanFatalFailure", previous);
+            }
+        }
+    }
+
+    @Test
+    void aClosedFlatQueueHonorsOnlyTheAlreadyEnteredMainRewardNotTheWiderBatch() throws Exception {
+        MinecraftServer server = serverOwnedBy(Thread.currentThread());
+        TestLevel level = TestLevel.create(server);
+        set(MinecraftServer.class, server, "levels", Map.of(Level.OVERWORLD, level));
+        var writes = new java.util.concurrent.atomic.AtomicInteger();
+        var scope = com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBatchScope.class;
+        var enter = scope.getDeclaredMethod("enterRewardBody");
+        var exit = scope.getDeclaredMethod("exitRewardBody");
+        enter.setAccessible(true);
+        exit.setAccessible(true);
+        FlatOwnerTasks.start(server);
+        FlatOwnerTasks.closeAdmission();
+        try {
+            for (int pass = 0; pass < 2; pass++) {
+                if (pass == 1) assertNull(FlatOwnerTasks.finish(null));
+                com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBatchScope.begin();
+                try {
+                    org.junit.jupiter.api.Assertions.assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                            () -> FabroliaIslandApi.executeOnOwner(level, OWN, writes::incrementAndGet));
+                    enter.invoke(null);
+                    try {
+                        onThread(false, () -> org.junit.jupiter.api.Assertions.assertThrows(
+                                java.util.concurrent.RejectedExecutionException.class,
+                                () -> FabroliaIslandApi.executeOnOwner(level, OWN, writes::incrementAndGet)));
+                        FabroliaIslandApi.executeOnOwner(level, OWN, writes::incrementAndGet);
+                    } finally { exit.invoke(null); }
+                } finally {
+                    com.axalotl.fabrolia.common.parallelised.advancement.AdvancementBatchScope.end();
+                }
+                org.junit.jupiter.api.Assertions.assertEquals(pass + 1, writes.get());
+            }
+        } finally {
+            closeFlatFixture(null);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static java.util.Queue<net.minecraft.server.TickTask> nativeTasks(MinecraftServer server)
+            throws Exception {
+        return (java.util.Queue<net.minecraft.server.TickTask>) get(
+                net.minecraft.util.thread.BlockableEventLoop.class, server, "pendingRunnables");
+    }
+
+    @Test
     void foreignWaitProbeUsesPublishedIdentitiesWhileTopologyIsRebuilding() throws Exception {
         try (Fixture fixture = new Fixture(true)) {
             fixture.runtime.islandRegistry.applyRebuildCells(
