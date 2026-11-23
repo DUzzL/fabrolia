@@ -10,6 +10,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -306,6 +307,7 @@ class FabroliaIslandOwnershipTest {
     }
 
     @Test
+    @Tag("shared-clock")
     void sharedClockCallbacksWaitForTheExclusiveTurnAndKeepReadModifyWriteOrder() throws Exception {
         try (Fixture fixture = new Fixture(false)) {
             set(MinecraftServer.class, fixture.server, "levels", Map.of(Level.OVERWORLD, fixture.level));
@@ -411,6 +413,7 @@ class FabroliaIslandOwnershipTest {
     }
 
     @Test
+    @Tag("shared-clock")
     void flatSubmissionReroutesAfterRegionsStartRatherThanBorrowingMain() throws Exception {
         try (Fixture fixture = new Fixture(false)) {
             set(MinecraftServer.class, fixture.server, "levels", Map.of(Level.OVERWORLD, fixture.level));
@@ -441,6 +444,7 @@ class FabroliaIslandOwnershipTest {
     }
 
     @Test
+    @Tag("shared-clock")
     void nativeReceiptReroutedToSharedStillFollowsTheEntityWhenItsFirstLevelUnloads() throws Exception {
         try (Fixture f = new Fixture(false)) {
             TestLevel destination = f.otherLevel;

@@ -553,6 +553,15 @@ public final class IslandRegistry {
          *  safe without taking the claim; topology/save spins instead drain
          *  the routed batch so the waiter can resume and finish its unit. */
         public volatile boolean waitingOnRoutedCommand;
+
+        /** A different unit can reserve this idle island for a native container interaction.
+         * Publication lends no authority on its own; callers must verify the actual claim. */
+        volatile PIsland containerClaimSource;
+
+        boolean hasRoutedWaiter() {
+            PIsland source = containerClaimSource;
+            return waitingOnRoutedCommand || source != null && source.waitingOnRoutedCommand;
+        }
         /** Diagnostics ONLY: artificial per-unit cost injected after the
          *  entity barrier (/fabrolia regions islanddebug <id> <ms>) — a
          *  deterministic overload for scheduler differentials (TPS slip,

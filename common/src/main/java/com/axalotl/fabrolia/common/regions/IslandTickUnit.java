@@ -415,7 +415,7 @@ public final class IslandTickUnit {
         try {
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
                 var srv = RegionScheduler.getServer();
-                if (srv != null && !srv.tickRateManager().runsNormally()) {
+                if (TemporalControl.manuallyDriven(srv) || srv != null && !srv.tickRateManager().runsNormally()) {
                     commitAndFinishReceipt(receipt, AttemptOutcome.NO_BODY,
                             island.logicalTick, island.logicalTick);
                     return;
@@ -458,14 +458,11 @@ public final class IslandTickUnit {
         // speed (probe: L 315->434 across a 6 s freeze while gt held 318;
         // observer pulses ran against runsNormally-frozen moving-piston BEs
         // and the oscillator wedged — the production flying-machine stop).
-        // runsNormally() is the exact per-tick vanilla flag: false while
-        // frozen, true during /tick step frames and sprint frames — so this
-        // one choke point covers the deadline drive, coherent pin, local
-        // sprint chaining, the rate pacer and the manual kick command alike.
-        // Deadlines stay due through the freeze; the first post-unfreeze
-        // drive resumes every island immediately. Nothing consumed or lost.
+        // A frozen /tick step admits exactly one unit at the server's frame boundary,
+        // even on an island paced at a different TPS. More than one wall deadline
+        // can expire while that same vanilla frame is marked live.
         var srv = RegionScheduler.getServer();
-        if (srv != null && !srv.tickRateManager().runsNormally()) {
+        if (TemporalControl.manuallyDriven(srv) || srv != null && !srv.tickRateManager().runsNormally()) {
             commitAndFinishReceipt(receipt, AttemptOutcome.NO_BODY,
                     island.logicalTick, island.logicalTick);
             return;
@@ -741,7 +738,7 @@ public final class IslandTickUnit {
             RegionizedServer rs, IslandRegistry.PIsland island, long submittedAtL) {
         RegionScheduler.throwWorkerFailureIfAny();
         var server = RegionScheduler.getServer();
-        if (server != null && !server.tickRateManager().runsNormally()) {
+        if (TemporalControl.manuallyDriven(server) || server != null && !server.tickRateManager().runsNormally()) {
             return PreparedSuccessor.NONE;
         }
         synchronized (island.unitAdmissionLock) {
@@ -817,6 +814,7 @@ public final class IslandTickUnit {
         Throwable failure = null;
         AttemptOutcome terminalOutcome = AttemptOutcome.NO_BODY;
         boolean claimAcquired = false;
+        CopperIslandClaims.Window containerClaims = null;
         try {
             NetherPortalTransfers.beforeUnitAdmission();
             try {
@@ -836,7 +834,8 @@ public final class IslandTickUnit {
                 if (globalSprintRequest != null) {
                     long waitStarted = System.nanoTime();
                     int stuckReports = 0;
-                    while (!(claimAcquired = globalSprintRequest.tryClaim())) {
+                    while ((containerClaims = rs.copperContainers.tryUnit(rs, island, globalSprintRequest))
+                            == CopperIslandClaims.Window.BUSY) {
                         RegionScheduler.throwWorkerFailureIfAny();
                         if (!rs.asyncActive || island.retired
                                 || island.globalSprintRequest != globalSprintRequest
@@ -858,6 +857,7 @@ public final class IslandTickUnit {
                         }
                         LockSupport.parkNanos(20_000L);
                     }
+                    claimAcquired = true;
                 } else if (island.mainInterest() || rs.mainClaimsFenceActive()) {
                     // Main announced interest (a claim waiter, entity-status
                     // escalation, a MAIN_SYNC service request or a global fence
@@ -869,25 +869,21 @@ public final class IslandTickUnit {
                     // safe point: wake an idle Main.
                     if (island.mainServiceWanted()) RegionScheduler.requestMainSyncService();
                     return;
-                } else if (!(claimAcquired = island.tryClaimAutonomousWork())) {
-                    // Brief claim contention need not cost the island a tick.
-                    // A longer topology/save/Main hold defers to the next drive.
-                    long spinUntil = System.nanoTime() + 200_000L;
-                    boolean claimed = false;
-                    while (System.nanoTime() < spinUntil) {
-                        // Interest announced while we spin wins: Main may be
-                        // between its bucket release and the bucket's tails.
-                        if (island.mainInterest() || rs.mainClaimsFenceActive()) break;
-                        if ((claimAcquired = island.tryClaimAutonomousWork())) {
-                            claimed = true;
-                            break;
+                } else {
+                    containerClaims = rs.copperContainers.tryUnit(rs, island, null);
+                    if (containerClaims == CopperIslandClaims.Window.BUSY) {
+                        long spinUntil = System.nanoTime() + 200_000L;
+                        while (System.nanoTime() < spinUntil && !island.mainInterest() && !rs.mainClaimsFenceActive()) {
+                            if ((containerClaims = rs.copperContainers.tryUnit(rs, island, null))
+                                    != CopperIslandClaims.Window.BUSY) break;
+                            Thread.onSpinWait();
                         }
-                        Thread.onSpinWait();
+                        if (containerClaims == CopperIslandClaims.Window.BUSY) {
+                            if (island.mainServiceWanted()) RegionScheduler.requestMainSyncService();
+                            return; // no body, no logical tick, and no claim retained on a miss
+                        }
                     }
-                    if (!claimed) {
-                        if (island.mainServiceWanted()) RegionScheduler.requestMainSyncService();
-                        return; // quiesced by topology/save/Main — the next drive retries
-                    }
+                    claimAcquired = true;
                 }
             } finally {
                 // CLAIM-ADMISSION HANDSHAKE (2026-08-22 c2me enhanced autosave):
@@ -924,6 +920,7 @@ public final class IslandTickUnit {
                 terminalOutcome = AttemptOutcome.RETIRED;
                 return;
             }
+            if (globalSprintRequest == null && TemporalControl.manuallyDriven(RegionScheduler.getServer())) return;
             if (globalSprintRequest != null
                     && (island.globalSprintRequest != globalSprintRequest
                         || !island.globalSprintFenced)) {
@@ -1449,6 +1446,7 @@ public final class IslandTickUnit {
             // The local marker is assigned by the exact successful CAS before
             // noteClaim or any other fallible work. It therefore remains the
             // release authority even if ledger publication itself fails.
+            if (claimAcquired && containerClaims != null) containerClaims.close();
             if (claimAcquired) {
                 try {
                     island.clearClaim();

@@ -37,8 +37,20 @@ dependencies {
     testImplementation("maven.modrinth:vmp-fabric:${vmp_version}") { transitive = false }
 }
 
+// The clock policy is fixed at JVM startup. Do not exercise a shared-clock ownership
+// transition in an independent-clock process with no island driving its queued work.
+def sharedClockTest = tasks.register('sharedClockTest', Test) {
+    group = 'verification'
+    description = 'Runs the shared-clock ownership contracts with the actual diagnostic switch.'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    systemProperty 'fabrolia.syncMode', 'true'
+    useJUnitPlatform { includeTags 'shared-clock' }
+}
+
 tasks.named('test') {
-    useJUnitPlatform()
+    dependsOn sharedClockTest
+    useJUnitPlatform { excludeTags 'shared-clock' }
     // DocumentationReferencesTest reads these; rerun when they change.
     inputs.files(rootProject.file('docs/CODEMAP.md'), rootProject.file('AGENTS.md'))
             .withPathSensitivity(PathSensitivity.RELATIVE)

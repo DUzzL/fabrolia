@@ -1330,6 +1330,8 @@ public final class RegionScheduler {
             if (owner != null && owner.domain == domain
                     && owner.domainLevel() == level && !owner.retired) {
                 if (physicalMain && IslandCommands.mainHolds(owner)) return true;
+                if (caller instanceof RegionWorkerThread worker && worker.exclusiveEntityPhase != null
+                        && worker.currentDomain != null && CopperIslandClaims.ownsExtra(owner, worker.currentDomain.owner)) return true;
                 if (caller instanceof RegionWorkerThread worker
                         && worker.currentRegion == null
                         && worker.currentDomain == domain
@@ -1588,6 +1590,20 @@ public final class RegionScheduler {
             return false;
         }
         queueMainSyncTick(passenger, vehicle, () -> true, null, false, false);
+        return true;
+    }
+
+    /** A vehicle can acquire a rider after the root's original admission. Never restart
+     * the vehicle or tick an unprotected rider on its helper's authority. */
+    public static boolean deferUnclaimedCopperPassenger(Entity vehicle, Entity passenger) {
+        if (!(Thread.currentThread() instanceof RegionWorkerThread worker)
+                || !(passenger.level() instanceof ServerLevel level)
+                || !ParallelProcessor.containsCopperGolemTree(passenger)) return false;
+        var runtime = publishedForLevel(level);
+        EpochDomain domain = worker.currentRegion != null ? worker.currentRegion.domain : worker.currentDomain;
+        if (runtime == null || !runtime.asyncActive || domain == null
+                || !CopperIslandClaims.treeNeedsMain(runtime, domain.owner, passenger)) return false;
+        queueMainSyncTick(passenger, vehicle, () -> true, null, false, true);
         return true;
     }
 
@@ -2715,7 +2731,7 @@ public final class RegionScheduler {
                         boolean routed = IslandCommands.hasRoutedPending();
                         if (!routed) {
                             for (IslandRegistry.PIsland owner : buckets.keySet()) {
-                                if (owner.waitingOnRoutedCommand) { routed = true; break; }
+                                if (owner.hasRoutedWaiter()) { routed = true; break; }
                             }
                         }
                         if (routed) {

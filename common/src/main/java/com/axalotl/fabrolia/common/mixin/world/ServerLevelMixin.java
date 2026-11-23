@@ -326,6 +326,7 @@ public abstract class ServerLevelMixin extends Level implements WorldGenLevel,
         // A subtree with a player this region worker does not own (attached by the
         // vehicle's own tick after the root visit chose this lane) ticks on Main.
         if (RegionScheduler.deferForeignPlayerPassenger(vehicle, entity)) return;
+        if (RegionScheduler.deferUnclaimedCopperPassenger(vehicle, entity)) return;
         ParallelProcessor.TickGuard guard = (ParallelProcessor.TickGuard) entity;
         if (!guard.fabrolia$tryBeginTick()) return;
         Throwable failure = null;

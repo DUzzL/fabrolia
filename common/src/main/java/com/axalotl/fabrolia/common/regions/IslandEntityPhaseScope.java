@@ -92,8 +92,9 @@ public final class IslandEntityPhaseScope implements AutoCloseable {
 
     /** A context stamp cannot authorize a foreign level, island, or helper body. */
     boolean ownsTarget(Level level, BlockPos position) {
-        return liveAuthority() && level == runtime.level
-                && runtime.islandOwnerOfChunk(ChunkPos.pack(position)) == island;
+        if (!liveAuthority() || level != runtime.level) return false;
+        IslandRegistry.PIsland owner = runtime.islandOwnerOfChunk(ChunkPos.pack(position));
+        return owner == island || CopperIslandClaims.ownsExtra(owner, island);
     }
 
     @Override

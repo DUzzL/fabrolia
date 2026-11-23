@@ -18,10 +18,17 @@ on its own clock. Different islands can tick entities, block entities and
 scheduled ticks at the same time. Within one island the default entity pass
 follows vanilla insertion order.
 
+A copper golem can remember a chest after a teleport to another island. When its
+next turn needs both islands, the worker reserves the chest's island before it
+starts the turn. The chest's own clock does not advance with the golem. An
+unrelated island can keep ticking while a write to that chest waits.
+
 To compare behavior against a shared clock, start the server with
 `-Dfabrolia.syncMode=true`. In this diagnostic mode the server thread visits the
 native entity list with region workers paused. Restart without the flag to return
 to independent clocks. The old `asyncIslands` config key has no effect.
+Vanilla `/tick freeze` pauses autonomous pacing; `/tick step N` runs exactly N
+simulation frames. Unfreezing resumes each island's configured rate.
 
 Fabrolia only helps where work can be split: one huge base with all players in it
 is still one island. The goal is to preserve vanilla work and its observable order.
@@ -124,6 +131,9 @@ finishes accepted shared work before its owner retires; new submissions can be
 refused during the switch. Accepted work also finishes before a normal shutdown
 save. With regions off, the server thread can run a callback inline and other
 threads post to its native queue. Do not block a tick thread waiting for queued work.
+Region work submitted without a position through `RegionScheduler.enqueueGlobal`
+waits for an exclusive server-thread turn. Use `executeOnOwner` when the target
+is known so independent work need not wait for this turn.
 
 ## Building
 

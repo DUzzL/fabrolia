@@ -11,6 +11,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.TickRateManager;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.animal.golem.CopperGolem;
 import net.minecraft.world.level.ChunkPos;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +46,7 @@ public final class RegionizedServer {
 
     public final ServerLevel level;
     private final ThreadedRegionizer regionizer;
+    final CopperIslandClaims copperContainers = new CopperIslandClaims();
 
     // NOTE: the per-level loadedChunks LevelChunk cache (+ pendingChunkUpdates queue) that
     // lived here was REMOVED 2026-07-01: the block-tick worker-resolve rewrite dropped its
@@ -1090,13 +1092,13 @@ public final class RegionizedServer {
                             // ownership. The outer fail-stop envelope releases only
                             // claims this quiesce actually acquired.
                             if (stuckReports >= 3 && !asyncActive
-                                    && !p.waitingOnRoutedCommand) {
+                                    && !p.hasRoutedWaiter()) {
                                 throw new IllegalStateException(
                                         "island claim remained held after forensic threshold: "
                                                 + IslandCommands.claimForensics(p));
                             }
                         }
-                        if (p.waitingOnRoutedCommand) {
+                        if (p.hasRoutedWaiter()) {
                             Throwable retryFailure =
                                     clearAllIslandClaimIntents(intentIslands, null);
                             intentIslands = null;
@@ -2748,6 +2750,7 @@ public final class RegionizedServer {
     void indexAdd(Entity e) {
         long key = regionizer.grid.keyFor(e.chunkPosition().pack());
         Region r = regionizer.admitEntity(key, e);
+        if (e instanceof CopperGolem golem) copperContainers.add(r, golem);
         ((RegionKeyed) e).fabrolia$setRegionKey(key);
         // Canonical island/global passes use a finite EntityTickList snapshot:
         // births after that cut first appear next phase, regardless of target
@@ -2767,7 +2770,7 @@ public final class RegionizedServer {
         long key = keyed.fabrolia$getRegionKey();
         if (key == RegionKeyed.NO_REGION) return;
         Region r = regionizer.peekByGridKey(key);
-        if (r != null && r.entities.remove(e)) r.entityCount.decrementAndGet();
+        if (r != null) removeFromIndex(r, e);
         keyed.fabrolia$setRegionKey(RegionKeyed.NO_REGION);
     }
 
@@ -2807,8 +2810,9 @@ public final class RegionizedServer {
     }
 
     private void indexMove(Entity e, Region from, long newKey) {
-        if (from.entities.remove(e)) from.entityCount.decrementAndGet();
+        removeFromIndex(from, e);
         Region to = regionizer.admitEntity(newKey, e);
+        if (e instanceof CopperGolem golem) copperContainers.add(to, golem);
         ((RegionKeyed) e).fabrolia$setRegionKey(newKey);
         // audit10: an island MERGE keeps the survivor's tick identity, so entities
         // re-indexed in from a merged-away island still carry that island's token
@@ -2822,12 +2826,17 @@ public final class RegionizedServer {
         }
     }
 
-    private static void dropFromRegion(Region r, Entity e) {
+    private void dropFromRegion(Region r, Entity e) {
         // isRemoved also exposes a claim-local departure view. A still-live
         // reserved source must remain tick-indexed so a refused transition can
         // resume it. Real removal callbacks/reasons retain their normal cleanup.
         if (e.getRemovalReason() == null
                 && com.axalotl.fabrolia.common.regions.NetherPortalTransfers.isSourceMutationBlocked(e)) return;
+        removeFromIndex(r, e);
+    }
+
+    private void removeFromIndex(Region r, Entity e) {
+        if (e instanceof CopperGolem golem) copperContainers.remove(r, golem);
         if (r.entities.remove(e)) r.entityCount.decrementAndGet();
     }
 
@@ -3365,7 +3374,8 @@ public final class RegionizedServer {
             // units, never between phases). Local sprint chaining pauses
             // (TemporalControl.prepareUnitCompletion) so counts stay exact. Topology
             // committed above at the tick head = the sprint-tick boundary.
-            if (level.getServer().tickRateManager().isSprinting()) {
+            var manager = level.getServer().tickRateManager();
+            if (manager.runsNormally() && (manager.isFrozen() || manager.isSprinting())) {
                 runGlobalSprintIslandFrame(due);
                 AtomicReference<ArrayList<Region>> sprintGlobalsRef =
                         new AtomicReference<>();
@@ -4198,7 +4208,8 @@ public final class RegionizedServer {
         for (int i = 0, n = members.size(); i < n; i++) {
             for (Entity e : members.get(i).entities) {
                 if (e instanceof net.minecraft.world.entity.item.PrimedTnt
-                        || e instanceof net.minecraft.world.entity.vehicle.minecart.AbstractMinecart) {
+                        || e instanceof net.minecraft.world.entity.vehicle.minecart.AbstractMinecart
+                        || e instanceof CopperGolem) {
                     return true;
                 }
             }
@@ -4487,6 +4498,12 @@ public final class RegionizedServer {
             }
         }
 
+        // A moved or newly attached golem can acquire a dependency after this unit's
+        // admission cut. Do not start its vanilla body without the missing authority.
+        if (asyncActive && CopperIslandClaims.treeNeedsMain(this, region.domain.owner, e)) {
+            RegionScheduler.queueMainSyncFencedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
+            return;
+        }
         if (e instanceof net.minecraft.world.entity.projectile.FishingHook hook
                 && hook.getPlayerOwner() instanceof ServerPlayer serverOwner
                 && fabrolia$fishingOwnerIsRemote(region, serverOwner)) {

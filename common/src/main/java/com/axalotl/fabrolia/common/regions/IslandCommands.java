@@ -456,8 +456,11 @@ public final class IslandCommands {
     private static boolean commandWaiterParkedForGlobalFence(
             RegionizedServer rs, IslandRegistry.PIsland owner,
             GlobalFenceFrame frame) {
+        IslandRegistry.PIsland source = owner.containerClaimSource;
         return rs.globalFenceIntentMatches(frame)
-                && GLOBAL_FENCE_PARK_ACKS.get(owner) == frame;
+                && (GLOBAL_FENCE_PARK_ACKS.get(owner) == frame
+                    || source != null && owner.claimHolder == source.claimHolder
+                    && GLOBAL_FENCE_PARK_ACKS.get(source) == frame);
     }
 
     /** Poll-only routed result. No completion callback or waiter is invoked from
@@ -1151,7 +1154,7 @@ public final class IslandCommands {
                     contended = true;
                     MAIN_CLAIMS_CONTENDED.increment();
                 }
-                if (owner.waitingOnRoutedCommand) {
+                if (owner.hasRoutedWaiter()) {
                     drainRoutedBatch();
                     continue;
                 }
@@ -1377,7 +1380,7 @@ public final class IslandCommands {
                         while (!(claimed = island.unitClaim.compareAndSet(false, true))
                                 && !(frame.routedBatch
                                 && commandWaiterParkedForGlobalFence(rs, island, frame))) {
-                            if (!frame.routedBatch && island.waitingOnRoutedCommand
+                            if (!frame.routedBatch && island.hasRoutedWaiter()
                                     && hasRoutedPending()) {
                                 // The coordinator parks in the middle of its unit for a
                                 // routed body. Its park is a claim substitute for that
