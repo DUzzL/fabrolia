@@ -146,7 +146,7 @@ public class StatsCommand {
             AtomicInteger totalFabroliaEntities = new AtomicInteger(0);
 
             InfoText out = InfoText.titled("Entity stats");
-            out.section("Per dimension");
+            out.section("Tick eligibility by dimension");
 
             server.getAllLevels().forEach(world -> {
                 AtomicInteger worldCount = new AtomicInteger(0);
@@ -181,7 +181,7 @@ public class StatsCommand {
             });
 
             out.line("Total", entitySplit(totalEntities.get(), totalFabroliaEntities.get()));
-            out.note("parallel = ticked off the main thread; main = needs the main thread");
+            out.note("parallel = worker-eligible, not a measured tick; ordered entity passes may still run on main");
 
             if (showTickStats && ticks > 0) {
                 long syncCount = TickStats.getTotalSyncTicks();

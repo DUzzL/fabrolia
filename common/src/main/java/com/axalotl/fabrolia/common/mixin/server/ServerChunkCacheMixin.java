@@ -1500,9 +1500,7 @@ public abstract class ServerChunkCacheMixin extends ChunkSource implements Spawn
             tickingChunkConsumer.accept(c);
         }
 
-        // The spawn future rides to the entity-phase barrier (one park covers
-        // max(spawn, entities)); a mob spawned mid-entity-phase takes its first tick
-        // next tick, as vanilla does for entities added during entityTickList iteration.
+        // Main joins the accepted flat spawn work before taking its entity-list cut.
         boolean rideAlong = !FabroliaConfig.disabled;
         CompletableFuture<Void> combined;
         if (rideAlong) {

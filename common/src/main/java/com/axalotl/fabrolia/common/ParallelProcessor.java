@@ -11,6 +11,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.entity.animal.golem.CopperGolem;
 import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.entity.monster.Enderman;
 import net.minecraft.world.entity.monster.Shulker;
@@ -23,6 +24,7 @@ import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
@@ -644,6 +646,28 @@ public final class ParallelProcessor {
         }
         for (Entity passenger : entity.getPassengers()) {
             if (exitsTheEnd(passenger)) return true;
+        }
+        return false;
+    }
+
+    /** Vanilla ticks a vehicle's live passenger tree, not just its root. */
+    public static boolean containsCopperGolemTree(Entity entity) {
+        if (entity instanceof CopperGolem) return true;
+        var passengers = entity.getPassengers();
+        for (int i = 0; i < passengers.size(); i++) {
+            if (containsCopperGolemTree(passengers.get(i))) return true;
+        }
+        return false;
+    }
+
+    /** Inspect the raw cut, before a previous entity can change any later
+     * member's eligibility. Even a normally parallel entity can destroy the
+     * golem's chest. Births after capture do not become new roots; vanilla
+     * still traverses each vehicle's live passenger list at its turn. */
+    public static boolean flatCutRequiresSerialTicks(List<Entity> members) {
+        if (FabroliaConfig.disabled) return false;
+        for (int i = 0; i < members.size(); i++) {
+            if (containsCopperGolemTree(members.get(i))) return true;
         }
         return false;
     }

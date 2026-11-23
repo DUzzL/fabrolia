@@ -20,6 +20,7 @@ import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.entity.animal.golem.CopperGolem;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -70,6 +71,32 @@ class EntitySafetyPolicyTest {
             passengers(middle);
             assertFalse(ParallelProcessor.requiresMainThread(root));
             assertFalse(ParallelProcessor.shouldTickSynchronously(root));
+        }
+    }
+
+    @Test
+    void flatCutWithNestedGolemKeepsEarlierAndLaterWorkerEligibleRootsOnMain() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            TestEntity first = fixture.entity(TestEntity.class, EntityTypes.CREEPER);
+            TestEntity vehicle = fixture.entity(TestEntity.class, EntityTypes.PIG);
+            TestEntity middle = fixture.entity(TestEntity.class, EntityTypes.PIG);
+            TestEntity last = fixture.entity(TestEntity.class, EntityTypes.PIG);
+            CopperGolem golem = (CopperGolem) unsafe().allocateInstance(CopperGolem.class);
+            passengers(vehicle, middle);
+            passengers(middle, golem);
+            List<Entity> cut = List.of(first, vehicle, last);
+            assertTrue(ParallelProcessor.flatCutRequiresSerialTicks(cut));
+
+            passengers(middle);
+            assertFalse(ParallelProcessor.flatCutRequiresSerialTicks(cut));
+            assertFalse(ParallelProcessor.shouldTickSynchronously(first));
+
+            assertTrue(ParallelProcessor.flatCutRequiresSerialTicks(List.of(golem, first)));
+
+            FabroliaConfig.disabled = true;
+            assertFalse(ParallelProcessor.flatCutRequiresSerialTicks(List.of(golem, first)),
+                    "disabled ticks need no chest-specific routing");
+            assertTrue(ParallelProcessor.shouldTickSynchronously(first));
         }
     }
 
