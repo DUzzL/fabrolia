@@ -1,5 +1,10 @@
 package com.axalotl.fabrolia.common.regions;
 
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.util.ProblemReporter;
+import net.minecraft.world.level.storage.TagValueOutput;
+import net.minecraft.world.level.storage.ValueOutput;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -8,10 +13,11 @@ import static org.junit.jupiter.api.Assertions.*;
 final class TimerClocksTest {
 
     /** A store with one timer, as an entity or a trial spawner holds it. */
-    private static final class OneTimer implements TimerClocks.Stamped {
+    private static class OneTimer implements TimerClocks.Stamped {
         IslandRegistry.PIsland basis;
         long stamp;
         final long floor;
+        int shifts;
 
         OneTimer(IslandRegistry.PIsland basis, long stamp, long floor) {
             this.basis = basis;
@@ -22,6 +28,7 @@ final class TimerClocksTest {
         @Override public IslandRegistry.PIsland fabrolia$timerBasis() { return basis; }
         @Override public void fabrolia$setTimerBasis(IslandRegistry.PIsland b) { basis = b; }
         @Override public void fabrolia$shiftTimers(long delta, boolean clamp) {
+            shifts++;
             stamp = TimerClocks.shift(stamp, delta, floor, clamp);
         }
     }
@@ -74,24 +81,64 @@ final class TimerClocksTest {
         IslandRegistry.PIsland lagged = island(1, 700L);
         OneTimer cooldown = new OneTimer(lagged, 1900L, 0L);
         long wall = 2000L;
-        long d = wall - TimerClocks.now(lagged, wall);
-        cooldown.fabrolia$shiftTimers(d, false);
-        assertEquals(3200L, cooldown.stamp, "saved in W");
-        cooldown.basis = null; // load
+        long written = save(cooldown, wall);
+        assertEquals(3200L, written, "saved in W");
+        cooldown = new OneTimer(null, written, 0L); // load
         IslandRegistry.PIsland reborn = island(3, 2030L);
         TimerClocks.moveTo(cooldown, reborn, 2030L);
         assertEquals(1170L, cooldown.stamp - reborn.logicalTick, "30 ticks passed while unloaded, as in vanilla");
     }
 
-    /** One save of {@code t} as the save wrappers do it: shift into W with the
-     *  clamp, write, shift back; returns the written value. */
     private static long save(OneTimer t, long wall) {
-        long d = TimerClocks.toWallForSave(t.basis, wall);
-        if (d == 0L) return t.stamp;
-        t.fabrolia$shiftTimers(d, true);
-        long written = t.stamp;
-        t.fabrolia$shiftTimers(-d, false);
-        return written;
+        TagValueOutput output = TagValueOutput.createWithoutContext(ProblemReporter.DISCARDING);
+        TimerClocks.saveInWallTime(t, TimerClocks.toWallForSave(t.basis, wall), output, args -> {
+            ((ValueOutput) args[0]).putLong("stamp", t.stamp);
+            return null;
+        });
+        return output.buildResult().getLong("stamp").orElseThrow();
+    }
+
+    @Test
+    void failingSaveSeesWallTimeAndLeavesTheLiveClockIntact() {
+        var ahead = island(1, 10_400L);
+        var output = TagValueOutput.createWithoutContext(ProblemReporter.DISCARDING);
+        var failure = new IllegalStateException("write");
+        for (long delta : new long[] {-400L, 0L}) {
+            OneTimer t = new OneTimer(ahead, 12_000L, 0L);
+            List<Long> observed = new ArrayList<>();
+            assertSame(failure, assertThrows(IllegalStateException.class,
+                    () -> TimerClocks.saveInWallTime(t, delta, output, args -> {
+                        assertEquals(1, args.length);
+                        assertSame(output, args[0]);
+                        assertSame(ahead, t.basis);
+                        observed.add(t.stamp);
+                        throw failure;
+                    })));
+            assertEquals(List.of(12_000L + delta), observed);
+            assertEquals(12_000L, t.stamp);
+            assertSame(ahead, t.basis);
+            assertEquals(delta == 0L ? 0 : 2, t.shifts);
+        }
+    }
+
+    @Test
+    void aFailedForwardShiftDoesNotStartTheSaveAndARestoreFailureWins() {
+        var shiftFailure = new IllegalStateException("shift");
+        for (boolean failForward : new boolean[] {true, false}) {
+            List<String> calls = new ArrayList<>();
+            OneTimer t = new OneTimer(null, 500L, 0L) {
+                @Override public void fabrolia$shiftTimers(long delta, boolean clamp) {
+                    calls.add(delta + ":" + clamp);
+                    if (clamp == failForward) throw shiftFailure;
+                }
+            };
+            assertSame(shiftFailure, assertThrows(IllegalStateException.class,
+                    () -> TimerClocks.saveInWallTime(t, -20L, null, args -> {
+                        calls.add("write");
+                        throw new IllegalStateException("write");
+                    })));
+            assertEquals(failForward ? List.of("-20:true") : List.of("-20:true", "write", "20:false"), calls);
+        }
     }
 
     @Test
