@@ -24,7 +24,8 @@ import java.util.function.Predicate;
  * ([scheduled → events → entities → BEs]) holds because only the island's own
  * state can observe the difference (separation invariant). Events posted
  * DURING a unit's scheduled/event window stay in its ordered capture. Other
- * posts retain their shared-partition/next-unit eligibility boundary.
+ * posts from the unit tail or claim-owned Main mutations join the next
+ * island drain in posting order; other posts retain the shared partition.
  *
  * <p>The chunk gate is memoized per chunk per pass (same rationale as the BE
  * slices: main's pump mutates tickets concurrently; one coherent gate read
@@ -64,6 +65,7 @@ public final class IslandBlockEvents {
     /** The level lock is held; queue transfer never executes a callback. */
     private static boolean captureLocalEntered(ServerLevel level, BlockEventData ev) {
         Thread t = Thread.currentThread();
+        RegionizedServer rs = RegionScheduler.forLevel(level);
         IslandRegistry.PIsland ctx = null;
         if (CAPTURING.get()) {
             ctx = CAPTURING_ISLAND.get();
@@ -72,15 +74,27 @@ public final class IslandBlockEvents {
                     ? w.currentRegion.domain : w.currentDomain;
             ctx = d != null ? d.owner : null;
         }
+        if (ctx == null && rs != null && rs.asyncActive) {
+            IslandRegistry.PIsland target = ownerIsland(rs, ev);
+            // A Main mutation under the target's claim is serialized with
+            // its unit work, including the preceding entity/BE tail. Append
+            // to that same FIFO now: a trip through Main's later partition
+            // both delays the event and puts it ahead of older next-unit posts
+            // in prepareUnitBlockEvents. Lever starts can then reverse a
+            // piston's extend/retract order and leave moved observers detached.
+            if (target != null && (rs.currentThreadHoldsAllClaims()
+                    || IslandCommands.mainHolds(target) || IslandCommands.mainFenceOwns(target))) {
+                ctx = target;
+            }
+        }
         if (ctx == null || ctx.retired) {
-            return false; // main/global context: shared set → partition → stamp
+            return false; // no owned island context: shared set → partition → stamp
         }
         // POSITION ownership (vanilla partition semantics): only this
         // island's own positions may bypass the shared set. Cross-island
         // posts (seam machines) go through main's partition to the true
         // owner — routing by posting-thread context sent a caravan's
         // seam events to the wrong island's queue (train stall).
-        RegionizedServer rs = RegionScheduler.forLevel(level);
         if (rs == null || ownerIsland(rs, ev) != ctx) {
             return false;
         }

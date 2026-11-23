@@ -133,6 +133,59 @@ class BlockEventPendingParityTest {
     }
 
     @Test
+    void claimOwnedMainPostFollowsThePreviousUnitTailBeforeScheduledPosts() throws Exception {
+        try (Fixture f = new Fixture(true)) {
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            RegionWorkerThread worker = new RegionWorkerThread(() -> {
+                try { f.post(0); } catch (Throwable thrown) { failure.set(thrown); }
+            }, "block-event-unit-tail");
+            worker.currentDomain = f.island.domain;
+            worker.start();
+            worker.join(3_000);
+            assertFalse(worker.isAlive());
+            assertNull(failure.get());
+
+            setAllClaimsOwner(f.runtime, Thread.currentThread());
+            f.post(1); // A later lever/command mutation between island units.
+            assertFalse(IslandBlockEvents.enqueue(f.level, f.event(1)), "next-unit FIFO retains dedup");
+            assertTrue(f.level.events.isEmpty(), "owned Main posts must not wait for a Main tick");
+            assertTrue(IslandBlockEvents.runPartitioned(f.level));
+            IslandBlockEvents.beginUnitCapture(f.island);
+            try {
+                f.post(2); // Scheduled phase of the next island unit.
+                IslandBlockEvents.runIslandEvents(f.runtime, f.island, f.island.domain);
+            } finally {
+                IslandBlockEvents.endUnitCapture(f.level);
+                field(RegionizedServer.class, "mainAllClaimsOwnership").set(f.runtime, null);
+            }
+            assertEquals(List.of(0, 1, 2), f.level.ran);
+            assertTrue(f.level.pending.isEmpty());
+        }
+    }
+
+    @Test
+    void anotherThreadsClaimReceiptCannotRouteMainPostsDirectly() throws Exception {
+        try (Fixture f = new Fixture(true)) {
+            setAllClaimsOwner(f.runtime, new Thread("foreign-claim-owner"));
+            f.post(1);
+            assertEquals(1, f.level.events.size());
+            assertArrayEquals(new int[]{0, 0}, f.island.eventStashDepths());
+            field(RegionizedServer.class, "mainAllClaimsOwnership").set(f.runtime, null);
+            f.drain();
+            assertEquals(List.of(1), f.level.ran);
+        }
+    }
+
+    private static void setAllClaimsOwner(RegionizedServer runtime, Thread owner) throws Exception {
+        Class<?> type = Class.forName(RegionizedServer.class.getName() + "$MainAllClaimsOwnership");
+        var constructor = type.getDeclaredConstructor(Object.class, Thread.class, boolean.class);
+        constructor.setAccessible(true);
+        field(RegionizedServer.class, "mainAllClaimsOwnership")
+                .set(runtime, constructor.newInstance(new Object(), owner, false));
+    }
+
+    @Test
     void nonTickableEventsRemainDedupedAndRunOnceWhenTheirGateOpens() throws Exception {
         for (boolean island : List.of(false, true)) {
             try (Fixture f = new Fixture(island)) {
