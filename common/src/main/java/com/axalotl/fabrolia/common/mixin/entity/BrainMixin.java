@@ -1,6 +1,8 @@
 package com.axalotl.fabrolia.common.mixin.entity;
 
 import com.axalotl.fabrolia.api.utils.AtomicMemoryStorage;
+import com.axalotl.fabrolia.common.regions.CopperContainerFootprint;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.Brain;
@@ -17,7 +19,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import java.util.Map;
 
 @Mixin(value = Brain.class, priority = 1500)
-public class BrainMixin<E extends LivingEntity> {
+public class BrainMixin<E extends LivingEntity> implements CopperContainerFootprint.RetainedTarget {
 
     // ---- flat behavior snapshot (2026-07-12) --------------------------------
     // startEachNonRunningBehavior walked TreeMap -> HashMap -> LinkedHashSet
@@ -84,6 +86,21 @@ public class BrainMixin<E extends LivingEntity> {
             fabrolia$flatBehaviors = flat;
         }
         return flat;
+    }
+
+    @Override
+    public BlockPos fabrolia$retainedCopperContainerPos() {
+        // CopperGolemAi installs one native transport behavior directly in its activity.
+        // Even STOPPED can retain its target. Read the actual behavior, not a memory proxy.
+        Object[] flat = fabrolia$flat();
+        for (int i = 1; i < flat.length; i += 2) {
+            for (Object behavior : (Object[]) flat[i]) {
+                if (behavior instanceof CopperContainerFootprint.RetainedTarget transport) {
+                    return transport.fabrolia$retainedCopperContainerPos();
+                }
+            }
+        }
+        return null;
     }
 
     // ---- running behaviors from the flat snapshot ----------------------------

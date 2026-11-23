@@ -1,18 +1,28 @@
 package com.axalotl.fabrolia.common.mixin.entity;
 
+import com.axalotl.fabrolia.common.regions.CopperContainerFootprint;
 import com.axalotl.fabrolia.common.regions.FabroliaLocks;
 import com.axalotl.fabrolia.common.utils.ContainerQueryOwners;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.behavior.TransportItemsBetweenContainers;
 import net.minecraft.world.level.Level;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 
 @Mixin(TransportItemsBetweenContainers.class)
-public class TransportItemsBetweenContainersMixin {
+public class TransportItemsBetweenContainersMixin implements CopperContainerFootprint.RetainedTarget {
+
+    @Shadow private TransportItemsBetweenContainers.TransportItemTarget target;
+
+    @Override
+    public BlockPos fabrolia$retainedCopperContainerPos() {
+        return target == null ? null : target.pos().immutable();
+    }
 
     @Unique
     private static final Object lock = new Object();

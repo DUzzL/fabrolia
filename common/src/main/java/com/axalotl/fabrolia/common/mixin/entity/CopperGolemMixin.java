@@ -40,11 +40,17 @@ public class CopperGolemMixin {
         if (open == null) {
             return false;
         }
-        CopperGolem self = (CopperGolem) (Object) this;
-        net.minecraft.world.level.block.state.BlockState state = self.level().getBlockState(open);
         if (open.equals(blockPos)) {
             return true;
         }
+        // A double chest has exactly one horizontal neighbor. A teleported golem may
+        // remember a chest arbitrarily far from this opener query; don't read that chunk
+        // to establish an answer already determined by the coordinates.
+        if (open.getY() != blockPos.getY()
+                || Math.abs((long) open.getX() - blockPos.getX())
+                        + Math.abs((long) open.getZ() - blockPos.getZ()) != 1L) return false;
+        CopperGolem self = (CopperGolem) (Object) this;
+        net.minecraft.world.level.block.state.BlockState state = self.level().getBlockState(open);
         return state.getBlock() instanceof net.minecraft.world.level.block.ChestBlock
                 && state.getValue(net.minecraft.world.level.block.ChestBlock.TYPE)
                         != net.minecraft.world.level.block.state.properties.ChestType.SINGLE
