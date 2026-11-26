@@ -1,13 +1,18 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
+import com.axalotl.fabrolia.common.regions.DiskSectionAttachments;
 import com.axalotl.fabrolia.common.regions.IslandUnitAdmission;
 import com.axalotl.fabrolia.common.regions.FailStops;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.entity.EntityAccess;
+import net.minecraft.world.level.entity.EntitySection;
+import net.minecraft.world.level.entity.EntitySectionStorage;
 import net.minecraft.world.level.entity.PersistentEntitySectionManager;
 import net.minecraft.world.level.entity.Visibility;
 import org.spongepowered.asm.mixin.Final;
@@ -58,6 +63,9 @@ public abstract class PersistentEntityUnloadRetryMixin
     private FabroliaStatusTransitions fabrolia$statusTransitions;
 
     @Unique
+    private ThreadLocal<DiskSectionAttachments.Pin> fabrolia$diskPin;
+
+    @Unique
     private static final java.util.concurrent.atomic.LongAdder fabrolia$unloadRetryTotal =
             new java.util.concurrent.atomic.LongAdder();
 
@@ -85,6 +93,7 @@ public abstract class PersistentEntityUnloadRetryMixin
         this.fabrolia$unloadFairness =
                 new IslandUnitAdmission.EntityUnloadRetryFairness();
         this.fabrolia$statusTransitions = new FabroliaStatusTransitions();
+        this.fabrolia$diskPin = new ThreadLocal<>();
         this.fabrolia$unloadRetryAges = new IslandUnitAdmission.EntityUnloadRetryAges();
         // Pass C2ME's instanceof check so its overwritten loop never replaces
         // the set object while our outer monitor is held.
@@ -197,6 +206,75 @@ public abstract class PersistentEntityUnloadRetryMixin
     @Inject(method = "processPendingLoads", at = @At("HEAD"), require = 1)
     private void fabrolia$applyStatusesBeforePendingLoads(CallbackInfo ci) {
         fabrolia$drainStatusTransitionsAtTickHead();
+    }
+
+    /** Only the per-entity consumer of a real disk batch, not addNewEntity, legacy or worldgen.
+     * Keep the vanilla poll, UUID check, complete callback sequence and terminal LOADED put.
+     * An outer finally also releases a reservation if another mixin throws between lookup
+     * and add. A reentrant processPendingLoads gets its own receipt. */
+    @WrapMethod(method = "lambda$processPendingLoads$0", require = 1)
+    private void fabrolia$diskConsumer(EntityAccess entity, Operation<Void> original) {
+        var outer = fabrolia$diskPin.get();
+        var pin = new DiskSectionAttachments.Pin(entity);
+        fabrolia$diskPin.set(pin);
+        Throwable failure = null;
+        try {
+            original.call(entity);
+        } catch (Throwable thrown) {
+            failure = thrown;
+            throw thrown;
+        } finally {
+            try {
+                pin.close(failure);
+            } finally {
+                if (outer == null) fabrolia$diskPin.remove();
+                else fabrolia$diskPin.set(outer);
+            }
+        }
+    }
+
+    // NeoForge moves the structural body behind its cancellable EntityJoinLevelEvent.
+    // The two ABIs have the same arguments; exactly one contains each native section call.
+    @WrapOperation(method = {"addEntity(Lnet/minecraft/world/level/entity/EntityAccess;Z)Z",
+            "addEntityWithoutEvent(Lnet/minecraft/world/level/entity/EntityAccess;Z)Z"}, at = @At(value = "INVOKE", target =
+            "Lnet/minecraft/world/level/entity/EntitySectionStorage;getOrCreateSection(J)Lnet/minecraft/world/level/entity/EntitySection;"), require = 1, allow = 1)
+    private EntitySection<?> fabrolia$reserveDiskSection(EntitySectionStorage<?> storage, long key,
+            Operation<EntitySection<?>> lookup, EntityAccess entity, boolean loaded) {
+        var pin = loaded ? fabrolia$diskPin.get() : null;
+        if (pin == null || pin.entity != entity) return lookup.call(storage, key);
+        ((DiskSectionAttachments.Access) storage).fabrolia$diskSectionAttachments().reserve(pin, key);
+        var returned = lookup.call(storage, key);
+        pin.bind(returned);
+        return returned;
+    }
+
+    @WrapOperation(method = {"addEntity(Lnet/minecraft/world/level/entity/EntityAccess;Z)Z",
+            "addEntityWithoutEvent(Lnet/minecraft/world/level/entity/EntityAccess;Z)Z"}, at = @At(value = "INVOKE", target =
+            "Lnet/minecraft/world/level/entity/EntitySection;add(Lnet/minecraft/world/level/entity/EntityAccess;)V"), require = 1, allow = 1)
+    private void fabrolia$finishDiskSectionAdd(EntitySection<?> section, EntityAccess member,
+            Operation<Void> add, EntityAccess entity, boolean loaded) {
+        var pin = loaded ? fabrolia$diskPin.get() : null;
+        if (pin == null || pin.entity != entity) {
+            add.call(section, member);
+            return;
+        }
+        Throwable failure = null;
+        try {
+            add.call(section, member);
+        } catch (Throwable thrown) {
+            failure = thrown;
+            throw thrown;
+        } finally {
+            pin.close(failure);
+        }
+    }
+
+    @WrapOperation(method = "removeSectionIfEmpty", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/level/entity/EntitySectionStorage;remove(J)V"), require = 1)
+    private void fabrolia$removeSameEmptySection(EntitySectionStorage<?> storage, long key,
+            Operation<Void> remove, long sectionKey, EntitySection<?> expected) {
+        ((DiskSectionAttachments.Access) storage).fabrolia$diskSectionAttachments()
+                .requestRemoval(key, expected, () -> remove.call(storage, key));
     }
 
     /** close delegates to saveAll, so accepted status work also precedes the

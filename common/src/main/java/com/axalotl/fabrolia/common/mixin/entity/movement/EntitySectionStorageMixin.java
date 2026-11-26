@@ -3,6 +3,7 @@ package com.axalotl.fabrolia.common.mixin.entity.movement;
 import com.axalotl.fabrolia.api.fastutil.ConcurrentLongSortedSet;
 import com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap;
 import com.axalotl.fabrolia.common.regions.CopperSectionAccess;
+import com.axalotl.fabrolia.common.regions.DiskSectionAttachments;
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
@@ -23,12 +24,11 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.Objects;
-import java.util.concurrent.locks.StampedLock;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
 @Mixin(value = EntitySectionStorage.class)
-public abstract class EntitySectionStorageMixin<T extends EntityAccess> {
+public abstract class EntitySectionStorageMixin<T extends EntityAccess> implements DiskSectionAttachments.Access {
 
     @Shadow
     @Final
@@ -44,10 +44,16 @@ public abstract class EntitySectionStorageMixin<T extends EntityAccess> {
     public abstract LongStream getExistingSectionPositionsInChunk(long chunkKey);
 
     @Unique
-    private final StampedLock fabrolia$sectionGuard = new StampedLock();
+    private DiskSectionAttachments fabrolia$sectionGuard;
+
+    @Override
+    public DiskSectionAttachments fabrolia$diskSectionAttachments() {
+        return fabrolia$sectionGuard;
+    }
 
     @Inject(method = "<init>", at = @At("TAIL"))
     private void fabrolia$replaceMaps(CallbackInfo ci) {
+        this.fabrolia$sectionGuard = new DiskSectionAttachments((EntitySectionStorage<?>) (Object) this);
         Long2ObjectConcurrentHashMap<EntitySection<T>> newSections = new Long2ObjectConcurrentHashMap<>();
         newSections.putAll(this.sections);
         this.sections = newSections;
@@ -72,27 +78,14 @@ public abstract class EntitySectionStorageMixin<T extends EntityAccess> {
 
     @WrapMethod(method = "getOrCreateSection")
     private EntitySection<T> fabrolia$guardGetOrCreate(long key, Operation<EntitySection<T>> original) {
-        // StampedLock stamps are NOT reentrant and NOT thread-owned: a throw out
-        // of original.call (the vanilla computeIfAbsent mapping function can throw,
-        // and OOME is always possible) leaks the write stamp with no owner able to
-        // release it — every later entity add/remove on this level, main included,
-        // blocks forever. Audit 2026-07-26.
-        long stamp = fabrolia$sectionGuard.writeLock();
-        try {
+        synchronized (fabrolia$sectionGuard) {
             return original.call(key);
-        } finally {
-            fabrolia$sectionGuard.unlockWrite(stamp);
         }
     }
 
     @WrapMethod(method = "remove")
     private void fabrolia$guardRemove(long sectionKey, Operation<Void> original) {
-        long stamp = fabrolia$sectionGuard.writeLock();
-        try {
-            original.call(sectionKey);
-        } finally {
-            fabrolia$sectionGuard.unlockWrite(stamp);
-        }
+        fabrolia$sectionGuard.remove(sectionKey, key -> original.call(key));
     }
 
     @WrapMethod(method = "getExistingSectionsInChunk")
