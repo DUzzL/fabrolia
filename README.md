@@ -41,6 +41,15 @@ arrays. Nested searches get separate storage. Neither the lists returned by the
 world nor a mob's remembered item are recycled. Buffer sizes limit retained
 memory, not how many entities can be checked or ticked.
 
+Fire spread checks reuse the order of players in a dimension until someone joins
+or leaves. The game still checks each player's current position and spectator
+state. If another mixin targets the player map, its original lookup still runs.
+
+When saved entities arrive while an island is ticking, the section receiving an
+entity stays attached until insertion finishes. Moving the last resident out of
+that section no longer leaves the loaded entity visible by UUID but missing from
+spatial queries and the next save. Other islands keep ticking independently.
+
 ## When it helps
 
 Fabrolia gains where work is spread over separate areas, for example players in

@@ -1,5 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.utils;
 
+import com.axalotl.fabrolia.common.utils.ProximityRosterTransform;
+
 import java.util.List;
 
 public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCanceller {
@@ -33,6 +35,7 @@ public class MixinCanceller implements com.bawnorton.mixinsquared.api.MixinCance
 
     @Override
     public boolean shouldCancel(List<String> targetClassNames, String mixinClassName) {
+        ProximityRosterTransform.observeTargets(targetClassNames, mixinClassName);
         if (mixinClassName.contains("lithium") && !mixinClassName.contains("fabrolia")) {
             LITHIUM = true;
         }
