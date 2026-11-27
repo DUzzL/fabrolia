@@ -1,7 +1,11 @@
 package com.axalotl.fabrolia.common.regions;
 
+import net.minecraft.commands.CommandSource;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.BaseCommandBlock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -280,26 +284,29 @@ public final class IslandCommands {
      * chain parks until the vanilla boolean result is known,
      * preserving conditional-chain and comparator semantics exactly.
      */
-    public static boolean routeCommandBlock(String command, ServerLevel level,
-                                            BlockPos sourcePos,
-                                            net.minecraft.commands.CommandSourceStack sourceStack,
-                                            BooleanSupplier original) {
+    public static boolean routeCommandBlock(BaseCommandBlock block, ServerLevel level, BooleanSupplier original) {
+        if (!(Thread.currentThread() instanceof RegionWorkerThread)) {
+            return RegionScheduler.callSuccessBooleanIfHealthy(original);
+        }
         RegionizedServer rs = RegionScheduler.publishedForLevel(level);
         if (rs == null || !requiresMainFence(rs)) {
             return RegionScheduler.callSuccessBooleanIfHealthy(original);
         }
-        EpochDomain d = null;
-        if (Thread.currentThread() instanceof RegionWorkerThread w) {
-            Region cur = w.currentRegion;
-            d = cur != null ? cur.domain : w.currentDomain;
+        // Even the local proof below covers a whole island, not one helper's region.
+        // Check before executing any part of the envelope or publishing a routed receipt.
+        IslandRegistry.PIsland owner = exclusiveCoordinatorIsland(level);
+        if (owner == null) {
+            throw new IllegalStateException("Command block requires its exclusive island coordinator; "
+                    + "submit the entire command-capable callback with RegionScheduler.enqueueGlobal "
+                    + "before it starts, not from a running region helper");
         }
-        IslandRegistry.PIsland owner = d != null ? d.owner : null;
-        if (owner == null || command == null || command.isEmpty()) {
-            // Main context (sync-lane minecarts, console triggers) or a
-            // non-island worker: vanilla body here; the nested dispatch is
-            // fenced by CommandsMixin.
+        var sourceStack = block.createCommandSourceStack(level, CommandSource.NULL);
+        BlockPos sourcePos = BlockPos.containing(sourceStack.getPosition());
+        String command = block.getCommand();
+        if (command == null || command.isEmpty()) {
             return RegionScheduler.callSuccessBooleanIfHealthy(original);
         }
+        EpochDomain d = owner.domain;
         if (isIslandLocal(command, sourcePos, rs, d)) {
             return RegionScheduler.callSuccessBooleanIfHealthy(() -> {
                 LOCAL_INLINE.increment();
@@ -311,9 +318,8 @@ public final class IslandCommands {
         // the owner — the whole compiled/interpreted body at island cadence on
         // island time. No metadata (Scope.UNKNOWN) or any dynamic-behavior
         // flag → the fenced routed path below (safe compatibility path).
-        EpochDomain exactFunctionDomain = d;
         String fnId = localFunctionId(command);
-        if (fnId != null && sourceStack != null) {
+        if (fnId != null) {
             net.minecraft.resources.Identifier ident =
                     net.minecraft.resources.Identifier.tryParse(fnId);
             if (ident != null) {
@@ -325,7 +331,7 @@ public final class IslandCommands {
                         (exactness, analysis) -> {
                             if (exactness != FunctionAnalyzer.Exactness.EXACT
                                     || !fnInlineEligible(
-                                            analysis, sourcePos, rs, exactFunctionDomain)) {
+                                            analysis, sourcePos, rs, d)) {
                                 return null;
                             }
                             return RegionScheduler.callSuccessBooleanIfHealthy(() -> {
@@ -348,6 +354,20 @@ public final class IslandCommands {
         return routeAndPark(rs, owner, inv, original, "routed command");
     }
 
+    /** Only this coordinator can stop all work under the source unit claim by parking.
+     * In particular a dependency pump may have no current region while groups still run. */
+    static IslandRegistry.PIsland exclusiveCoordinatorIsland(ServerLevel level) {
+        if (!(Thread.currentThread() instanceof RegionWorkerThread worker)
+                || worker.islandDispatchInFlight) return null;
+        EpochDomain domain = worker.currentDomain;
+        IslandRegistry.PIsland owner = domain == null ? null : domain.owner;
+        if (owner != null && !owner.retired && owner.domainLevel() == level && owner.domain == domain
+                && owner.unitClaim.get() && owner.claimHolder == worker
+                && (worker.currentRegion == null && domain.entityPending.get() == 0
+                    || IslandEntityPhaseScope.owns(worker.currentRegion))) return owner;
+        return null;
+    }
+
     /**
      * An island coordinator (holding its unit claim) hands one body to the
      * serialized Main routed batch and parks until it completed: exactly one
@@ -357,6 +377,9 @@ public final class IslandCommands {
      */
     static boolean routeFencedIslandBody(RegionizedServer rs, IslandRegistry.PIsland owner,
                                          String label, BooleanSupplier body) {
+        if (owner == null || exclusiveCoordinatorIsland(rs.level) != owner) {
+            throw new IllegalStateException(label + " requires its exclusive island coordinator");
+        }
         Invocation inv = new Invocation("function", null, owner.id, owner.logicalTick, label);
         return routeAndPark(rs, owner, inv, body, "routed function line");
     }
@@ -381,10 +404,7 @@ public final class IslandCommands {
                 // The routed receipt is already visible.  Publishing its Main
                 // successor is a separate success stage: a peer W selected after
                 // ROUTED.add must cancel the queued receipt, not enqueue new work.
-                RegionScheduler.runSuccessBodyIfHealthy(
-                        () -> sv.schedule(new net.minecraft.server.TickTask(sv.getTickCount(), () -> {
-                            if (!fut.isDone()) drainRoutedBatch();
-                        })));
+                RegionScheduler.runSuccessBodyIfHealthy(() -> scheduleRoutedDrain(sv, fut));
             }
         });
         RegionScheduler.commitSuccessIfHealthy(ROUTED_GLOBAL::increment);
@@ -397,7 +417,7 @@ public final class IslandCommands {
         try {
             while (!fut.isDone() && RegionScheduler.poolRunning()) {
                 RegionScheduler.throwWorkerFailureIfAny();
-                if (!parkCommandWaiterForGlobalFence(rs, owner)) {
+                if (!parkCommandWaiterForGlobalFence(rs)) {
                     if (!fut.isDone()) {
                         LockSupport.parkNanos(50_000L);
                     }
@@ -420,45 +440,31 @@ public final class IslandCommands {
      * frame's intent; Main therefore has a real stable substitute for this
      * coordinator's already-held unit claim.
      */
-    private static boolean parkCommandWaiterForGlobalFence(
-            RegionizedServer rs, IslandRegistry.PIsland owner) {
+    private static boolean parkCommandWaiterForGlobalFence(RegionizedServer rs) {
         Object receipt = rs.globalFenceIntentReceipt();
         if (receipt == null) return false;
-        Object previous = GLOBAL_FENCE_PARK_ACKS.putIfAbsent(owner, receipt);
-        if (previous != null) {
-            publishAndPropagate(new IllegalStateException(
-                    "command waiter already has a global-fence park acknowledgement"));
-        }
-
-        Throwable failure = null;
+        var worker = (RegionWorkerThread) Thread.currentThread();
+        worker.parkedCommandFence = receipt;
         try {
-            while (rs.globalFenceIntentMatches(receipt)) {
-                RegionScheduler.throwWorkerFailureIfAny();
-                LockSupport.parkNanos(50_000L);
-            }
-            RegionScheduler.throwWorkerFailureIfAny();
-        } catch (Throwable primary) {
-            failure = publishFatalPreserving(primary);
+            // Even fatal unwind cannot return the lent claims while Main is still
+            // inside a started body. Its fence releases intent on both exits.
+            while (rs.globalFenceIntentMatches(receipt)) LockSupport.parkNanos(50_000L);
+        } finally {
+            worker.parkedCommandFence = null;
         }
-        try {
-            if (!GLOBAL_FENCE_PARK_ACKS.remove(owner, receipt)) {
-                throw new IllegalStateException(
-                        "command waiter lost its exact global-fence park acknowledgement");
-            }
-        } catch (Throwable cleanup) {
-            failure = publishFatalPreserving(FailStops.mergeFailure(failure, cleanup));
-        }
-        if (failure != null) {
-            FailStops.<RuntimeException>rethrow(failure);
-        }
+        RegionScheduler.throwWorkerFailureIfAny();
         return true;
     }
 
     private static boolean commandWaiterParkedForGlobalFence(
             RegionizedServer rs, IslandRegistry.PIsland owner,
             GlobalFenceFrame frame) {
+        IslandRegistry.PIsland source = owner.containerClaimSource;
+        if (source == null) source = owner;
         return rs.globalFenceIntentMatches(frame)
-                && GLOBAL_FENCE_PARK_ACKS.get(owner) == frame;
+                && source.claimHolder instanceof RegionWorkerThread coordinator
+                && coordinator.parkedCommandFence == frame
+                && coordinator.currentDomain == source.domain && owner.claimHolder == coordinator;
     }
 
     /** Poll-only routed result. No completion callback or waiter is invoked from
@@ -683,9 +689,7 @@ public final class IslandCommands {
                 }, receipt, tracked, -1L));
                 var server = RegionScheduler.getServer();
                 if (server != null) {
-                    server.schedule(new net.minecraft.server.TickTask(server.getTickCount(), () -> {
-                        if (!receipt.isDone()) drainRoutedBatch();
-                    }));
+                    scheduleRoutedDrain(server, receipt);
                 }
             }, body);
         } catch (Throwable failure) {
@@ -693,6 +697,11 @@ public final class IslandCommands {
         }
     }
 
+    private static void scheduleRoutedDrain(MinecraftServer server, RoutedResult receipt) {
+        server.schedule(new TickTask(server.getTickCount(), () -> {
+            if (!receipt.isDone()) drainRoutedBatch();
+        }));
+    }
 
     private static void fabrolia$drainRoutedBatchEntered() {
         // Retain every detached obligation until its exact post-release completion.
@@ -915,15 +924,6 @@ public final class IslandCommands {
     /** Volatile so a foreign callback can never borrow Main's frame.  Frame
      * lists themselves remain confined to the exact owner. */
     private static volatile GlobalFenceFrame ACTIVE_FENCE;
-
-    /** Worker-published rendezvous acknowledgements for command waiters. A
-     *  waiter writes the exact active frame while parked, then performs no
-     *  simulation work until that frame clears the level intent. Main may
-     *  treat an otherwise-held unit claim as stable only through this exact
-     *  token, never through the broader waitingOnRoutedCommand diagnostic bit. */
-    private static final java.util.concurrent.ConcurrentHashMap<
-            IslandRegistry.PIsland, Object> GLOBAL_FENCE_PARK_ACKS =
-            new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Single-island claims MAIN currently holds (interaction handlers,
      *  entity-section/raid/fight/player-save wraps). Main-confined. A nested
@@ -1149,7 +1149,7 @@ public final class IslandCommands {
                     contended = true;
                     MAIN_CLAIMS_CONTENDED.increment();
                 }
-                if (owner.waitingOnRoutedCommand) {
+                if (owner.hasRoutedWaiter()) {
                     drainRoutedBatch();
                     continue;
                 }
@@ -1375,7 +1375,7 @@ public final class IslandCommands {
                         while (!(claimed = island.unitClaim.compareAndSet(false, true))
                                 && !(frame.routedBatch
                                 && commandWaiterParkedForGlobalFence(rs, island, frame))) {
-                            if (!frame.routedBatch && island.waitingOnRoutedCommand
+                            if (!frame.routedBatch && island.hasRoutedWaiter()
                                     && hasRoutedPending()) {
                                 // The coordinator parks in the middle of its unit for a
                                 // routed body. Its park is a claim substitute for that

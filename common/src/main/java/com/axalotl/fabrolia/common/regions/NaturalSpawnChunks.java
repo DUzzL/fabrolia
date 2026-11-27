@@ -1,6 +1,7 @@
 package com.axalotl.fabrolia.common.regions;
 
 import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.LongList;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.world.level.ChunkPos;
 
@@ -20,12 +21,22 @@ public final class NaturalSpawnChunks {
 
     /** {@code FixedPlayerDistanceChunkTracker(8)}: 17×17 = 289 chunks per player. */
     public static final int RADIUS = 8;
+    private static final int CHUNKS_PER_PLAYER = (2 * RADIUS + 1) * (2 * RADIUS + 1);
 
     private NaturalSpawnChunks() {}
 
+    /** Main needs only the denominator, not the encounter order used by the island chunk pass. */
+    public static int count(LongList playerChunkKeys) {
+        return switch (playerChunkKeys.size()) {
+            case 0 -> 0;
+            case 1 -> CHUNKS_PER_PLAYER;
+            default -> candidates(playerChunkKeys.iterator()).size();
+        };
+    }
+
     /** Union of the radius-8 squares around {@code playerChunkKeys}. */
     public static LongOpenHashSet candidates(LongIterator playerChunkKeys) {
-        LongOpenHashSet out = new LongOpenHashSet(289);
+        LongOpenHashSet out = new LongOpenHashSet(CHUNKS_PER_PLAYER);
         while (playerChunkKeys.hasNext()) {
             long key = playerChunkKeys.nextLong();
             int cx = ChunkPos.getX(key);

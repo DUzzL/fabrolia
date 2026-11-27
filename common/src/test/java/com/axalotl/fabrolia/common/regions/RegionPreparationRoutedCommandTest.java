@@ -20,6 +20,9 @@ import net.minecraft.util.thread.BlockableEventLoop;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.flag.FeatureFlagSet;
+import net.minecraft.world.entity.ai.Brain;
+import net.minecraft.world.entity.animal.golem.CopperGolem;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.BaseCommandBlock;
 import net.minecraft.world.level.gamerules.GameRules;
 import net.minecraft.world.phys.Vec2;
@@ -274,6 +277,58 @@ class RegionPreparationRoutedCommandTest {
             assertFalse(IslandCommands.hasRoutedPending());
             for (TickTask task; (task = f.tasks.poll()) != null;) task.run();
             assertEquals(3, order.size(), "the queued liveness nudge cannot replay the completed task");
+        }
+    }
+
+    @Test
+    void unaddressedReceiptSettlesAtRegionOffOrAfterWholeServerJoin() throws Throwable {
+        for (boolean stoppingServer : List.of(false, true)) {
+            List<Thread> deliveries = new CopyOnWriteArrayList<>();
+            try (Fixture f = new Fixture()) {
+                f.pool.start();
+                f.levels.remove(f.level, f.runtime);
+                FlatOwnerTasks.start(f.server);
+                Object previous = get(RegionScheduler.class, null, "accepting");
+                try {
+                    set(RegionScheduler.class, null, "accepting", true);
+                    RegionScheduler.enqueueGlobal(() -> deliveries.add(Thread.currentThread()));
+                    if (stoppingServer) FlatOwnerTasks.closeAdmission();
+                    withPoolDeadline(f, () -> stopFixtureScheduler(f));
+                    assertTrue(f.pool.isTerminated());
+                    assertEquals(stoppingServer ? List.of() : List.of(f.main), deliveries);
+                } finally { set(RegionScheduler.class, null, "accepting", previous); }
+            } finally {
+                // Full shutdown keeps the receipt through the join, then settles before save.
+                FlatOwnerTasks.closeAdmission();
+                try { assertNull(FlatOwnerTasks.finish(null)); } finally { FlatOwnerTasks.retire(); }
+            }
+            assertEquals(List.of(Thread.currentThread()), deliveries);
+        }
+    }
+
+    @Test
+    void failedRegionStopCancelsUnaddressedReceiptBeforeDetachingGeneration() throws Throwable {
+        try (Fixture f = new Fixture()) {
+            f.pool.start();
+            f.levels.remove(f.level, f.runtime);
+            FlatOwnerTasks.start(f.server);
+            var winner = new IllegalStateException("first worker failure");
+            List<Throwable> cancellations = new CopyOnWriteArrayList<>();
+            Object previous = get(RegionScheduler.class, null, "accepting");
+            try {
+                set(RegionScheduler.class, null, "accepting", true);
+                RegionScheduler.enqueueGlobal(RegionScheduler.cancellableRoot(
+                        () -> fail("failed generation entered an unaddressed callback"), cancellations::add));
+                f.pool.publishFatalFailure(winner);
+                withPoolDeadline(f, () -> assertSame(winner, assertThrows(Throwable.class, () -> stopFixtureScheduler(f))));
+                assertTrue(f.pool.isTerminated());
+                assertEquals(List.of(winner), cancellations);
+            } finally {
+                set(RegionScheduler.class, null, "accepting", previous);
+                FlatOwnerTasks.closeAdmission();
+                try { assertSame(winner, FlatOwnerTasks.finish(winner)); } finally { FlatOwnerTasks.retire(); }
+            }
+            assertEquals(List.of(winner), cancellations);
         }
     }
 
@@ -573,6 +628,112 @@ class RegionPreparationRoutedCommandTest {
         }
     }
 
+    private enum CopperChange { MOVE, CHANGE_LEVEL, REPLACE, REMOVE }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(CopperChange.class)
+    void copperReacquiresTheLiveBodyAfterARoutedCommandAtItsRetainedChest(CopperChange change) throws Throwable {
+        try (Fixture f = new Fixture(CopperLevel.class)) {
+            var level = (CopperLevel) f.level;
+            var grid = f.runtime.regionizer().grid;
+            BlockPos start = new BlockPos(2048, 64, 64);
+            long home = grid.keyFor(ChunkPos.containing(start));
+            BlockPos landing = new BlockPos(1024, 64, 64);
+            long target = grid.keyFor(ChunkPos.containing(landing));
+            f.runtime.islandRegistry.applyRebuildCells(List.of(
+                    new LongArrayList(new long[]{0L}), new LongArrayList(new long[]{home}),
+                    new LongArrayList(new long[]{target})), 0L);
+            var source = f.runtime.islandRegistry.byCell(home);
+            source.level = level;
+            var destination = f.runtime.islandRegistry.byCell(target);
+            destination.level = level;
+            var domains = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<EpochDomain>();
+            domains.put(0L, f.island.domain);
+            domains.put(home, source.domain);
+            domains.put(target, destination.domain);
+            set(RegionizedServer.class, f.runtime, "cellDomainSnapshot", domains);
+            set(RegionizedServer.class, f.runtime, "copperContainers", new CopperIslandClaims());
+
+            var unsafe = (sun.misc.Unsafe) get(sun.misc.Unsafe.class, null, "theUnsafe");
+            var golem = (ProbeGolem) unsafe.allocateInstance(ProbeGolem.class);
+            golem.pos = start;
+            golem.expectedOwner = source;
+            golem.setId(42);
+            golem.brain = (ProbeBrain) unsafe.allocateInstance(ProbeBrain.class);
+            set(Entity.class, golem, "level", level);
+            level.visible = golem;
+            var otherLevel = (CopperLevel) unsafe.allocateInstance(CopperLevel.class);
+            var replacement = (ProbeGolem) unsafe.allocateInstance(ProbeGolem.class);
+            replacement.setId(golem.getId());
+            var removal = Entity.class.getDeclaredField("removalReason");
+            removal.setAccessible(true);
+
+            List<String> effects = new java.util.ArrayList<>();
+            f.pool.start();
+            withPoolDeadline(f, () -> assertTrue(routeFromIslandUnit(f, "tp @e 1024 64 64", 0L, () -> {
+                assertTrue(IslandCommands.fenceWindowHeld());
+                assertTrue(f.island.mainInterest(), "the command must run inside Main's claim-acquisition pump");
+                assertTrue(IslandCommands.mainHolds(source), "Main must already own the golem's original island");
+                assertTrue(golem.brainReads > 0, "the retained chest triggered acquisition of the worker's island");
+                golem.brainReads = 0;
+                switch (change) {
+                    case MOVE -> {
+                        golem.pos = landing;
+                        golem.expectedOwner = destination;
+                    }
+                    case CHANGE_LEVEL -> golem.transferTo(otherLevel);
+                    case REPLACE -> level.visible = replacement;
+                    case REMOVE -> {
+                        try {
+                            removal.set(golem, Entity.RemovalReason.DISCARDED);
+                        } catch (IllegalAccessException ex) {
+                            throw new AssertionError(ex);
+                        }
+                    }
+                }
+                effects.add("command");
+                return true;
+            }, () -> CopperIslandClaims.onMain(level, golem, () -> {
+                assertTrue(IslandCommands.mainHolds(destination));
+                effects.add("ai");
+            }))));
+            assertEquals(change == CopperChange.MOVE, golem.brainReads > 0);
+            assertEquals(change == CopperChange.MOVE ? List.of("command", "ai") : List.of("command"), effects);
+            assertFalse(source.unitClaim.get());
+            assertFalse(destination.unitClaim.get());
+        }
+    }
+
+    private static final class CopperLevel extends ServerLevel {
+        Entity visible;
+        private CopperLevel() { super(null, null, null, null, null, null, false, 0L, List.of(), false); }
+        @Override public Entity getEntity(int id) { return visible != null && visible.getId() == id ? visible : null; }
+    }
+
+    private static final class ProbeBrain extends Brain<CopperGolem> implements CopperContainerFootprint.RetainedTarget {
+        @Override public BlockPos fabrolia$retainedCopperContainerPos() { return BlockPos.ZERO; }
+    }
+
+    private static final class ProbeGolem extends CopperGolem implements CopperContainerFootprint.OpenChest {
+        BlockPos pos;
+        IslandRegistry.PIsland expectedOwner;
+        ProbeBrain brain;
+        int brainReads;
+        private ProbeGolem() { super(null, null); }
+        void transferTo(ServerLevel destination) { setLevel(destination); }
+        @Override public BlockPos blockPosition() { return pos; }
+        @Override public ChunkPos chunkPosition() { return ChunkPos.containing(pos); }
+        @Override public Brain<CopperGolem> getBrain() {
+            assertTrue(IslandCommands.mainHolds(expectedOwner), "brain read without the current spatial claim");
+            ++brainReads;
+            return brain;
+        }
+        @Override public double getAttributeValue(net.minecraft.core.Holder<net.minecraft.world.entity.ai.attributes.Attribute> attribute) {
+            return 48;
+        }
+        @Override public BlockPos fabrolia$openCopperContainerPos() { return null; }
+    }
+
     private static boolean routeFromIslandUnit(Fixture f, String command,
                                                java.util.function.BooleanSupplier body) throws Exception {
         return routeFromIslandUnit(f, command, 0L, body);
@@ -583,6 +744,11 @@ class RegionPreparationRoutedCommandTest {
      *  worker while this (Main) thread pumps the scheduled routed drains. */
     private static boolean routeFromIslandUnit(Fixture f, String command, long unitGameTime,
                                                java.util.function.BooleanSupplier body) throws Exception {
+        return routeFromIslandUnit(f, command, unitGameTime, body, null);
+    }
+
+    private static boolean routeFromIslandUnit(Fixture f, String command, long unitGameTime,
+                                               java.util.function.BooleanSupplier body, Runnable waitingMainTurn) throws Exception {
         CountDownLatch done = new CountDownLatch(1);
         AtomicReference<Boolean> result = new AtomicReference<>();
         AtomicReference<Throwable> failure = new AtomicReference<>();
@@ -598,8 +764,7 @@ class RegionPreparationRoutedCommandTest {
                 result.set(command == null
                         ? IslandCommands.routeFencedIslandBody(f.runtime, f.island,
                                 "routed-clock-regression", body)
-                        : IslandCommands.routeCommandBlock(command, f.level,
-                                BlockPos.ZERO, null, body));
+                        : IslandCommands.routeCommandBlock(new CommandBlock(null, command), f.level, body));
             } catch (Throwable problem) {
                 failure.set(problem);
             } finally {
@@ -612,6 +777,10 @@ class RegionPreparationRoutedCommandTest {
                 done.countDown();
             }
         }));
+        if (waitingMainTurn != null) {
+            await(f.published, "the worker did not publish its routed command");
+            waitingMainTurn.run();
+        }
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (!done.await(1, TimeUnit.MILLISECONDS)) {
             for (TickTask task; (task = f.tasks.poll()) != null;) task.run();
@@ -624,7 +793,7 @@ class RegionPreparationRoutedCommandTest {
     }
 
     @Test
-    void selectorCommandsKeepTheVanillaCommandBlockEnvelope() throws Exception {
+    void parkedCoordinatorLendsItsChestClaimAndKeepsTheVanillaCommandBlockEnvelope() throws Throwable {
         try (Fixture f = new Fixture(CommandLevel.class)) {
             CommandLevel level = (CommandLevel) f.level;
             level.rules = new GameRules(FeatureFlagSet.of());
@@ -639,6 +808,9 @@ class RegionPreparationRoutedCommandTest {
             dispatcher.setConsumer(ExecutionCommandSource.resultConsumer());
             set(Commands.class, commands, "dispatcher", dispatcher);
             installCommands(f.server, commands);
+            f.runtime.islandRegistry.applyRebuildCells(List.of(LongArrayList.of(0L), LongArrayList.of(3L)), 17L);
+            IslandRegistry.PIsland chest = f.runtime.islandRegistry.byCell(3L);
+            chest.level = f.level;
 
             CountDownLatch done = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
@@ -647,11 +819,13 @@ class RegionPreparationRoutedCommandTest {
                 assertTrue(f.pool.enqueueUnit(() -> {
                     RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
                     boolean claimed = false;
-                    try {
+                    try (var window = new CopperIslandClaims.Window(f.island, false)) {
                         assertTrue(f.island.tryClaimAutonomousWork());
                         claimed = true;
                         f.island.noteClaim("command-envelope-regression");
                         worker.currentDomain = f.island.domain;
+                        assertTrue(window.test(chest));
+                        assertTrue(CopperIslandClaims.ownsExtra(chest, f.island));
                         CommandBlock disabled = new CommandBlock(target, "tag @s add disabled");
                         disabled.setSuccessCount(7);
                         assertTrue(executeBlock(f, disabled));
@@ -673,6 +847,8 @@ class RegionPreparationRoutedCommandTest {
                         assertEquals(1, next.getSuccessCount(),
                                 "vanilla success callbacks must update comparator/conditional state");
                         assertFalse(executeBlock(f, next));
+                        assertTrue(CopperIslandClaims.ownsExtra(chest, f.island));
+                        assertEquals(17L, chest.logicalTick, "lending a claim never ticks that island");
                     } catch (Throwable problem) {
                         failure.set(problem);
                     } finally {
@@ -684,11 +860,11 @@ class RegionPreparationRoutedCommandTest {
                         done.countDown();
                     }
                 }));
-                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                while (!done.await(1, TimeUnit.MILLISECONDS)) {
-                    for (TickTask task; (task = f.tasks.poll()) != null;) task.run();
-                    assertTrue(System.nanoTime() < deadline, "command envelope route did not complete");
-                }
+                withPoolDeadline(f, () -> {
+                    while (!done.await(1, TimeUnit.MILLISECONDS)) {
+                        for (TickTask task; (task = f.tasks.poll()) != null;) task.run();
+                    }
+                });
                 assertNull(failure.get(), () -> "command envelope failed: " + failure.get());
             } finally {
                 if (done.getCount() != 0) {
@@ -714,12 +890,11 @@ class RegionPreparationRoutedCommandTest {
     }
 
     private static boolean executeBlock(Fixture fixture, CommandBlock block) {
-        CommandSourceStack source = block.createCommandSourceStack(fixture.level, CommandSource.NULL);
-        return IslandCommands.routeCommandBlock(block.getCommand(), fixture.level,
-                BlockPos.ZERO, source, () -> {
-                    assertSame(fixture.main, Thread.currentThread());
-                    return block.performCommand(fixture.level);
-                });
+        return IslandCommands.routeCommandBlock(block, fixture.level, () -> {
+            assertSame(fixture.main, Thread.currentThread());
+            assertTrue(fixture.runtime.currentThreadHoldsAllClaims());
+            return block.performCommand(fixture.level);
+        });
     }
 
     private static final class CommandBlock extends BaseCommandBlock {
@@ -778,6 +953,7 @@ class RegionPreparationRoutedCommandTest {
             AtomicReference<Throwable> workerFailure = new AtomicReference<>();
             AtomicReference<Throwable> mainFailure = new AtomicReference<>();
             AtomicBoolean prepared = new AtomicBoolean();
+            AtomicReference<TickTask> workerWake = new AtomicReference<>();
             AtomicBoolean timedOut = new AtomicBoolean();
             List<String> effects = new CopyOnWriteArrayList<>();
             RegionizedTaskQueue nextUnit = new RegionizedTaskQueue();
@@ -795,6 +971,8 @@ class RegionPreparationRoutedCommandTest {
                 }
             }, "preparation-route-watchdog");
             watchdog.setDaemon(true);
+            // Vanilla execute() may run a submitted body inline on the caller after stop.
+            set(MinecraftServer.class, f.server, "stopped", true);
             f.pool.start();
             watchdog.start();
             try {
@@ -808,8 +986,8 @@ class RegionPreparationRoutedCommandTest {
                         worker.currentDomain = f.island.domain;
                         workerEntered.countDown();
                         await(publishCommand, "worker publication was never released");
-                        result.set(IslandCommands.routeCommandBlock("say preparation regression", f.level,
-                                BlockPos.ZERO, null, () -> {
+                        result.set(IslandCommands.routeCommandBlock(new CommandBlock(null, "say preparation regression"),
+                                f.level, () -> {
                                     assertSame(Thread.currentThread(), f.main,
                                             "the original nonlocal command must execute on physical Main");
                                     assertTrue(f.pool.mayServiceDetachedTransfers(),
@@ -843,6 +1021,8 @@ class RegionPreparationRoutedCommandTest {
                             "late-publication latch must run inside the pause request");
                     publishCommand.countDown();
                     await(f.published, "the worker did not publish its causal Main receipt");
+                    workerWake.set(f.tasks.element());
+                    assertTrue(effects.isEmpty(), "the stopped server cannot enter the command on its worker");
                 }));
                 assertTrue(RegionalPlayerEntityTicksV2.schedulerLifecycleTransitionAllowed(f.server),
                         "fixture Main must be at a physically completed server-tick boundary");
@@ -864,6 +1044,12 @@ class RegionPreparationRoutedCommandTest {
                 effects.add("preparation");
                 RegionScheduler.resumeExactPlayerTurn();
                 nextUnit.drain(Integer.MAX_VALUE);
+                AtomicBoolean nextEntered = new AtomicBoolean();
+                IslandCommands.enqueueFencedBody(() -> nextEntered.set(true));
+                workerWake.get().run();
+                assertFalse(nextEntered.get(), "a parked command's old wake must not drain a later receipt");
+                IslandCommands.drainRoutedBatch();
+                assertTrue(nextEntered.get());
             } catch (Throwable failure) {
                 mainFailure.set(failure);
             } finally {

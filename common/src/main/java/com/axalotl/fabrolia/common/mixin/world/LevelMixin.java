@@ -3,6 +3,7 @@ package com.axalotl.fabrolia.common.mixin.world;
 import com.axalotl.fabrolia.common.parallelised.utils.FabroliaRandomStriping;
 import com.axalotl.fabrolia.common.regions.FabroliaLocks;
 import com.axalotl.fabrolia.common.regions.RegionWorkerThread;
+import com.axalotl.fabrolia.common.utils.ContainerQueryOwners;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -29,10 +30,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(value = Level.class, priority = 1500)
 public abstract class LevelMixin implements LevelAccessor, AutoCloseable,
-        com.axalotl.fabrolia.common.regions.BlockEntityTickerAccess {
+        com.axalotl.fabrolia.common.regions.BlockEntityTickerAccess, ContainerQueryOwners.Access {
 
     @Unique
     private static final Object fabrolia$lock = new Object();
+
+    @Unique
+    private final ContainerQueryOwners fabrolia$containerReads = new ContainerQueryOwners();
+
+    @Override
+    public ContainerQueryOwners fabrolia$containerQueryOwners() {
+        return fabrolia$containerReads;
+    }
 
     @Unique
     private final Object fabrolia$blockEntityTickerLock = new Object();
@@ -65,7 +74,7 @@ public abstract class LevelMixin implements LevelAccessor, AutoCloseable,
                                          net.minecraft.world.level.block.state.BlockState state,
                                          int flags, int recursionLeft,
                                          org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
-        com.axalotl.fabrolia.common.regions.RegionAccessDetector.onBlockWrite(pos);
+        com.axalotl.fabrolia.common.regions.RegionAccessDetector.onBlockWrite((Level) (Object) this, pos);
         // Cross-region containment: a worker writing a block state OUTSIDE its claimed
         // region (fire spread, plant growth, a contraption straddling the boundary) would
         // race a concurrent same-colour region two cells away — and even a distance-1

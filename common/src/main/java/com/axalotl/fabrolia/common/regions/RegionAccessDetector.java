@@ -2,6 +2,8 @@ package com.axalotl.fabrolia.common.regions;
 
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Level;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,7 +45,7 @@ public final class RegionAccessDetector {
 
     private RegionAccessDetector() {}
 
-    public static void onBlockWrite(BlockPos pos) {
+    public static void onBlockWrite(Level level, BlockPos pos) {
         // Production audit 2026-07-12: the detector is LIVE whenever async
         // islands run (fail-closed depends on it) — one static volatile read
         // per setBlock when everything is off.
@@ -53,6 +55,10 @@ public final class RegionAccessDetector {
         Thread t = Thread.currentThread();
         if (!(t instanceof RegionWorkerThread w)) {
             OFF_WORKER.increment();   // main / pool / IO — out of scope
+            return;
+        }
+        if (w.exclusiveEntityPhase != null && w.exclusiveEntityPhase.ownsTarget(level, pos)) {
+            IN_REGION.increment();
             return;
         }
         Region r = w.currentRegion;
@@ -66,7 +72,7 @@ public final class RegionAccessDetector {
                 OFF_WORKER.increment();
                 return;
             }
-            RegionizedServer rsd = RegionScheduler.forLevel(mine.owner.domainLevel());
+            RegionizedServer rsd = level instanceof ServerLevel sl ? RegionScheduler.forLevel(sl) : null;
             if (rsd == null) {
                 OFF_WORKER.increment();
                 return;
@@ -81,13 +87,13 @@ public final class RegionAccessDetector {
             }
             return;
         }
-        RegionizedServer rs = RegionScheduler.forLevel(r.level);
+        RegionizedServer rs = level instanceof ServerLevel sl ? RegionScheduler.forLevel(sl) : null;
         if (rs == null) {
             OFF_WORKER.increment();
             return;
         }
         long writeKey = rs.regionizer().grid.keyFor(pos.getX() >> 4, pos.getZ() >> 4);
-        if (writeKey == r.gridKey) {
+        if (level == r.level && writeKey == r.gridKey) {
             IN_REGION.increment();
             return;
         }

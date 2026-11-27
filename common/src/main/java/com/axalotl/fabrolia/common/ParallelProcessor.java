@@ -5,12 +5,14 @@ import com.axalotl.fabrolia.api.utils.SyncItemPickup;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
 import com.axalotl.fabrolia.common.regions.NetherPortalTransfers;
 import com.axalotl.fabrolia.common.regions.EntityTickLease;
+import com.axalotl.fabrolia.common.regions.FlatOwnerTasks;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
+import net.minecraft.world.entity.animal.golem.CopperGolem;
 import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.entity.monster.Enderman;
 import net.minecraft.world.entity.monster.Shulker;
@@ -23,6 +25,7 @@ import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
@@ -92,6 +95,11 @@ public final class ParallelProcessor {
     public static volatile ExecutorService executor;
     public static final ThreadGroup FABROLIA_GROUP = new ThreadGroup("Fabrolia-Tick-Pool");
     private static volatile boolean isShuttingDown = false;
+
+    /** Physical-Main lifecycle query for operator commands and direct region starts. */
+    public static boolean serverStopping(MinecraftServer target) {
+        return target.isStopped() || target == server && isShuttingDown;
+    }
 
     public static final MobCategory[] CATEGORIES = MobCategory.values();
 
@@ -163,6 +171,7 @@ public final class ParallelProcessor {
     public static void setServer(MinecraftServer server) {
         ParallelProcessor.server = server;
         NetherPortalTransfers.init(server);
+        FlatOwnerTasks.start(server);
     }
 
     public static void setupThreadPool(int parallelism) {
@@ -648,6 +657,28 @@ public final class ParallelProcessor {
         return false;
     }
 
+    /** Vanilla ticks a vehicle's live passenger tree, not just its root. */
+    public static boolean containsCopperGolemTree(Entity entity) {
+        if (entity instanceof CopperGolem) return true;
+        var passengers = entity.getPassengers();
+        for (int i = 0; i < passengers.size(); i++) {
+            if (containsCopperGolemTree(passengers.get(i))) return true;
+        }
+        return false;
+    }
+
+    /** Inspect the raw cut, before a previous entity can change any later
+     * member's eligibility. Even a normally parallel entity can destroy the
+     * golem's chest. Births after capture do not become new roots; vanilla
+     * still traverses each vehicle's live passenger list at its turn. */
+    public static boolean flatCutRequiresSerialTicks(Iterable<Entity> members) {
+        if (FabroliaConfig.disabled) return false;
+        for (Entity entity : members) {
+            if (containsCopperGolemTree(entity)) return true;
+        }
+        return false;
+    }
+
     public static boolean shouldTickSynchronously(Entity entity) {
         if (isShuttingDown || FabroliaConfig.disabled) return true;
         if (containsMainOwnedTrackingEntity(entity)) return true;
@@ -821,6 +852,8 @@ public final class ParallelProcessor {
      */
     public static void stopServerRuntime() {
         Throwable failure = null;
+        isShuttingDown = true;
+        FlatOwnerTasks.closeAdmission();
         // SERVER_STOPPING runs before vanilla disconnect/save.  Close any flat
         // advancement tail even when region threading was never enabled; a live
         // RegionScheduler performs further fixed-point passes while it drains.
@@ -834,6 +867,7 @@ public final class ParallelProcessor {
         } catch (Throwable primary) {
             failure = FailStops.mergeFailure(failure, primary);
         }
+        if (failure != null) failure = RegionScheduler.publishFatalAndSelectWinner(failure);
         try {
             stop();
         } catch (Throwable cleanup) {
@@ -881,6 +915,11 @@ public final class ParallelProcessor {
             }
             if (interrupted) Thread.currentThread().interrupt();
         }
+        try {
+            failure = FlatOwnerTasks.finish(failure);
+        } catch (Throwable cleanup) {
+            failure = FailStops.mergeFailure(failure, cleanup);
+        }
 
         // The flat executor join is the final producer edge in regions-off mode.
         // Apply its retained advancement results on physical Main, then prove that
@@ -910,6 +949,11 @@ public final class ParallelProcessor {
         }
         try {
             NetherPortalTransfers.shutdown();
+        } catch (Throwable cleanup) {
+            failure = FailStops.mergeFailure(failure, cleanup);
+        }
+        try {
+            FlatOwnerTasks.retire();
         } catch (Throwable cleanup) {
             failure = FailStops.mergeFailure(failure, cleanup);
         }

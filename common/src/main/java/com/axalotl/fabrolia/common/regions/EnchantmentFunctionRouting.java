@@ -73,7 +73,7 @@ public final class EnchantmentFunctionRouting {
             execute.run();
             return;
         }
-        IslandRegistry.PIsland owner = exclusiveCoordinatorIsland(level);
+        IslandRegistry.PIsland owner = IslandCommands.exclusiveCoordinatorIsland(level);
         if (owner == null) {
             IslandCommands.publishAndPropagate(new IllegalStateException(
                     "enchantment function " + function.id() + " is not proven owner-local and "
@@ -87,27 +87,6 @@ public final class EnchantmentFunctionRouting {
             IslandFunctionScope.runUnscoped(execute);
             return true;
         });
-    }
-
-    /**
-     * The island whose coordinator this thread is at an exclusive point: it holds
-     * the island's unit claim and either no entity-phase helper is pending or it
-     * runs the island's serial entity pass. Only there may a body be handed to
-     * fenced Main while this coordinator parks (same condition as
-     * {@link RaidOwnership#runFenced}).
-     */
-    static IslandRegistry.PIsland exclusiveCoordinatorIsland(ServerLevel level) {
-        if (!(Thread.currentThread() instanceof RegionWorkerThread worker)) return null;
-        EpochDomain domain = worker.currentDomain;
-        IslandRegistry.PIsland owner = domain == null ? null : domain.owner;
-        if (owner != null && !owner.retired
-                && owner.domainLevel() == level && owner.domain == domain
-                && owner.unitClaim.get() && owner.claimHolder == worker
-                && (worker.currentRegion == null && domain.entityPending.get() == 0
-                    || IslandEntityPhaseScope.owns(worker.currentRegion))) {
-            return owner;
-        }
-        return null;
     }
 
     /**

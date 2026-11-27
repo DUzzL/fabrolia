@@ -23,8 +23,19 @@ public final class RegionWorkerThread extends Thread {
      *  getGameTime redirect. */
     volatile EpochDomain currentDomain;
 
+    /** Coordinator-confined: a member group can execute from dispatch until the exact join.
+     * Queue-only groups do not contribute to EpochDomain.entityPending. */
+    boolean islandDispatchInFlight;
+
+    /** This worker alone sets/clears its ACK. Main must match this very worker as
+     * claim holder, its coordinating domain, and the exact active fence intent. */
+    volatile Object parkedCommandFence;
+
     /** Exact post-queue, serial island entity phase; thread-confined and stacked. */
     IslandEntityPhaseScope exclusiveEntityPhase;
+
+    /** The one reusable serial entity cut; detached while in use on this worker. */
+    RegionizedServer.IslandVisits idleIslandVisits;
 
     /** Ownership partition of the owner-local function body this thread is
      *  executing ({@link IslandFunctionScope}); thread-confined, null outside. */

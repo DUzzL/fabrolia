@@ -58,11 +58,10 @@ def prepare(config, run, world_template, port, xmx, view_distance, simulation_di
         if mode:
             (run / 'config').mkdir(exist_ok=True)
             on = 'false' if mode == 'default' else 'true'
-            # Async islands are always on; the synchronous control is a JVM option.
             (run / 'config' / 'fabrolia.toml').write_text(
                 'enablePlayerTickActor = %s\nenableRegionThreading = true\n'
                 'islandEntityParallel = %s\n' % (on, 'true' if mode == 'parallel' else 'false'))
-            if mode == 'default':
+            if mode == 'default':  # Historical synchronous comparison.
                 sync_flag = ['-Dfabrolia.syncMode=true']
     if world_template is not None:
         shutil.copytree(world_template, run / 'world')

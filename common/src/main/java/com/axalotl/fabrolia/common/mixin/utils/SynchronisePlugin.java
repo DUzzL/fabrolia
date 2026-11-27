@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.utils;
 
+import com.axalotl.fabrolia.common.utils.ProximityRosterTransform;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
 
@@ -177,6 +178,11 @@ public class SynchronisePlugin implements IMixinConfigPlugin {
 
     @Override
     public void preApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
+        if (mixinClassName.endsWith(".server.PlayerMapMixin")) {
+            ProximityRosterTransform.markNativeMap(targetClass);
+        } else if (mixinClassName.endsWith(".server.ChunkMapMixin")) {
+            ProximityRosterTransform.afterInjections(targetClass);
+        }
     }
 
     @Override

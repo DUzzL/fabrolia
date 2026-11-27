@@ -5,7 +5,6 @@ import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
-import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.BaseCommandBlock;
 import org.spongepowered.asm.mixin.Mixin;
@@ -29,15 +28,7 @@ public abstract class BaseCommandBlockMixin {
 
     @WrapMethod(method = "performCommand")
     private boolean fabrolia$islandCommandRoute(ServerLevel level, Operation<Boolean> original) {
-        BaseCommandBlock self = (BaseCommandBlock) (Object) this;
-        // The source stack is exactly what vanilla builds inside performCommand;
-        // locality proofs need its position, shard resolution needs the full
-        // context (position + rotation for @p-style sorting).
-        net.minecraft.commands.CommandSourceStack stack =
-                self.createCommandSourceStack(level, net.minecraft.commands.CommandSource.NULL);
-        BlockPos src = BlockPos.containing(stack.getPosition());
-        return IslandCommands.routeCommandBlock(self.getCommand(), level, src, stack,
-                () -> original.call(level));
+        return IslandCommands.routeCommandBlock((BaseCommandBlock) (Object) this, level, () -> original.call(level));
     }
 
     /**

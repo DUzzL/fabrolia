@@ -32,14 +32,14 @@ class EnchantmentFunctionRoutingTest {
         AtomicInteger runs = new AtomicInteger();
         EnchantmentFunctionRouting.execute(null, null, null, null, runs::incrementAndGet);
         assertEquals(1, runs.get(), "off a region worker the vanilla call runs once, here");
-        assertNull(EnchantmentFunctionRouting.exclusiveCoordinatorIsland(null),
+        assertNull(IslandCommands.exclusiveCoordinatorIsland(null),
                 "a non-worker thread is never an island's exclusive coordinator");
     }
 
     @Test
     void nonOwnerLocalBodyRoutesThroughTheExclusiveCoordinatorAfterTheProofLease() throws Exception {
         String routing = source("common/regions/EnchantmentFunctionRouting.java");
-        String execute = section(routing, "public static void execute(", "static IslandRegistry.PIsland exclusiveCoordinatorIsland");
+        String execute = section(routing, "public static void execute(", "public static Map<Identifier, List<String>> functionSites");
         int proof = execute.indexOf("FunctionAnalyzer.withExactOwnerLocalProof(");
         int proofEnd = execute.indexOf("if (ranOwnerLocal) return;");
         int route = execute.indexOf("IslandCommands.routeFencedIslandBody(");
@@ -54,15 +54,15 @@ class EnchantmentFunctionRoutingTest {
         assertTrue(failStop > proofEnd && failStop < route,
                 "a worker that cannot park for Main fail-stops instead of running the body unfenced");
 
-        String coordinator = section(routing, "static IslandRegistry.PIsland exclusiveCoordinatorIsland",
-                "public static Map<Identifier, List<String>> functionSites");
+        String coordinator = section(source("common/regions/IslandCommands.java"),
+                "static IslandRegistry.PIsland exclusiveCoordinatorIsland", "static boolean routeFencedIslandBody");
+        assertTrue(coordinator.contains("worker.islandDispatchInFlight"));
         assertTrue(coordinator.contains("owner.unitClaim.get() && owner.claimHolder == worker"));
         assertTrue(coordinator.contains("worker.currentRegion == null && domain.entityPending.get() == 0"));
         assertTrue(coordinator.contains("IslandEntityPhaseScope.owns(worker.currentRegion)"));
         String raid = source("common/regions/RaidOwnership.java");
-        assertTrue(raid.contains("worker.currentRegion == null && domain.entityPending.get() == 0")
-                        && raid.contains("IslandEntityPhaseScope.owns(worker.currentRegion)"),
-                "same exclusive-coordinator condition as the raid callbacks");
+        assertTrue(raid.contains("IslandCommands.exclusiveCoordinatorIsland(level)"),
+                "raids and enchantments require the same exclusive coordinator");
     }
 
     @Test

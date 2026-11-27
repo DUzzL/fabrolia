@@ -6,13 +6,18 @@ import it.unimi.dsi.fastutil.objects.ReferenceLinkedOpenHashSet;
 import net.minecraft.server.level.PlayerMap;
 import net.minecraft.server.level.ServerPlayer;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Set;
 
 /**
  * Component-local guard for vanilla's player membership map.
  *
- * <p>Exact 26.2 {@link PlayerMap} stores membership and the ignored bit in one plain
+ * <p>In 26.3 {@link PlayerMap} stores membership and the ignored bit in one plain
  * fastutil {@code Object2BooleanOpenHashMap}. Player movement can update it from an
  * island worker while block/light publication and spawning read it from other workers.
  * Protect every map operation with the PlayerMap instance monitor and detach the sole
@@ -30,6 +35,33 @@ import java.util.Set;
 @Mixin(value = PlayerMap.class, priority = 1500)
 public abstract class PlayerMapMixin {
 
+    @Shadow public abstract Set<ServerPlayer> getAllPlayers();
+
+    @Unique private List<ServerPlayer> fabrolia$proximityRoster;
+    @Unique private long fabrolia$rosterRevision;
+    @Unique private int fabrolia$rosterMutationDepth;
+
+    /** Called only for the native forward loop. Take the normal reader monitor even on hits.
+     * Positions, spectator state and the distance predicate are evaluated after it is released. */
+    @Unique
+    public synchronized Iterator<ServerPlayer> fabrolia$proximityIterator() {
+        if (fabrolia$rosterMutationDepth != 0) return getAllPlayers().iterator();
+        List<ServerPlayer> roster = fabrolia$proximityRoster;
+        if (roster == null) {
+            long revision = fabrolia$rosterRevision;
+            roster = Arrays.asList(getAllPlayers().toArray(ServerPlayer[]::new));
+            if (revision == fabrolia$rosterRevision) fabrolia$proximityRoster = roster;
+        }
+        return roster.iterator();
+    }
+
+    @Unique
+    private void fabrolia$beginRosterMutation() {
+        fabrolia$proximityRoster = null;
+        fabrolia$rosterRevision++;
+        fabrolia$rosterMutationDepth++;
+    }
+
     @WrapMethod(method = "getAllPlayers")
     private synchronized Set<ServerPlayer> fabrolia$snapshotAllPlayers(
             Operation<Set<ServerPlayer>> original) {
@@ -43,13 +75,23 @@ public abstract class PlayerMapMixin {
     @WrapMethod(method = "addPlayer")
     private synchronized void fabrolia$lockedAddPlayer(
             ServerPlayer player, boolean ignored, Operation<Void> original) {
-        original.call(player, ignored);
+        fabrolia$beginRosterMutation();
+        try {
+            original.call(player, ignored);
+        } finally {
+            fabrolia$rosterMutationDepth--;
+        }
     }
 
     @WrapMethod(method = "removePlayer")
     private synchronized void fabrolia$lockedRemovePlayer(
             ServerPlayer player, Operation<Void> original) {
-        original.call(player);
+        fabrolia$beginRosterMutation();
+        try {
+            original.call(player);
+        } finally {
+            fabrolia$rosterMutationDepth--;
+        }
     }
 
     @WrapMethod(method = "ignorePlayer")

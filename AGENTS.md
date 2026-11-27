@@ -477,9 +477,9 @@ All 160 files are listed here, grouped by topic. Each name is `C/regions/<Name>.
   down once per island tick (`TicketStorageMixin`); only an island that has not advanced for
   6000 wall ticks falls back to wall cadence. There is no extra lease for portal-active
   entities, so a portal loader keeps its area exactly as long as vanilla.
-- `TransportItemsBetweenContainersMixin` keys its busy-container map by `BlockPos`
-  without the dimension, so copper golems in two dimensions can see each other's
-  container as busy (rare; vanilla has no such map).
+- `ContainerQueryOwners` tracks transport reads per level instance and position. Nested reads on the same
+  thread call vanilla. Competing reads of the same address by different threads still use the historical
+  busy fallback; island claims alone do not exclude concurrent global work.
 - Lithium's `mixin.entity.framed_maps` never prunes players who left from
   `MapItemSavedData.carriedByPlayers` of maps in item frames (a Lithium leak that also
   happens without Fabrolia; workaround `mixin.entity.framed_maps=false`). Fabrolia does

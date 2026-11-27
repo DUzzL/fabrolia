@@ -13,19 +13,42 @@ like in vanilla.
 Vanilla Minecraft ticks everything on one thread, so a server with many players
 in different places is limited by a single core. Fabrolia splits every dimension
 into regions of 8×8 chunks. Loaded regions that touch form an **island**, for
-example a player's base and everything around it. Islands that are far enough
-apart cannot affect each other within one tick, so Fabrolia ticks them at the
-same time on worker threads: entities, block entities, redstone and scheduled
-ticks, random ticks and mob spawning. The main thread keeps everything global:
-commands, players joining and leaving, and work that crosses islands.
+example a player's base and everything around it. By default each island ticks
+on its own clock. Different islands can tick entities, block entities and
+scheduled ticks at the same time. Within one island the default entity pass
+follows vanilla insertion order.
 
-By default every island also keeps its own clock (**async islands**): a lagging
-base no longer slows down the rest of the server, and players tick on their own
-island. For diagnosis, the JVM option `-Dfabrolia.syncMode=true` starts the server in
-synchronous region threading, where the whole world finishes each tick together.
+A copper golem can remember a chest after a teleport to another island. When its
+next turn needs both islands, the worker reserves the chest's island before it
+starts the turn. The chest's own clock does not advance with the golem. An
+unrelated island can keep ticking while a write to that chest waits.
+This includes nearby golems that are visible to the chest but are not themselves
+ticking. If a required cell belongs to no island, the affected turn waits for
+that level's global work instead of treating an island lock as permission to read it.
+
+To compare behavior against a shared clock, start the server with
+`-Dfabrolia.syncMode=true`. In this diagnostic mode the server thread visits the
+native entity list with region workers paused. Restart without the flag to return
+to independent clocks. The old `asyncIslands` config key has no effect.
+Vanilla `/tick freeze` pauses autonomous pacing; `/tick step N` runs exactly N
+simulation frames. Unfreezing resumes each island's configured rate.
 
 Fabrolia only helps where work can be split: one huge base with all players in it
-is still one island. It does not skip or reorder vanilla work to gain TPS.
+is still one island. The goal is to preserve vanilla work and its observable order.
+
+Nearby-item searches and serial island entity passes reuse only private working
+arrays. Nested searches get separate storage. Neither the lists returned by the
+world nor a mob's remembered item are recycled. Buffer sizes limit retained
+memory, not how many entities can be checked or ticked.
+
+Fire spread checks reuse the order of players in a dimension until someone joins
+or leaves. The game still checks each player's current position and spectator
+state. If another mixin targets the player map, its original lookup still runs.
+
+When saved entities arrive while an island is ticking, the section receiving an
+entity stays attached until insertion finishes. Moving the last resident out of
+that section no longer leaves the loaded entity visible by UUID but missing from
+spatial queries and the next save. Other islands keep ticking independently.
 
 ## When it helps
 
@@ -67,10 +90,11 @@ Operators:
 | Command | Level | What it does |
 | --- | --- | --- |
 | `/fabrolia regions player <player>` | 2 | TPS where another player is. |
-| `/fabrolia regions playerticks [on\|off]` | 4 | Players tick on their own island. |
-| `/fabrolia regions islandentities [vanilla\|parallel]` | 4 | Entities of one island in vanilla order (default) or in parallel per region. |
+| `/fabrolia regions playerticks [on\|off]` | 4 | Select the player venue for independent-clock mode. |
+| `/fabrolia regions islandentities [vanilla\|parallel]` | 4 | Choose entity order inside an autonomous island; does not change the shared-clock pass. |
 | `/fabrolia regions on\|off\|toggle` | 4 | Region threading on or off. |
-| `/fabrolia regions rate here <tps>` | 4 | Slow down or speed up the island you stand on (also `/tick rate island here`). |
+| `/fabrolia regions rate here <tps>` | 4 | Change an autonomous island's rate. With a shared clock use vanilla `/tick rate`. |
+| `/fabrolia regions sprint here <ticks>` | 4 | Advance an autonomous island by a tick count. With a shared clock use vanilla `/tick sprint`. |
 | `/fabrolia regions top verbose [count]` | 4 | Raw island figures for diagnosis. |
 | `/fabrolia regions crossdim [on\|off]` | 4 | Overworld/Nether island coupling. |
 | `/fabrolia config reload` | 4 | Reloads `config/fabrolia.toml`. |
@@ -90,8 +114,8 @@ With Carpet, `/log tps` shows the main thread and the island you are on.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `disabled` | `false` | Turns Fabrolia off without removing it. |
-| `enableRegionThreading` | `true` | Tick islands on worker threads. |
-| `enablePlayerTickActor` | `true` | Players tick on their own island. |
+| `enableRegionThreading` | `true` | Enable regional workers; does not select the clock. |
+| `enablePlayerTickActor` | `true` | Tick eligible players on their own island in independent-clock mode. |
 | `regionWorkerCount` | `-1` | Worker threads; `-1` uses the core count minus two. |
 | `islandEntityParallel` | `false` | Parallel entity ticking inside one island. |
 | `fabroliaCrossDimCoupling` | `true` | Overworld and Nether islands that overlap share one clock anchor. |
@@ -104,6 +128,24 @@ With Carpet, `/log tps` shows the main thread and the island you are on.
 Internal switches are not config keys. The `/fabrolia regions debug` toggles and
 `/fabrolia config setFabroliaEntitySpawn|setFabroliaRandomTicks|setFabroliaDespawn` change the
 running server only and are never saved.
+
+With Fabrolia enabled and region threading off, the entity list is taken after the flat spawn jobs finish.
+If that list contains a copper golem (including a passenger), its entire pass runs in
+insertion order on the server thread: each entity's despawn check stays with its turn.
+Nested checks for the same chest use the vanilla opener list; matching coordinates in
+different dimensions do not interfere. Two threads checking the same chest at once still
+get Fabrolia's older busy fallback on the contending thread. This is not an inventory lock.
+
+`FabroliaIslandApi.executeOnOwner` runs inline under an existing spatial claim.
+With a shared clock and regions enabled, other submissions are queued in FIFO
+order for an exclusive server-thread turn after the tick. Turning regions off
+finishes accepted shared work before its owner retires; new submissions can be
+refused during the switch. Accepted work also finishes before a normal shutdown
+save. With regions off, the server thread can run a callback inline and other
+threads post to its native queue. Do not block a tick thread waiting for queued work.
+Region work submitted without a position through `RegionScheduler.enqueueGlobal`
+waits for an exclusive server-thread turn. Use `executeOnOwner` when the target
+is known so independent work need not wait for this turn.
 
 ## Building
 

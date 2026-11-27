@@ -39,7 +39,8 @@ final class HelpCommand {
             new Entry("/fabrolia regions top verbose", "raw island rows for diagnosis", ADMIN),
             new Entry("/fabrolia regions islandentities", "entity order on islands (vanilla/parallel)", ADMIN),
             new Entry("/fabrolia regions playerticks", "players tick on their island (on/off)", ADMIN),
-            new Entry("/fabrolia regions rate here ", "slow down or speed up the island you stand on", ADMIN),
+            new Entry("/fabrolia regions rate here ", "set your island's target TPS (independent clocks)", ADMIN),
+            new Entry("/fabrolia regions sprint here ", "advance your island by a tick count (independent clocks)", ADMIN),
             new Entry("/fabrolia functions plan", "how datapack functions are split",
                     PlatformPermission.require("command.functions", 4)),
             new Entry("/fabrolia config reload", "reload config/fabrolia.toml",
@@ -51,7 +52,7 @@ final class HelpCommand {
         section(out, src, "Administration", ADMINISTER);
         out.section("Terms");
         out.line("Island", InfoText.text(
-                "nearby loaded chunks that tick together on their own thread", ChatFormatting.WHITE));
+                "connected loaded regions that tick on their own clock by default", ChatFormatting.WHITE));
         out.line("TPS", InfoText.text(
                 "ticks per second; 20 is full speed", ChatFormatting.WHITE));
         out.line("MSPT / ms", InfoText.text(

@@ -12,10 +12,8 @@ import net.minecraft.world.level.ChunkPos;
 /**
  * Public island API for mods.
  *
- * <p>Work routed via {@link #executeOnOwner} retains the owning region's
- * ordering in both wall-tick and async-island modes. Async islands retain
- * their local clocks and deadlines, but mutable gameplay bodies execute
- * serially across islands on their actual worker owners or physical Main.
+ * <p>Routing to one region does not serialize work in another: independent
+ * islands can run mutable callbacks concurrently on different local clocks.
  *
  * <p>Ownership rules for mods, enforced by RegionAccessDetector in
  * development/compat modes: reading or mutating entities, block entities,
@@ -46,9 +44,9 @@ public final class FabroliaIslandApi {
      *  game time when the region runtime or owner is unavailable. */
     public static long islandLogicalTick(ServerLevel level, BlockPos pos) {
         RegionizedServer rs = RegionScheduler.forLevel(level);
-        if (rs == null) return level.getGameTime();
+        if (rs == null || !rs.asyncActive) return IslandClock.wallTime(level);
         IslandRegistry.PIsland p = rs.islandRegistry.byCell(rs.beCellKeyFor(pos));
-        return p == null ? level.getGameTime() : p.logicalTick;
+        return p == null ? IslandClock.wallTime(level) : p.logicalTick;
     }
 
     /** Dimension-global calendar time (the W clock: day/night, weather,
@@ -58,9 +56,22 @@ public final class FabroliaIslandApi {
     }
 
     /**
-     * Run {@code task} under the ownership/ordering domain of the given
-     * position: inline only with both region ownership and current gameplay
-     * admission, otherwise queued to the owning region's task lane.
+     * Run {@code task} inline under existing spatial ownership. With a shared clock and
+     * region workers, unowned submissions run FIFO on exclusive Main after the tick.
+     * With independent clocks they route to the target owner. With regions off, physical
+     * Main runs inline; other callers post to its native queue. Queued submission is not
+     * completion. Do not wait for the callback from a tick that must finish first.
+     * A position never retargets a replacement level; an entity follows its current level.
+     * Turning regions off finishes already accepted shared tasks before retiring their owner;
+     * new submissions can be rejected during the transition. Normal stop settles accepted work before saving.
+     *
+     * <p>An addressed callback may run on one region helper, not the island's exclusive
+     * coordinator. It cannot synchronously invoke a command block there: even the local
+     * command proof covers an entire island. With the region scheduler active, submit
+     * the <em>whole</em> command-capable operation through {@link RegionScheduler#enqueueGlobal}
+     * instead, before it starts. Resolve its target and consume the actual command result
+     * inside that exclusive Main callback. Never queue just the command and wait for it
+     * while retaining a region claim.
      */
     public static void executeOnOwner(ServerLevel level, BlockPos pos, Runnable task) {
         RegionScheduler.executeAt(level, new ChunkPos(pos.getX() >> 4, pos.getZ() >> 4), task);

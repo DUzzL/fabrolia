@@ -3,6 +3,7 @@ package com.axalotl.fabrolia.common.regions;
 import com.axalotl.fabrolia.api.fastutil.Long2ObjectConcurrentHashMap;
 import com.axalotl.fabrolia.common.ParallelProcessor;
 import com.axalotl.fabrolia.common.config.FabroliaConfig;
+import it.unimi.dsi.fastutil.objects.ObjectArrays;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.server.level.DistanceManager;
@@ -10,11 +11,13 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.TickRateManager;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.animal.golem.CopperGolem;
 import net.minecraft.world.level.ChunkPos;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.LockSupport;
@@ -43,6 +46,7 @@ public final class RegionizedServer {
 
     public final ServerLevel level;
     private final ThreadedRegionizer regionizer;
+    final CopperIslandClaims copperContainers = new CopperIslandClaims();
 
     // NOTE: the per-level loadedChunks LevelChunk cache (+ pendingChunkUpdates queue) that
     // lived here was REMOVED 2026-07-01: the block-tick worker-resolve rewrite dropped its
@@ -1088,13 +1092,13 @@ public final class RegionizedServer {
                             // ownership. The outer fail-stop envelope releases only
                             // claims this quiesce actually acquired.
                             if (stuckReports >= 3 && !asyncActive
-                                    && !p.waitingOnRoutedCommand) {
+                                    && !p.hasRoutedWaiter()) {
                                 throw new IllegalStateException(
                                         "island claim remained held after forensic threshold: "
                                                 + IslandCommands.claimForensics(p));
                             }
                         }
-                        if (p.waitingOnRoutedCommand) {
+                        if (p.hasRoutedWaiter()) {
                             Throwable retryFailure =
                                     clearAllIslandClaimIntents(intentIslands, null);
                             intentIslands = null;
@@ -2739,6 +2743,30 @@ public final class RegionizedServer {
         return regionizer.regionCount();
     }
 
+    /** Cold generation start under the physical Main cut. Seed from the very sections used
+     * by getEntities(AABB), not EntityTickList or the manager's UUID lookup. */
+    void seedTrackedCopper() {
+        var storage = ((com.axalotl.fabrolia.common.mixin.world.ServerLevelEntityManagerAccessor)
+                level).fabrolia$entityManager().sectionStorage;
+        for (var chunks = storage.getAllChunksWithExistingSections().iterator(); chunks.hasNext();) {
+            storage.getExistingSectionsInChunk(chunks.nextLong()).forEach(section ->
+                    ((CopperSectionAccess) section).fabrolia$seedTrackedCopper(this));
+        }
+    }
+
+    /** Stop can clear active before an entered worker finishes moving an entity. Keep
+     * publishing to its generation until its claims retire. Removal never creates one. */
+    public static RegionizedServer copperSectionRuntime(ServerLevel level, boolean entering) {
+        var runtime = RegionScheduler.publishedForLevel(level);
+        return runtime != null || !entering ? runtime : RegionScheduler.forLevel(level);
+    }
+
+    public void updateCopperSection(long chunkKey, CopperGolem golem, boolean accessible) {
+        long key = regionizer.grid.keyFor(chunkKey);
+        if (accessible) copperContainers.add(key, golem);
+        else copperContainers.remove(key, golem);
+    }
+
     // ---------------------------------------------------------------------
     // Region-owned entity index
     // ---------------------------------------------------------------------
@@ -2765,7 +2793,7 @@ public final class RegionizedServer {
         long key = keyed.fabrolia$getRegionKey();
         if (key == RegionKeyed.NO_REGION) return;
         Region r = regionizer.peekByGridKey(key);
-        if (r != null && r.entities.remove(e)) r.entityCount.decrementAndGet();
+        if (r != null) removeFromIndex(r, e);
         keyed.fabrolia$setRegionKey(RegionKeyed.NO_REGION);
     }
 
@@ -2805,7 +2833,7 @@ public final class RegionizedServer {
     }
 
     private void indexMove(Entity e, Region from, long newKey) {
-        if (from.entities.remove(e)) from.entityCount.decrementAndGet();
+        removeFromIndex(from, e);
         Region to = regionizer.admitEntity(newKey, e);
         ((RegionKeyed) e).fabrolia$setRegionKey(newKey);
         // audit10: an island MERGE keeps the survivor's tick identity, so entities
@@ -2820,12 +2848,16 @@ public final class RegionizedServer {
         }
     }
 
-    private static void dropFromRegion(Region r, Entity e) {
+    private void dropFromRegion(Region r, Entity e) {
         // isRemoved also exposes a claim-local departure view. A still-live
         // reserved source must remain tick-indexed so a refused transition can
         // resume it. Real removal callbacks/reasons retain their normal cleanup.
         if (e.getRemovalReason() == null
                 && com.axalotl.fabrolia.common.regions.NetherPortalTransfers.isSourceMutationBlocked(e)) return;
+        removeFromIndex(r, e);
+    }
+
+    private void removeFromIndex(Region r, Entity e) {
         if (r.entities.remove(e)) r.entityCount.decrementAndGet();
     }
 
@@ -2935,12 +2967,46 @@ public final class RegionizedServer {
         return dispatchOwnedEntityTicks(false);
     }
 
+    // Physical Main only. Set before publishing the first global chunk callback;
+    // a failed dispatch/join leaves admission closed for the failed generation.
+    boolean globalPreEntityWorkPending;
+
+    void armGlobalPreEntityWork() {
+        if (globalPreEntityWorkPending) throw new IllegalStateException("overlapping global entity phases");
+        globalPreEntityWorkPending = true;
+        if ((Object) level.getChunkSource() instanceof com.axalotl.fabrolia.common.utils.SpawnFutureTaker chunks) {
+            RegionScheduler.runSuccessBodyIfHealthy(chunks::fabrolia$armDeferredChunkWork);
+        }
+    }
+
+    public void joinGlobalPreEntityWork(CompletableFuture<Void> regionAll) {
+        if (!globalPreEntityWorkPending) throw new IllegalStateException("no global entity phase to join");
+        if ((Object) level.getChunkSource() instanceof com.axalotl.fabrolia.common.utils.SpawnFutureTaker chunks) {
+            CompletableFuture<Void> spawn = chunks.fabrolia$takeSpawnFuture();
+            CompletableFuture<Void> blocks = chunks.fabrolia$takeBlockTicksFuture();
+            if (spawn != null) regionAll = CompletableFuture.allOf(regionAll, spawn);
+            if (blocks != null) regionAll = CompletableFuture.allOf(regionAll, blocks);
+        }
+        try {
+            ParallelProcessor.pumpUntilDone(regionAll);
+        } catch (Throwable failure) {
+            FailStops.<RuntimeException>rethrow(RegionScheduler.publishFatalAndSelectWinner(failure));
+            return;
+        }
+        globalPreEntityWorkPending = false;
+    }
+
     /** Canonical Main pass over the global remainder after its queue-only join. */
     public void tickGlobalEntitiesInVanillaOrder(java.util.function.Consumer<Entity> consumer) {
         if (!RegionalPlayerEntityTicksV2.isPhysicalServerThread(level.getServer())
+                || globalPreEntityWorkPending
                 || !isQueueOnlyEntityEpoch(globalDomain, globalDomain.epoch)
                 || !globalDomain.entityDispatchPublication.isAccepted()) {
             throw new IllegalStateException("global ordered entity pass outside its Main queue boundary");
+        }
+        if (!FabroliaConfig.ALLOW_INDEPENDENT_CLOCKS) {
+            tickSharedClockEntities(consumer);
+            return;
         }
         // An entity is visited only through its region key, and indexAdd/indexMove
         // admit it to that region's set before publishing the key. With async
@@ -2967,23 +3033,42 @@ public final class RegionizedServer {
                 }
                 regionsByKey.put(key, region);
             }
-            Region owner = region;
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                // Lazy cross-cell re-routing, as the region tick body did for
-                // global entities: keep the ownership index on the entity's
-                // current cell so an island adopts it once it walks in.
-                if (!entity.isRemoved()) {
-                    long current = regionizer.grid.keyFor(entity.chunkPosition().pack());
-                    if (current != owner.gridKey) indexMove(entity, owner, current);
-                }
-                if (((RegionKeyed) entity).fabrolia$tryMarkRegionTick(globalDomain.tickToken())) {
-                    if (entity instanceof net.minecraft.server.level.ServerPlayer player
-                            && AsyncIslandPlayerTicks.deferGlobalPassPlayerTick(player)) {
-                        return;
+                reindexGlobalEntityIfMoved(entity, key);
+                if (((RegionKeyed) entity).fabrolia$tryMarkRegionTick(globalDomain.tickToken())
+                        && !(entity instanceof ServerPlayer player && AsyncIslandPlayerTicks.deferGlobalPassPlayerTick(player))) {
+                    if (asyncActive && ParallelProcessor.containsCopperGolemTree(entity)) {
+                        AsyncIslandPlayerTicks.runFencedMainMutation("global copper entity tick", () -> {
+                            if (entity.level() == level && !entity.isRemoved()) consumer.accept(entity);
+                            reindexMovedTree(entity);
+                        });
+                    } else {
+                        consumer.accept(entity);
                     }
-                    consumer.accept(entity);
                 }
             });
+        }
+    }
+
+    /** A golem can still address its old container, and a vehicle can acquire a golem
+     * during its own tick. Keep the native list turn, not just a pickup/put-down method,
+     * exclusive. Do not consume queued regional work owed to a future chunk phase. */
+    private void tickSharedClockEntities(java.util.function.Consumer<Entity> consumer) {
+        RegionScheduler.runSharedClockTurn(() -> level.entityTickList.forEach(entity ->
+                RegionScheduler.runSuccessBodyIfHealthy(() -> {
+                    reindexGlobalEntityIfMoved(entity, ((RegionKeyed) entity).fabrolia$getRegionKey());
+                    // Only this iterator visits roots. A birth before its cut is owed a turn
+                    // even if an early chunk worker stamped the regional dispatch token.
+                    consumer.accept(entity);
+                })));
+    }
+
+    private void reindexGlobalEntityIfMoved(Entity entity, long indexedKey) {
+        if (indexedKey == RegionKeyed.NO_REGION || entity.isRemoved() || entity.level() != level) return;
+        long current = regionizer.grid.keyFor(entity.chunkPosition().pack());
+        if (current != indexedKey) {
+            Region old = regionizer.peekByGridKey(indexedKey);
+            if (old != null) indexMove(entity, old, current);
         }
     }
 
@@ -3252,21 +3337,19 @@ public final class RegionizedServer {
                 }
             }
             long waitStart = System.nanoTime();
-            int stuckReports = 0;
             while (island.submitQueued.get()) {
                 RegionScheduler.throwWorkerFailureIfAny();
-                if (!RegionScheduler.poolRunning()) {
+                if (!RegionScheduler.poolRunning() || !currentThreadHoldsAllClaims()
+                        || !island.unitClaim.get() || island.globalSprintRequest != null
+                        || !(island.globalSprintFenced || globalSprintAdmissionFenced)) {
                     throw new IllegalStateException(
-                            "global sprint lost the unit pool while draining its fence");
+                            "global sprint lost its pool or claim boundary while draining its fence");
                 }
                 IslandCommands.drainMainChunkServices();
                 if (System.nanoTime() - waitStart > 5_000_000_000L) {
                     waitStart = System.nanoTime();
-                    if (++stuckReports >= 3) {
-                        throw new IllegalStateException(
-                                "global sprint ordinary publication did not drain: "
-                                        + IslandCommands.claimForensics(island));
-                    }
+                    LOGGER.warn("[async-islands] global sprint waiting for fenced ordinary publication: {}",
+                            IslandCommands.claimForensics(island));
                 }
                 java.util.concurrent.locks.LockSupport.parkNanos(20_000L);
             }
@@ -3347,8 +3430,12 @@ public final class RegionizedServer {
             // units, never between phases). Local sprint chaining pauses
             // (TemporalControl.prepareUnitCompletion) so counts stay exact. Topology
             // committed above at the tick head = the sprint-tick boundary.
-            if (level.getServer().tickRateManager().isSprinting()) {
+            var manager = level.getServer().tickRateManager();
+            if (manager.runsNormally() && (manager.isFrozen() || manager.isSprinting())) {
                 runGlobalSprintIslandFrame(due);
+                // The strict frame includes the Main bodies its islands handed off.
+                // Settle those before arming global work that needs this dispatch.
+                if (!tickEntities) armGlobalPreEntityWork();
                 AtomicReference<ArrayList<Region>> sprintGlobalsRef =
                         new AtomicReference<>();
                 RegionScheduler.runSuccessBodyIfHealthy(() -> {
@@ -3437,6 +3524,7 @@ public final class RegionizedServer {
             }
             // Global remainder lane: gap regions holding executeAt work and
             // regions born on the global domain since the rebuild above.
+            if (!tickEntities) armGlobalPreEntityWork();
             List<Region> regions = regionizer.snapshotAtEntityDispatchCut(globalDomain);
             ArrayList<Region> globals = new ArrayList<>(Math.max(8, regions.size() / 4));
             for (int i = 0, n = regions.size(); i < n; i++) {
@@ -3489,6 +3577,7 @@ public final class RegionizedServer {
             }
             return dispatchEntityPhase(globalDomain, globals, tickEntities);
         }
+        if (!tickEntities) armGlobalPreEntityWork();
         return dispatchEntityPhase(
                 globalDomain,
                 regionizer.snapshotAtEntityDispatchCut(globalDomain),
@@ -3542,7 +3631,7 @@ public final class RegionizedServer {
                 }
             } else if (roots != null) {
                 for (int i = 0, n = roots.size(); i < n; i++) {
-                    RegionScheduler.enqueueGlobal(roots.get(i));
+                    RegionScheduler.enqueueOwnedGroup(roots.get(i));
                 }
             }
 
@@ -3944,7 +4033,7 @@ public final class RegionizedServer {
                     }
                 }
                 RegionScheduler.throwWorkerFailureIfAny();
-                RegionScheduler.enqueueGlobal(
+                RegionScheduler.enqueueOwnedGroup(
                         cancellableGroupRoot(rest, depth + 1, cf, tickEntities,
                                 rest.get(0).domain.entityDispatchPublication));
             }
@@ -4004,9 +4093,9 @@ public final class RegionizedServer {
         RegionWorkerThread worker = (RegionWorkerThread) Thread.currentThread();
         EpochDomain domain = island.domain;
         var phases = new java.util.LinkedHashMap<Region, IslandEntityRegionPhase>();
-        var visits = new ArrayList<IslandEntityVisit>();
+        var visits = IslandVisits.take(worker);
         Throwable failure = null;
-        try (IslandEntityPhaseScope ignored = IslandEntityPhaseScope.enter(this, island)) {
+        try (visits; IslandEntityPhaseScope serial = IslandEntityPhaseScope.enter(this, island)) {
             RegionScheduler.runSuccessBodyIfHealthy(() -> {
                 List<Entity> snapshot = ((EntityTickListSnapshotAccess) level.entityTickList)
                         .fabrolia$snapshotEntities();
@@ -4026,7 +4115,7 @@ public final class RegionizedServer {
                         phaseByKey.put(key, phase);
                     }
                     if (phase != IslandEntityRegionPhase.FOREIGN) {
-                        visits.add(new IslandEntityVisit(entity, phase));
+                        visits.add(entity, phase);
                     }
                 }
             });
@@ -4035,7 +4124,7 @@ public final class RegionizedServer {
                 // region claims as well as the exclusive enclosing unit claim.
                 for (IslandEntityRegionPhase phase : phases.values()) {
                     RegionScheduler.runSuccessBodyIfHealthy(() -> {
-                        worker.currentRegion = phase.region;
+                        serial.selectRegion(phase.region);
                         if (!phase.region.tryClaimIslandEntityPhase(worker, domain, domain.epoch)) {
                             throw new IllegalStateException(
                                     "joined island entity region still has a claimant");
@@ -4048,15 +4137,15 @@ public final class RegionizedServer {
                 }
                 TickRateManager tickRate = level.tickRateManager();
                 DistanceManager distance = level.getChunkSource().chunkMap.getDistanceManager();
-                for (IslandEntityVisit visit : visits) {
-                    IslandEntityRegionPhase phase = visit.phase;
-                    worker.currentRegion = phase.region;
+                for (int i = 0, n = visits.size; i < n; i++) {
+                    IslandEntityRegionPhase phase = visits.phases[i];
+                    serial.selectRegion(phase.region);
                     long start = System.nanoTime();
-                    tickOne(phase.region, visit.entity, level, tickRate, distance, phase.gate);
+                    tickOne(phase.region, visits.entities[i], level, tickRate, distance, phase.gate);
                     phase.nanos += System.nanoTime() - start;
                 }
                 for (IslandEntityRegionPhase phase : phases.values()) {
-                    worker.currentRegion = phase.region;
+                    serial.selectRegion(phase.region);
                     RegionScheduler.runSuccessBodyIfHealthy(() -> RegionTickHooks.firePost(phase.region));
                     RegionScheduler.commitSuccessIfHealthy(() -> {
                         phase.region.stagedPhaseNanos = phase.nanos;
@@ -4068,7 +4157,7 @@ public final class RegionizedServer {
             } finally {
                 for (IslandEntityRegionPhase phase : phases.values()) {
                     if (!phase.claimed) continue;
-                    worker.currentRegion = phase.region;
+                    serial.selectRegion(phase.region);
                     if (phase.stamped) {
                         try {
                             phase.region.stampRelease("island-entities");
@@ -4087,7 +4176,7 @@ public final class RegionizedServer {
                         failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailureCapped(failure, cleanup));
                     }
                 }
-                worker.currentRegion = null;
+                serial.selectRegion(null);
             }
         } catch (Throwable thrown) {
             failure = RegionScheduler.publishFatalAndSelectWinner(FailStops.mergeFailureCapped(failure, thrown));
@@ -4096,7 +4185,75 @@ public final class RegionizedServer {
         RegionScheduler.throwWorkerFailureIfAny();
     }
 
-    private record IslandEntityVisit(Entity entity, IslandEntityRegionPhase phase) {}
+    /** Ordered (entity, phase at the cut) pairs. Only the idle frame is worker-reachable. */
+    static final class IslandVisits implements AutoCloseable {
+        // Bound idle memory, not gameplay: even an oversized cut grows normally.
+        private static final int MAX_RETAINED = 4096;
+        private static final Entity[] NO_ENTITIES = new Entity[0];
+        private static final IslandEntityRegionPhase[] NO_PHASES = new IslandEntityRegionPhase[0];
+
+        private final RegionWorkerThread worker;
+        private Entity[] entities = NO_ENTITIES;
+        private IslandEntityRegionPhase[] phases = NO_PHASES;
+        // Keep the last in-budget pair while a larger cut is active.
+        private Entity[] retainedEntities;
+        private IslandEntityRegionPhase[] retainedPhases;
+        private int size;
+
+        private IslandVisits(RegionWorkerThread worker) {
+            this.worker = worker;
+        }
+
+        private static IslandVisits take(RegionWorkerThread worker) {
+            IslandVisits visits = worker.idleIslandVisits;
+            if (visits == null) return new IslandVisits(worker);
+            worker.idleIslandVisits = null;
+            return visits;
+        }
+
+        private void add(Entity entity, IslandEntityRegionPhase phase) {
+            if (size == entities.length) {
+                // Keep the old pair intact if either allocation fails.
+                Entity[] grown = grow(entities);
+                IslandEntityRegionPhase[] grownPhases = grow(phases);
+                if (size == MAX_RETAINED) {
+                    retainedEntities = entities;
+                    retainedPhases = phases;
+                }
+                entities = grown;
+                phases = grownPhases;
+            }
+            entities[size] = entity;
+            phases[size] = phase;
+            size++;
+        }
+
+        private static <T> T[] grow(T[] slots) {
+            int n = slots.length;
+            // Don't cross the idle limit just because fastutil grows by half.
+            if (n < MAX_RETAINED && n + (n >> 1) > MAX_RETAINED) {
+                return Arrays.copyOf(slots, MAX_RETAINED);
+            }
+            return ObjectArrays.grow(slots, Math.max(16, n + 1));
+        }
+
+        @Override public void close() {
+            if (retainedEntities != null) {
+                entities = retainedEntities;
+                phases = retainedPhases;
+                retainedEntities = null;
+                retainedPhases = null;
+                size = entities.length;
+            }
+            Arrays.fill(entities, 0, size, null);
+            Arrays.fill(phases, 0, size, null);
+            size = 0;
+            // A nested pass may already have returned a usable frame.
+            if (worker.idleIslandVisits == null || entities.length >= worker.idleIslandVisits.entities.length) {
+                worker.idleIslandVisits = this;
+            }
+        }
+    }
 
     /**
      * Primed TNT and all minecarts depend on Vanilla insertion order across
@@ -4112,7 +4269,8 @@ public final class RegionizedServer {
         for (int i = 0, n = members.size(); i < n; i++) {
             for (Entity e : members.get(i).entities) {
                 if (e instanceof net.minecraft.world.entity.item.PrimedTnt
-                        || e instanceof net.minecraft.world.entity.vehicle.minecart.AbstractMinecart) {
+                        || e instanceof net.minecraft.world.entity.vehicle.minecart.AbstractMinecart
+                        || e instanceof CopperGolem) {
                     return true;
                 }
             }
@@ -4229,12 +4387,13 @@ public final class RegionizedServer {
      *  predates the fence). */
     private boolean fabrolia$admitFencedTick(Entity entity, ServerLevel sourceLevel) {
         ServerChunkCache source = sourceLevel.getChunkSource();
-        long chunkKey = entity.chunkPosition().pack();
         while (source.mainThreadProcessor.pollTask()) {
             // drain queued main-thread chunk work before re-checking admission
         }
-        return entity.level() == sourceLevel && !entity.isRemoved()
-                && source.chunkMap.getDistanceManager().inEntityTickingRange(chunkKey)
+        if (entity.level() != sourceLevel || entity.isRemoved()
+                || sourceLevel.getEntity(entity.getId()) != entity) return false;
+        long chunkKey = entity.chunkPosition().pack();
+        return source.chunkMap.getDistanceManager().inEntityTickingRange(chunkKey)
                 && fabrolia$ownChunkFull(source, chunkKey);
     }
 
@@ -4401,6 +4560,12 @@ public final class RegionizedServer {
             }
         }
 
+        // A moved or newly attached golem can acquire a dependency after this unit's
+        // admission cut. Do not start its vanilla body without the missing authority.
+        if (asyncActive && CopperIslandClaims.treeNeedsMain(this, region.domain.owner, e)) {
+            RegionScheduler.queueMainSyncJoinedTick(e, () -> fabrolia$admitFencedTick(e, lvl), null);
+            return;
+        }
         if (e instanceof net.minecraft.world.entity.projectile.FishingHook hook
                 && hook.getPlayerOwner() instanceof ServerPlayer serverOwner
                 && fabrolia$fishingOwnerIsRemote(region, serverOwner)) {

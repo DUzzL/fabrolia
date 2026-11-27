@@ -542,6 +542,18 @@ public final class AsyncIslandPlayerTicks {
             this.owner = owner;
             this.permit = permit;
         }
+
+        /** Caller holds state. Recheck the source on each use; the session phase is a separate proof. */
+        boolean matchesSourceOwnerLocked(IslandRegistry.PIsland island) {
+            return owner.playerIdentity() == player
+                    && owner.listenerIdentity() == listener
+                    && owner.islandIdentity() == island
+                    && owner.islandId() == island.id
+                    && owner.islandGeneration() == island.gen
+                    && owner.domainIdentity() == island.domain
+                    && owner.kind() == IslandPlayerTurnSession.PlayerKind.REAL
+                    && permit.owner().matchesExactly(owner);
+        }
     }
 
     /** Exact state identity prepared before any lifecycle depth is incremented. */
@@ -1959,14 +1971,7 @@ public final class AsyncIslandPlayerTicks {
                 || pending.player == null || pending.listener == null
                 || pending.owner == null || pending.permit == null
                 || pending.state.listenerGate != pending.listener
-                || pending.owner.playerIdentity() != pending.player
-                || pending.owner.listenerIdentity() != pending.listener
-                || pending.owner.islandIdentity() != island
-                || pending.owner.islandId() != island.id
-                || pending.owner.islandGeneration() != island.gen
-                || pending.owner.domainIdentity() != island.domain
-                || pending.owner.kind() != IslandPlayerTurnSession.PlayerKind.REAL
-                || !pending.permit.owner().matchesExactly(pending.owner)
+                || !pending.matchesSourceOwnerLocked(island)
                 || !pending.state.session.isAwaitingRealLate(pending.permit)) {
             return false;
         }

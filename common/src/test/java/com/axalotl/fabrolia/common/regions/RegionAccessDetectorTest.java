@@ -109,7 +109,7 @@ class RegionAccessDetectorTest {
                     else if (kind == HolderKind.OTHER_THREAD) setHolder(target, other);
                     long before = unsafe.get();
                     // A block of region (8, 0) written while the worker ticks region (0, 0).
-                    RegionAccessDetector.onBlockWrite(new BlockPos(8 * 16, 64, 0));
+                    RegionAccessDetector.onBlockWrite(level, new BlockPos(8 * 16, 64, 0));
                     delta[0] = unsafe.get() - before;
                 } catch (Throwable thrown) {
                     failure.set(thrown);

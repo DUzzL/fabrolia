@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.lithium;
 
+import com.axalotl.fabrolia.common.regions.DiskSectionAttachments;
 import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import net.caffeinemc.mods.lithium.common.entity.PositionedEntityTrackingSection;
 import net.caffeinemc.mods.lithium.common.tracking.entity.EntityMovementTrackerSection;
@@ -65,7 +66,8 @@ public abstract class FabroliaLithiumEntitySectionMixin<T extends EntityAccess>
             listener.onSectionLeftRange(this);
         }
         if (this.isEmpty()) {
-            sectionedEntityCache.remove(this.lithium$getPos());
+            ((DiskSectionAttachments.Access) sectionedEntityCache).fabrolia$diskSectionAttachments()
+                    .removeIfEmpty(this.lithium$getPos(), (EntitySection<?>) (Object) this);
         }
     }
 

@@ -7,6 +7,7 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectLinkedOpenHashMap;
 import net.minecraft.SharedConstants;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.animal.golem.CopperGolem;
 import net.minecraft.world.entity.item.PrimedTnt;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.entity.EntityTickList;
@@ -87,6 +88,32 @@ class EntityPhaseMembershipParityTest {
         assertEquals(ids(vanilla), ids(candidate.snapshot()));
         assertEquals(List.of(10, 20, 30), ids(candidate.snapshot()),
                 "the next phase must admit the birth; exclusion must not become permanent");
+    }
+
+    @Test
+    void flatCallbacksKeepVanillasIterationSlotAndBirthCutInBothVenues() throws Exception {
+        for (boolean serial : List.of(false, true)) {
+            Fixture candidate = new Fixture();
+            Entity first = serial ? (Entity) unsafe().allocateInstance(CopperGolem.class) : entity(10);
+            first.setId(10);
+            Entity second = entity(20), birth = entity(30);
+            candidate.add(first);
+            candidate.add(second);
+            List<Integer> seen = new ArrayList<>();
+            Consumer<Entity> visit = e -> {
+                seen.add(e.getId());
+                if (e == first) {
+                    assertThrows(UnsupportedOperationException.class,
+                            () -> candidate.forEach(unexpected -> fail("nested forEach entered")));
+                    assertDoesNotThrow(() -> candidate.add(birth));
+                }
+            };
+            Consumer<Entity> wrong = e -> fail("wrong venue for entity " + e.getId());
+            assertEquals(serial, candidate.list.fabrolia$visitFlatEntities(
+                    serial ? wrong : visit, serial ? visit : wrong));
+            assertEquals(List.of(10, 20), seen);
+            assertEquals(List.of(10, 20, 30), ids(candidate.snapshot()));
+        }
     }
 
     @Test
@@ -227,6 +254,9 @@ class EntityPhaseMembershipParityTest {
 
     private static Entity entity(int id) throws Exception {
         PrimedTnt entity = (PrimedTnt) unsafe().allocateInstance(PrimedTnt.class);
+        var passengers = Entity.class.getDeclaredField("passengers");
+        passengers.setAccessible(true);
+        passengers.set(entity, com.google.common.collect.ImmutableList.of());
         entity.setId(id);
         return entity;
     }

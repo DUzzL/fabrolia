@@ -212,8 +212,7 @@ class Fixture:
         self.process = subprocess.Popen(
             [self.args.java, '-Xms512M', '-Xmx' + self.args.heap,
              '-XX:ActiveProcessorCount=4']
-            # Async islands are always on; the synchronous control is a JVM option.
-            + (['-Dfabrolia.syncMode=true'] if self.args.mode == 'sync' else [])
+            + ['-Dfabrolia.syncMode=' + ('true' if self.args.mode == 'sync' else 'false')]
             + ['-jar', self.args.launcher, 'nogui'],
             cwd=self.server, stdin=subprocess.PIPE, stdout=self.log, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))

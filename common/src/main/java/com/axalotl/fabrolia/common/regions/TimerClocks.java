@@ -25,6 +25,7 @@ import com.axalotl.fabrolia.common.mixin.timer.UseBonemealTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.VillagerMakeLoveTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.VillagerTimerAccessor;
 import com.axalotl.fabrolia.common.mixin.timer.WorkAtPoiTimerAccessor;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import it.unimi.dsi.fastutil.longs.Long2LongMap;
 import it.unimi.dsi.fastutil.objects.Object2LongMap;
 import java.util.List;
@@ -54,6 +55,7 @@ import net.minecraft.world.entity.animal.golem.CopperGolem;
 import net.minecraft.world.entity.npc.villager.Villager;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.block.entity.trialspawner.TrialSpawner;
+import net.minecraft.world.level.storage.ValueOutput;
 
 /**
  * Clock-domain ownership of ABSOLUTE TIMERS in entities and block entities
@@ -219,7 +221,7 @@ public final class TimerClocks {
      * island runs ahead whenever W stops or slows while it keeps ticking (a Main
      * stall, the empty-server pause, an island sprint or a rate above 20); a load
      * reads the written values as W, so a save must write W in both directions.
-     * Callers shift forward by {@code d} with {@code clamp} (a timer whose W
+     * The save shifts forward by {@code d} with {@code clamp} (a timer whose W
      * value would fall on or below its sentinel is written just above it, still
      * expired, never as "unset", "no anger" or "waxed") and back by {@code -d}
      * without it. Exact for every timer whose W value is above its sentinel.
@@ -236,6 +238,20 @@ public final class TimerClocks {
     /** {@link #toWallForSave(Stamped, ServerLevel)} for a basis and the raw wall counter. */
     static long toWallForSave(IslandRegistry.PIsland basis, long wall) {
         return basis == null ? 0L : wall - now(basis, wall);
+    }
+
+    /** The owner (or claim holder) writes in W without changing the live clock basis. */
+    public static void saveInWallTime(Stamped timers, long delta, ValueOutput output, Operation<Void> original) {
+        if (delta == 0L) {
+            original.call(output);
+            return;
+        }
+        timers.fabrolia$shiftTimers(delta, true);
+        try {
+            original.call(output);
+        } finally {
+            timers.fabrolia$shiftTimers(-delta, false);
+        }
     }
 
     /**

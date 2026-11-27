@@ -1,5 +1,6 @@
 package com.axalotl.fabrolia.common.mixin.server;
 
+import com.axalotl.fabrolia.common.regions.DiskSectionAttachments;
 import com.axalotl.fabrolia.common.regions.IslandCommands;
 import com.axalotl.fabrolia.common.mixin.server.PersistentEntityUnloadRetryMixin.FabroliaStatusTransitions.Pass;
 import com.axalotl.fabrolia.common.regions.IslandRegistry;
@@ -10,6 +11,8 @@ import net.minecraft.world.level.entity.ChunkEntities;
 import net.minecraft.world.level.entity.EntityAccess;
 import net.minecraft.world.level.entity.EntityInLevelCallback;
 import net.minecraft.world.level.entity.EntityPersistentStorage;
+import net.minecraft.world.level.entity.EntitySection;
+import net.minecraft.world.level.entity.EntitySectionStorage;
 import net.minecraft.world.level.entity.LevelCallback;
 import net.minecraft.world.level.entity.PersistentEntitySectionManager;
 import net.minecraft.world.level.entity.Visibility;
@@ -486,6 +489,217 @@ final class EntityStatusOwnerTransactionTest {
         statuses.cancel();
         statuses.drain((key, body) -> { body.run(); return true; }, Pass.FLUSH);
         assertEquals(List.of(), effects);
+    }
+
+    @Test
+    void diskLookupKeepsItsExactReceiverWhenWorkerRemovesTheLastMember() throws Exception {
+        var storage = new EntitySectionStorage<>(TestEntity.class, ignored -> Visibility.TICKING);
+        var guard = new DiskSectionAttachments(storage);
+        long key = 17;
+        TestEntity disk = new TestEntity(1, 16), last = new TestEntity(2, 16);
+        var existing = storage.getOrCreateSection(key);
+        existing.add(last);
+        try (var pin = new DiskSectionAttachments.Pin(disk)) {
+            guard.reserve(pin, key);
+            var receiver = storage.getOrCreateSection(key);
+            pin.bind(receiver);
+            var exit = new java.util.concurrent.FutureTask<>(() -> {
+                assertTrue(existing.remove(last));
+                assertTrue(existing.isEmpty());
+                guard.removeIfEmpty(key, existing);
+                return null;
+            });
+            Thread.ofVirtual().start(exit);
+            exit.get(3, TimeUnit.SECONDS); // the worker returns before disk add, not blocked behind it
+            assertSame(receiver, storage.getSection(key));
+            receiver.add(disk);
+        }
+        assertEquals(List.of(disk), storage.getSection(key).getEntities().toList());
+        assertTrue(existing.remove(disk));
+        guard.removeIfEmpty(key, existing);
+        assertNull(storage.getSection(key), "no pin survives the admission");
+    }
+
+    @Test
+    void failedDiskAddPrunesOnlyOnRequestAndNeverUndoesAPartialInsert() {
+        var storage = new EntitySectionStorage<>(TestEntity.class, ignored -> Visibility.TICKING);
+        var guard = new DiskSectionAttachments(storage);
+        long key = 23;
+        TestEntity disk = new TestEntity(1, 16);
+        Error primary = new Error("native add failure");
+        for (boolean prune : List.of(false, true)) {
+            for (boolean inserted : List.of(false, true)) {
+                var receiver = storage.getOrCreateSection(key);
+                assertSame(primary, assertThrows(Error.class, () -> {
+                    try (var outer = new DiskSectionAttachments.Pin(disk);
+                         var inner = new DiskSectionAttachments.Pin(disk)) {
+                        guard.reserve(outer, key);
+                        outer.bind(receiver);
+                        guard.reserve(inner, key);
+                        if (prune) guard.removeIfEmpty(key, receiver); // even before lookup returns
+                        inner.bind(receiver);
+                        inner.close();
+                        assertSame(receiver, storage.getSection(key), "outer pin still holds");
+                        if (inserted) receiver.add(disk);
+                        throw primary;
+                    }
+                }));
+                if (prune && !inserted) assertNull(storage.getSection(key));
+                else {
+                    assertSame(receiver, storage.getSection(key));
+                    assertEquals(inserted ? List.of(disk) : List.of(), receiver.getEntities().toList());
+                }
+                storage.remove(key);
+            }
+        }
+    }
+
+    @Test
+    void staleEmptyObservationCannotDetachAReplacementOrACompletedDiskAdd() {
+        long key = 31;
+        TestEntity disk = new TestEntity(1, 16);
+        // Interpose at the virtual isEmpty(), exactly where a modded predicate could reenter.
+        var storage = new EntitySectionStorage<>(TestEntity.class, ignored -> Visibility.TICKING) {
+            EntitySection<TestEntity> current;
+            @Override public EntitySection<TestEntity> getSection(long pos) { return current; }
+            @Override public void remove(long pos) { current = null; }
+        };
+        var guard = new DiskSectionAttachments(storage);
+        storage.current = new EntitySection<>(TestEntity.class, Visibility.TICKING) {
+            @Override public boolean isEmpty() {
+                assertFalse(Thread.holdsLock(guard));
+                if (!super.isEmpty()) return false;
+                try (var pin = new DiskSectionAttachments.Pin(disk)) {
+                    guard.reserve(pin, key);
+                    pin.bind(this);
+                    add(disk);
+                }
+                return true; // the pre-attachment observation
+            }
+        };
+        guard.removeIfEmpty(key, storage.current);
+        assertEquals(List.of(disk), storage.current.getEntities().toList());
+        var replacement = new EntitySection<>(TestEntity.class, Visibility.TICKING);
+        storage.current = new EntitySection<>(TestEntity.class, Visibility.TICKING) {
+            @Override public boolean isEmpty() { storage.current = replacement; return true; }
+        };
+        guard.removeIfEmpty(key, storage.current);
+        assertSame(replacement, storage.current);
+    }
+
+    @Test
+    void finalPruneRespectsListenerEmptinessAndUnrelatedDiskWorkCannotInvalidateIt() {
+        long key = 41;
+        TestEntity disk = new TestEntity(1, 16);
+        var storage = new EntitySectionStorage<>(TestEntity.class, ignored -> Visibility.TICKING) {
+            EntitySection<TestEntity> current;
+            @Override public EntitySection<TestEntity> getSection(long pos) { return current; }
+            @Override public void remove(long pos) { current = null; }
+        };
+        var guard = new DiskSectionAttachments(storage);
+        var section = new EntitySection<>(TestEntity.class, Visibility.TICKING) {
+            boolean listener;
+            int checks;
+            @Override public boolean isEmpty() {
+                assertFalse(Thread.holdsLock(guard));
+                assertTrue(++checks <= 2, "unrelated loads must not restart the emptiness query");
+                try (var unrelated = new DiskSectionAttachments.Pin(disk)) {
+                    guard.reserve(unrelated, key + 1);
+                }
+                return !listener && super.isEmpty();
+            }
+        };
+        storage.current = section;
+        try (var pin = new DiskSectionAttachments.Pin(disk)) {
+            guard.reserve(pin, key);
+            pin.bind(section);
+            guard.removeIfEmpty(key, section); // the last listener requested a native prune
+            section.listener = true;         // another listener entered before pin release
+        }
+        assertSame(section, storage.current);
+        section.listener = false;
+        guard.removeIfEmpty(key, section);
+        assertNull(storage.current);
+        assertEquals(2, section.checks);
+    }
+
+    @Test
+    void conditionalCallSiteRunsOnceOnItsCallerEvenWhenPhysicalRetirementIsDeferred() throws Exception {
+        class Storage extends EntitySectionStorage<TestEntity> {
+            final DiskSectionAttachments guard = new DiskSectionAttachments(this);
+            int removals;
+            Storage() { super(TestEntity.class, ignored -> Visibility.TICKING); }
+            @Override public void remove(long key) {
+                guard.remove(key, actual -> { removals++; super.remove(actual); });
+            }
+        }
+        var storage = new Storage();
+        long key = 43;
+        var section = storage.getOrCreateSection(key);
+        List<Thread> callerHooks = new ArrayList<>();
+        var pin = new DiskSectionAttachments.Pin(new TestEntity(1, 16));
+        storage.guard.reserve(pin, key);
+        pin.bind(section);
+        var attempt = new java.util.concurrent.FutureTask<>(() -> {
+            storage.guard.requestRemoval(key, section, () -> {
+                callerHooks.add(Thread.currentThread());
+                storage.remove(key);
+            });
+            return null;
+        });
+        Thread worker = Thread.ofVirtual().start(attempt);
+        try {
+            attempt.get(3, TimeUnit.SECONDS);
+            assertEquals(List.of(worker), callerHooks);
+            assertEquals(0, storage.removals);
+        } finally {
+            pin.close();
+        }
+        assertEquals(1, storage.removals);
+        assertNull(storage.getSection(key));
+        assertEquals(List.of(worker), callerHooks, "releasing thread must never replay the call-site operation");
+        var next = storage.getOrCreateSection(key);
+        storage.guard.requestRemoval(key, next, () -> { callerHooks.add(Thread.currentThread()); storage.remove(key); });
+        assertEquals(2, storage.removals);
+        assertEquals(List.of(worker, Thread.currentThread()), callerHooks);
+    }
+
+    @Test
+    void failingAddAndDeferredPrunePreserveTheOriginalThrowableEvenWhenIdentical() throws Exception {
+        var probe = new StatusProbe();
+        var slot = new ThreadLocal<DiskSectionAttachments.Pin>();
+        var pinField = PersistentEntityUnloadRetryMixin.class.getDeclaredField("fabrolia$diskPin");
+        pinField.setAccessible(true);
+        pinField.set(probe, slot);
+        var finish = PersistentEntityUnloadRetryMixin.class.getDeclaredMethod("fabrolia$finishDiskSectionAdd",
+                EntitySection.class, EntityAccess.class, com.llamalad7.mixinextras.injector.wrapoperation.Operation.class,
+                EntityAccess.class, boolean.class);
+        finish.setAccessible(true);
+        var disk = new TestEntity(1, 16);
+        for (boolean identical : List.of(false, true)) {
+            Error primary = new Error("add threw");
+            Error cleanup = identical ? primary : new Error("removal threw");
+            var storage = new EntitySectionStorage<>(TestEntity.class, ignored -> Visibility.TICKING) {
+                @Override public void remove(long key) { throw cleanup; }
+            };
+            var guard = new DiskSectionAttachments(storage);
+            var section = storage.getOrCreateSection(47);
+            var pin = new DiskSectionAttachments.Pin(disk);
+            slot.set(pin);
+            guard.reserve(pin, 47);
+            pin.bind(section);
+            guard.removeIfEmpty(47, section);
+            com.llamalad7.mixinextras.injector.wrapoperation.Operation<Void> throwing = args -> { throw primary; };
+            try {
+                var thrown = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                        () -> finish.invoke(probe, section, disk, throwing, disk, true));
+                assertSame(primary, thrown.getCause());
+                assertEquals(identical ? List.of() : List.of(cleanup), List.of(primary.getSuppressed()));
+            } finally {
+                slot.remove();
+            }
+            assertDoesNotThrow(() -> pin.close(), "the disk consumer's outer cleanup cannot replay the prune");
+        }
     }
 
     private static void await(CountDownLatch latch) {

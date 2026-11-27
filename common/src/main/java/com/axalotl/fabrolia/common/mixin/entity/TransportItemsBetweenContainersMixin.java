@@ -1,5 +1,8 @@
 package com.axalotl.fabrolia.common.mixin.entity;
 
+import com.axalotl.fabrolia.common.regions.CopperContainerFootprint;
+import com.axalotl.fabrolia.common.regions.FabroliaLocks;
+import com.axalotl.fabrolia.common.utils.ContainerQueryOwners;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.core.BlockPos;
@@ -8,20 +11,21 @@ import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.behavior.TransportItemsBetweenContainers;
 import net.minecraft.world.level.Level;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import com.axalotl.fabrolia.common.regions.FabroliaLocks;
-
 @Mixin(TransportItemsBetweenContainers.class)
-public class TransportItemsBetweenContainersMixin {
+public class TransportItemsBetweenContainersMixin implements CopperContainerFootprint.RetainedTarget {
+
+    @Shadow private TransportItemsBetweenContainers.TransportItemTarget target;
+
+    @Override
+    public BlockPos fabrolia$retainedCopperContainerPos() {
+        return target == null ? null : target.pos().immutable();
+    }
 
     @Unique
     private static final Object lock = new Object();
-    @Unique
-    private static final Map<BlockPos, AtomicBoolean> containerFlags = new ConcurrentHashMap<>();
 
     @WrapMethod(method = "pickUpItems")
     private void pickUpItems(PathfinderMob body, Container container, Operation<Void> original) {
@@ -43,18 +47,6 @@ public class TransportItemsBetweenContainersMixin {
             Level level,
             Operation<Boolean> original
     ) {
-        BlockPos pos = target.pos();
-        AtomicBoolean flag = containerFlags.computeIfAbsent(pos, _ -> new AtomicBoolean(false));
-
-        if (!flag.compareAndSet(false, true)) {
-            return true;
-        }
-
-        try {
-            return original.call(target, level);
-        } finally {
-            flag.set(false);
-            containerFlags.remove(pos, flag);
-        }
+        return ((ContainerQueryOwners.Access) level).fabrolia$containerQueryOwners().read(target, level, original);
     }
 }

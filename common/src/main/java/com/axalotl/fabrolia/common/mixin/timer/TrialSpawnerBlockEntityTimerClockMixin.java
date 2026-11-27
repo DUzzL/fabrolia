@@ -37,17 +37,6 @@ public abstract class TrialSpawnerBlockEntityTimerClockMixin {
         TrialSpawnerBlockEntity self = (TrialSpawnerBlockEntity) (Object) this;
         TimerClocks.Stamped spawner = (TimerClocks.Stamped) (Object) self.getTrialSpawner();
         long d = self.getLevel() instanceof ServerLevel level ? TimerClocks.toWallForSave(spawner, level) : 0L;
-        if (d == 0L) {
-            original.call(output);
-            return;
-        }
-        // Negative on an island ahead of W; the forward half clamps
-        // (TimerClocks.toWallForSave), the restore does not.
-        spawner.fabrolia$shiftTimers(d, true);
-        try {
-            original.call(output);
-        } finally {
-            spawner.fabrolia$shiftTimers(-d, false);
-        }
+        TimerClocks.saveInWallTime(spawner, d, output, original);
     }
 }

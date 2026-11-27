@@ -16,12 +16,14 @@ import org.junit.jupiter.api.parallel.Isolated;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -59,6 +61,50 @@ final class PlayerTurnOwnershipTest {
             fixture.holdAllClaims();
             assertTrue(PlayerTurnOwnership.currentThreadOwns(fixture.player),
                     "under the held fence Main owns every player");
+        }
+    }
+
+    @Test
+    void onlyTheExactSourceCanDeferFlushOrHandOffAfterPhysics() throws Exception {
+        try (Fixture f = new Fixture()) {
+            var island = f.island;
+            var different = new IslandRegistry.PIsland(island.id, 0L);
+            var real = IslandPlayerTurnSession.PlayerKind.REAL;
+            var exact = new IslandPlayerTurnSession.OwnerStamp(f.player, f.listener,
+                    island, island.id, island.gen, island.domain, 0L, 1L, real);
+            for (var stamp : List.of(exact,
+                    new IslandPlayerTurnSession.OwnerStamp(new Object(), f.listener, island, island.id, island.gen, island.domain, 0L, 1L, real),
+                    new IslandPlayerTurnSession.OwnerStamp(f.player, new Object(), island, island.id, island.gen, island.domain, 0L, 1L, real),
+                    new IslandPlayerTurnSession.OwnerStamp(f.player, f.listener, different, island.id, island.gen, island.domain, 0L, 1L, real),
+                    new IslandPlayerTurnSession.OwnerStamp(f.player, f.listener, island, island.id + 1, island.gen, island.domain, 0L, 1L, real),
+                    new IslandPlayerTurnSession.OwnerStamp(f.player, f.listener, island, island.id, island.gen + 1, island.domain, 0L, 1L, real),
+                    new IslandPlayerTurnSession.OwnerStamp(f.player, f.listener, island, island.id, island.gen, different.domain, 0L, 1L, real))) {
+                var state = new AsyncIslandPlayerTicks.PlayerState();
+                state.listenerGate = f.listener;
+                f.listener.binding.set(state);
+                assertTrue(state.session.attach(stamp));
+                var permit = state.session.tryReserveEarly(stamp, 1L).orElseThrow();
+                assertTrue(state.session.enterIslandBody(permit));
+                assertTrue(state.session.completeRealEarly(permit));
+                var pending = new AsyncIslandPlayerTicks.PendingLate(state, f.player, f.listener, stamp, permit);
+                synchronized (state) {
+                    assertEquals(stamp == exact,
+                            AsyncIslandPlayerTicks.pendingRealPlayerBeforeLateInvariantLocked(pending, island));
+                    assertTrue(state.session.beginRealLate(permit));
+                    assertFalse(AsyncIslandPlayerTicks.pendingRealPlayerBeforeLateInvariantLocked(pending, island));
+                    state.hardLifecycleExitPending = true;
+                    assertEquals(stamp == exact ? IslandEntityTracking.PostPhysicsResult.HANDOFF
+                                    : IslandEntityTracking.PostPhysicsResult.INVALID,
+                            IslandEntityTracking.publishPendingRealPlayerAfterPhysics(pending, island));
+                    if (stamp == exact) {
+                        var replacement = new IslandPlayerTurnSession.OwnerStamp(f.player, f.listener,
+                                island, island.id, island.gen, island.domain, 0L, 2L, real);
+                        var stale = new AsyncIslandPlayerTicks.PendingLate(state, f.player, f.listener, replacement, permit);
+                        assertEquals(IslandEntityTracking.PostPhysicsResult.INVALID,
+                                IslandEntityTracking.publishPendingRealPlayerAfterPhysics(stale, island));
+                    }
+                }
+            }
         }
     }
 

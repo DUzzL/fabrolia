@@ -4,8 +4,6 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -140,47 +138,5 @@ class PassiveConnectionLoopsTest {
                 channel.finishAndReleaseAll();
             }
         });
-    }
-
-    @Test
-    void everyMainFixedPointServicesPassiveLoops() throws Exception {
-        String scheduler = Files.readString(Path.of(
-                "src/main/java/com/axalotl/fabrolia/common/regions/RegionScheduler.java"));
-        String pause = section(scheduler,
-                "private static boolean pauseExactPlayerTurn(boolean retainQueuedRegions)",
-                "public static void resumeExactPlayerTurn()");
-        assertOrdered(pause, "PassiveConnectionLoops.runQueued();", "throwWorkerFailureIfAny();");
-        String stop = section(scheduler, "Runnable drainProgress = () -> {",
-                "stoppingPool.stop(drainProgress);");
-        assertOrdered(stop, "PassiveConnectionLoops.runQueued();",
-                "AdvancementBuffer.drainShutdownPassIfPending();");
-        assertTrue(section(scheduler, "static Throwable cancelFailedGenerationQueues(",
-                "static boolean failedGenerationQueuesEmpty(")
-                .contains("PassiveConnectionLoops.runQueued();"));
-        assertTrue(section(scheduler, "static boolean failedGenerationQueuesEmpty(",
-                "} catch (Throwable cleanup) {")
-                .contains("!PassiveConnectionLoops.isEmpty()"));
-
-        String connection = Files.readString(Path.of(
-                "src/main/java/com/axalotl/fabrolia/common/mixin/network/ConnectionIslandPlayerMixin.java"));
-        String enqueue = section(connection,
-                "public void fabrolia$enqueueEventLoopTask(Runnable task)",
-                "private void fabrolia$orderedOffLoopSend(");
-        assertOrdered(enqueue, "RegionScheduler.executeTrackedExternal(", "} finally {");
-        assertOrdered(enqueue, "} finally {", "PassiveConnectionLoops.noteQueued(current);");
-    }
-
-    private static String section(String source, String start, String end) {
-        int from = source.indexOf(start);
-        assertTrue(from >= 0, "missing " + start);
-        int to = source.indexOf(end, from + start.length());
-        assertTrue(to > from, "missing " + end + " after " + start);
-        return source.substring(from, to);
-    }
-
-    private static void assertOrdered(String section, String first, String second) {
-        int a = section.indexOf(first);
-        int b = section.indexOf(second, Math.max(a, 0));
-        assertTrue(a >= 0 && b > a, first + " must precede " + second);
     }
 }

@@ -1,12 +1,19 @@
 package com.axalotl.fabrolia.common.regions;
 
 import com.axalotl.fabrolia.common.ParallelProcessor;
+import com.axalotl.fabrolia.common.utils.SpawnFutureTaker;
+import com.google.common.collect.ImmutableList;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.SharedConstants;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.animal.golem.CopperGolem;
+import net.minecraft.world.entity.decoration.ItemFrame;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -16,6 +23,9 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -415,9 +425,122 @@ class IslandBucketsTest {
         }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"false,true", "true,true", "false,false", "true,false"})
+    void copperAndItsFifoSuffixWaitForSuccessfulGlobalChunkJoin(boolean failChunk, boolean explicitFence) throws Exception {
+        try (Fixture f = new Fixture()) {
+            ChunkWork chunks = (ChunkWork) f.unsafe.allocateInstance(ChunkWork.class);
+            f.level.chunks = chunks;
+            chunks.started = new CountDownLatch(1);
+            chunks.release = new CountDownLatch(1);
+            chunks.failure = failChunk ? new IllegalStateException("global chunk callback") : null;
+            ProbeGolem golem = (ProbeGolem) f.unsafe.allocateInstance(ProbeGolem.class);
+            golem.lease = new EntityTickLease();
+            field(Entity.class, "level").set(golem, f.level);
+            field(Entity.class, "passengers").set(golem, ImmutableList.of());
+            Entity other = (Entity) f.unsafe.allocateInstance(ItemFrame.class);
+            field(Entity.class, "level").set(other, f.level);
+            field(Entity.class, "passengers").set(other, ImmutableList.of());
+            field(Entity.class, "chunkPosition").set(other, ChunkPos.ZERO);
+            field(IslandRegistry.class, "identitySnapshot").set(f.runtime.islandRegistry, List.of(f.idle, f.busy));
+            var domains = new Long2ObjectOpenHashMap<EpochDomain>();
+            domains.put(0L, f.idle.domain);
+            field(RegionizedServer.class, "cellDomainSnapshot").set(f.runtime, domains);
+            List<String> events = new ArrayList<>();
+            f.level.tick = entity -> {
+                assertSame(golem, entity);
+                assertTrue(RegionScheduler.globalWorkJoined(f.level));
+                assertSame(Thread.currentThread(), f.idle.claimHolder);
+                if (explicitFence) assertSame(Thread.currentThread(), f.busy.claimHolder);
+                else assertNull(f.busy.claimHolder, "a global join is not an all-island fence");
+                events.add("copper tick");
+            };
+            f.runtime.armGlobalPreEntityWork();
+            try {
+                assertTrue(chunks.started.await(2, TimeUnit.SECONDS));
+                RegionScheduler.queueMainSyncGuardedTick(other, () -> false, () -> {
+                    events.add("prefix");
+                    assertFalse(RegionScheduler.drainReadyMainSyncTicks(), "nested pump overtook copper");
+                });
+                if (explicitFence) RegionScheduler.queueMainSyncJoinedTick(golem, () -> true, () -> events.add("copper tail"));
+                else RegionScheduler.queueMainSyncTick(golem);
+                RegionScheduler.queueMainSyncGuardedTick(other, () -> false, () -> events.add("suffix"));
+                assertTrue(RegionScheduler.drainReadyMainSyncTicks());
+                assertFalse(RegionScheduler.drainMainSyncTicks(), "COMPLETE is not proof of a global join");
+                assertEquals(List.of("prefix"), events);
+            } finally {
+                chunks.release.countDown();
+            }
+            // Even a terminal callback is not a successful join. The group and
+            // spawn receipts are healthy; only this block callback may fail.
+            chunks.blocks.handle((ok, failure) -> null).get(2, TimeUnit.SECONDS);
+            assertFalse(RegionScheduler.drainReadyMainSyncTicks());
+            CompletableFuture<Void> group = CompletableFuture.completedFuture(null);
+            RegionWorkerPool pool = (RegionWorkerPool) field(RegionScheduler.class, "pool").get(null);
+            if (failChunk) {
+                assertSame(chunks.failure, assertThrows(IllegalStateException.class,
+                        () -> f.runtime.joinGlobalPreEntityWork(group)));
+                assertSame(chunks.failure, RegionScheduler.cancelFailedGenerationQueues(pool, chunks.failure));
+                assertFalse(RegionScheduler.globalWorkJoined(f.level));
+                assertEquals(List.of("prefix"), events);
+            } else {
+                f.runtime.joinGlobalPreEntityWork(group);
+                assertTrue(RegionScheduler.drainReadyMainSyncTicks());
+                assertEquals(explicitFence ? List.of("prefix", "copper tick", "copper tail", "suffix")
+                        : List.of("prefix", "copper tick", "suffix"), events);
+            }
+            assertFalse(RegionScheduler.drainReadyMainSyncTicks(), "no late or repeated turn");
+            assertEquals(0L, field(RegionWorkerPool.class, "externalObligations").getLong(pool));
+        }
+    }
+
+    private static final class ChunkWork extends ServerChunkCache implements SpawnFutureTaker {
+        CountDownLatch started, release;
+        RuntimeException failure;
+        CompletableFuture<Void> blocks;
+        private ChunkWork() { super(null, null, null, null, Runnable::run, null, 0, 0, false, null); }
+        @Override public void fabrolia$armDeferredChunkWork() {
+            blocks = CompletableFuture.runAsync(() -> {
+                started.countDown();
+                try {
+                    assertTrue(release.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    throw new AssertionError(e);
+                }
+                if (failure != null) throw failure;
+            }, Thread.ofVirtual()::start);
+        }
+        @Override public CompletableFuture<Void> fabrolia$takeSpawnFuture() {
+            return CompletableFuture.completedFuture(null);
+        }
+        @Override public CompletableFuture<Void> fabrolia$takeBlockTicksFuture() {
+            var receipt = blocks;
+            blocks = null;
+            return receipt;
+        }
+    }
+
+    private static final class ProbeGolem extends CopperGolem implements ParallelProcessor.TickGuard, RegionKeyed {
+        EntityTickLease lease;
+        private ProbeGolem() { super(null, null); }
+        @Override public void checkDespawn() {}
+        @Override public ChunkPos chunkPosition() { return ChunkPos.ZERO; }
+        @Override public EntityTickLease fabrolia$tickLease() { return lease; }
+        @Override public byte fabrolia$getSyncCache() { return 0; }
+        @Override public void fabrolia$setSyncCache(byte value) {}
+        @Override public long fabrolia$getRegionKey() { return NO_REGION; }
+        @Override public void fabrolia$setRegionKey(long key) { fail("unindexed probe"); }
+        @Override public boolean fabrolia$tryMarkRegionTick(long token) { throw new AssertionError(); }
+        @Override public boolean fabrolia$carryRegionTickMark(long from, long to) { throw new AssertionError(); }
+    }
+
     private static final class TestLevel extends ServerLevel {
+        ChunkWork chunks;
+        java.util.function.Consumer<Entity> tick;
         private TestLevel() { super(null, null, null, null, null, null, false, 0L, null, false); }
         @Override public ResourceKey<Level> dimension() { return Level.OVERWORLD; }
+        @Override public ServerChunkCache getChunkSource() { return chunks; }
+        @Override public void tickNonPassenger(Entity entity) { tick.accept(entity); }
     }
 
     private static final class Fixture implements AutoCloseable {

@@ -44,6 +44,18 @@ public final class TemporalControl {
     /** Global island target (nanos per logical tick). Vanilla /tick rate sets it. */
     public static volatile long globalIslandTargetNanos = 50_000_000L;
 
+    /** Main publishes a single control bit to the pacer and unit workers. */
+    public interface ManualTickMode {
+        boolean fabrolia$manuallyDriven();
+    }
+
+    static boolean manuallyDriven(net.minecraft.server.MinecraftServer server) {
+        if (server == null) return false;
+        var manager = server.tickRateManager();
+        if (manager instanceof ManualTickMode mode) return mode.fabrolia$manuallyDriven();
+        return manager.isFrozen() || manager.isSprinting(); // untransformed vanilla manager
+    }
+
     public static final class Session {
         public final long id = SESSION_IDS.incrementAndGet();
         /** Membership snapshot — treat as IMMUTABLE after the session is
@@ -821,8 +833,7 @@ public final class TemporalControl {
             }
 
             var server = RegionScheduler.getServer();
-            if (server != null && (!server.tickRateManager().runsNormally()
-                    || server.tickRateManager().isSprinting())) {
+            if (manuallyDriven(server) || server != null && !server.tickRateManager().runsNormally()) {
                 finishAndReseed(e, CONTROL_RETRY_NANOS);
                 return null;
             }

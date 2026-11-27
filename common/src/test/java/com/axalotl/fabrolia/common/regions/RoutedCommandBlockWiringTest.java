@@ -35,19 +35,6 @@ class RoutedCommandBlockWiringTest {
     }
 
     @Test
-    void routedDrainStaysAScheduledTickTaskSkippedOnceDone() throws Exception {
-        // f068a2e: MinecraftServer.execute runs inline on a stopped server, which
-        // drained on the routing region worker during shutdown.
-        String commands = source("common/regions/IslandCommands.java");
-        String park = section(commands, "private static boolean routeAndPark",
-                "private static boolean parkCommandWaiterForGlobalFence");
-        assertTrue(park.contains("sv.schedule(new net.minecraft.server.TickTask(sv.getTickCount(), () -> {")
-                        && park.contains("if (!fut.isDone()) drainRoutedBatch();"),
-                "the routed drain nudge is a tick task skipped once its receipt is done");
-        assertFalse(park.contains("sv.execute("), "never execute the routed drain inline");
-    }
-
-    @Test
     void routedBodiesBindTheRoutingIslandClockOnMain() throws Exception {
         String commands = source("common/regions/IslandCommands.java");
         String park = section(commands, "private static boolean routeAndPark",

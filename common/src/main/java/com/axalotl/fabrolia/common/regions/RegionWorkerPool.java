@@ -9,6 +9,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.function.BooleanSupplier;
 
 /**
  * Region-worker pool.
@@ -434,7 +435,7 @@ public final class RegionWorkerPool {
      * it runs outside {@link #lifecycleLock}.
      */
     void pauseExactTurnAndAwait(Runnable progress) {
-        pauseExactTurnAndAwait(progress, false);
+        pauseExactTurnAndAwait(progress, false, null);
     }
 
     /**
@@ -444,10 +445,15 @@ public final class RegionWorkerPool {
      * False leaves no pause ownership and replays every accepted deferred root.
      */
     boolean pauseMainPreparationAndAwait(Runnable progress) {
-        return pauseExactTurnAndAwait(progress, true);
+        return pauseMainPreparationAndAwait(progress, null);
     }
 
-    private boolean pauseExactTurnAndAwait(Runnable progress, boolean retainQueuedRegions) {
+    boolean pauseMainPreparationAndAwait(Runnable progress, BooleanSupplier yieldWhileBusy) {
+        return pauseExactTurnAndAwait(progress, true, yieldWhileBusy);
+    }
+
+    private boolean pauseExactTurnAndAwait(Runnable progress, boolean retainQueuedRegions,
+                                           BooleanSupplier yieldWhileBusy) {
         if (progress == null) throw new NullPointerException("progress");
         if (isOwnWorker(Thread.currentThread())) {
             throw new IllegalStateException("a region worker cannot pause its own pool");
@@ -532,6 +538,15 @@ public final class RegionWorkerPool {
             }
             try {
                 throwIfFailed();
+                // An already accepted worker can acquire a second island after Main
+                // requested this cut. Let unrelated roots resume rather than waiting
+                // out that native operation with all future island units deferred.
+                if (!validatingPausedCut && yieldWhileBusy != null && yieldWhileBusy.getAsBoolean()) {
+                    resumeExactTurn(true);
+                    throwIfFailed();
+                    if (interrupted) Thread.currentThread().interrupt();
+                    return false;
+                }
                 progress.run();
                 throwIfFailed();
             } catch (Throwable failure) {

@@ -1,5 +1,7 @@
 package com.axalotl.fabrolia.common.mixin.entity;
 
+import com.axalotl.fabrolia.common.ParallelProcessor;
+import com.axalotl.fabrolia.common.regions.FlatEntityTickListAccess;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
@@ -16,7 +18,7 @@ import com.axalotl.fabrolia.common.regions.RegionScheduler;
 import com.axalotl.fabrolia.common.regions.EntityTickListSnapshotAccess;
 
 @Mixin(EntityTickList.class)
-public class EntityTickListMixin implements EntityTickListSnapshotAccess {
+public class EntityTickListMixin implements EntityTickListSnapshotAccess, FlatEntityTickListAccess {
     @Shadow private Int2ObjectMap<Entity> active;
     @Shadow private Int2ObjectMap<Entity> passive;
     @Shadow private Int2ObjectMap<Entity> iterated;
@@ -111,6 +113,11 @@ public class EntityTickListMixin implements EntityTickListSnapshotAccess {
 
     @WrapMethod(method = "forEach")
     private void forEach(Consumer<Entity> output, Operation<Void> original) {
+        fabrolia$visitFlatEntities(output, null);
+    }
+
+    @Override
+    public final boolean fabrolia$visitFlatEntities(Consumer<Entity> collect, Consumer<Entity> ordered) {
         final Int2ObjectMap<Entity> snapshot;
         synchronized (this) {
             if (this.iterated != null) {
@@ -120,9 +127,11 @@ public class EntityTickListMixin implements EntityTickListSnapshotAccess {
             this.iterated = snapshot;
         }
         try {
-            for (Entity entity : snapshot.values()) {
-                output.accept(entity);
-            }
+            var members = snapshot.values();
+            boolean serial = ordered != null && ParallelProcessor.flatCutRequiresSerialTicks(members);
+            Consumer<Entity> visit = serial ? ordered : collect;
+            for (Entity entity : members) visit.accept(entity);
+            return serial;
         } finally {
             synchronized (this) {
                 if (this.iterated != snapshot) {

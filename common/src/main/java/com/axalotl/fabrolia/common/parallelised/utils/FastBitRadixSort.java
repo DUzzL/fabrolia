@@ -2,6 +2,8 @@ package com.axalotl.fabrolia.common.parallelised.utils;
 
 import net.minecraft.world.entity.Entity;
 
+import java.lang.ref.WeakReference;
+
 /**
  * Distance sort for the sensor mixins: squared distances as raw long bits
  * (order-preserving for non-negative doubles), MSB radix partitioning, SIMD
@@ -17,33 +19,55 @@ import net.minecraft.world.entity.Entity;
 public final class FastBitRadixSort {
     private static final int SMALL_ARRAY_THRESHOLD = 6;
 
-    private static final ThreadLocal<long[]>   BITS_BUFFER = ThreadLocal.withInitial(() -> new long[0]);
-    private static final ThreadLocal<int[]>    IDX_BUFFER  = ThreadLocal.withInitial(() -> new int[0]);
-    private static final ThreadLocal<double[]> X_BUFFER    = ThreadLocal.withInitial(() -> new double[0]);
-    private static final ThreadLocal<double[]> Y_BUFFER    = ThreadLocal.withInitial(() -> new double[0]);
-    private static final ThreadLocal<double[]> Z_BUFFER    = ThreadLocal.withInitial(() -> new double[0]);
+    // A coordinate hook can synchronously sort another sensor's candidates on this thread.
+    private static final int MAX_RETAINED = 4096;
+    private static final ThreadLocal<Workspace> LOCAL = ThreadLocal.withInitial(Workspace::new);
+    // Reuse a run of dense sorts without pinning a peak or its direct buffers until worker shutdown.
+    private static final ThreadLocal<WeakReference<Workspace>> OVERFLOW = new ThreadLocal<>();
+
+    private static int capacityFor(int size) {
+        if (size <= MAX_RETAINED) return Integer.highestOneBit(size - 1) << 1;
+        // Give a growing pile some headroom without doubling a large direct allocation.
+        int extra = size >>> 3;
+        return size <= Integer.MAX_VALUE / Double.BYTES - extra ? size + extra : size;
+    }
 
     /** Rust path scratch: coordinate + permutation direct buffers and an
      *  Object[] for applying the permutation. */
     private static final class NativeBufs {
         java.nio.ByteBuffer xs, ys, zs, perm;
-        Object[] scratch = new Object[0];
+        Object[] scratch;
 
         void ensure(int n) {
-            if (xs == null || xs.capacity() < n * 8) {
-                int cap = Integer.highestOneBit(Math.max(64, n) - 1) << 1;
-                xs = java.nio.ByteBuffer.allocateDirect(cap * 8).order(java.nio.ByteOrder.nativeOrder());
+            if (xs == null || xs.capacity() / Double.BYTES < n) {
+                int cap = capacityFor(Math.max(64, n));
                 ys = java.nio.ByteBuffer.allocateDirect(cap * 8).order(java.nio.ByteOrder.nativeOrder());
                 zs = java.nio.ByteBuffer.allocateDirect(cap * 8).order(java.nio.ByteOrder.nativeOrder());
                 perm = java.nio.ByteBuffer.allocateDirect(cap * 4).order(java.nio.ByteOrder.nativeOrder());
-            }
-            if (scratch.length < n) {
-                scratch = new Object[Math.max(64, n)];
+                scratch = new Object[cap];
+                xs = java.nio.ByteBuffer.allocateDirect(cap * 8).order(java.nio.ByteOrder.nativeOrder());
             }
         }
     }
 
-    private static final ThreadLocal<NativeBufs> NATIVE = ThreadLocal.withInitial(NativeBufs::new);
+    private static final class Workspace {
+        boolean inUse;
+        long[] bits;
+        int[] idx;
+        double[] x, y, z;
+        NativeBufs nativeBufs;
+
+        void ensureJava(int size) {
+            if (bits != null && bits.length >= size) return;
+            int capacity = capacityFor(size);
+            idx = new int[capacity];
+            x = new double[capacity];
+            y = new double[capacity];
+            z = new double[capacity];
+            // Set the capacity marker last, so even an interrupted allocation leaves it safe.
+            bits = new long[capacity];
+        }
+    }
 
     public void sort(Object[] entities, int size, net.minecraft.core.Position target) {
         if (size <= 1) {
@@ -53,12 +77,36 @@ public final class FastBitRadixSort {
         double tx = target.x();
         double ty = target.y();
         double tz = target.z();
+        Workspace scratch = size <= MAX_RETAINED ? LOCAL.get() : overflow();
+        if (scratch.inUse) {
+            sort(new Workspace(), entities, size, tx, ty, tz);
+            return;
+        }
+        scratch.inUse = true;
+        try {
+            sort(scratch, entities, size, tx, ty, tz);
+        } finally {
+            scratch.inUse = false;
+        }
+    }
 
+    private static Workspace overflow() {
+        WeakReference<Workspace> idle = OVERFLOW.get();
+        Workspace scratch = idle == null ? null : idle.get();
+        if (scratch == null) {
+            scratch = new Workspace();
+            OVERFLOW.set(new WeakReference<>(scratch));
+        }
+        return scratch;
+    }
+
+    private static void sort(Workspace workspace, Object[] entities, int size, double tx, double ty, double tz) {
         // Batch-FFI path: one Rust call computes squared distances AND the
         // stable permutation (ties by encounter index — TimSort-equivalent);
         // only the Object[] shuffle stays in Java.
         if (DistanceSortBridge.available()) {
-            NativeBufs nb = NATIVE.get();
+            NativeBufs nb = workspace.nativeBufs;
+            if (nb == null) workspace.nativeBufs = nb = new NativeBufs();
             nb.ensure(size);
             for (int i = 0; i < size; i++) {
                 Entity e = (Entity) entities[i];
@@ -81,11 +129,10 @@ public final class FastBitRadixSort {
             }
         }
 
-        long[]   bits = ensure(BITS_BUFFER, size);
-        int[]    idx  = ensureI(IDX_BUFFER, size);
-        double[] ex   = ensureD(X_BUFFER,   size);
-        double[] ey   = ensureD(Y_BUFFER,   size);
-        double[] ez   = ensureD(Z_BUFFER,   size);
+        workspace.ensureJava(size);
+        long[] bits = workspace.bits;
+        int[] idx = workspace.idx;
+        double[] ex = workspace.x, ey = workspace.y, ez = workspace.z;
 
         for (int i = 0; i < size; i++) {
             Entity e = (Entity) entities[i];
@@ -107,24 +154,6 @@ public final class FastBitRadixSort {
         }
 
         fastRadixSort(entities, bits, idx, 0, size - 1, 62);
-    }
-
-    private static long[] ensure(ThreadLocal<long[]> tl, int size) {
-        long[] b = tl.get();
-        if (b.length < size) { b = new long[size]; tl.set(b); }
-        return b;
-    }
-
-    private static int[] ensureI(ThreadLocal<int[]> tl, int size) {
-        int[] b = tl.get();
-        if (b.length < size) { b = new int[size]; tl.set(b); }
-        return b;
-    }
-
-    private static double[] ensureD(ThreadLocal<double[]> tl, int size) {
-        double[] b = tl.get();
-        if (b.length < size) { b = new double[size]; tl.set(b); }
-        return b;
     }
 
     private static void fastRadixSort(Object[] ents, long[] bits, int[] idx, int low, int high, int bit) {
